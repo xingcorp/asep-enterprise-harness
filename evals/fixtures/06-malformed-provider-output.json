@@ -1,0 +1,21 @@
+{
+  "id": "eval-06-malformed-provider-output",
+  "source": "synthetic",
+  "grader": "malformed-provider-output",
+  "labels": ["provider", "malformed", "negative"],
+  "provenance": {
+    "author": "ASEP contributors",
+    "createdAt": "2026-07-14",
+    "note": "Synthetic seed. A provider that returns a non-conformant ReviewReport must be rejected."
+  },
+  "privacyClass": "public-synthetic",
+  "input": {
+    "contract": "review-report",
+    "data": {
+      "reviewerProvider": "some-model",
+      "verdict": "LGTM",
+      "findings": "all good"
+    }
+  },
+  "expected": { "valid": false }
+}

@@ -1,0 +1,16 @@
+{
+  "id": "eval-03-verification-plan",
+  "source": "synthetic",
+  "grader": "verification-plan",
+  "labels": ["verification", "assurance-levels"],
+  "provenance": {
+    "author": "ASEP contributors",
+    "createdAt": "2026-07-14",
+    "note": "Synthetic seed. NOT a real historical task."
+  },
+  "privacyClass": "public-synthetic",
+  "input": { "risk": "R4" },
+  "expected": {
+    "requiredLevels": ["L0", "L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8", "L9"]
+  }
+}

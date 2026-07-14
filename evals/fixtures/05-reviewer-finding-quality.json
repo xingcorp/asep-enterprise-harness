@@ -1,0 +1,21 @@
+{
+  "id": "eval-05-reviewer-finding-quality",
+  "source": "synthetic",
+  "grader": "reviewer-finding-quality",
+  "labels": ["review", "finding-quality", "negative"],
+  "provenance": {
+    "author": "ASEP contributors",
+    "createdAt": "2026-07-14",
+    "note": "Synthetic seed. A generic finding without evidence must be rejected."
+  },
+  "privacyClass": "public-synthetic",
+  "input": {
+    "finding": {
+      "id": "REV-999",
+      "severity": "LOW",
+      "category": "MAINTAINABILITY",
+      "requiredFix": "clean this up"
+    }
+  },
+  "expected": { "valid": false }
+}

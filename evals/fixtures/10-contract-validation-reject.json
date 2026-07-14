@@ -1,0 +1,30 @@
+{
+  "id": "eval-10-contract-validation-reject",
+  "source": "synthetic",
+  "grader": "contract-validation",
+  "labels": ["contract", "validation", "negative"],
+  "provenance": {
+    "author": "ASEP contributors",
+    "createdAt": "2026-07-14",
+    "note": "Synthetic seed. A WorkOrder with an invalid risk level must be rejected."
+  },
+  "privacyClass": "public-synthetic",
+  "input": {
+    "contract": "work-order",
+    "data": {
+      "id": "task-bad",
+      "runId": "run-bad",
+      "objective": "broken",
+      "requirementIds": [],
+      "baseSha": "0000000000000000000000000000000000000000",
+      "allowedPaths": [],
+      "forbiddenChanges": [],
+      "architectureInvariants": [],
+      "acceptanceCheckIds": [],
+      "risk": "R9",
+      "requiredSkills": [],
+      "budget": { "maxTurns": 1, "maxToolCalls": 1, "maxCostUsd": 1, "maxWallClockMinutes": 1 }
+    }
+  },
+  "expected": { "valid": false }
+}

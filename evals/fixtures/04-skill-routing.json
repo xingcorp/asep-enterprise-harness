@@ -1,0 +1,24 @@
+{
+  "id": "eval-04-skill-routing",
+  "source": "synthetic",
+  "grader": "skill-routing",
+  "labels": ["skill", "routing"],
+  "provenance": {
+    "author": "ASEP contributors",
+    "createdAt": "2026-07-14",
+    "note": "Synthetic seed. NOT a real historical task."
+  },
+  "privacyClass": "public-synthetic",
+  "input": {
+    "taskType": "regression-after-refactor",
+    "routingTable": {
+      "regression-after-refactor": "systematic-debugging",
+      "new-feature": "incremental-implementation",
+      "schema-change": "database-migration"
+    }
+  },
+  "expected": {
+    "primarySkill": "systematic-debugging",
+    "forbiddenPrimarySkills": ["greenfield-bootstrap", "release-management"]
+  }
+}

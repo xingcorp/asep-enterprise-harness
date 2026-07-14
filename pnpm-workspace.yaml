@@ -3,3 +3,4 @@ packages:
   - workers/*
   - packages/*
   - adapters/*
+  - evals

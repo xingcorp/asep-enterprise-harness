@@ -9,6 +9,7 @@
     { "path": "adapters/agent-mock" },
     { "path": "adapters/memory-inmemory" },
     { "path": "workers/workflow-worker" },
-    { "path": "apps/control-plane-api" }
+    { "path": "apps/control-plane-api" },
+    { "path": "evals" }
   ]
 }

@@ -1,0 +1,16 @@
+{
+  "id": "eval-02-risk-routing",
+  "source": "synthetic",
+  "grader": "risk-routing",
+  "labels": ["risk", "routing", "max-across-categories"],
+  "provenance": {
+    "author": "ASEP contributors",
+    "createdAt": "2026-07-14",
+    "note": "Synthetic seed. NOT a real historical task."
+  },
+  "privacyClass": "public-synthetic",
+  "input": {
+    "categories": ["documentation", "authentication", "ui-ux"]
+  },
+  "expected": { "risk": "R3" }
+}

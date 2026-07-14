@@ -1,0 +1,19 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "outDir": "dist"
+  },
+  "include": [
+    "runner/**/*.ts",
+    "schema/**/*.ts"
+  ],
+  "references": [
+    {
+      "path": "../packages/contracts"
+    },
+    {
+      "path": "../packages/policy"
+    }
+  ]
+}

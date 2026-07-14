@@ -1,0 +1,16 @@
+{
+  "id": "eval-09-false-completion",
+  "source": "synthetic",
+  "grader": "false-completion",
+  "labels": ["false-completion", "failure-taxonomy", "negative"],
+  "provenance": {
+    "author": "ASEP contributors",
+    "createdAt": "2026-07-14",
+    "note": "Synthetic seed. Agent declared complete while gates were red -> false-completion."
+  },
+  "privacyClass": "public-synthetic",
+  "input": {
+    "signals": { "declaredCompleteButGatesRed": true }
+  },
+  "expected": { "failureClass": "false-completion" }
+}

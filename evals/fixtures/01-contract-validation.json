@@ -1,0 +1,30 @@
+{
+  "id": "eval-01-contract-validation",
+  "source": "synthetic",
+  "grader": "contract-validation",
+  "labels": ["contract", "validation", "positive"],
+  "provenance": {
+    "author": "ASEP contributors",
+    "createdAt": "2026-07-14",
+    "note": "Synthetic seed. NOT a real historical task. Real historical-task collection is a production-pilot dependency (see evals/README.md)."
+  },
+  "privacyClass": "public-synthetic",
+  "input": {
+    "contract": "work-order",
+    "data": {
+      "id": "task-eval",
+      "runId": "run-eval",
+      "objective": "Add pagination to the users endpoint",
+      "requirementIds": ["REQ-001"],
+      "baseSha": "0000000000000000000000000000000000000000",
+      "allowedPaths": ["src/**"],
+      "forbiddenChanges": [],
+      "architectureInvariants": [],
+      "acceptanceCheckIds": ["AC-001"],
+      "risk": "R2",
+      "requiredSkills": [],
+      "budget": { "maxTurns": 20, "maxToolCalls": 80, "maxCostUsd": 10, "maxWallClockMinutes": 60 }
+    }
+  },
+  "expected": { "valid": true }
+}

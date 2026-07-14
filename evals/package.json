@@ -1,0 +1,19 @@
+{
+  "name": "@asep/evals",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b --pretty false",
+    "eval": "tsx runner/cli.ts"
+  },
+  "dependencies": {
+    "@asep/contracts": "workspace:*",
+    "@asep/policy": "workspace:*",
+    "ajv": "8.20.0",
+    "yaml": "2.9.0"
+  }
+}

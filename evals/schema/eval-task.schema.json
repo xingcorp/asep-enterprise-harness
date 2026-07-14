@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://asep.dev/schema/eval-task/v1",
+  "version": "1.0.0",
+  "title": "EvalTask",
+  "description": "One labelled evaluation task ingested into the deterministic eval dataset. This is the task-ingest contract: every fixture under evals/fixtures/**/*.json validates against it, and the deterministic graders in evals/runner/graders.ts consume exactly this shape. Real historical tasks (a production-pilot dependency, NOT a Phase 1 deliverable) reuse the same shape with a non-synthetic source and a fuller provenance record.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "source", "grader", "labels", "privacyClass", "provenance", "input", "expected"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[a-z0-9][a-z0-9-]*$",
+      "description": "Stable, path-independent task id. The runner sorts by this for deterministic ordering."
+    },
+    "source": {
+      "type": "string",
+      "description": "Provenance class of the task. Phase 1 fixtures are all synthetic; real historical tasks are a production-pilot dependency, not a Phase 1 deliverable.",
+      "enum": ["synthetic", "historical", "adversarial-synthetic"]
+    },
+    "grader": {
+      "type": "string",
+      "description": "Deterministic grader id. Must match a registered grader in evals/runner/graders.ts.",
+      "enum": [
+        "contract-validation",
+        "risk-routing",
+        "verification-plan",
+        "skill-routing",
+        "reviewer-finding-quality",
+        "malformed-provider-output",
+        "prompt-injection",
+        "scope-violation",
+        "false-completion"
+      ]
+    },
+    "labels": {
+      "type": "array",
+      "description": "Free-form tags for slicing eval results.",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "privacyClass": {
+      "type": "string",
+      "description": "Privacy classification of the task payload. Synthetic tasks are always 'public-synthetic'.",
+      "enum": ["public-synthetic", "internal", "confidential", "restricted"]
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "How the task was obtained. Required so no fixture can silently masquerade as a real historical task.",
+      "required": ["author"],
+      "properties": {
+        "author": { "type": "string", "minLength": 1 },
+        "createdAt": { "type": "string" },
+        "note": { "type": "string" },
+        "originalRef": { "type": ["string", "null"] },
+        "reviewedBy": { "type": ["string", "null"] }
+      }
+    },
+    "input": {
+      "type": "object",
+      "description": "The task payload handed to the grader. Shape depends on grader; kept open but must be a non-empty object.",
+      "minProperties": 1
+    },
+    "expected": {
+      "type": "object",
+      "description": "Expected grader output. Compared structurally by the deterministic grader.",
+      "minProperties": 1
+    }
+  },
+  "examples": [
+    {
+      "id": "eval-risk-routing-secrets-is-r4",
+      "source": "synthetic",
+      "grader": "risk-routing",
+      "labels": ["risk", "secrets"],
+      "privacyClass": "public-synthetic",
+      "provenance": { "author": "ASEP contributors", "note": "Synthetic seed. NOT a real historical task." },
+      "input": { "categories": ["secrets"] },
+      "expected": { "risk": "R4" }
+    }
+  ]
+}

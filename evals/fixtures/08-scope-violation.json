@@ -1,0 +1,17 @@
+{
+  "id": "eval-08-scope-violation",
+  "source": "synthetic",
+  "grader": "scope-violation",
+  "labels": ["scope", "violation", "negative"],
+  "provenance": {
+    "author": "ASEP contributors",
+    "createdAt": "2026-07-14",
+    "note": "Synthetic seed. A changed path outside allowedPaths is a scope violation."
+  },
+  "privacyClass": "public-synthetic",
+  "input": {
+    "changedPaths": ["src/users.ts", "infra/terraform/main.tf"],
+    "allowedPaths": ["src/**"]
+  },
+  "expected": { "violation": true }
+}
