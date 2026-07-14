@@ -1,0 +1,13 @@
+{
+  "id": "product-spec-bad",
+  "version": 1,
+  "objective": "Nested requirement violates the Requirement schema.",
+  "inScope": [],
+  "outOfScope": [],
+  "requirements": [
+    { "id": "REQ-001", "statement": "Missing priority enum value.", "priority": "URGENT" }
+  ],
+  "nonFunctionalRequirements": [],
+  "acceptanceScenarios": [],
+  "architectureInvariants": []
+}

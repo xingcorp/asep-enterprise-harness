@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://asep.dev/schema/acceptance-scenario/v1",
+  "version": "1.0.0",
+  "title": "AcceptanceScenario",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "given", "when", "then", "automated"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "given": { "type": "array", "items": { "type": "string" } },
+    "when": { "type": "array", "items": { "type": "string" } },
+    "then": { "type": "array", "items": { "type": "string" } },
+    "automated": { "type": "boolean" }
+  },
+  "examples": [
+    { "id": "AC-001", "given": ["a draft run"], "when": ["it is submitted"], "then": ["state becomes DISCOVERY"], "automated": true }
+  ]
+}

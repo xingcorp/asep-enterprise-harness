@@ -1,0 +1,6 @@
+{
+  "id": "REV-002",
+  "severity": "LOW",
+  "category": "SECURITY",
+  "requiredFix": "Sanitize the input."
+}

@@ -1,0 +1,9 @@
+{
+  "id": "vp-example",
+  "workOrderId": "task-example",
+  "risk": "R2",
+  "requiredLevels": ["L0", "L1", "L2", "L3", "L4", "L5", "L8"],
+  "checks": [
+    { "id": "chk-workspace", "level": "L0", "category": "workspace", "mandatory": true }
+  ]
+}

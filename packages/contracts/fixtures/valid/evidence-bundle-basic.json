@@ -1,0 +1,12 @@
+{
+  "taskId": "task-example",
+  "attemptId": "attempt-example",
+  "baseSha": "0000000000000000000000000000000000000000",
+  "resultSha": "1111111111111111111111111111111111111111",
+  "createdAt": "2026-07-14T00:00:00Z",
+  "environment": { "imageDigest": "sha256:abc", "lockfileHash": "sha256:def", "nodeVersion": "24.6.0" },
+  "diff": { "artifactId": "artifact-diff", "sha256": "sha256:diff" },
+  "checks": [
+    { "id": "typecheck", "category": "static", "command": "pnpm typecheck", "exitCode": 0, "durationMs": 1000, "stdoutArtifactId": "artifact-out", "stderrArtifactId": "artifact-err" }
+  ]
+}

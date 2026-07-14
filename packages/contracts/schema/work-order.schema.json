@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://asep.dev/schema/work-order/v1",
+  "version": "1.0.0",
+  "title": "WorkOrder",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "runId", "objective", "requirementIds", "baseSha", "allowedPaths", "forbiddenChanges", "architectureInvariants", "acceptanceCheckIds", "risk", "requiredSkills", "budget"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1, "x-tsType": "TaskId" },
+    "runId": { "type": "string", "minLength": 1, "x-tsType": "RunId" },
+    "objective": { "type": "string", "minLength": 1 },
+    "requirementIds": { "type": "array", "items": { "type": "string" } },
+    "baseSha": { "type": "string", "minLength": 1 },
+    "allowedPaths": { "type": "array", "items": { "type": "string" } },
+    "forbiddenChanges": { "type": "array", "items": { "type": "string" } },
+    "architectureInvariants": { "type": "array", "items": { "type": "string" } },
+    "acceptanceCheckIds": { "type": "array", "items": { "type": "string" } },
+    "risk": { "type": "string", "enum": ["R0", "R1", "R2", "R3", "R4"], "x-tsType": "RiskLevel" },
+    "requiredSkills": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "version"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "version": { "type": "string", "minLength": 1 }
+        },
+        "x-tsType": "SkillRef"
+      }
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maxTurns", "maxToolCalls", "maxCostUsd", "maxWallClockMinutes"],
+      "properties": {
+        "maxTurns": { "type": "integer", "minimum": 0 },
+        "maxToolCalls": { "type": "integer", "minimum": 0 },
+        "maxCostUsd": { "type": "number", "minimum": 0 },
+        "maxWallClockMinutes": { "type": "number", "minimum": 0 }
+      },
+      "x-tsType": "Budget"
+    }
+  },
+  "examples": [
+    {
+      "id": "task-example",
+      "runId": "run-example",
+      "objective": "One independently verifiable outcome",
+      "requirementIds": ["REQ-001"],
+      "baseSha": "0000000000000000000000000000000000000000",
+      "allowedPaths": ["src/**", "tests/**"],
+      "forbiddenChanges": ["unrelated dependency upgrades"],
+      "architectureInvariants": [],
+      "acceptanceCheckIds": ["AC-001"],
+      "risk": "R2",
+      "requiredSkills": [{ "id": "process.incremental-implementation", "version": "1.0.0" }],
+      "budget": { "maxTurns": 30, "maxToolCalls": 120, "maxCostUsd": 15, "maxWallClockMinutes": 120 }
+    }
+  ]
+}

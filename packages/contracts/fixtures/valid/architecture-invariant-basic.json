@@ -1,0 +1,5 @@
+{
+  "id": "INV-001",
+  "statement": "No provider SDK may be imported by domain contracts.",
+  "category": "DEPENDENCY"
+}

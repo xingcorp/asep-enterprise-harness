@@ -1,21 +1,16 @@
-apiVersion: asep.dev/v1
-kind: ContextPack
-metadata:
-  id: ctx-example
-  generatedAt: "2026-07-14T00:00:00Z"
-  hash: "sha256:..."
-spec:
-  baseSha: "..."
-  objective: "..."
-  specificationExcerpt: "..."
-  architectureInvariants: []
-  repositoryMap:
-    relevantFiles: []
-    relevantSymbols: []
-    dependencyPaths: []
-  priorEvidenceIds: []
-  skills: []
-  policy:
-    allowedTools: []
-    deniedOperations: []
-  budgetRemaining: {}
+# Canonical ContextPack template.
+# Shape matches packages/contracts/schema/context-pack.schema.json (flat, additionalProperties:false).
+# Validated against that schema by packages/contracts/src/templates.test.ts.
+id: ctx-example
+generatedAt: "2026-07-14T00:00:00Z"
+baseSha: "0000000000000000000000000000000000000000"
+objective: "..."
+specificationExcerpt: "..."
+architectureInvariants: []
+relevantFiles: []
+relevantSymbols: []
+priorEvidenceIds: []
+skills: []
+allowedTools: []
+deniedOperations: []
+hash: "sha256:0000"

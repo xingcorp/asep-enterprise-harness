@@ -1,28 +1,24 @@
-apiVersion: asep.dev/v1
-kind: ProductSpec
-metadata:
-  id: product-spec-example
-  version: 1
-  status: draft
-spec:
-  objective: "Measurable product outcome"
-  inScope: []
-  outOfScope: []
-  assumptions: []
-  requirements:
-    - id: REQ-001
-      priority: MUST
-      statement: "..."
-      rationale: "..."
-  nonFunctionalRequirements:
-    - id: NFR-001
-      priority: MUST
-      statement: "p95 latency <= ..."
-  acceptanceScenarios:
-    - id: AC-001
-      given: []
-      when: []
-      then: []
-      automated: true
-  architectureInvariants: []
-  definitionOfDone: []
+# Canonical ProductSpec template.
+# Shape matches packages/contracts/schema/product-spec.schema.json (flat, additionalProperties:false).
+# Validated against that schema by packages/contracts/src/templates.test.ts.
+id: product-spec-example
+version: 1
+objective: "Measurable product outcome"
+inScope: []
+outOfScope: []
+requirements:
+  - id: REQ-001
+    priority: MUST
+    statement: "..."
+    rationale: "..."
+nonFunctionalRequirements:
+  - id: NFR-001
+    priority: MUST
+    statement: "p95 latency <= 200ms"
+acceptanceScenarios:
+  - id: AC-001
+    given: []
+    when: []
+    then: []
+    automated: true
+architectureInvariants: []

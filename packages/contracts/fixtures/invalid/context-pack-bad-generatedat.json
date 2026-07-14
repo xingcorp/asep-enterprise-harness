@@ -1,0 +1,15 @@
+{
+  "id": "ctx-bad",
+  "generatedAt": "not-a-date",
+  "baseSha": "0000000000000000000000000000000000000000",
+  "objective": "generatedAt must be date-time.",
+  "specificationExcerpt": "",
+  "architectureInvariants": [],
+  "relevantFiles": [],
+  "relevantSymbols": [],
+  "priorEvidenceIds": [],
+  "skills": [],
+  "allowedTools": [],
+  "deniedOperations": [],
+  "hash": "sha256:0000"
+}

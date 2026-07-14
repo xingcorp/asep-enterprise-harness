@@ -1,0 +1,5 @@
+{
+  "id": "REQ-001",
+  "statement": "Priority is not in the allowed enum.",
+  "priority": "CRITICAL"
+}

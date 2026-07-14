@@ -1,0 +1,7 @@
+{
+  "reviewerProvider": "codex",
+  "reviewerModel": "gpt-5.6-sol",
+  "verdict": "APPROVE",
+  "confidence": 1.5,
+  "findings": []
+}

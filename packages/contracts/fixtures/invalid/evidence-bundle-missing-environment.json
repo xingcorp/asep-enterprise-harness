@@ -1,0 +1,9 @@
+{
+  "taskId": "task-example",
+  "attemptId": "attempt-example",
+  "baseSha": "0000000000000000000000000000000000000000",
+  "resultSha": "1111111111111111111111111111111111111111",
+  "createdAt": "2026-07-14T00:00:00Z",
+  "diff": { "artifactId": "artifact-diff", "sha256": "sha256:diff" },
+  "checks": []
+}

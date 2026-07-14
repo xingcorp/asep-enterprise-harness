@@ -1,0 +1,7 @@
+{
+  "id": "AC-001",
+  "given": ["a draft run"],
+  "when": ["it is submitted"],
+  "then": ["state becomes DISCOVERY"],
+  "automated": true
+}

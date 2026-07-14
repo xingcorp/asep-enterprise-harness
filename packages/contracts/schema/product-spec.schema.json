@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://asep.dev/schema/product-spec/v1",
+  "version": "1.0.0",
+  "title": "ProductSpec",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "version", "objective", "inScope", "outOfScope", "requirements", "nonFunctionalRequirements", "acceptanceScenarios", "architectureInvariants"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "version": { "type": "integer", "minimum": 1 },
+    "objective": { "type": "string", "minLength": 1 },
+    "inScope": { "type": "array", "items": { "type": "string" } },
+    "outOfScope": { "type": "array", "items": { "type": "string" } },
+    "requirements": { "type": "array", "items": { "$ref": "https://asep.dev/schema/requirement/v1", "x-tsType": "Requirement" } },
+    "nonFunctionalRequirements": { "type": "array", "items": { "$ref": "https://asep.dev/schema/requirement/v1", "x-tsType": "Requirement" } },
+    "acceptanceScenarios": { "type": "array", "items": { "$ref": "https://asep.dev/schema/acceptance-scenario/v1", "x-tsType": "AcceptanceScenario" } },
+    "architectureInvariants": { "type": "array", "items": { "type": "string" } }
+  },
+  "examples": [
+    {
+      "id": "product-spec-example",
+      "version": 1,
+      "objective": "Measurable product outcome",
+      "inScope": [],
+      "outOfScope": [],
+      "requirements": [{ "id": "REQ-001", "statement": "...", "priority": "MUST" }],
+      "nonFunctionalRequirements": [{ "id": "NFR-001", "statement": "p95 latency <= 200ms", "priority": "MUST" }],
+      "acceptanceScenarios": [{ "id": "AC-001", "given": [], "when": [], "then": [], "automated": true }],
+      "architectureInvariants": []
+    }
+  ]
+}

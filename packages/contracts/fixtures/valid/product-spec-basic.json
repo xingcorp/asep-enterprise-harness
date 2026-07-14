@@ -1,0 +1,17 @@
+{
+  "id": "product-spec-example",
+  "version": 1,
+  "objective": "Ship a durable run-state machine.",
+  "inScope": ["state persistence"],
+  "outOfScope": ["provider integration"],
+  "requirements": [
+    { "id": "REQ-001", "statement": "Persist run state durably.", "priority": "MUST" }
+  ],
+  "nonFunctionalRequirements": [
+    { "id": "NFR-001", "statement": "p95 latency <= 200ms", "priority": "MUST" }
+  ],
+  "acceptanceScenarios": [
+    { "id": "AC-001", "given": ["a draft run"], "when": ["submitted"], "then": ["state becomes DISCOVERY"], "automated": true }
+  ],
+  "architectureInvariants": ["INV-001"]
+}

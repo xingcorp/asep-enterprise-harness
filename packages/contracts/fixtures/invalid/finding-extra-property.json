@@ -1,0 +1,8 @@
+{
+  "id": "REV-003",
+  "severity": "MEDIUM",
+  "category": "SECURITY",
+  "evidence": "Token logged in plaintext.",
+  "requiredFix": "Redact before logging.",
+  "unexpected": "additionalProperties must be rejected"
+}

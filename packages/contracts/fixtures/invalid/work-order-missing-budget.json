@@ -1,0 +1,13 @@
+{
+  "id": "task-bad-2",
+  "runId": "run-bad-2",
+  "objective": "Budget is a required property.",
+  "requirementIds": [],
+  "baseSha": "0000000000000000000000000000000000000000",
+  "allowedPaths": [],
+  "forbiddenChanges": [],
+  "architectureInvariants": [],
+  "acceptanceCheckIds": [],
+  "risk": "R1",
+  "requiredSkills": []
+}

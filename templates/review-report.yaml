@@ -1,23 +1,17 @@
-apiVersion: asep.dev/v1
-kind: ReviewReport
-metadata:
-  taskId: task-example
-  attemptId: attempt-example
-spec:
-  reviewer:
-    provider: codex
-    model: PINNED_MODEL
-    freshContext: true
-  verdict: REQUEST_CHANGES
-  confidence: 0.9
-  findings:
-    - id: REV-001
-      severity: HIGH
-      category: CORRECTNESS
-      requirementId: REQ-001
-      location:
-        file: src/example.ts
-        lineStart: 10
-        lineEnd: 20
-      evidence: "Concrete, reproducible evidence"
-      requiredFix: "Specific expected behavior"
+# Canonical ReviewReport template.
+# Shape matches packages/contracts/schema/review-report.schema.json (flat, additionalProperties:false).
+# Validated against that schema by packages/contracts/src/templates.test.ts.
+reviewerProvider: codex
+reviewerModel: PINNED_MODEL
+verdict: REQUEST_CHANGES
+confidence: 0.9
+findings:
+  - id: REV-001
+    severity: HIGH
+    category: CORRECTNESS
+    requirementId: REQ-001
+    file: src/example.ts
+    lineStart: 10
+    lineEnd: 20
+    evidence: "Concrete, reproducible evidence"
+    requiredFix: "Specific expected behavior"

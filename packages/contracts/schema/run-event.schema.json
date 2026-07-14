@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://asep.dev/schema/run-event/v1",
+  "version": "1.0.0",
+  "title": "RunEvent",
+  "description": "Immutable telemetry record emitted by the trusted harness. This is the single source catalog for every metric operand: the measurement dictionary may only reference eventType values and field names defined here.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["eventId", "eventType", "occurredAt", "runId"],
+  "properties": {
+    "eventId": { "type": "string", "minLength": 1 },
+    "eventType": {
+      "type": "string",
+      "description": "Closed set of harness lifecycle events.",
+      "enum": [
+        "run.started",
+        "run.completed",
+        "task.started",
+        "task.completed",
+        "attempt.started",
+        "attempt.declared_complete",
+        "attempt.completed",
+        "verification.completed",
+        "review.completed",
+        "repair.started",
+        "integration.completed",
+        "deployment.completed",
+        "incident.opened",
+        "human.intervention",
+        "workflow.recovered"
+      ]
+    },
+    "occurredAt": { "type": "string", "format": "date-time" },
+    "runId": { "type": "string", "minLength": 1, "x-tsType": "RunId" },
+    "taskId": { "type": "string", "x-tsType": "TaskId" },
+    "attemptId": { "type": "string", "x-tsType": "AttemptId" },
+    "risk": { "type": "string", "enum": ["R0", "R1", "R2", "R3", "R4"], "x-tsType": "RiskLevel" },
+    "outcome": {
+      "type": "string",
+      "description": "Outcome discriminator used by acceptance/failure metrics.",
+      "enum": ["accepted", "rejected", "failed", "blocked", "cancelled", "succeeded", "pass", "fail", "error"]
+    },
+    "declaredComplete": { "type": "boolean", "description": "Whether the agent declared the attempt complete (false-completion numerator source)." },
+    "passedRequiredAssurance": { "type": "boolean", "description": "Whether the attempt passed all mandatory assurance levels." },
+    "failureClass": { "type": "string", "description": "Failure taxonomy class id when outcome is failed/rejected." },
+    "scopeViolation": { "type": "boolean" },
+    "reviewFindingsTotal": { "type": "integer", "minimum": 0 },
+    "reviewFindingsValid": { "type": "integer", "minimum": 0 },
+    "reviewFindingsFalsePositive": { "type": "integer", "minimum": 0 },
+    "escapedDefect": { "type": "boolean" },
+    "repairCycles": { "type": "integer", "minimum": 0 },
+    "leadTimeMs": { "type": "number", "minimum": 0 },
+    "deploymentFrequencyWindowDays": { "type": "number", "minimum": 0 },
+    "changeFailure": { "type": "boolean", "description": "Whether a deployment caused a change failure (DORA CFR)." },
+    "restoreTimeMs": { "type": "number", "minimum": 0 },
+    "modelCostUsd": { "type": "number", "minimum": 0 },
+    "computeCostUsd": { "type": "number", "minimum": 0 },
+    "reviewCostUsd": { "type": "number", "minimum": 0 },
+    "humanMinutes": { "type": "number", "minimum": 0 },
+    "inputTokens": { "type": "integer", "minimum": 0 },
+    "outputTokens": { "type": "integer", "minimum": 0 },
+    "toolCalls": { "type": "integer", "minimum": 0 },
+    "durationMs": { "type": "number", "minimum": 0 },
+    "requirementAccepted": { "type": "boolean" },
+    "userJourneySuccess": { "type": "boolean" },
+    "tenantId": { "type": "string" },
+    "projectId": { "type": "string", "x-tsType": "ProjectId" }
+  },
+  "examples": [
+    {
+      "eventId": "evt-0001",
+      "eventType": "attempt.declared_complete",
+      "occurredAt": "2026-07-14T00:00:00Z",
+      "runId": "run-1",
+      "taskId": "task-1",
+      "attemptId": "attempt-1",
+      "risk": "R2",
+      "declaredComplete": true,
+      "passedRequiredAssurance": false,
+      "failureClass": "false-completion"
+    }
+  ]
+}

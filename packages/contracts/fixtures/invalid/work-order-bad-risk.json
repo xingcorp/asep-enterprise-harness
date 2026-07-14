@@ -1,0 +1,14 @@
+{
+  "id": "task-bad",
+  "runId": "run-bad",
+  "objective": "Risk level is outside R0-R4.",
+  "requirementIds": [],
+  "baseSha": "0000000000000000000000000000000000000000",
+  "allowedPaths": [],
+  "forbiddenChanges": [],
+  "architectureInvariants": [],
+  "acceptanceCheckIds": [],
+  "risk": "R5",
+  "requiredSkills": [],
+  "budget": { "maxTurns": 1, "maxToolCalls": 1, "maxCostUsd": 1, "maxWallClockMinutes": 1 }
+}

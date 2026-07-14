@@ -1,0 +1,6 @@
+{
+  "eventId": "evt-bad",
+  "eventType": "attempt.exploded",
+  "occurredAt": "2026-07-14T00:00:00Z",
+  "runId": "run-1"
+}

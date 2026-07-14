@@ -1,0 +1,19 @@
+{
+  "reviewerProvider": "codex",
+  "reviewerModel": "gpt-5.6-sol",
+  "verdict": "REQUEST_CHANGES",
+  "confidence": 0.9,
+  "findings": [
+    {
+      "id": "REV-001",
+      "severity": "HIGH",
+      "category": "CORRECTNESS",
+      "requirementId": "REQ-001",
+      "file": "src/example.ts",
+      "lineStart": 10,
+      "lineEnd": 20,
+      "evidence": "Concrete, reproducible evidence.",
+      "requiredFix": "Specific expected behavior."
+    }
+  ]
+}

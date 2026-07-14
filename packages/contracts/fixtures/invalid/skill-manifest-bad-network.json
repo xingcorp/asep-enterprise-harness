@@ -1,0 +1,11 @@
+{
+  "id": "engineering.bad",
+  "version": "1.0.0",
+  "owner": "platform-architecture",
+  "provenance": { "source": "internal" },
+  "activation": { "phases": [], "taskTypes": [] },
+  "execution": { "role": "adjunct" },
+  "permissions": { "tools": [], "network": "unrestricted", "productionAccess": "forbidden" },
+  "verification": { "requiredChecks": [] },
+  "compatibility": { "harness": ">=0.1 <1.0" }
+}

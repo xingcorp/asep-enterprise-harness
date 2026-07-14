@@ -1,0 +1,7 @@
+{
+  "id": "REV-001",
+  "severity": "HIGH",
+  "category": "CORRECTNESS",
+  "evidence": "Off-by-one in pagination bound.",
+  "requiredFix": "Use <= instead of <."
+}

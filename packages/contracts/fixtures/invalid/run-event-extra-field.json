@@ -1,0 +1,7 @@
+{
+  "eventId": "evt-extra",
+  "eventType": "run.started",
+  "occurredAt": "2026-07-14T00:00:00Z",
+  "runId": "run-1",
+  "undocumentedMetricField": 42
+}

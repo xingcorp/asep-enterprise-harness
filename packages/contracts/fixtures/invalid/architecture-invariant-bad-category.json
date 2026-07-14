@@ -1,0 +1,5 @@
+{
+  "id": "INV-002",
+  "statement": "Category is not in the allowed enum.",
+  "category": "PERFORMANCE"
+}

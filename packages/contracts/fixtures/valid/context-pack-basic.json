@@ -1,0 +1,15 @@
+{
+  "id": "ctx-example",
+  "generatedAt": "2026-07-14T00:00:00Z",
+  "baseSha": "0000000000000000000000000000000000000000",
+  "objective": "Implement the run state machine.",
+  "specificationExcerpt": "State transitions must reject unsafe skips.",
+  "architectureInvariants": ["INV-001"],
+  "relevantFiles": ["packages/domain/src/index.ts"],
+  "relevantSymbols": ["transition"],
+  "priorEvidenceIds": [],
+  "skills": [{ "id": "process.incremental-implementation", "version": "1.0.0" }],
+  "allowedTools": ["read-file", "apply-patch"],
+  "deniedOperations": ["network"],
+  "hash": "sha256:0000"
+}

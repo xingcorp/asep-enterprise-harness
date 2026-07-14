@@ -1,0 +1,7 @@
+{
+  "id": "vp-bad",
+  "workOrderId": "task-bad",
+  "risk": "R2",
+  "requiredLevels": ["L0", "L11"],
+  "checks": []
+}

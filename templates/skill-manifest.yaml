@@ -1,14 +1,14 @@
-apiVersion: asep.skills/v1
-kind: Skill
-metadata:
-  id: engineering.database-migration
-  version: 1.0.0
-  owner: platform-architecture
-  provenance:
-    source: internal
-    upstream: null
-    commit: null
-  signature: "cosign:..."
+# Canonical SkillManifest template.
+# Shape matches packages/contracts/schema/skill-manifest.schema.json (flat top-level, additionalProperties:false).
+# Validated against that schema by packages/contracts/src/templates.test.ts.
+id: engineering.database-migration
+version: "1.0.0"
+owner: platform-architecture
+signature: "cosign:..."
+provenance:
+  source: internal
+  upstream: null
+  commit: null
 activation:
   phases: [planning, implementation, verification]
   taskTypes: [schema-change, data-migration]
