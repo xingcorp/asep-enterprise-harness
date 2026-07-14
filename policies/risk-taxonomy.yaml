@@ -1,0 +1,57 @@
+# ASEP risk taxonomy — SINGLE CANONICAL SOURCE.
+#
+# Maps the 13 change categories to a baseline risk level R0–R4. The TS engine
+# (packages/policy/src/risk.ts) loads this file at init; it never hardcodes the
+# mapping. A parity test asserts TS and this file agree and that every category
+# resolves to a defined R0–R4 level. Risk classification is DETERMINISTIC: no
+# model call, no network, pure data lookup.
+#
+# When a single change touches multiple categories, the effective risk is the
+# MAXIMUM across all matched categories (see risk.ts classifyRisk).
+apiVersion: asep.policy/v1
+kind: RiskTaxonomy
+version: 1.0.0
+
+# Ordered R0 (lowest) .. R4 (highest). Used to compute the max level.
+levels: [R0, R1, R2, R3, R4]
+
+categories:
+  documentation:
+    risk: R0
+    description: Docs, comments, non-executable prose; no behavior change.
+  internal-refactor:
+    risk: R1
+    description: Behavior-preserving internal refactor; no public surface change.
+  ui-ux:
+    risk: R2
+    description: User-facing UI/UX change without security or data-model impact.
+  dependency-upgrade:
+    risk: R2
+    description: Third-party dependency version change (non-security-critical).
+  public-api:
+    risk: R3
+    description: Change to a published/consumed API contract or its semantics.
+  database-migration:
+    risk: R3
+    description: Schema or data migration; reversible with a rollback plan.
+  authentication:
+    risk: R3
+    description: Login, session, credential verification or identity flows.
+  authorization:
+    risk: R3
+    description: Access-control, permission or role-enforcement logic.
+  infrastructure:
+    risk: R3
+    description: IaC, deployment topology, networking or runtime configuration.
+  billing-payment:
+    risk: R3
+    description: Billing, invoicing, payment capture or pricing logic.
+  secrets:
+    risk: R4
+    description: Handling of secrets, keys, tokens or credential brokering.
+  production-data:
+    risk: R4
+    description: Irreversible production data mutation or destructive action.
+  multi-tenant-isolation:
+    risk: R4
+    description: Tenant boundary, data-partitioning or cross-tenant isolation.

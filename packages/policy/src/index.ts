@@ -1,4 +1,64 @@
+// Public surface of @asep/policy.
+//
+// Risk, verification, approval and failure policy are all DERIVED from the
+// canonical YAML under <repo>/policies/ (loaded via ./policy-source.ts). There
+// is exactly one authority for each policy; parity tests (index.test.ts,
+// parity.test.ts) assert the TS surface and the YAML never diverge.
+//
+// All policy evaluation is DETERMINISTIC: pure file read + parse + lookup. No
+// model call, no network — a hard requirement so risk routing is reproducible.
+
 import type { RiskLevel } from '@asep/contracts';
+import { approvalFor } from './approval.js';
+
+export {
+  classifyRisk,
+  riskForCategory,
+  changeCategories,
+  riskRank,
+  RISK_ORDER,
+  type ChangeCategory,
+} from './risk.js';
+
+export {
+  requiredLevels,
+  isMandatory,
+  missingMandatory,
+  ALL_LEVELS,
+  type AssuranceLevel,
+} from './verification.js';
+
+export {
+  approvalFor,
+  type ApprovalRequirements,
+} from './approval.js';
+
+export {
+  classifyFailure,
+  failureInfo,
+  failureClasses,
+  type FailureClass,
+  type FailureClassInfo,
+  type FailureSignals,
+  type Attribution,
+} from './failure.js';
+
+export {
+  loadRiskTaxonomy,
+  loadVerificationMatrix,
+  loadApprovalMatrix,
+  loadFailureTaxonomy,
+  type RiskTaxonomyDoc,
+  type VerificationMatrixDoc,
+  type ApprovalMatrixDoc,
+  type FailureTaxonomyDoc,
+} from './policy-source.js';
+
+// ---------------------------------------------------------------------------
+// Legacy gate-policy surface (kept compatible). It is now DERIVED from the
+// canonical approval matrix rather than being an independent hardcoded table,
+// so the two can never diverge (P1-CHANGE-004).
+// ---------------------------------------------------------------------------
 
 export interface GatePolicy {
   readonly independentReviewers: number;
@@ -9,22 +69,22 @@ export interface GatePolicy {
 }
 
 export function gatePolicy(risk: RiskLevel): GatePolicy {
-  switch (risk) {
-    case 'R0': return { independentReviewers: 0, requireDifferentModelFamily: false, requireHumanMerge: false, requireHumanRelease: false, allowAutoMerge: true };
-    case 'R1': return { independentReviewers: 1, requireDifferentModelFamily: false, requireHumanMerge: false, requireHumanRelease: false, allowAutoMerge: true };
-    case 'R2': return { independentReviewers: 1, requireDifferentModelFamily: true, requireHumanMerge: true, requireHumanRelease: false, allowAutoMerge: false };
-    case 'R3': return { independentReviewers: 2, requireDifferentModelFamily: true, requireHumanMerge: true, requireHumanRelease: true, allowAutoMerge: false };
-    case 'R4': return { independentReviewers: 2, requireDifferentModelFamily: true, requireHumanMerge: true, requireHumanRelease: true, allowAutoMerge: false };
-    default: return assertNever(risk);
-  }
+  const a = approvalFor(risk);
+  return {
+    independentReviewers: a.independentReviewers,
+    requireDifferentModelFamily: a.requireDifferentModelFamily,
+    requireHumanMerge: a.requireHumanMerge,
+    requireHumanRelease: a.requireHumanRelease,
+    allowAutoMerge: a.allowAutoMerge,
+  };
 }
 
 export function canUseExperimentalOutputReducer(input: {
-  risk: RiskLevel; commandCategory: 'LISTING'|'DIAGNOSTIC'|'SECURITY'|'MIGRATION'|'MACHINE_READABLE'; rawCaptured: boolean;
+  risk: RiskLevel;
+  commandCategory: 'LISTING' | 'DIAGNOSTIC' | 'SECURITY' | 'MIGRATION' | 'MACHINE_READABLE';
+  rawCaptured: boolean;
 }): boolean {
   if (!input.rawCaptured) return false;
   if (input.risk === 'R3' || input.risk === 'R4') return false;
   return input.commandCategory === 'LISTING';
 }
-
-function assertNever(value: never): never { throw new Error(`Unhandled risk level: ${String(value)}`); }

@@ -10,6 +10,7 @@
     "typecheck": "tsc -b --pretty false"
   },
   "dependencies": {
-    "@asep/contracts": "workspace:*"
+    "@asep/contracts": "workspace:*",
+    "yaml": "2.9.0"
   }
 }

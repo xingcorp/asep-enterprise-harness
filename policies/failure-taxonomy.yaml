@@ -1,0 +1,103 @@
+# ASEP failure taxonomy — SINGLE CANONICAL SOURCE.
+#
+# 17 failure classes as data. The TS classifier (packages/policy/src/failure.ts)
+# loads this file; a parity test asserts TS and this file agree and that the
+# classifier resolves every signal to a defined class. Classification is
+# DETERMINISTIC: pure signal matching, no model call.
+#
+# Fields per class:
+#   description   what the class means
+#   attribution   whether the failure is attributable to the agent under test
+#                 (agent | environment | provider | pre-existing | harness)
+#   retriable     whether an automated retry can plausibly recover
+#   countsAgainstAgent  whether it counts against the agent's task pass-rate
+apiVersion: asep.policy/v1
+kind: FailureTaxonomy
+version: 1.0.0
+
+classes:
+  baseline:
+    description: No failure; the attempt succeeded and passed all mandatory assurance.
+    attribution: agent
+    retriable: false
+    countsAgainstAgent: false
+  pre-existing:
+    description: Failure present at the base SHA before the agent acted.
+    attribution: pre-existing
+    retriable: false
+    countsAgainstAgent: false
+  introduced-regression:
+    description: The agent's change broke a previously passing check.
+    attribution: agent
+    retriable: false
+    countsAgainstAgent: true
+  environment:
+    description: Sandbox/environment fault (disk, network policy, missing tool) unrelated to the change.
+    attribution: environment
+    retriable: true
+    countsAgainstAgent: false
+  flaky-test:
+    description: Non-deterministic test that passes/fails without code change.
+    attribution: pre-existing
+    retriable: true
+    countsAgainstAgent: false
+  provider:
+    description: Model/provider error (5xx, malformed response, timeout).
+    attribution: provider
+    retriable: true
+    countsAgainstAgent: false
+  quota-rate-limit:
+    description: Provider or service quota/rate-limit exhaustion.
+    attribution: provider
+    retriable: true
+    countsAgainstAgent: false
+  context:
+    description: Missing/insufficient context led the agent to the wrong target.
+    attribution: harness
+    retriable: true
+    countsAgainstAgent: false
+  skill-routing:
+    description: Wrong or missing skill activated for the task type.
+    attribution: harness
+    retriable: true
+    countsAgainstAgent: false
+  tool:
+    description: A tool invocation failed or behaved incorrectly (patch, runner).
+    attribution: harness
+    retriable: true
+    countsAgainstAgent: false
+  policy-violation:
+    description: The agent attempted a forbidden action (scope, secret, prod side-effect).
+    attribution: agent
+    retriable: false
+    countsAgainstAgent: true
+  agent-loop-stall:
+    description: The agent looped or stalled without progress until a budget cap.
+    attribution: agent
+    retriable: true
+    countsAgainstAgent: true
+  false-completion:
+    description: The agent declared completion while gates were red or work was incomplete.
+    attribution: agent
+    retriable: false
+    countsAgainstAgent: true
+  review-escape:
+    description: A defect passed review and was caught later (escaped defect).
+    attribution: agent
+    retriable: false
+    countsAgainstAgent: true
+  duplicate-side-effect:
+    description: A non-idempotent action was applied more than once.
+    attribution: harness
+    retriable: false
+    countsAgainstAgent: false
+  artifact-loss:
+    description: Evidence/artifact was lost or not captured by the trusted runner.
+    attribution: harness
+    retriable: true
+    countsAgainstAgent: false
+  workflow-recovery-failure:
+    description: The workflow failed to recover after an interruption/replay.
+    attribution: harness
+    retriable: true
+    countsAgainstAgent: false

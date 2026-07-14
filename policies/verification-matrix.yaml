@@ -1,0 +1,25 @@
+# ASEP mandatory verification matrix — SINGLE CANONICAL SOURCE.
+#
+# Maps each risk level R0–R4 to the assurance levels L0–L9 that are MANDATORY
+# for that risk. An implementer may add checks but can never skip a mandatory
+# level (enforced by verification.ts requiredLevels + a parity test).
+#
+# Assurance ladder (docs/platform/verification-and-review.md):
+#   L0 workspace integrity & scope        L5 security / secrets / SAST / SCA
+#   L1 format / lint / type / forbidden    L6 product acceptance & UI flows
+#   L2 unit / property / mutation          L7 performance / resilience / a11y / migration
+#   L3 integration & contract tests        L8 independent review
+#   L4 architecture fitness functions      L9 clean-build / preview / release / rollback
+apiVersion: asep.policy/v1
+kind: VerificationMatrix
+version: 1.0.0
+
+levels: [L0, L1, L2, L3, L4, L5, L6, L7, L8, L9]
+
+# Mandatory assurance levels per risk. Monotonic: a higher risk is a superset.
+matrix:
+  R0: [L0, L1]
+  R1: [L0, L1, L2]
+  R2: [L0, L1, L2, L3, L4, L8]
+  R3: [L0, L1, L2, L3, L4, L5, L6, L7, L8]
+  R4: [L0, L1, L2, L3, L4, L5, L6, L7, L8, L9]

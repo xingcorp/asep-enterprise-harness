@@ -1,0 +1,67 @@
+# ASEP approval matrix — SINGLE CANONICAL SOURCE.
+#
+# Per-risk approval requirements. The TS gatePolicy() in packages/policy/src is
+# DERIVED from this file (approval.ts), so there is exactly one authority. A
+# parity test asserts the derived gatePolicy matches this data and that the
+# historical gatePolicy contract (R4 never auto-merges, requires human release)
+# still holds.
+#
+# Fields:
+#   independentReviewers        integer count of blind independent reviewers
+#   requireDifferentModelFamily reviewer must be a different model family
+#   requireSpecialistReview     domain specialist review required (auth, data...)
+#   requireHumanMerge           a human must approve the merge
+#   requireHumanRelease         a human must approve the release
+#   allowAutoMerge              harness may merge without a human
+#   requireRollbackPlan         a tested rollback/backout plan is mandatory
+#   evidenceRequired            evidence bundle is mandatory before acceptance
+apiVersion: asep.policy/v1
+kind: ApprovalMatrix
+version: 1.0.0
+
+matrix:
+  R0:
+    independentReviewers: 0
+    requireDifferentModelFamily: false
+    requireSpecialistReview: false
+    requireHumanMerge: false
+    requireHumanRelease: false
+    allowAutoMerge: true
+    requireRollbackPlan: false
+    evidenceRequired: true
+  R1:
+    independentReviewers: 1
+    requireDifferentModelFamily: false
+    requireSpecialistReview: false
+    requireHumanMerge: false
+    requireHumanRelease: false
+    allowAutoMerge: true
+    requireRollbackPlan: false
+    evidenceRequired: true
+  R2:
+    independentReviewers: 1
+    requireDifferentModelFamily: true
+    requireSpecialistReview: false
+    requireHumanMerge: true
+    requireHumanRelease: false
+    allowAutoMerge: false
+    requireRollbackPlan: false
+    evidenceRequired: true
+  R3:
+    independentReviewers: 2
+    requireDifferentModelFamily: true
+    requireSpecialistReview: true
+    requireHumanMerge: true
+    requireHumanRelease: true
+    allowAutoMerge: false
+    requireRollbackPlan: true
+    evidenceRequired: true
+  R4:
+    independentReviewers: 2
+    requireDifferentModelFamily: true
+    requireSpecialistReview: true
+    requireHumanMerge: true
+    requireHumanRelease: true
+    allowAutoMerge: false
+    requireRollbackPlan: true
+    evidenceRequired: true
