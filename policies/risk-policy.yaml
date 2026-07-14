@@ -1,0 +1,29 @@
+apiVersion: asep.policy/v1
+kind: RiskPolicy
+levels:
+  R0:
+    examples: [docs, deterministic generated metadata]
+    independentReviewers: 0
+    humanMerge: false
+    humanRelease: false
+  R1:
+    examples: [tests, mechanical refactor]
+    independentReviewers: 1
+    differentModelFamily: false
+    humanMerge: false
+  R2:
+    examples: [normal feature, internal API]
+    independentReviewers: 1
+    differentModelFamily: true
+    humanMerge: true
+  R3:
+    examples: [auth, payment, database migration, public API, infrastructure]
+    independentReviewers: 2
+    specialistReview: true
+    humanMerge: true
+    humanRelease: true
+  R4:
+    examples: [irreversible production data/action, key or permission escalation]
+    agentMayExecuteProductionSideEffect: false
+    humanMerge: true
+    humanRelease: true

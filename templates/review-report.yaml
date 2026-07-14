@@ -1,0 +1,23 @@
+apiVersion: asep.dev/v1
+kind: ReviewReport
+metadata:
+  taskId: task-example
+  attemptId: attempt-example
+spec:
+  reviewer:
+    provider: codex
+    model: PINNED_MODEL
+    freshContext: true
+  verdict: REQUEST_CHANGES
+  confidence: 0.9
+  findings:
+    - id: REV-001
+      severity: HIGH
+      category: CORRECTNESS
+      requirementId: REQ-001
+      location:
+        file: src/example.ts
+        lineStart: 10
+        lineEnd: 20
+      evidence: "Concrete, reproducible evidence"
+      requiredFix: "Specific expected behavior"

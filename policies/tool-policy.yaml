@@ -1,0 +1,22 @@
+apiVersion: asep.policy/v1
+kind: ToolPolicy
+defaults:
+  network: deny
+  productionCredentials: deny
+  workspaceWrite: scoped
+  publicSkillInstall: deny
+categories:
+  read:
+    approval: automatic
+  localWrite:
+    approval: automatic-within-allowed-paths
+  ephemeralExecute:
+    approval: automatic-in-sandbox
+  externalRead:
+    approval: allowlist
+  externalWrite:
+    approval: policy-or-human
+  productionSensitive:
+    approval: human
+  irreversible:
+    approval: human-only-agent-prepares

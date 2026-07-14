@@ -1,0 +1,29 @@
+apiVersion: asep.skills/v1
+kind: Skill
+metadata:
+  id: engineering.database-migration
+  version: 1.0.0
+  owner: platform-architecture
+  provenance:
+    source: internal
+    upstream: null
+    commit: null
+  signature: "cosign:..."
+activation:
+  phases: [planning, implementation, verification]
+  taskTypes: [schema-change, data-migration]
+  requiredRiskCategories: [database-migration]
+  conflictsWith: []
+execution:
+  role: adjunct
+  requiredInputs: [schema-before, schema-after, rollback-strategy]
+  produces: [migration-plan, migration-files, migration-evidence]
+permissions:
+  tools: [read-file, apply-patch, run-test, ephemeral-database]
+  network: none
+  productionAccess: forbidden
+verification:
+  requiredChecks: [migration-forward, migration-backward, compatibility]
+compatibility:
+  harness: ">=0.1 <1.0"
+  languages: [typescript, sql]

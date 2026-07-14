@@ -1,0 +1,21 @@
+apiVersion: asep.dev/v1
+kind: ContextPack
+metadata:
+  id: ctx-example
+  generatedAt: "2026-07-14T00:00:00Z"
+  hash: "sha256:..."
+spec:
+  baseSha: "..."
+  objective: "..."
+  specificationExcerpt: "..."
+  architectureInvariants: []
+  repositoryMap:
+    relevantFiles: []
+    relevantSymbols: []
+    dependencyPaths: []
+  priorEvidenceIds: []
+  skills: []
+  policy:
+    allowedTools: []
+    deniedOperations: []
+  budgetRemaining: {}

@@ -1,0 +1,28 @@
+apiVersion: asep.dev/v1
+kind: ProductSpec
+metadata:
+  id: product-spec-example
+  version: 1
+  status: draft
+spec:
+  objective: "Measurable product outcome"
+  inScope: []
+  outOfScope: []
+  assumptions: []
+  requirements:
+    - id: REQ-001
+      priority: MUST
+      statement: "..."
+      rationale: "..."
+  nonFunctionalRequirements:
+    - id: NFR-001
+      priority: MUST
+      statement: "p95 latency <= ..."
+  acceptanceScenarios:
+    - id: AC-001
+      given: []
+      when: []
+      then: []
+      automated: true
+  architectureInvariants: []
+  definitionOfDone: []

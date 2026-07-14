@@ -1,0 +1,17 @@
+apiVersion: asep.policy/v1
+kind: OutputReducerPolicy
+default: disabled
+requirements:
+  rawCaptureBeforeReduction: true
+  preserveExitCode: true
+  rawRangeFallback: true
+allowedCategories: [file-listing, tree, git-stat, inventory]
+deniedCategories:
+  - failing-tests
+  - compiler-diagnostics
+  - security-scan
+  - migration
+  - benchmark
+  - machine-readable-json
+  - production-operation
+promotionMetric: total-cost-per-accepted-task

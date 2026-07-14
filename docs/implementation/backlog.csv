@@ -1,0 +1,16 @@
+Priority,Area,Item,Owner,Estimate,Exit Criterion
+P0,Contracts,Finalize ProductSpec/WorkOrder/Context/Evidence/Review schemas,Platform Architecture,15d,Schema compatibility tests
+P0,Workflow,Implement Temporal Run and Task workflows,Workflow Team,25d,Kill/restart and idempotency tests
+P0,Execution,Workspace lease + trusted raw command runner,Sandbox Team,20d,"Scope, timeout, exit-code tests"
+P0,Provider,Claude or Codex first adapter,Agent Runtime,15d,Provider contract suite
+P0,Assurance,Mandatory VerificationPlan engine,Assurance,20d,Historical regression pass
+P1,Review,Independent cross-model review/repair loop,Assurance,20d,Finding yield and escape eval
+P1,Security,Credential broker and network policy,Security,25d,Prompt injection/red-team suite
+P1,Telemetry,OTel correlation and quality/cost dashboards,SRE,20d,Trace completeness SLO
+P1,Evaluation,Historical task replay + harness canary,Evaluation,25d,Promotion/rollback policy
+P2,Knowledge,AST/LSP/dependency/test maps,Code Intelligence,30d,Context retrieval eval
+P2,Brownfield,Baseline/readiness/characterization pipeline,Modernization,30d,Pilot module autonomy map
+P2,Adapters,OpenHands and Spec Kit adapters,Integrations,20d,Compatibility matrix
+P3,Memory,Mem0 shadow adapter,Knowledge,15d,Tenant/provenance/usefulness eval
+P3,Knowledge,Graphiti temporal relation trial,Knowledge,20d,Salience/provenance eval
+P3,Optimization,RTK listing-output experiment,Evaluation,10d,Accepted-task cost A/B

@@ -1,0 +1,14 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/contracts" },
+    { "path": "packages/domain" },
+    { "path": "packages/ports" },
+    { "path": "packages/policy" },
+    { "path": "packages/observability" },
+    { "path": "adapters/agent-mock" },
+    { "path": "adapters/memory-inmemory" },
+    { "path": "workers/workflow-worker" },
+    { "path": "apps/control-plane-api" }
+  ]
+}

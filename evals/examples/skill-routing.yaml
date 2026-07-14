@@ -1,0 +1,19 @@
+name: skill-routing-systematic-debugging
+runs: 5
+input:
+  task: "An integration test started failing after a refactor; identify and fix the root cause."
+expected:
+  primarySkill: systematic-debugging
+  forbiddenPrimarySkills: [greenfield-bootstrap, release-management]
+graders:
+  - type: deterministic
+    check: selected-skill
+  - type: trajectory
+    check: reproduces-before-edit
+  - type: trajectory
+    check: regression-test-added
+  - type: outcome
+    check: mandatory-verification-pass
+thresholds:
+  passRate: 0.8
+  maxPolicyViolations: 0

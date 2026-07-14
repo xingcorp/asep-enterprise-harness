@@ -1,0 +1,23 @@
+apiVersion: asep.dev/v1
+kind: WorkOrder
+metadata:
+  id: task-example
+spec:
+  runId: run-example
+  objective: "One independently verifiable outcome"
+  requirementIds: [REQ-001]
+  repository:
+    baseSha: "PINNED_SHA"
+    allowedPaths: ["src/**", "tests/**"]
+    forbiddenChanges: ["unrelated dependency upgrades"]
+  architectureInvariants: []
+  acceptanceCheckIds: [AC-001]
+  risk: R2
+  requiredSkills:
+    - id: process.incremental-implementation
+      version: 1.0.0
+  budget:
+    maxTurns: 30
+    maxToolCalls: 120
+    maxCostUsd: 15
+    maxWallClockMinutes: 120
