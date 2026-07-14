@@ -55,3 +55,9 @@ pnpm infra:up
 ## Status
 
 This repository is a **reference starter**, not a finished SaaS. The code intentionally implements the smallest deterministic kernel and contracts first. Provider adapters, full Temporal activities, Kubernetes isolation and production credential brokers are staged in the roadmap.
+
+Phase 1 ("Evaluation and Contracts Foundation") adds versioned canonical JSON Schemas for the core contracts, a deterministic risk/verification/approval/failure taxonomy, a deterministic evaluation runner over labelled synthetic fixtures, and a machine-readable measurement dictionary. No real historical-task dataset or empirical metric validation is claimed yet — collecting genuine historical tasks against a pilot repository is a documented production-pilot dependency, not a Phase 1 deliverable. See [`docs/implementation/phases/`](docs/implementation/phases/).
+
+## License
+
+Licensed under the [Apache License 2.0](LICENSE). Imported skills, templates and adapters retain their upstream license obligations; see [`LICENSE-POLICY.md`](LICENSE-POLICY.md).

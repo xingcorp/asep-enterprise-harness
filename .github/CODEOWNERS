@@ -1,0 +1,18 @@
+# ASEP code ownership.
+# Every path requires review from the platform architecture group by default.
+# Update this file when dedicated owners exist for a subtree.
+
+*                                   @asep/platform-architecture
+
+# Domain contracts are load-bearing; changes need contract owners.
+/packages/contracts/                @asep/platform-architecture
+/packages/policy/                   @asep/platform-architecture
+
+# Evaluation and measurement foundations.
+/evals/                             @asep/platform-architecture
+/docs/platform/metrics-dictionary.yaml @asep/platform-architecture
+
+# Security- and publication-sensitive tooling.
+/scripts/                           @asep/platform-architecture
+/.github/                           @asep/platform-architecture
+/LICENSE                            @asep/platform-architecture

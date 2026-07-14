@@ -1,0 +1,68 @@
+name: CI
+
+# Canonical verification gate, mirrored from the local `pnpm verify` +
+# publication scanners. Fails red on any step (P1-CHANGE-009).
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (full history for git-history secret scan)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: Setup Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+
+      - name: Format check
+        run: pnpm format:check
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
+
+      - name: Contract schema + fixture validation
+        run: pnpm --filter @asep/contracts test
+
+      - name: Policy parity + taxonomy tests
+        run: pnpm --filter @asep/policy test
+
+      - name: Secret scan (self-testing)
+        run: pnpm scan:secret
+
+      - name: Large-file scan (self-testing)
+        run: pnpm scan:large-file
+
+      - name: Publication gate (license, abs-path, history, deps)
+        run: pnpm check:publication
+
+      - name: Clean-tree assertion (no generated/untracked files)
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "Working tree is dirty after verify:" >&2
+            git status --porcelain >&2
+            exit 1
+          fi
+          echo "clean-tree: PASS"

@@ -8,3 +8,9 @@ dist/
 .DS_Store
 .vscode/
 .idea/
+# Phase 1 additions
+.task-complete
+*.tsbuildinfo
+*.tmp
+# Raw evidence must never enter git; only sanitized manifests are committed.
+artifacts/phase-01/raw/
