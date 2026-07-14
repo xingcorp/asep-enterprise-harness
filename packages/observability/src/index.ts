@@ -28,3 +28,24 @@ export class ConsoleTelemetrySink implements TelemetrySink {
     console.log(JSON.stringify({ type: 'metric', ...point, at: new Date().toISOString() }));
   }
 }
+
+// Measurement dictionary (machine-readable) loader + referential-integrity validator.
+export {
+  loadMeasurementDictionary,
+  validateDictionary,
+  assertDictionaryValid,
+  metricNames,
+  metricFamilies,
+  type MeasurementDictionary,
+  type MetricDefinition,
+  type MetricOperand,
+  type PrivacyClassRule,
+  type DictionaryError,
+} from './metrics.js';
+
+// EvidenceBundle generator (schema-valid; raw output referenced, never reduced).
+export {
+  generateEvidenceBundle,
+  type EvidenceInput,
+  type RawCheckCapture,
+} from './evidence.js';

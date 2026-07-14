@@ -21,5 +21,13 @@ export {
 } from './validate.js';
 export type { ContractName, ValidationError, ValidationResult } from './validate.js';
 
+// RunEvent field/event-type catalog (referential-integrity source for metrics).
+export {
+  runEventFields,
+  runEventTypes,
+  isRunEventField,
+  isRunEventType,
+} from './run-event-catalog.js';
+
 // Backwards-compatible alias: the canonical review finding contract is `Finding`.
 export type { Finding as ReviewFinding } from './generated.js';

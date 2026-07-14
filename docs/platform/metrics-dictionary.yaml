@@ -1,0 +1,427 @@
+# ASEP measurement dictionary — machine-readable, SINGLE CANONICAL SOURCE.
+#
+# Every metric operand is expressed in terms of the RunEvent contract
+# (packages/contracts/schema/run-event.schema.json): `sourceEvents` must be
+# RunEvent.eventType enum values, and every field referenced in a numerator,
+# denominator, filter or dimension must be a RunEvent property name. The loader
+# (packages/observability/src/metrics.ts) enforces this referential integrity
+# (Codex P1-METRIC-002) and fails if any operand is unknown or if a ratio metric
+# omits a zero-denominator policy.
+#
+# IMPORTANT (Codex P1-CRIT-001 disposition): these are DEFINED metric contracts.
+# They have NOT been validated against a real production run. Empirical baselines
+# are a production-pilot dependency (see docs/implementation/phases), not a
+# Phase 1 deliverable.
+apiVersion: asep.metrics/v1
+kind: MeasurementDictionary
+version: 1.0.0
+
+# Closed privacy enum (Codex P1-METRIC-003). Every metric declares exactly one
+# class; the loader fails on an unknown class. Rules govern capture, redaction,
+# retention and access for the metric's operands and dimensions.
+privacyClasses:
+  public:
+    description: Non-identifying aggregate counts safe for public reporting.
+    capture: always
+    redaction: none
+    retentionDays: 3650
+    access: public
+  operational:
+    description: Internal operating metrics; no customer content, no PII.
+    capture: always
+    redaction: none
+    retentionDays: 730
+    access: internal
+  sensitive:
+    description: May correlate to a tenant/project; identifiers hashed at rest.
+    capture: opt-in
+    redaction: hash-identifiers
+    retentionDays: 365
+    access: restricted
+  restricted:
+    description: Cost/economic data with contractual limits; fully governed.
+    capture: opt-in
+    redaction: full-redaction
+    retentionDays: 90
+    access: need-to-know
+
+# Aggregations understood by the loader/validator:
+#   count  — number of matching events (optionally filtered)
+#   sum    — sum of the listed numeric fields across matching events
+#   mean   — mean of the listed numeric field across matching events
+metrics:
+  # --- Product outcome -----------------------------------------------------
+  - name: requirement_acceptance_rate
+    family: product
+    purpose: Share of completed tasks whose requirement was accepted by product review.
+    formula: count(task.completed where requirementAccepted=true) / count(task.completed)
+    numerator:
+      aggregation: count
+      events: [task.completed]
+      filter: { field: requirementAccepted, equals: true }
+    denominator:
+      aggregation: count
+      events: [task.completed]
+    dimensions: [risk, projectId, tenantId]
+    sourceEvents: [task.completed]
+    owner: product-platform
+    sampling: full
+    alertRelevance: low
+    zeroDenominatorPolicy: report-null-when-no-tasks
+    privacyClass: sensitive
+
+  - name: user_journey_success_rate
+    family: product
+    purpose: Share of deployments whose user-journey checks succeeded.
+    formula: count(deployment.completed where userJourneySuccess=true) / count(deployment.completed)
+    numerator:
+      aggregation: count
+      events: [deployment.completed]
+      filter: { field: userJourneySuccess, equals: true }
+    denominator:
+      aggregation: count
+      events: [deployment.completed]
+    dimensions: [projectId, tenantId]
+    sourceEvents: [deployment.completed]
+    owner: product-platform
+    sampling: full
+    alertRelevance: medium
+    zeroDenominatorPolicy: report-null-when-no-deployments
+    privacyClass: sensitive
+
+  # --- DORA ----------------------------------------------------------------
+  - name: deployment_frequency
+    family: dora
+    purpose: Deployments per window-day; a DORA velocity signal.
+    formula: count(deployment.completed) / deploymentFrequencyWindowDays
+    numerator:
+      aggregation: count
+      events: [deployment.completed]
+    denominator:
+      aggregation: sum
+      events: [deployment.completed]
+      fields: [deploymentFrequencyWindowDays]
+    dimensions: [projectId]
+    sourceEvents: [deployment.completed]
+    owner: delivery-platform
+    sampling: full
+    alertRelevance: low
+    zeroDenominatorPolicy: report-null-when-window-zero
+    privacyClass: operational
+
+  - name: lead_time_for_changes_ms
+    family: dora
+    purpose: Mean time from task start to deployment (DORA lead time).
+    formula: mean(task.completed.leadTimeMs)
+    numerator:
+      aggregation: mean
+      events: [task.completed]
+      fields: [leadTimeMs]
+    dimensions: [risk, projectId]
+    sourceEvents: [task.completed]
+    owner: delivery-platform
+    sampling: full
+    alertRelevance: medium
+    privacyClass: operational
+
+  - name: change_failure_rate
+    family: dora
+    purpose: Share of deployments that caused a change failure (DORA CFR).
+    formula: count(deployment.completed where changeFailure=true) / count(deployment.completed)
+    numerator:
+      aggregation: count
+      events: [deployment.completed]
+      filter: { field: changeFailure, equals: true }
+    denominator:
+      aggregation: count
+      events: [deployment.completed]
+    dimensions: [risk, projectId]
+    sourceEvents: [deployment.completed]
+    owner: delivery-platform
+    sampling: full
+    alertRelevance: high
+    zeroDenominatorPolicy: report-null-when-no-deployments
+    privacyClass: operational
+
+  - name: mean_time_to_restore_ms
+    family: dora
+    purpose: Mean time to restore service after an incident (DORA MTTR).
+    formula: mean(incident.opened.restoreTimeMs)
+    numerator:
+      aggregation: mean
+      events: [incident.opened]
+      fields: [restoreTimeMs]
+    dimensions: [projectId]
+    sourceEvents: [incident.opened]
+    owner: operations
+    sampling: full
+    alertRelevance: high
+    privacyClass: operational
+
+  # --- Agent task performance ---------------------------------------------
+  - name: task_pass_rate
+    family: agent
+    purpose: Share of completed attempts that were accepted.
+    formula: count(attempt.completed where outcome=accepted) / count(attempt.completed)
+    numerator:
+      aggregation: count
+      events: [attempt.completed]
+      filter: { field: outcome, equals: accepted }
+    denominator:
+      aggregation: count
+      events: [attempt.completed]
+    dimensions: [risk, failureClass, projectId]
+    sourceEvents: [attempt.completed]
+    owner: agent-platform
+    sampling: full
+    alertRelevance: high
+    zeroDenominatorPolicy: report-null-when-no-attempts
+    privacyClass: operational
+
+  - name: first_attempt_pass_rate
+    family: agent
+    purpose: Share of tasks accepted with zero repair cycles.
+    formula: count(task.completed where outcome=accepted and repairCycles=0) / count(task.completed)
+    numerator:
+      aggregation: count
+      events: [task.completed]
+      filter: { field: repairCycles, equals: 0 }
+    denominator:
+      aggregation: count
+      events: [task.completed]
+    dimensions: [risk, projectId]
+    sourceEvents: [task.completed]
+    owner: agent-platform
+    sampling: full
+    alertRelevance: medium
+    zeroDenominatorPolicy: report-null-when-no-tasks
+    privacyClass: operational
+
+  - name: scope_violation_rate
+    family: agent
+    purpose: Share of attempts that changed files outside the allowed scope.
+    formula: count(attempt.completed where scopeViolation=true) / count(attempt.completed)
+    numerator:
+      aggregation: count
+      events: [attempt.completed]
+      filter: { field: scopeViolation, equals: true }
+    denominator:
+      aggregation: count
+      events: [attempt.completed]
+    dimensions: [risk, projectId]
+    sourceEvents: [attempt.completed]
+    owner: agent-platform
+    sampling: full
+    alertRelevance: high
+    zeroDenominatorPolicy: report-null-when-no-attempts
+    privacyClass: operational
+
+  # --- False completion ----------------------------------------------------
+  - name: false_completion_rate
+    family: false-completion
+    purpose: Share of declared-complete attempts that failed required assurance.
+    formula: count(attempt.declared_complete where declaredComplete=true and passedRequiredAssurance=false) / count(attempt.declared_complete where declaredComplete=true)
+    numerator:
+      aggregation: count
+      events: [attempt.declared_complete]
+      filter: { field: passedRequiredAssurance, equals: false }
+    denominator:
+      aggregation: count
+      events: [attempt.declared_complete]
+      filter: { field: declaredComplete, equals: true }
+    dimensions: [risk, failureClass, projectId]
+    sourceEvents: [attempt.declared_complete]
+    owner: agent-platform
+    sampling: full
+    alertRelevance: high
+    zeroDenominatorPolicy: report-null-when-no-declarations
+    privacyClass: operational
+
+  # --- Trajectory quality --------------------------------------------------
+  - name: tool_calls_per_task
+    family: trajectory
+    purpose: Mean tool-call count per completed task (trajectory efficiency).
+    formula: mean(task.completed.toolCalls)
+    numerator:
+      aggregation: mean
+      events: [task.completed]
+      fields: [toolCalls]
+    dimensions: [risk, projectId]
+    sourceEvents: [task.completed]
+    owner: agent-platform
+    sampling: full
+    alertRelevance: low
+    privacyClass: operational
+
+  - name: repair_cycles_per_task
+    family: trajectory
+    purpose: Mean repair cycles per completed task.
+    formula: mean(task.completed.repairCycles)
+    numerator:
+      aggregation: mean
+      events: [task.completed]
+      fields: [repairCycles]
+    dimensions: [risk, projectId]
+    sourceEvents: [task.completed]
+    owner: agent-platform
+    sampling: full
+    alertRelevance: medium
+    privacyClass: operational
+
+  # --- Review effectiveness ------------------------------------------------
+  - name: review_finding_yield
+    family: review
+    purpose: Share of review findings that were confirmed valid.
+    formula: sum(review.completed.reviewFindingsValid) / sum(review.completed.reviewFindingsTotal)
+    numerator:
+      aggregation: sum
+      events: [review.completed]
+      fields: [reviewFindingsValid]
+    denominator:
+      aggregation: sum
+      events: [review.completed]
+      fields: [reviewFindingsTotal]
+    dimensions: [risk, projectId]
+    sourceEvents: [review.completed]
+    owner: review-platform
+    sampling: full
+    alertRelevance: medium
+    zeroDenominatorPolicy: report-null-when-no-findings
+    privacyClass: operational
+
+  - name: review_false_positive_rate
+    family: review
+    purpose: Share of review findings that were false positives.
+    formula: sum(review.completed.reviewFindingsFalsePositive) / sum(review.completed.reviewFindingsTotal)
+    numerator:
+      aggregation: sum
+      events: [review.completed]
+      fields: [reviewFindingsFalsePositive]
+    denominator:
+      aggregation: sum
+      events: [review.completed]
+      fields: [reviewFindingsTotal]
+    dimensions: [risk, projectId]
+    sourceEvents: [review.completed]
+    owner: review-platform
+    sampling: full
+    alertRelevance: medium
+    zeroDenominatorPolicy: report-null-when-no-findings
+    privacyClass: operational
+
+  - name: escaped_defect_rate
+    family: review
+    purpose: Share of reviewed changes that later revealed an escaped defect.
+    formula: count(review.completed where escapedDefect=true) / count(review.completed)
+    numerator:
+      aggregation: count
+      events: [review.completed]
+      filter: { field: escapedDefect, equals: true }
+    denominator:
+      aggregation: count
+      events: [review.completed]
+    dimensions: [risk, projectId]
+    sourceEvents: [review.completed]
+    owner: review-platform
+    sampling: full
+    alertRelevance: high
+    zeroDenominatorPolicy: report-null-when-no-reviews
+    privacyClass: operational
+
+  # --- Harness reliability -------------------------------------------------
+  - name: artifact_loss_rate
+    family: harness
+    purpose: Share of attempts where evidence/artifact capture failed.
+    formula: count(attempt.completed where failureClass=artifact-loss) / count(attempt.completed)
+    numerator:
+      aggregation: count
+      events: [attempt.completed]
+      filter: { field: failureClass, equals: artifact-loss }
+    denominator:
+      aggregation: count
+      events: [attempt.completed]
+    dimensions: [projectId]
+    sourceEvents: [attempt.completed]
+    owner: harness-platform
+    sampling: full
+    alertRelevance: high
+    zeroDenominatorPolicy: report-null-when-no-attempts
+    privacyClass: operational
+
+  - name: workflow_recovery_rate
+    family: harness
+    purpose: Share of workflow recoveries that did not end in a recovery failure.
+    formula: count(workflow.recovered where failureClass!=workflow-recovery-failure) / count(workflow.recovered)
+    numerator:
+      aggregation: count
+      events: [workflow.recovered]
+      filter: { field: failureClass, notEquals: workflow-recovery-failure }
+    denominator:
+      aggregation: count
+      events: [workflow.recovered]
+    dimensions: [projectId]
+    sourceEvents: [workflow.recovered]
+    owner: harness-platform
+    sampling: full
+    alertRelevance: high
+    zeroDenominatorPolicy: report-null-when-no-recoveries
+    privacyClass: operational
+
+  # --- Cost / economics ----------------------------------------------------
+  - name: cost_per_accepted_task
+    family: cost
+    purpose: Total model+compute+review cost divided by accepted tasks.
+    formula: sum(attempt.completed.modelCostUsd + computeCostUsd + reviewCostUsd) / count(task.completed where outcome=accepted)
+    numerator:
+      aggregation: sum
+      events: [attempt.completed]
+      fields: [modelCostUsd, computeCostUsd, reviewCostUsd]
+    denominator:
+      aggregation: count
+      events: [task.completed]
+      filter: { field: outcome, equals: accepted }
+    dimensions: [risk, projectId, tenantId]
+    sourceEvents: [attempt.completed, task.completed]
+    owner: finance-platform
+    sampling: full
+    alertRelevance: high
+    zeroDenominatorPolicy: report-null-when-no-accepted-tasks
+    privacyClass: restricted
+
+  # --- Human intervention --------------------------------------------------
+  - name: human_intervention_rate
+    family: human
+    purpose: Human interventions per completed task.
+    formula: count(human.intervention) / count(task.completed)
+    numerator:
+      aggregation: count
+      events: [human.intervention]
+    denominator:
+      aggregation: count
+      events: [task.completed]
+    dimensions: [risk, projectId]
+    sourceEvents: [human.intervention, task.completed]
+    owner: operations
+    sampling: full
+    alertRelevance: medium
+    zeroDenominatorPolicy: report-null-when-no-tasks
+    privacyClass: operational
+
+  - name: human_minutes_per_task
+    family: human
+    purpose: Mean human minutes spent per completed task.
+    formula: sum(task.completed.humanMinutes) / count(task.completed)
+    numerator:
+      aggregation: sum
+      events: [task.completed]
+      fields: [humanMinutes]
+    denominator:
+      aggregation: count
+      events: [task.completed]
+    dimensions: [risk, projectId]
+    sourceEvents: [task.completed]
+    owner: operations
+    sampling: full
+    alertRelevance: medium
+    zeroDenominatorPolicy: report-null-when-no-tasks
+    privacyClass: sensitive

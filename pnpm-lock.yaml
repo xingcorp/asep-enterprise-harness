@@ -75,7 +75,14 @@ importers:
         specifier: workspace:*
         version: link:../contracts
 
-  packages/observability: {}
+  packages/observability:
+    dependencies:
+      '@asep/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      yaml:
+        specifier: 2.9.0
+        version: 2.9.0
 
   packages/policy:
     dependencies:
