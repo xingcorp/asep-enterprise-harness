@@ -1,6 +1,6 @@
 gate: install-frozen
 command: pnpm install --frozen-lockfile
 exit_code: 0
-duration_s: 0
-output_sha256: 42389df8a0be98631ba13509ef4b39361080bfa9eda704fe233283bdca359002
+duration_s: 1
+output_sha256: 067538b5fe36cfa14465e2519a7ce8054dd8ce11b2cf61f26831416e65f9436e
 output_file: gates/install-frozen.log

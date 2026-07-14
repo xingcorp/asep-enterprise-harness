@@ -15,7 +15,12 @@ verdict: complete
 repository:
   branch: phase/01-evaluation-contracts
   base_sha: 83ba33db16072f05fb27f00f34cebd6774cb771a
-  head_sha: HEAD_SHA_PLACEHOLDER
+  head_sha: 6d6f08c
+  head_sha_note: >-
+    6d6f08c is the S6 phase-close content commit (report + evidence + traceability +
+    approval manifest). This administrative follow-up commit pins the resolved SHA
+    into the report; a git object cannot embed its own hash, so head_sha names the
+    immediately-preceding content commit that carries the full Phase 1 deliverable.
   worktree: isolated linked worktree; main untouched
   completion: offline (remote push + PR are a separate human-gated step, not a Phase 1 exit criterion)
 
@@ -74,7 +79,8 @@ commits:
   - d7f591e feat(policy): add risk assurance and failure classification foundation
   - b21396d feat(evals): add deterministic phase-one evaluation foundation
   - e1e842e feat(measurement): define evidence and platform metric contracts
-  - HEAD docs(phase-1): record evidence and close evaluation-contracts foundation
+  - 6d6f08c docs(phase-1): record evidence and close evaluation-contracts foundation
+  - "(+ administrative follow-up commit pinning head_sha into this report)"
 
 verification:
   canonical_command: pnpm verify (format:check + typecheck + test)

@@ -1,6 +1,6 @@
 gate: format-check
 command: pnpm format:check
 exit_code: 0
-duration_s: 4
+duration_s: 3
 output_sha256: c43798ed2c4613e09b035cdaa48a41a125efeb04dd236761bf678f08db0663ef
 output_file: gates/format-check.log
