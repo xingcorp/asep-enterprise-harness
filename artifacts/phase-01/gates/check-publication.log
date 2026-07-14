@@ -1,0 +1,15 @@
+check-publication: license
+  LICENSE: present (Apache-2.0)
+check-publication: absolute-path / internal-path leak scan
+  abs-path scan: clean
+check-publication: git-history secret scan
+  git-history: clean (no secret material across all commits)
+check-publication: dependency-license
+  dependency-license: checklist present (see publication checklist)
+check-publication: secret scan (delegated)
+  secret-scan: scanning 217 tracked files
+  secret-scan: PASS (no secrets; self-test green)
+check-publication: large-file scan (delegated)
+  large-file-scan: PASS (all tracked files <= 512000 bytes; self-test green)
+check-publication: abs-path scanner self-test
+check-publication: PASS (all publication gates green)

@@ -1,0 +1,7 @@
+captured_utc: 2026-07-14T21:27:21Z
+node: v24.6.0
+pnpm: 10.31.0
+tsc: Version 7.0.2
+os: Darwin 24.1.0 arm64
+base_sha: 83ba33db16072f05fb27f00f34cebd6774cb771a
+head_sha: e1e842e1ff6a4f61d85552ca87830f7c3417b151

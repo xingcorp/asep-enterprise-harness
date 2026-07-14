@@ -17,6 +17,30 @@ GitHub issue / ProductSpec
 
 **Điều kiện thành công:** workflow có thể bị kill rồi resume; commit truy ngược được tới task/attempt/evidence; agent không được merge; failure có taxonomy; cost và false-completion được đo.
 
+## 1b. Phase 1 — Evaluation and Contracts Foundation (đã triển khai)
+
+Phase 1 đã đặt nền: schema hợp đồng có version, taxonomy rủi ro/kiểm chứng/phê
+duyệt/lỗi tất định, bộ chạy eval tất định trên fixture synthetic có nhãn, và từ
+điển đo lường máy đọc được. Đây là các "defined contracts" — CHƯA được kiểm
+chứng bằng run thật (thu thập 30–50 task lịch sử là phụ thuộc production-pilot,
+không phải deliverable của Phase 1).
+
+Artifacts Phase 1:
+
+- `docs/implementation/phases/phase-01-report.md` — báo cáo + base/head SHA thật.
+- `docs/implementation/phases/phase-01-exit-criteria.md` — tiêu chí "xong".
+- `docs/implementation/phases/phase-01-traceability.md` — map tiêu chí → file + test + evidence.
+- `docs/implementation/phases/phase-01-approval-manifest.md` — ADR/tech-radar sign-off.
+- `docs/implementation/phases/phase-01-publication-checklist.md` — cổng công khai.
+- `artifacts/phase-01/` — evidence từng gate (command, exit code, checksum, env digest).
+- `packages/contracts/schema/*.schema.json` — 12 hợp đồng canonical (nguồn chân lý).
+- `packages/policy/` + `policies/*.yaml` — taxonomy rủi ro/kiểm chứng/phê duyệt/lỗi.
+- `evals/` — schema task-ingest + runner tất định + fixture synthetic.
+- `docs/platform/metrics-dictionary.yaml` — từ điển đo lường máy đọc được.
+
+Oracle của repo: `pnpm verify` (format + typecheck + test). Cổng công khai:
+`bash scripts/check-publication.sh`.
+
 ## 2. Trình tự đọc
 
 1. `docs/architecture/01-system-overview.md`

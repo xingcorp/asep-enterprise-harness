@@ -1,0 +1,6 @@
+gate: eval-determinism
+command: pnpm --filter @asep/evals eval > /tmp/asep-eval-a.json && pnpm --filter @asep/evals eval > /tmp/asep-eval-b.json && diff -q /tmp/asep-eval-a.json /tmp/asep-eval-b.json && echo BYTE-IDENTICAL
+exit_code: 0
+duration_s: 1
+output_sha256: f4bed684afadb5ebcc7da4aa17237d04eb77e33193c92dfaafd4feef871641a0
+output_file: gates/eval-determinism.log
