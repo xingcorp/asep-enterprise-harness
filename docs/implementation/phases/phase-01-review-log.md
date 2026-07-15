@@ -75,9 +75,14 @@ bump). Backward/forward policy is codified, not prose.
 ## P1-CHANGE-004 — Consolidate policy authority (YAML vs TS)
 
 **Disposition: ACCEPTED.** `policies/risk-policy.yaml` and
-`packages/policy` currently duplicate risk rules. Designate one versioned source
-of truth and add parity tests so both cannot diverge. Deterministic risk rules
-stay code-only (no model calls) per prompt pack §C.
+`packages/policy` originally duplicated risk rules. Resolution: the canonical
+risk authority is `policies/risk-taxonomy.yaml` (categories → R0–R4) plus
+`policies/approval-matrix.yaml` (per-risk approval requirements), loaded by
+`packages/policy/src/policy-source.ts`; the TS surface is a projection asserted
+by parity tests. The legacy divergent `policies/risk-policy.yaml` (nested
+envelope, missing a R4 field) loaded by no code was **removed**
+(P1-FINAL-HIGH-005), and a guard test fails if it reappears. Deterministic risk
+rules stay code-only (no model calls) per prompt pack §C.
 
 ## P1-CHANGE-005 — Raw evidence external/ignored; commit sanitized manifests
 

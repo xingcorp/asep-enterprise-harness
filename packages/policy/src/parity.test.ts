@@ -11,11 +11,30 @@ import { changeCategories, riskForCategory, RISK_ORDER } from './risk.js';
 import { requiredLevels } from './verification.js';
 import { approvalFor, gatePolicy } from './index.js';
 import { failureClasses, failureInfo } from './failure.js';
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 
 const RISKS: RiskLevel[] = ['R0', 'R1', 'R2', 'R3', 'R4'];
 
 // P1-CHANGE-004: the YAML is the single authority and the TS surface must be a
 // faithful projection of it — no independent hardcoded second source.
+
+// P1-FINAL-HIGH-005: the legacy policies/risk-policy.yaml was a second, divergent
+// risk authority (nested envelope, R4 missing a field) that no code loaded. It is
+// removed; the canonical risk authority is risk-taxonomy.yaml + approval-matrix.yaml.
+// This guard fails if a duplicate risk authority silently reappears.
+test('no legacy duplicate risk authority (risk-policy.yaml) exists', () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const repoRoot = join(here, '..', '..', '..');
+  const legacy = join(repoRoot, 'policies', 'risk-policy.yaml');
+  assert.equal(
+    existsSync(legacy),
+    false,
+    'policies/risk-policy.yaml reappeared — it is a removed duplicate risk authority; ' +
+      'the canonical source is risk-taxonomy.yaml + approval-matrix.yaml (P1-FINAL-HIGH-005)',
+  );
+});
 
 test('risk taxonomy: TS categories exactly match the YAML categories', () => {
   const doc = loadRiskTaxonomy();
