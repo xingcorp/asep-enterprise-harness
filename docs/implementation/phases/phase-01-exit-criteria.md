@@ -62,16 +62,17 @@
 
 ## G. Phase artifacts / governance (MUST unless noted)
 
-- [x] G1. `phase-01-report.md` present with base + head SHA matching git.
+- [x] G1. `phase-01-report.md` present; base_sha == `git merge-base main HEAD` (9f60c9d). head is NOT hardcoded (a commit cannot embed its own hash) — it is bound by `artifacts/phase-01/acceptance.json` + `scripts/check-acceptance.sh` (P1-FINAL-CRIT-001 / P1-CHANGE-008).
 - [x] G2. `artifacts/phase-01/` holds per-gate command evidence (command, exit code, duration, output/checksum, tool version, env).
 - [x] G3. Traceability matrix maps every exit criterion → implementation + test + evidence (SHOULD).
 - [x] G4. ADR/technology-radar approval manifest present (SHOULD).
 - [x] G5. `.task-complete` created **last**, only after report + evidence written.
+- [ ] G6. Acceptance marker `artifacts/phase-01/acceptance.json` present AND `scripts/check-acceptance.sh` green (marker.reviewed_head == HEAD, base == merge-base, evidence digest matches, verdict == ACCEPT). **Written by the controller AFTER independent review passes** — remains unchecked until then; any repair commit moves HEAD and invalidates a prior marker.
 
 ## H. Completion protocol (MUST)
 
 - [x] H1. No unresolved CRITICAL or HIGH finding from codex final review (or explicitly recorded disposition). — Codex final review is a separate human-gated step (plan §0 PROMPT 5); disposition recorded in `phase-01-report.md` under `codex_review` (worker self-review clean; independent review pending, not a blocker for offline completion per P1-CHANGE-007).
-- [x] H2. Completion marker bound to HEAD/evidence; a simulated reviewer-rejection cannot leave a valid marker (P1-CHANGE-008). — The `.task-complete` marker is created only after the full gate is green and evidence is written at the final HEAD; any later repair commit moves HEAD past the marker, so a stale marker is detectable by comparing it against `git rev-parse HEAD`.
+- [x] H2. Completion marker bound to HEAD/evidence; a simulated reviewer-rejection cannot leave a valid marker (P1-CHANGE-008). — Implemented as `artifacts/phase-01/acceptance.json` (fields: reviewed_head, base, evidence_index_sha256, verdict) verified by `scripts/check-acceptance.sh`. The gate FAILS if reviewed_head != `git rev-parse HEAD`, base != merge-base, evidence digest drifts, or verdict != ACCEPT. Its `--self-test` proves the REQUEST_REPAIR path: moving HEAD invalidates a prior marker. The `.task-complete` sentinel is still created last, but it is no longer the binding mechanism.
 - [x] H3. No Phase 2+ implementation present (Temporal runtime, real providers, memory, UI) — codex final review confirms. — Verified by the worker: no Temporal/provider-SDK/memory/UI code added; scope held to schemas, deterministic policy, deterministic eval runner, and the measurement dictionary. Independent codex confirmation pending as the human-gated review step.
 
 ## Production-pilot dependencies (NOT Phase 1 exit — recorded for gate before pilot)

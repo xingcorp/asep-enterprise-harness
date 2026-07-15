@@ -10,6 +10,7 @@
     { "path": "adapters/memory-inmemory" },
     { "path": "workers/workflow-worker" },
     { "path": "apps/control-plane-api" },
-    { "path": "evals" }
+    { "path": "evals" },
+    { "path": "scripts" }
   ]
 }

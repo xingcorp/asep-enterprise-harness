@@ -14,13 +14,21 @@ verdict: complete
 
 repository:
   branch: phase/01-evaluation-contracts
-  base_sha: 83ba33db16072f05fb27f00f34cebd6774cb771a
-  head_sha: 6d6f08c
+  base_sha: 9f60c9d2c6da2a00b2dc9e6da188e6cf26f1885e
+  base_sha_note: >-
+    base = `git merge-base main HEAD`. main advanced to 9f60c9d (the plan-approval
+    docs commit) after the branch was created, so the true fork point is 9f60c9d,
+    not the older 83ba33d starter-import commit named in the locked plan.
+  head_sha: bound-by-acceptance-marker
   head_sha_note: >-
-    6d6f08c is the S6 phase-close content commit (report + evidence + traceability +
-    approval manifest). This administrative follow-up commit pins the resolved SHA
-    into the report; a git object cannot embed its own hash, so head_sha names the
-    immediately-preceding content commit that carries the full Phase 1 deliverable.
+    A git object cannot embed its own hash, and HEAD advances on every repair
+    commit, so this report does NOT hardcode a head SHA. Completion is instead
+    bound to the reviewed commit by artifacts/phase-01/acceptance.json, which the
+    controller writes AFTER the independent review passes. scripts/check-acceptance.sh
+    verifies marker.reviewed_head == `git rev-parse HEAD`, marker.base == merge-base,
+    and marker.evidence_index_sha256 == sha256(artifacts/phase-01/index.tsv). Any
+    repair lands a new commit, moves HEAD, and instantly invalidates a prior marker
+    (P1-CHANGE-008) — false completion cannot survive a repair cycle.
   worktree: isolated linked worktree; main untouched
   completion: offline (remote push + PR are a separate human-gated step, not a Phase 1 exit criterion)
 
@@ -74,18 +82,22 @@ deliverables:
     - docs/implementation/phases/phase-01-approval-manifest.md (ADR/technology-radar approval)
 
 commits:
-  - b783d03 chore(repo): harden repository for public development
-  - 276833c feat(contracts): establish versioned canonical platform schemas
-  - d7f591e feat(policy): add risk assurance and failure classification foundation
-  - b21396d feat(evals): add deterministic phase-one evaluation foundation
-  - e1e842e feat(measurement): define evidence and platform metric contracts
-  - 6d6f08c docs(phase-1): record evidence and close evaluation-contracts foundation
-  - "(+ administrative follow-up commit pinning head_sha into this report)"
+  note: >-
+    Six slice commits plus repair-cycle-1 fix commits (fix(phase-1): P1-FINAL-*).
+    The exact set is recorded in git log; the acceptance marker binds the reviewed
+    HEAD rather than this list, so the list is descriptive, not authoritative.
+  slices:
+    - b783d03 chore(repo): harden repository for public development
+    - 276833c feat(contracts): establish versioned canonical platform schemas
+    - d7f591e feat(policy): add risk assurance and failure classification foundation
+    - b21396d feat(evals): add deterministic phase-one evaluation foundation
+    - e1e842e feat(measurement): define evidence and platform metric contracts
+    - 6d6f08c docs(phase-1): record evidence and close evaluation-contracts foundation
 
 verification:
-  canonical_command: pnpm verify (format:check + typecheck + test)
+  canonical_command: pnpm verify:all (format + typecheck + test + secret + large-file + publication + clean-tree)
+  quick_command: pnpm verify (format:check + typecheck + test only — subset, NOT the full gate)
   result: green
-  test_count: 83 passing, 0 failing, 0 skipped
   gate_evidence: artifacts/phase-01/index.tsv (all exit 0)
   clean_checkout: pnpm install --frozen-lockfile succeeds; eval runner byte-identical across two runs
 
@@ -136,8 +148,10 @@ phase_2_recommendation: >
 ## Summary
 
 Phase 1 delivers the evaluation and contracts foundation as six reviewed,
-per-slice commits on `phase/01-evaluation-contracts`, off the locked base
-`83ba33d`. JSON Schema is the single authoritative representation for the 12
+per-slice commits (plus repair-cycle-1 fixes) on `phase/01-evaluation-contracts`,
+off the true fork point `9f60c9d` (`git merge-base main HEAD`; the locked plan
+named the older starter-import `83ba33d`, but main advanced to the plan-approval
+commit before the branch forked). JSON Schema is the single authoritative representation for the 12
 platform contracts; TypeScript types are generated from the schemas and guarded
 against drift, and an ajv-backed validator is the runtime projection of the same
 source. Risk, verification, approval and failure policy are all derived from

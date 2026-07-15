@@ -28,7 +28,7 @@ sha256() {
   echo "pnpm: $(pnpm --version)"
   echo "tsc: $(pnpm exec tsc --version 2>/dev/null || echo unknown)"
   echo "os: $(uname -srm)"
-  echo "base_sha: $(git rev-parse 83ba33d 2>/dev/null || echo unknown)"
+  echo "base_sha: $(git merge-base main HEAD 2>/dev/null || echo unknown)"
   echo "head_sha: $(git rev-parse HEAD)"
 } > "$OUT_DIR/env-digest.txt"
 

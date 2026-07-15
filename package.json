@@ -10,7 +10,7 @@
     "dev": "pnpm --filter @asep/control-plane-api dev",
     "build": "tsc -b",
     "typecheck": "tsc -b --pretty false",
-    "test": "tsx --test packages/**/*.test.ts apps/**/*.test.ts workers/**/*.test.ts adapters/**/*.test.ts evals/**/*.test.ts",
+    "test": "tsx --test packages/**/*.test.ts apps/**/*.test.ts workers/**/*.test.ts adapters/**/*.test.ts evals/**/*.test.ts scripts/**/*.test.ts",
     "format:check": "bash scripts/format-check.sh",
     "scan:secret": "bash scripts/secret-scan.sh",
     "scan:large-file": "bash scripts/large-file-scan.sh",
