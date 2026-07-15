@@ -146,10 +146,103 @@ clean runs with shuffled discovery order.
 
 ---
 
+## Repair cycle 1 — final-implementation review findings (P1-FINAL-*)
+
+Codex's final implementation review (against the built tree, not the plan)
+raised ten findings on the delivered code. All ten were **ACCEPTED** and fixed;
+each cites the fix commit. These are code-level defects where an earlier gate was
+present in form but hollow in substance (a check that could not actually fail),
+or where a structured artifact silently disagreed with its own prose.
+
+### P1-FINAL-CRIT-001 — completion not bound to the reviewed commit
+
+**Disposition: ACCEPTED (fixed in `8221fa6`).** The report hardcoded no head SHA
+but nothing bound completion to the reviewed state either. Added
+`artifacts/phase-01/acceptance.json` + `scripts/check-acceptance.sh`: the marker
+records `reviewed_head`/`base`/`evidence_index_sha256`/`verdict`, and the gate
+fails unless the marker binds the current HEAD, merge-base and evidence digest
+with an ACCEPT verdict. A repair commit moves HEAD and instantly invalidates a
+prior marker, so false completion cannot survive a repair (P1-CHANGE-008).
+
+### P1-FINAL-HIGH-001 — TS-type parity guard blind to x-tsType overrides
+
+**Disposition: ACCEPTED (fixed in `600a562`).** The schema→TS drift guard did not
+assert the `x-tsType` branded-type overrides, so a hand-edit to a generated brand
+would pass. Added a structural parity guard over every `x-tsType` override.
+
+### P1-FINAL-HIGH-002 — compat gate did not compare against frozen snapshots
+
+**Disposition: ACCEPTED (fixed in `203f12f`).** The compatibility checker ran but
+never diffed live schemas against the frozen v1 snapshots, so a breaking change
+could pass. Wired the gate to the committed `schema/snapshots/v1/*` and proved a
+breaking mutation fails.
+
+### P1-FINAL-HIGH-003 — publication scanners were presence stubs
+
+**Disposition: ACCEPTED (fixed in `ca8b930`).** The dependency-license check was a
+checklist note, there was no PII scanner, and the git-history secret scan used a
+different pattern set than the HEAD scan. Added a real license inventory
+(fail-closed on non-permissive/unknown), a self-testing PII scanner, and a shared
+`scripts/lib/secret-patterns.sh` so HEAD and history scans cannot diverge.
+
+### P1-FINAL-HIGH-004 — policy CI step ran zero tests
+
+**Disposition: ACCEPTED (fixed in `1fca71c`).** `@asep/policy` had no `test`
+script, so CI's `pnpm --filter @asep/policy test` was a silent no-op. Added the
+real test script (34 tests) and a forbidden-import fitness test (no provider SDK
+or live-network module in domain packages), wired into CI.
+
+### P1-FINAL-HIGH-005 — legacy duplicate risk authority
+
+**Disposition: ACCEPTED (fixed in `3207b2f`).** See P1-CHANGE-004 above:
+`policies/risk-policy.yaml` was a dead duplicate risk authority loaded by no code.
+Removed it and its MANIFEST entry; a guard test fails if it reappears.
+
+### P1-FINAL-MED-001 — prompt-injection grader trusted a pre-labeled list
+
+**Disposition: ACCEPTED (fixed in `2c05b53`).** The grader did set-arithmetic on a
+pre-labeled `injectedOperations` list and never inspected what the agent actually
+did, so it could not detect a real breach. Re-based it on a **trusted action
+trace** (recorded execution outcomes): the verdict fails if any operation outside
+the allowlist was actually executed. Added grader self-tests proving an executed
+out-of-allowlist op flips the verdict.
+
+### P1-FINAL-MED-002 — eval network deny only covered dns.lookup
+
+**Disposition: ACCEPTED (fixed in `91dbb4f`).** The determinism harness overrode
+only `dns.lookup`; `net.connect`, `http`/`https` and global `fetch` stayed open.
+Hardened the deny across every egress path and added network-deny canary tests
+plus a shuffle-discovery test proving order-independence (P1-OPT-002).
+
+### P1-FINAL-MED-003 — metric formula/operand silent disagreement
+
+**Disposition: ACCEPTED (fixed in `41ca7eb`).** Operand filters supported only a
+single `{field, equals}`, so a formula's `where A=x and B=y` could not be encoded
+and silently disagreed with the structured operand (e.g. `first_attempt_pass_rate`
+formula named `outcome=accepted and repairCycles=0` but the operand encoded only
+`repairCycles=0`). Added conjunctive `filters` support and a per-operand
+formula↔operand agreement validator (attributes each `where` clause to its own
+operand via top-level `/` split, so a numerator/denominator swap is caught too),
+then fixed the two drifting metrics.
+
+### P1-FINAL-MED-004 — no single full-gate entry point; CI hand-chained steps
+
+**Disposition: ACCEPTED (fixed in `c6c115d`).** Local `verify` ran only
+format+typecheck+test while CI hand-chained eleven separate steps, so the two
+could silently diverge. Added `scripts/verify-all.sh` (`pnpm verify:all`) as the
+single full gate — format, typecheck, full test matrix, filter tests, compat
+gate, forbidden-import fitness, secret/large-file/PII scans, publication gate,
+clean-tree assertion — and refactored CI to call that exact script. Adding a
+check in one place now adds it to both.
+
+---
+
 ## Summary
 
 - CRITICAL findings unresolved: **0** (P1-CRIT-001 rejected with evidence;
   underlying concern folded into exit criteria + production-pilot dependency).
 - HIGH findings without disposition: **0**.
 - All 10 required plan changes accepted (1 reframed).
+- Final-review findings (P1-FINAL-*): **10 raised, 10 accepted and fixed**
+  (1 CRITICAL, 5 HIGH, 4 MEDIUM), each bound to a fix commit above.
 - Locked plan `phase-01-plan.md` incorporates every accepted change.

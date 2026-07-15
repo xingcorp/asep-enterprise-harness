@@ -49,7 +49,7 @@ deliverables:
     - LICENSE (Apache-2.0)
     - .gitignore hardened (.task-complete, *.tsbuildinfo, .coverage/, *.tmp)
     - .github/CODEOWNERS, pull_request_template, ISSUE_TEMPLATE/{bug_report,feature_request}
-    - .github/workflows/ci.yml (install --frozen-lockfile -> format -> typecheck -> test -> schema validation -> fixture accept/reject -> template validation -> compat check -> secret scan -> large-file scan -> publication check -> clean-tree assertion)
+    - .github/workflows/ci.yml (single step: pnpm verify:all — the exact full gate a developer runs locally, so CI and local cannot diverge; P1-FINAL-MED-004)
     - scripts/{secret-scan,large-file-scan,check-publication,format-check,capture-evidence}.sh (scanners self-test on seeded canaries)
     - docs/implementation/phases/phase-01-publication-checklist.md
   B_canonical_contracts:
@@ -103,10 +103,21 @@ verification:
 
 codex_review:
   plan_review: 10 adjustments accepted and applied (see phase-01-review-log.md)
-  final_review: pending human-gated dispatch; no unresolved CRITICAL/HIGH known at close
-  dispositions:
+  final_review: repair cycle 1 complete — 10 findings raised on the built tree (1 CRITICAL, 5 HIGH, 4 MEDIUM), all accepted and fixed; no unresolved CRITICAL/HIGH
+  plan_dispositions:
     - P1-CRIT-001: metrics + evals are DEFINED contracts, not empirically validated; real historical-task collection is a production-pilot dependency, not a Phase 1 exit criterion
     - P1-HIGH-001: schema/type/template drift resolved — JSON Schema is the single authority; TS generated + drift-guarded; templates validated
+  final_dispositions:
+    - P1-FINAL-CRIT-001 (8221fa6): completion bound to reviewed HEAD via acceptance.json + check-acceptance.sh; a repair commit invalidates a prior marker
+    - P1-FINAL-HIGH-001 (600a562): drift guard now asserts x-tsType branded-type overrides
+    - P1-FINAL-HIGH-002 (203f12f): compat gate diffs live schemas against frozen v1 snapshots; breaking mutation fails
+    - P1-FINAL-HIGH-003 (ca8b930): real dependency-license inventory (fail-closed) + PII scanner + shared secret-pattern lib (HEAD/history cannot diverge)
+    - P1-FINAL-HIGH-004 (1fca71c): @asep/policy test script added (was a silent CI no-op) + forbidden-import fitness test
+    - P1-FINAL-HIGH-005 (3207b2f): legacy duplicate risk-policy.yaml removed; guard test fails if it reappears
+    - P1-FINAL-MED-001 (2c05b53): prompt-injection grader re-based on a trusted action trace; fails if an out-of-allowlist op actually executed
+    - P1-FINAL-MED-002 (91dbb4f): eval network deny hardened across net/http/https/fetch (was dns.lookup only) + canary + shuffle-discovery tests
+    - P1-FINAL-MED-003 (41ca7eb): conjunctive metric filters + per-operand formula<->operand agreement validator; two drifting metrics fixed
+    - P1-FINAL-MED-004 (c6c115d): single verify:all full-gate entry point; CI calls the exact script developers run locally
 
 security:
   license: Apache-2.0 present
@@ -167,7 +178,7 @@ production run has exercised them. Collecting a real pilot repository and 30-50
 historical tasks is recorded as a blocking production-pilot dependency, not a
 Phase 1 exit criterion.
 
-The canonical `pnpm verify` is green (83 tests). Per-gate evidence — command,
+The canonical `pnpm verify:all` full gate is green (117 tests). Per-gate evidence — command,
 exit code, duration, output checksum, tool versions and environment digest — is
 in `artifacts/phase-01/`, with absolute paths sanitized so the publication gate
 stays clean. See `phase-01-traceability.md` for the exit-criterion → implementation
