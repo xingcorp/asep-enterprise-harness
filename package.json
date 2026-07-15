@@ -14,8 +14,10 @@
     "format:check": "bash scripts/format-check.sh",
     "scan:secret": "bash scripts/secret-scan.sh",
     "scan:large-file": "bash scripts/large-file-scan.sh",
+    "scan:pii": "bash scripts/pii-scan.sh",
     "check:publication": "bash scripts/check-publication.sh",
     "verify": "pnpm format:check && pnpm typecheck && pnpm test",
+    "verify:all": "bash scripts/verify-all.sh",
     "infra:up": "docker compose --env-file .env up -d",
     "infra:down": "docker compose --env-file .env down",
     "infra:logs": "docker compose --env-file .env logs -f --tail=200"

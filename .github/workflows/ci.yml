@@ -34,41 +34,12 @@ jobs:
       - name: Install (frozen lockfile)
         run: pnpm install --frozen-lockfile
 
-      - name: Format check
-        run: pnpm format:check
-
-      - name: Typecheck
-        run: pnpm typecheck
-
-      - name: Test
-        run: pnpm test
-
-      - name: Contract schema + fixture validation
-        run: pnpm --filter @asep/contracts test
-
-      - name: Policy parity + taxonomy tests
-        run: pnpm --filter @asep/policy test
-
-      - name: Contract compatibility gate (live schemas vs frozen v1 snapshots)
-        run: pnpm --filter @asep/contracts compat:gate
-
-      - name: Forbidden-import fitness (no provider SDK / live-network in domain)
-        run: pnpm exec tsx --test scripts/forbidden-imports.test.ts
-
-      - name: Secret scan (self-testing)
-        run: pnpm scan:secret
-
-      - name: Large-file scan (self-testing)
-        run: pnpm scan:large-file
-
-      - name: Publication gate (license, abs-path, history, deps)
-        run: pnpm check:publication
-
-      - name: Clean-tree assertion (no generated/untracked files)
-        run: |
-          if [ -n "$(git status --porcelain)" ]; then
-            echo "Working tree is dirty after verify:" >&2
-            git status --porcelain >&2
-            exit 1
-          fi
-          echo "clean-tree: PASS"
+      # Single full-gate entry point (P1-FINAL-MED-004). CI runs the EXACT same
+      # script a developer runs locally via `pnpm verify:all`, so the local gate
+      # and the CI gate cannot silently diverge. Adding a check to verify-all.sh
+      # adds it to both. This step is deliberately the whole gate — format,
+      # typecheck, full test matrix, filter tests, compat gate, forbidden-import
+      # fitness, secret/large-file/PII scans, publication gate, and the
+      # clean-tree assertion — so there is nothing to keep in sync by hand.
+      - name: Full verification gate (pnpm verify:all)
+        run: pnpm verify:all
