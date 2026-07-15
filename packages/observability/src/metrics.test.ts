@@ -7,6 +7,8 @@ import {
   assertDictionaryValid,
   metricNames,
   metricFamilies,
+  formulaConditionFields,
+  splitFormula,
   type MeasurementDictionary,
 } from './metrics.js';
 
@@ -140,4 +142,93 @@ test('every privacy class defines capture/redaction/retention/access rules (E4)'
     assert.ok(typeof rule.retentionDays === 'number', `${name} missing retentionDays`);
     assert.ok(rule.access, `${name} missing access`);
   }
+});
+
+// --- P1-FINAL-MED-003: conjunctive filters + formula<->operand agreement -----
+
+test('formulaConditionFields extracts every field from a multi-term where clause', () => {
+  const fields = formulaConditionFields(
+    'count(task.completed where outcome=accepted and repairCycles=0) / count(task.completed)',
+  );
+  assert.deepEqual([...fields].sort(), ['outcome', 'repairCycles']);
+});
+
+test('formulaConditionFields handles != terms and multiple where clauses', () => {
+  const fields = formulaConditionFields(
+    'count(a.b where failureClass!=x) / count(a.b where declaredComplete=true)',
+  );
+  assert.deepEqual([...fields].sort(), ['declaredComplete', 'failureClass']);
+});
+
+test('splitFormula splits on the top-level slash only, not slashes inside parens', () => {
+  const { numerator, denominator } = splitFormula(
+    'count(a.b where outcome=accepted) / count(a.b)',
+  );
+  assert.ok(numerator.includes('outcome=accepted'));
+  assert.ok(!denominator.includes('outcome=accepted'));
+  // a non-ratio formula returns the whole thing as numerator
+  const single = splitFormula('mean(task.completed.toolCalls)');
+  assert.equal(single.denominator, '');
+});
+
+test('the committed conjunctive metrics encode every where-clause term', () => {
+  // first_attempt_pass_rate and false_completion_rate both have `A and B`
+  // numerator where-clauses; they must carry a conjunctive `filters` array.
+  const dict = loadMeasurementDictionary();
+  for (const name of ['first_attempt_pass_rate', 'false_completion_rate']) {
+    const m = dict.metrics.find((x) => x.name === name)!;
+    assert.ok(m, `missing ${name}`);
+    const conds = m.numerator.filters ?? (m.numerator.filter ? [m.numerator.filter] : []);
+    const formulaFields = formulaConditionFields(splitFormula(m.formula).numerator);
+    const condFields = new Set(conds.map((c) => c.field));
+    for (const f of formulaFields) {
+      assert.ok(condFields.has(f), `${name}: numerator operand missing filter for "${f}"`);
+    }
+    assert.ok(conds.length >= 2, `${name} should use a conjunctive filter`);
+  }
+});
+
+test('formula<->operand drift: a formula where-term with no operand filter is rejected', () => {
+  const bad = clone(loadMeasurementDictionary());
+  const m = bad.metrics.find((x) => x.name === 'scope_violation_rate')!;
+  // The formula says `where scopeViolation=true`; drop the operand filter so the
+  // structured operand no longer encodes it — the validator must catch the drift.
+  delete (m.numerator as { filter?: unknown }).filter;
+  delete (m.numerator as { filters?: unknown }).filters;
+  const errors = validateDictionary(bad as unknown as MeasurementDictionary);
+  assert.ok(
+    errors.some((e) => e.metric === 'scope_violation_rate' && e.problem.includes('formula<->operand drift')),
+    `expected drift error, got: ${JSON.stringify(errors)}`,
+  );
+});
+
+test('formula<->operand drift: an operand filter absent from the formula is rejected', () => {
+  const bad = clone(loadMeasurementDictionary());
+  const m = bad.metrics.find((x) => x.name === 'scope_violation_rate')!;
+  // Add a second operand filter the formula never mentions — must be caught.
+  (m.numerator as { filters?: unknown[] }).filters = [
+    { field: 'scopeViolation', equals: true },
+    { field: 'escapedDefect', equals: true },
+  ];
+  delete (m.numerator as { filter?: unknown }).filter;
+  const errors = validateDictionary(bad as unknown as MeasurementDictionary);
+  assert.ok(
+    errors.some(
+      (e) => e.metric === 'scope_violation_rate' && e.problem.includes('escapedDefect') && e.problem.includes('drift'),
+    ),
+    `expected drift error for escapedDefect, got: ${JSON.stringify(errors)}`,
+  );
+});
+
+test('formula<->operand drift: a numerator/denominator condition swap is caught', () => {
+  const bad = clone(loadMeasurementDictionary());
+  const m = bad.metrics.find((x) => x.name === 'task_pass_rate')!;
+  // task_pass_rate numerator formula is `where outcome=accepted`; move that
+  // filter onto the denominator operand. Per-operand attribution must flag both
+  // the missing numerator filter and the extraneous denominator filter.
+  delete (m.numerator as { filter?: unknown }).filter;
+  (m.denominator as { filter?: unknown }).filter = { field: 'outcome', equals: 'accepted' };
+  const errors = validateDictionary(bad as unknown as MeasurementDictionary);
+  const swapErrors = errors.filter((e) => e.metric === 'task_pass_rate' && e.problem.includes('drift'));
+  assert.ok(swapErrors.length >= 2, `expected numerator+denominator drift, got: ${JSON.stringify(errors)}`);
 });

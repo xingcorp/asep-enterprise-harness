@@ -24,11 +24,21 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(HERE, '..', '..', '..');
 const DICTIONARY_PATH = join(REPO_ROOT, 'docs', 'platform', 'metrics-dictionary.yaml');
 
+export interface FilterCondition {
+  readonly field: string;
+  readonly equals?: unknown;
+  readonly notEquals?: unknown;
+}
+
 export interface MetricOperand {
   readonly aggregation: 'count' | 'sum' | 'mean';
   readonly events: readonly string[];
   readonly fields?: readonly string[];
-  readonly filter?: { field: string; equals?: unknown; notEquals?: unknown };
+  // A single filter condition (back-compat).
+  readonly filter?: FilterCondition;
+  // A conjunction of filter conditions — ALL must hold (P1-FINAL-MED-003). This
+  // is what lets an operand faithfully encode a formula's `where A=x and B=y`.
+  readonly filters?: readonly FilterCondition[];
 }
 
 export interface MetricDefinition {
@@ -70,17 +80,85 @@ export interface DictionaryError {
   readonly problem: string;
 }
 
-// Collect every field name a metric references (operand fields + filter + dims).
+// All filter conditions on an operand, normalising the single-`filter` and the
+// conjunctive-`filters` forms into one list (P1-FINAL-MED-003).
+function operandConditions(op: MetricOperand | undefined): FilterCondition[] {
+  if (!op) return [];
+  const out: FilterCondition[] = [];
+  if (op.filter) out.push(op.filter);
+  if (op.filters) out.push(...op.filters);
+  return out;
+}
+
+// Collect every field name a metric references (operand fields + filters + dims).
 function operandFields(op: MetricOperand | undefined): string[] {
   if (!op) return [];
   const out: string[] = [];
   if (op.fields) out.push(...op.fields);
-  if (op.filter) out.push(op.filter.field);
+  for (const c of operandConditions(op)) out.push(c.field);
   return out;
 }
 
 function operandEvents(op: MetricOperand | undefined): string[] {
   return op ? [...op.events] : [];
+}
+
+// --- formula <-> operand agreement (P1-FINAL-MED-003) ------------------------
+//
+// Each metric carries a human-readable `formula` string AND a structured
+// numerator/denominator operand. If the two disagree — e.g. the formula says
+// `where outcome=accepted and repairCycles=0` but the operand only encodes
+// `repairCycles=0` — the metric is a silent lie: the prose promises one thing,
+// the machine computes another. We parse the fields named inside each `where`
+// clause of the formula and assert every one is represented by an operand
+// filter condition, and vice versa. This forces the conjunctive-filter form
+// (`filters: [...]`) whenever a formula's where-clause has more than one term.
+
+// Extract the set of field names named in every `where ...` clause of a formula.
+// A where-clause runs from `where` up to the next `)` (operand boundary). Field
+// names are the left-hand identifiers of `field=value` / `field!=value` terms.
+export function formulaConditionFields(formula: string): Set<string> {
+  const fields = new Set<string>();
+  const whereRe = /where\s+([^)]*)/gi;
+  let m: RegExpExecArray | null;
+  while ((m = whereRe.exec(formula)) !== null) {
+    const clause = m[1]!;
+    // split on `and` (case-insensitive) then take the identifier before =/!=
+    for (const term of clause.split(/\s+and\s+/i)) {
+      const t = term.trim();
+      const fieldMatch = /^([A-Za-z_][A-Za-z0-9_]*)\s*(!=|=)/.exec(t);
+      if (fieldMatch) fields.add(fieldMatch[1]!);
+    }
+  }
+  return fields;
+}
+
+// The set of fields a single operand encodes as filter conditions.
+function operandFilterFieldSet(op: MetricOperand | undefined): Set<string> {
+  const out = new Set<string>();
+  for (const c of operandConditions(op)) out.add(c.field);
+  return out;
+}
+
+// Split a ratio formula into its numerator and denominator fragments on the
+// single top-level `/` (the one NOT inside parentheses). Non-ratio formulas
+// (no denominator) return the whole string as the numerator fragment. This lets
+// us attribute each formula `where` clause to the correct operand so a
+// numerator/denominator condition swap cannot slip through the agreement check.
+export function splitFormula(formula: string): { numerator: string; denominator: string } {
+  let depth = 0;
+  for (let i = 0; i < formula.length; i++) {
+    const c = formula[i]!;
+    if (c === '(') depth++;
+    else if (c === ')') depth--;
+    else if (c === '/' && depth === 0) {
+      return {
+        numerator: formula.slice(0, i),
+        denominator: formula.slice(i + 1),
+      };
+    }
+  }
+  return { numerator: formula, denominator: '' };
 }
 
 /**
@@ -129,6 +207,39 @@ export function validateDictionary(dict: MeasurementDictionary): DictionaryError
       const denomAgg = m.denominator.aggregation;
       if ((denomAgg === 'count' || denomAgg === 'sum') && !m.zeroDenominatorPolicy) {
         errors.push({ metric: m.name, problem: 'ratio metric missing zeroDenominatorPolicy' });
+      }
+    }
+
+    // formula <-> operand agreement (P1-FINAL-MED-003): every field named in a
+    // `where` clause of the formula must be encoded as an operand filter
+    // condition, and every operand filter field must appear in the formula.
+    // This catches conjunctive drift (formula says `A=x and B=y` but operand
+    // only filters on B) in BOTH directions, and — because we attribute each
+    // where-clause to its own operand via splitFormula — also catches a
+    // numerator/denominator condition swap.
+    const { numerator: numFormula, denominator: denFormula } = splitFormula(m.formula);
+    const operandChecks: { label: string; formula: string; op: MetricOperand | undefined }[] = [
+      { label: 'numerator', formula: numFormula, op: m.numerator },
+      { label: 'denominator', formula: denFormula, op: m.denominator },
+    ];
+    for (const { label, formula, op } of operandChecks) {
+      const formulaFields = formulaConditionFields(formula);
+      const opFields = operandFilterFieldSet(op);
+      for (const f of formulaFields) {
+        if (!opFields.has(f)) {
+          errors.push({
+            metric: m.name,
+            problem: `${label} formula filters on "${f}" but the ${label} operand does not encode it (formula<->operand drift)`,
+          });
+        }
+      }
+      for (const f of opFields) {
+        if (!formulaFields.has(f)) {
+          errors.push({
+            metric: m.name,
+            problem: `${label} operand filters on "${f}" but the ${label} formula does not mention it (formula<->operand drift)`,
+          });
+        }
       }
     }
   }

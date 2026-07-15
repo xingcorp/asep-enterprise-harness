@@ -185,7 +185,9 @@ metrics:
     numerator:
       aggregation: count
       events: [task.completed]
-      filter: { field: repairCycles, equals: 0 }
+      filters:
+        - { field: outcome, equals: accepted }
+        - { field: repairCycles, equals: 0 }
     denominator:
       aggregation: count
       events: [task.completed]
@@ -224,7 +226,9 @@ metrics:
     numerator:
       aggregation: count
       events: [attempt.declared_complete]
-      filter: { field: passedRequiredAssurance, equals: false }
+      filters:
+        - { field: declaredComplete, equals: true }
+        - { field: passedRequiredAssurance, equals: false }
     denominator:
       aggregation: count
       events: [attempt.declared_complete]
