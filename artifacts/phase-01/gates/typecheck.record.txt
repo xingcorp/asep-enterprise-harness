@@ -1,6 +1,6 @@
 gate: typecheck
 command: pnpm typecheck
 exit_code: 0
-duration_s: 1
+duration_s: 0
 output_sha256: edc918b9af2eeb330820bc4fe54c6a5583ed07374060970e49da3d6687f4b74e
 output_file: gates/typecheck.log

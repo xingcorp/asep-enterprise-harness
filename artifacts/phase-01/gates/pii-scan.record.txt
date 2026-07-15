@@ -1,0 +1,6 @@
+gate: pii-scan
+command: bash scripts/pii-scan.sh
+exit_code: 0
+duration_s: 4
+output_sha256: b6fcae6b4b7a3c305949ecf2b4152897398582d693f7f4f06634321ee4392dd8
+output_file: gates/pii-scan.log

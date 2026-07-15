@@ -85,10 +85,20 @@ run_gate "install-frozen"     "pnpm install --frozen-lockfile" || fail=1
 run_gate "format-check"       "pnpm format:check" || fail=1
 run_gate "typecheck"          "pnpm typecheck" || fail=1
 run_gate "test"               "pnpm test" || fail=1
+run_gate "contracts-test"     "pnpm --filter @asep/contracts test" || fail=1
+run_gate "policy-test"        "pnpm --filter @asep/policy test" || fail=1
+run_gate "contracts-compat"   "pnpm --filter @asep/contracts compat:gate" || fail=1
+run_gate "forbidden-imports"  "pnpm exec tsx --test scripts/forbidden-imports.test.ts" || fail=1
 run_gate "secret-scan"        "bash scripts/secret-scan.sh" || fail=1
 run_gate "large-file-scan"    "bash scripts/large-file-scan.sh" || fail=1
+run_gate "pii-scan"           "bash scripts/pii-scan.sh" || fail=1
 run_gate "check-publication"  "bash scripts/check-publication.sh" || fail=1
 run_gate "eval-determinism"   "pnpm --filter @asep/evals eval > /tmp/asep-eval-a.json && pnpm --filter @asep/evals eval > /tmp/asep-eval-b.json && diff -q /tmp/asep-eval-a.json /tmp/asep-eval-b.json && echo BYTE-IDENTICAL" || fail=1
+# NOTE: the composite `pnpm verify:all` is deliberately NOT captured here. It
+# ends in a clean-tree assertion, but capture-evidence writes into tracked
+# artifacts/phase-01/ by design, so running verify:all mid-capture would fail on
+# a dirty tree by construction. The individual gates above ARE every step
+# verify:all runs (minus that clean-tree assertion); CI runs verify:all directly.
 
 sha256 "$INDEX" > "$OUT_DIR/index.sha256"
 
