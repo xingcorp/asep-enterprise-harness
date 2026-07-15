@@ -7,7 +7,8 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc -b",
-    "typecheck": "tsc -b --pretty false"
+    "typecheck": "tsc -b --pretty false",
+    "test": "tsx --test src/**/*.test.ts"
   },
   "dependencies": {
     "@asep/contracts": "workspace:*",

@@ -49,6 +49,12 @@ jobs:
       - name: Policy parity + taxonomy tests
         run: pnpm --filter @asep/policy test
 
+      - name: Contract compatibility gate (live schemas vs frozen v1 snapshots)
+        run: pnpm --filter @asep/contracts compat:gate
+
+      - name: Forbidden-import fitness (no provider SDK / live-network in domain)
+        run: pnpm exec tsx --test scripts/forbidden-imports.test.ts
+
       - name: Secret scan (self-testing)
         run: pnpm scan:secret
 
