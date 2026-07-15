@@ -10,6 +10,12 @@ dist/
 .idea/
 # Phase 1 additions
 .task-complete
+# Acceptance marker: written into the working tree AFTER review passes and binds
+# the reviewed HEAD (reviewed_head). Committing it would move HEAD and invalidate
+# its own binding, so it is a gitignored working-tree artifact (like .task-complete),
+# verified by scripts/check-acceptance.sh. Keeping it untracked also keeps the
+# verify:all clean-tree assertion honest.
+artifacts/phase-01/acceptance.json
 *.tsbuildinfo
 *.tmp
 # Raw evidence must never enter git; only sanitized manifests are committed.
