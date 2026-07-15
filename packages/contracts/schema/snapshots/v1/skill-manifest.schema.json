@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://asep.dev/schema/skill-manifest/v1",
+  "version": "1.0.0",
+  "title": "SkillManifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "version", "owner", "provenance", "activation", "execution", "permissions", "verification", "compatibility"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "version": { "type": "string", "minLength": 1 },
+    "owner": { "type": "string", "minLength": 1 },
+    "signature": { "type": "string" },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source"],
+      "properties": {
+        "source": { "type": "string", "enum": ["internal", "vendored", "public"] },
+        "upstream": { "type": ["string", "null"] },
+        "commit": { "type": ["string", "null"] }
+      }
+    },
+    "activation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["phases", "taskTypes"],
+      "properties": {
+        "phases": { "type": "array", "items": { "type": "string" } },
+        "taskTypes": { "type": "array", "items": { "type": "string" } },
+        "requiredRiskCategories": { "type": "array", "items": { "type": "string" } },
+        "conflictsWith": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role"],
+      "properties": {
+        "role": { "type": "string", "enum": ["primary", "adjunct"] },
+        "requiredInputs": { "type": "array", "items": { "type": "string" } },
+        "produces": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "permissions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tools", "network", "productionAccess"],
+      "properties": {
+        "tools": { "type": "array", "items": { "type": "string" } },
+        "network": { "type": "string", "enum": ["none", "allowlist", "full"] },
+        "productionAccess": { "type": "string", "enum": ["forbidden", "human-only", "allowed"] }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requiredChecks"],
+      "properties": {
+        "requiredChecks": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "compatibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["harness"],
+      "properties": {
+        "harness": { "type": "string", "minLength": 1 },
+        "languages": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  },
+  "examples": [
+    {
+      "id": "engineering.database-migration",
+      "version": "1.0.0",
+      "owner": "platform-architecture",
+      "signature": "cosign:...",
+      "provenance": { "source": "internal", "upstream": null, "commit": null },
+      "activation": { "phases": ["planning", "implementation", "verification"], "taskTypes": ["schema-change", "data-migration"], "requiredRiskCategories": ["database-migration"], "conflictsWith": [] },
+      "execution": { "role": "adjunct", "requiredInputs": ["schema-before", "schema-after", "rollback-strategy"], "produces": ["migration-plan", "migration-files", "migration-evidence"] },
+      "permissions": { "tools": ["read-file", "apply-patch", "run-test", "ephemeral-database"], "network": "none", "productionAccess": "forbidden" },
+      "verification": { "requiredChecks": ["migration-forward", "migration-backward", "compatibility"] },
+      "compatibility": { "harness": ">=0.1 <1.0", "languages": ["typescript", "sql"] }
+    }
+  ]
+}

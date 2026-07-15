@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://asep.dev/schema/finding/v1",
+  "version": "1.0.0",
+  "title": "Finding",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "severity", "category", "evidence", "requiredFix"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "severity": { "type": "string", "enum": ["INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL"] },
+    "category": { "type": "string", "enum": ["SPEC", "ARCHITECTURE", "CORRECTNESS", "SECURITY", "PERFORMANCE", "TEST_QUALITY", "MAINTAINABILITY"] },
+    "requirementId": { "type": "string" },
+    "file": { "type": "string" },
+    "lineStart": { "type": "integer", "minimum": 0 },
+    "lineEnd": { "type": "integer", "minimum": 0 },
+    "evidence": { "type": "string", "minLength": 1 },
+    "requiredFix": { "type": "string", "minLength": 1 }
+  },
+  "examples": [
+    { "id": "REV-001", "severity": "HIGH", "category": "CORRECTNESS", "evidence": "Off-by-one in pagination bound.", "requiredFix": "Use <= instead of <." }
+  ]
+}

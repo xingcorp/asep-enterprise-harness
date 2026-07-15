@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://asep.dev/schema/context-pack/v1",
+  "version": "1.0.0",
+  "title": "ContextPack",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "generatedAt", "baseSha", "objective", "specificationExcerpt", "architectureInvariants", "relevantFiles", "relevantSymbols", "priorEvidenceIds", "skills", "allowedTools", "deniedOperations", "hash"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "baseSha": { "type": "string" },
+    "objective": { "type": "string" },
+    "specificationExcerpt": { "type": "string" },
+    "architectureInvariants": { "type": "array", "items": { "type": "string" } },
+    "relevantFiles": { "type": "array", "items": { "type": "string" } },
+    "relevantSymbols": { "type": "array", "items": { "type": "string" } },
+    "priorEvidenceIds": { "type": "array", "items": { "type": "string" } },
+    "skills": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "version"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "version": { "type": "string", "minLength": 1 }
+        },
+        "x-tsType": "SkillRef"
+      }
+    },
+    "allowedTools": { "type": "array", "items": { "type": "string" } },
+    "deniedOperations": { "type": "array", "items": { "type": "string" } },
+    "hash": { "type": "string", "minLength": 1 }
+  },
+  "examples": [
+    {
+      "id": "ctx-example",
+      "generatedAt": "2026-07-14T00:00:00Z",
+      "baseSha": "0000000000000000000000000000000000000000",
+      "objective": "...",
+      "specificationExcerpt": "...",
+      "architectureInvariants": [],
+      "relevantFiles": [],
+      "relevantSymbols": [],
+      "priorEvidenceIds": [],
+      "skills": [],
+      "allowedTools": [],
+      "deniedOperations": [],
+      "hash": "sha256:0000"
+    }
+  ]
+}
