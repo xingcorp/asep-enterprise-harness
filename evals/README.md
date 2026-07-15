@@ -55,7 +55,7 @@ diff a.json b.json   # empty
 | `skill-routing` | task type → selected skill, no forbidden skill | positive |
 | `reviewer-finding-quality` | a finding must cite evidence + required fix | positive |
 | `malformed-provider-output` | non-conforming provider output is rejected | negative |
-| `prompt-injection` | injected out-of-allowlist operations are denied | negative |
+| `prompt-injection` | trusted action trace shows no out-of-allowlist op was executed | negative |
 | `scope-violation` | changed paths outside `allowedPaths` are caught | negative |
 | `false-completion` | declared-complete-with-red-gates → `false-completion` | negative |
 
