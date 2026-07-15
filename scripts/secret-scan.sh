@@ -13,27 +13,16 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-# High-signal secret patterns. Kept conservative to avoid false positives on a
-# public reference repo while still catching real credential material.
-# shellcheck disable=SC2016
-PATTERNS=(
-  'AKIA[0-9A-Z]{16}'                                   # AWS access key id
-  'ASIA[0-9A-Z]{16}'                                   # AWS temp access key id
-  '-----BEGIN [A-Z ]*PRIVATE KEY-----'                 # PEM private key
-  'ghp_[A-Za-z0-9]{36}'                                # GitHub personal token
-  'gho_[A-Za-z0-9]{36}'                                # GitHub OAuth token
-  'github_pat_[A-Za-z0-9_]{22,}'                       # GitHub fine-grained PAT
-  'xox[baprs]-[A-Za-z0-9-]{10,}'                       # Slack token
-  'sk-[A-Za-z0-9]{20,}'                                # OpenAI-style secret key
-  'sk-ant-[A-Za-z0-9-]{20,}'                           # Anthropic-style key
-  'AIza[0-9A-Za-z_-]{35}'                              # Google API key
-  'eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}' # JWT
-  'glpat-[A-Za-z0-9_-]{20}'                            # GitLab PAT
-)
+# High-signal secret patterns come from the single shared source so the
+# working-tree scan and the git-history scan (check-publication.sh) can never
+# diverge (P1-FINAL-HIGH-003).
+# shellcheck source=scripts/lib/secret-patterns.sh
+source "$REPO_ROOT/scripts/lib/secret-patterns.sh"
+PATTERNS=("${SECRET_PATTERNS[@]}")
 
 # Files intentionally exempt: this scanner itself and its self-tests define the
 # patterns above and must not trip on their own regexes.
-EXEMPT_REGEX='^(scripts/secret-scan\.sh|scripts/check-publication\.sh)$'
+EXEMPT_REGEX='^(scripts/secret-scan\.sh|scripts/check-publication\.sh|scripts/lib/secret-patterns\.sh)$'
 
 scan_paths() {
   # Args: list of files. Prints "path:line:match" for each hit. Returns 0 if any

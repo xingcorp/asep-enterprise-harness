@@ -16,7 +16,14 @@
 | 2 | Secret scan clean | `scripts/secret-scan.sh` | seeded AWS-key canary must be caught |
 | 3 | Large-file scan (no tracked file > 500KB) | `scripts/large-file-scan.sh` | seeded oversized canary must be caught |
 | 4 | Absolute-path / internal-path leak scan | `scripts/check-publication.sh` | seeded `/Users/...` canary must be caught |
-| 5 | Git-history secret scan | see below | seeded canary in a scratch commit must be caught |
+| 5 | Git-history secret scan | `scripts/check-publication.sh` | shared pattern lib — same set as HEAD scan (P1-FINAL-HIGH-003) |
+| 6 | Dependency-license inventory (direct + transitive) | `scripts/license-inventory.sh` | GPL / unknown-license canary must be rejected (fail-closed) |
+| 7 | PII scan (email / phone / SSN) | `scripts/pii-scan.sh` | seeded real-email / SSN / phone canary must be caught; placeholders allowlisted |
+
+All of gates 2–7 are wired into `scripts/check-publication.sh` (the single
+publication entry point) and into CI. The working-tree secret scan and the
+git-history secret scan both `source scripts/lib/secret-patterns.sh`, so their
+pattern sets can never diverge (P1-FINAL-HIGH-003).
 
 ## License approval record
 

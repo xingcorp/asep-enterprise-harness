@@ -79,18 +79,18 @@ check_license() {
 }
 
 check_history_secrets() {
-  # Scan the full git history (all blobs across all commits) for the same
-  # high-signal secret patterns the working-tree scanner uses. A secret removed
-  # from HEAD but still reachable in history would leak on a public push.
-  local grep_pat
-  grep_pat='AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----'
-  grep_pat="$grep_pat|ghp_[A-Za-z0-9]{36}|gho_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{22,}"
-  grep_pat="$grep_pat|xox[baprs]-[A-Za-z0-9-]{10,}|sk-ant-[A-Za-z0-9-]{20,}|AIza[0-9A-Za-z_-]{35}"
-  grep_pat="$grep_pat|glpat-[A-Za-z0-9_-]{20}"
-  # git grep across every commit object. Exempt the scanner scripts themselves.
+  # Scan the full git history (all blobs across all commits) for the SAME
+  # high-signal secret patterns the working-tree scanner uses. The pattern set
+  # is sourced from the single shared lib so HEAD and history can never diverge
+  # (P1-FINAL-HIGH-003 — previously history was missing sk-[A-Za-z0-9]{20,}).
+  # shellcheck source=scripts/lib/secret-patterns.sh
+  source "$REPO_ROOT/scripts/lib/secret-patterns.sh"
+  local grep_pat="$SECRET_PATTERNS_ALT"
+  # git grep across every commit object. Exempt the scanner scripts and the
+  # shared pattern lib themselves (they contain the patterns by definition).
   local hits
   if hits="$(git grep -nE "$grep_pat" $(git rev-list --all) 2>/dev/null \
-      | grep -vE ':(scripts/secret-scan\.sh|scripts/check-publication\.sh):' || true)"; then
+      | grep -vE ':(scripts/secret-scan\.sh|scripts/check-publication\.sh|scripts/lib/secret-patterns\.sh):' || true)"; then
     if [ -n "$hits" ]; then
       echo "  git-history: FAIL — secret material found in history:" >&2
       echo "$hits" | head -n 20 >&2
@@ -101,14 +101,16 @@ check_history_secrets() {
 }
 
 check_dep_licenses() {
-  # Phase 1 has zero third-party runtime deps in domain packages; devDeps are
-  # permissively licensed (MIT/Apache/ISC). Record that a dependency-license
-  # review artifact exists; deep SCA is a pre-public human step.
-  if [ -f docs/implementation/phases/phase-01-publication-checklist.md ]; then
-    echo "  dependency-license: checklist present (see publication checklist)"
+  # Real dependency-license inventory (direct + transitive) against an allowlist,
+  # not a checklist-presence stub (P1-FINAL-HIGH-003). Delegates to
+  # license-inventory.sh, which fails closed on any non-permissive/unknown license.
+  if bash scripts/license-inventory.sh > /tmp/asep-lic-deleg.$$ 2>&1; then
+    sed 's/^/  /' /tmp/asep-lic-deleg.$$
+    rm -f /tmp/asep-lic-deleg.$$
     return 0
   fi
-  echo "  dependency-license: publication checklist missing" >&2
+  sed 's/^/  /' /tmp/asep-lic-deleg.$$ >&2
+  rm -f /tmp/asep-lic-deleg.$$
   return 1
 }
 
@@ -162,6 +164,15 @@ main() {
     fail=1
   fi
   rm -f /tmp/asep-large-deleg.$$
+
+  echo "check-publication: PII scan (delegated)"
+  if bash scripts/pii-scan.sh > /tmp/asep-pii-deleg.$$ 2>&1; then
+    sed 's/^/  /' /tmp/asep-pii-deleg.$$
+  else
+    sed 's/^/  /' /tmp/asep-pii-deleg.$$ >&2
+    fail=1
+  fi
+  rm -f /tmp/asep-pii-deleg.$$
 
   echo "check-publication: abs-path scanner self-test"
   self_test >/dev/null || fail=1
