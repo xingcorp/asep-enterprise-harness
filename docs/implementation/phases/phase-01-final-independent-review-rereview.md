@@ -48,9 +48,9 @@ rereview:
         direct/transitive packages; license self-tests reject GPL and UNKNOWN.
         Both HEAD and history scanners source scripts/lib/secret-patterns.sh.
         A real PII scanner and canaries exist, but its email allowlist skips an
-        entire line if any placeholder address occurs. The input
-        "user@example.com real=jane.doe@gmail.com" therefore suppresses the real
-        Gmail address, demonstrating a direct bypass.
+        entire line if any placeholder address occurs. An input pairing
+        "user@example.com" with a real external address on the same line
+        therefore suppresses the real one, demonstrating a direct bypass.
     - id: P1-FINAL-HIGH-004
       resolved: true
       evidence: >-

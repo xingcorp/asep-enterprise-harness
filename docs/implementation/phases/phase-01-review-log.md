@@ -298,8 +298,8 @@ breaking and demands a major bump. Bypass tests added for each class.
 ### P1-FINAL-HIGH-003 (re-fix) — PII allowlist suppressed per line, not per match
 
 **Disposition: ACCEPTED.** The email allowlist skipped an entire *line* if any
-placeholder address occurred, so `user@example.com real=jane.doe@gmail.com`
-suppressed the real Gmail address. Fix: the scanner now evaluates each matched
+placeholder address occurred, so a line pairing `user@example.com` with a real
+external address (a `<name>@gmail.com`) suppressed the real one. Fix: the scanner now evaluates each matched
 address independently and only allowlists the specific placeholder tokens, so a
 real address sharing a line with a placeholder is still caught. Canary added.
 
