@@ -5,8 +5,10 @@ import net from 'node:net';
 import tls from 'node:tls';
 import http from 'node:http';
 import https from 'node:https';
-import { enforceDeterminism, NetworkDeniedError, stableCompare } from './env.js';
-import { loadTasks, runEval, stableStringify } from './run.js';
+import http2 from 'node:http2';
+import dgram from 'node:dgram';
+import { enforceDeterminism, NetworkDeniedError, EVAL_SEED, stableCompare } from './env.js';
+import { loadTasks, runEval, gradeTasks, stableStringify } from './run.js';
 
 // P1-FINAL-MED-002: prove the determinism harness has teeth.
 //
@@ -24,14 +26,40 @@ test('enforceDeterminism is idempotent and pins locale/timezone', () => {
   assert.equal(process.env.LC_ALL, 'C');
 });
 
-test('network canary: DNS resolution is denied', () => {
+test('network canary: the full DNS resolver surface is denied', () => {
   enforceDeterminism();
-  assert.throws(() => (dns as unknown as { lookup: () => void }).lookup(), NetworkDeniedError);
-  assert.throws(
-    () => (dns.promises as unknown as { lookup: () => void }).lookup(),
-    NetworkDeniedError,
-  );
-  assert.throws(() => (dns as unknown as { resolve: () => void }).resolve(), NetworkDeniedError);
+  // Not just lookup/resolve: every record-type resolver, reverse, and the
+  // promises API must be blocked. A grader reaching for dns.resolveTxt() or
+  // dns.reverse() has to fail exactly as loudly as one calling dns.lookup().
+  const methods = [
+    'lookup',
+    'resolve',
+    'resolve4',
+    'resolve6',
+    'resolveAny',
+    'resolveCname',
+    'resolveCaa',
+    'resolveMx',
+    'resolveNaptr',
+    'resolveNs',
+    'resolvePtr',
+    'resolveSoa',
+    'resolveSrv',
+    'resolveTxt',
+    'reverse',
+  ] as const;
+  for (const m of methods) {
+    assert.throws(
+      () => (dns as unknown as Record<string, () => void>)[m]!(),
+      NetworkDeniedError,
+      `dns.${m} must be denied`,
+    );
+    assert.throws(
+      () => (dns.promises as unknown as Record<string, () => void>)[m]!(),
+      NetworkDeniedError,
+      `dns.promises.${m} must be denied`,
+    );
+  }
 });
 
 test('network canary: raw TCP/TLS sockets are denied', () => {
@@ -42,6 +70,22 @@ test('network canary: raw TCP/TLS sockets are denied', () => {
     NetworkDeniedError,
   );
   assert.throws(() => (tls as unknown as { connect: () => void }).connect(), NetworkDeniedError);
+});
+
+test('network canary: UDP datagram sockets are denied', () => {
+  enforceDeterminism();
+  assert.throws(
+    () => (dgram as unknown as { createSocket: () => void }).createSocket(),
+    NetworkDeniedError,
+  );
+});
+
+test('network canary: HTTP/2 client is denied', () => {
+  enforceDeterminism();
+  assert.throws(
+    () => (http2 as unknown as { connect: () => void }).connect(),
+    NetworkDeniedError,
+  );
 });
 
 test('network canary: http/https client requests are denied', () => {
@@ -60,14 +104,48 @@ test('network canary: global fetch is denied', async () => {
   );
 });
 
-test('discovery is order-independent: shuffled task order yields identical report', () => {
-  // The runner sorts by id, so a shuffled load must not change the output.
-  const tasks = loadTasks();
-  const ids = tasks.map((t) => t.id);
-  const sorted = [...ids].sort(stableCompare);
-  assert.deepEqual(ids, sorted, 'loadTasks must already return id-sorted order');
+// Seeded deterministic shuffle (Fisher–Yates over a small LCG). Same seed ->
+// same permutation, so this test stays byte-reproducible while still feeding
+// gradeTasks a genuinely reordered list.
+function seededShuffle<T>(items: readonly T[], seed: number): T[] {
+  const out = [...items];
+  let state = seed >>> 0;
+  const next = (): number => {
+    // Numerical Recipes LCG constants.
+    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+    return state / 0x1_0000_0000;
+  };
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(next() * (i + 1));
+    [out[i], out[j]] = [out[j]!, out[i]!];
+  }
+  return out;
+}
 
-  // Two independent runs (each of which sorts internally) are byte-identical.
+test('discovery is order-independent: a genuinely shuffled task list yields the sorted report', () => {
+  const tasks = loadTasks();
+  assert.ok(tasks.length >= 2, 'need at least two tasks to prove order-independence');
+
+  const shuffled = seededShuffle(tasks, EVAL_SEED);
+  // Sanity: the shuffle must actually change the order, otherwise the test is
+  // vacuous. (With >=9 fixtures the LCG permutation is not the identity.)
+  const beforeIds = tasks.map((t) => t.id);
+  const shuffledIds = shuffled.map((t) => t.id);
+  assert.notDeepEqual(shuffledIds, beforeIds, 'seededShuffle must reorder the tasks');
+
+  // Grading the shuffled list must produce the SAME report as grading the
+  // canonical (sorted) list — proving the report is a pure function of the set
+  // of tasks, not their discovery order.
+  const fromShuffled = stableStringify(gradeTasks(shuffled));
+  const fromSorted = stableStringify(gradeTasks(tasks));
+  assert.equal(fromShuffled, fromSorted);
+
+  // And the result ids come out in sorted order regardless of input order.
+  const resultIds = gradeTasks(shuffled).results.map((r) => r.id);
+  assert.deepEqual(resultIds, [...resultIds].sort(stableCompare));
+});
+
+test('runEval remains byte-identical across repeated runs (D2)', () => {
   const a = stableStringify(runEval());
   const b = stableStringify(runEval());
   assert.equal(a, b);

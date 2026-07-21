@@ -57,10 +57,16 @@ export function loadTasks(): EvalTask[] {
   return tasks.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 }
 
-export function runEval(): EvalReport {
-  enforceDeterminism();
-  const tasks = loadTasks();
-  const results: TaskResult[] = tasks.map((t) => {
+// Grade a specific set of tasks into a report. The report is INDEPENDENT of the
+// order `tasks` arrives in: tasks are sorted by id here before grading, so a
+// caller that passes a shuffled list gets byte-identical output to one that
+// passes the sorted list. This is the property the order-independence test in
+// env.test.ts exercises directly (feeding a deliberately shuffled list).
+export function gradeTasks(tasks: readonly EvalTask[]): EvalReport {
+  const ordered = [...tasks].sort((a, b) =>
+    a.id < b.id ? -1 : a.id > b.id ? 1 : 0,
+  );
+  const results: TaskResult[] = ordered.map((t) => {
     const g: GradeResult = grade(t);
     return {
       id: t.id,
@@ -78,6 +84,11 @@ export function runEval(): EvalReport {
     failed: results.length - passed,
     results,
   };
+}
+
+export function runEval(): EvalReport {
+  enforceDeterminism();
+  return gradeTasks(loadTasks());
 }
 
 // Deterministic JSON serialization: keys sorted recursively, trailing newline.

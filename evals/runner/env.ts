@@ -7,9 +7,11 @@
 //   - timezone pinned to UTC
 //   - a fixed seed is exposed for any (currently none) pseudo-random need
 //   - outbound network is default-DENY across EVERY egress path a grader could
-//     reach for: DNS resolution, raw TCP/TLS sockets (net/tls.connect),
-//     http/https client requests, and the global fetch(). Any attempt throws
-//     the same NetworkDenied error so a determinism regression fails loud.
+//     reach for: the full DNS resolver surface (lookup/resolve*/reverse and the
+//     promises API), raw TCP/TLS sockets (net/tls.connect), UDP datagram sockets
+//     (dgram), http/https client requests, the HTTP/2 client (http2.connect),
+//     and the global fetch(). Any attempt throws the same NetworkDenied error so
+//     a determinism regression fails loud.
 //
 // The runner imports `enforceDeterminism()` before doing any work.
 
@@ -18,6 +20,8 @@ import net from 'node:net';
 import tls from 'node:tls';
 import http from 'node:http';
 import https from 'node:https';
+import http2 from 'node:http2';
+import dgram from 'node:dgram';
 
 export const EVAL_SEED = 0x5eed_1234;
 export const EVAL_TIMEZONE = 'UTC';
@@ -53,10 +57,32 @@ export function enforceDeterminism(): void {
     throw new NetworkDeniedError(via);
   };
 
-  // DNS resolution.
-  (dns as unknown as { lookup: unknown }).lookup = deny('dns.lookup');
-  (dns.promises as unknown as { lookup: unknown }).lookup = deny('dns.promises.lookup');
-  (dns as unknown as { resolve: unknown }).resolve = deny('dns.resolve');
+  // DNS resolution. Cover the whole resolver surface, not just three entries:
+  // lookup/resolve, every resolveXxx record helper, reverse, and the promises
+  // API. A grader that reached for dns.resolveTxt() must fail just as loudly as
+  // one that called dns.lookup().
+  const DNS_METHODS = [
+    'lookup',
+    'lookupService',
+    'resolve',
+    'resolve4',
+    'resolve6',
+    'resolveAny',
+    'resolveCname',
+    'resolveCaa',
+    'resolveMx',
+    'resolveNaptr',
+    'resolveNs',
+    'resolvePtr',
+    'resolveSoa',
+    'resolveSrv',
+    'resolveTxt',
+    'reverse',
+  ] as const;
+  for (const m of DNS_METHODS) {
+    (dns as unknown as Record<string, unknown>)[m] = deny(`dns.${m}`);
+    (dns.promises as unknown as Record<string, unknown>)[m] = deny(`dns.promises.${m}`);
+  }
 
   // Raw sockets (TCP/TLS). This is the lowest-level egress and also what most
   // higher-level clients ultimately call.
@@ -64,11 +90,19 @@ export function enforceDeterminism(): void {
   (net as unknown as { createConnection: unknown }).createConnection = deny('net.createConnection');
   (tls as unknown as { connect: unknown }).connect = deny('tls.connect');
 
+  // UDP (dgram) — a datagram socket is a full egress path (DNS-over-UDP, QUIC,
+  // arbitrary UDP exfiltration) that bypasses net/tls entirely.
+  (dgram as unknown as { createSocket: unknown }).createSocket = deny('dgram.createSocket');
+
   // http/https client requests.
   (http as unknown as { request: unknown }).request = deny('http.request');
   (http as unknown as { get: unknown }).get = deny('http.get');
   (https as unknown as { request: unknown }).request = deny('https.request');
   (https as unknown as { get: unknown }).get = deny('https.get');
+
+  // HTTP/2 client — http2.connect() opens a session over its own socket path,
+  // so it must be denied independently of http/https.
+  (http2 as unknown as { connect: unknown }).connect = deny('http2.connect');
 
   // Global fetch (Node 18+/24). Undici lives behind this symbol.
   if (typeof (globalThis as { fetch?: unknown }).fetch !== 'undefined') {
