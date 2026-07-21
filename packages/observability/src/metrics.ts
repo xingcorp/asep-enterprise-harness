@@ -114,30 +114,81 @@ function operandEvents(op: MetricOperand | undefined): string[] {
 // filter condition, and vice versa. This forces the conjunctive-filter form
 // (`filters: [...]`) whenever a formula's where-clause has more than one term.
 
-// Extract the set of field names named in every `where ...` clause of a formula.
-// A where-clause runs from `where` up to the next `)` (operand boundary). Field
-// names are the left-hand identifiers of `field=value` / `field!=value` terms.
-export function formulaConditionFields(formula: string): Set<string> {
-  const fields = new Set<string>();
+// A fully-parsed condition from a formula `where` clause: field, operator and
+// the literal value on the right-hand side. Comparing on ALL THREE (not just the
+// field name) is what closes P1-FINAL-MED-003 — a formula `where outcome=accepted`
+// must NOT be accepted by an operand `{field: outcome, equals: rejected}` or
+// `{field: outcome, notEquals: accepted}`; the field alone is not enough.
+export interface FormulaCondition {
+  readonly field: string;
+  readonly operator: '=' | '!=';
+  readonly value: string;
+}
+
+// Parse every condition named in every `where ...` clause of a formula. A
+// where-clause runs from `where` up to the next `)` (operand boundary); each
+// term is `field=value` / `field!=value`, joined by `and`.
+export function formulaConditions(formula: string): FormulaCondition[] {
+  const out: FormulaCondition[] = [];
   const whereRe = /where\s+([^)]*)/gi;
   let m: RegExpExecArray | null;
   while ((m = whereRe.exec(formula)) !== null) {
     const clause = m[1]!;
-    // split on `and` (case-insensitive) then take the identifier before =/!=
+    // split on `and` (case-insensitive), then parse field/operator/value.
     for (const term of clause.split(/\s+and\s+/i)) {
       const t = term.trim();
-      const fieldMatch = /^([A-Za-z_][A-Za-z0-9_]*)\s*(!=|=)/.exec(t);
-      if (fieldMatch) fields.add(fieldMatch[1]!);
+      const match = /^([A-Za-z_][A-Za-z0-9_]*)\s*(!=|=)\s*(.+)$/.exec(t);
+      if (match) {
+        out.push({
+          field: match[1]!,
+          operator: match[2] as '=' | '!=',
+          value: match[3]!.trim(),
+        });
+      }
     }
   }
-  return fields;
+  return out;
 }
 
-// The set of fields a single operand encodes as filter conditions.
-function operandFilterFieldSet(op: MetricOperand | undefined): Set<string> {
-  const out = new Set<string>();
-  for (const c of operandConditions(op)) out.add(c.field);
+// Back-compat: the set of field names named in a formula's where clauses.
+export function formulaConditionFields(formula: string): Set<string> {
+  return new Set(formulaConditions(formula).map((c) => c.field));
+}
+
+// Normalise a scalar operand value to the same textual form a formula literal
+// carries, so `true`/`false`/`0`/`accepted` compare cleanly across the YAML
+// (typed) and formula (raw text) sides.
+function normalizeValue(v: unknown): string {
+  return String(v);
+}
+
+// Normalise an operand FilterCondition into {operator, value} form. `notEquals`
+// means the operator is `!=`; otherwise it is `=` over `equals`.
+function normalizeOperandCondition(c: FilterCondition): { operator: '=' | '!='; value: string } {
+  if (c.notEquals !== undefined) {
+    return { operator: '!=', value: normalizeValue(c.notEquals) };
+  }
+  return { operator: '=', value: normalizeValue(c.equals) };
+}
+
+// Index conditions by field name -> set of "operator|value" keys, so a field
+// carrying multiple conditions (or a duplicated one) is compared as a set.
+function conditionsByField(
+  conds: readonly { field: string; operator: '=' | '!='; value: string }[],
+): Map<string, Set<string>> {
+  const out = new Map<string, Set<string>>();
+  for (const c of conds) {
+    if (!out.has(c.field)) out.set(c.field, new Set());
+    out.get(c.field)!.add(`${c.operator}|${c.value}`);
+  }
   return out;
+}
+
+function describeConditionSet(keys: ReadonlySet<string>): string {
+  return [...keys]
+    .sort()
+    .map((k) => k.replace('|', ''))
+    .join(', ');
 }
 
 // Split a ratio formula into its numerator and denominator fragments on the
@@ -210,35 +261,63 @@ export function validateDictionary(dict: MeasurementDictionary): DictionaryError
       }
     }
 
-    // formula <-> operand agreement (P1-FINAL-MED-003): every field named in a
-    // `where` clause of the formula must be encoded as an operand filter
-    // condition, and every operand filter field must appear in the formula.
-    // This catches conjunctive drift (formula says `A=x and B=y` but operand
-    // only filters on B) in BOTH directions, and — because we attribute each
-    // where-clause to its own operand via splitFormula — also catches a
-    // numerator/denominator condition swap.
+    // formula <-> operand agreement (P1-FINAL-MED-003): every CONDITION named in
+    // a `where` clause of the formula — field, operator AND value — must be
+    // encoded by an operand filter condition, and every operand filter condition
+    // must appear in the formula. Comparing the full (field, operator, value)
+    // triple, not just the field name, is what closes the MED-003 gap: a formula
+    // `where outcome=accepted` can no longer be silently satisfied by an operand
+    // `{field: outcome, equals: rejected}` or `{field: outcome, notEquals:
+    // accepted}`. This catches conjunctive drift (formula says `A=x and B=y` but
+    // operand only filters on B) in BOTH directions, operator/value drift, and —
+    // because we attribute each where-clause to its own operand via splitFormula
+    // — a numerator/denominator condition swap.
     const { numerator: numFormula, denominator: denFormula } = splitFormula(m.formula);
     const operandChecks: { label: string; formula: string; op: MetricOperand | undefined }[] = [
       { label: 'numerator', formula: numFormula, op: m.numerator },
       { label: 'denominator', formula: denFormula, op: m.denominator },
     ];
     for (const { label, formula, op } of operandChecks) {
-      const formulaFields = formulaConditionFields(formula);
-      const opFields = operandFilterFieldSet(op);
-      for (const f of formulaFields) {
-        if (!opFields.has(f)) {
+      const formulaByField = conditionsByField(formulaConditions(formula));
+      const opByField = conditionsByField(
+        operandConditions(op).map((c) => ({ field: c.field, ...normalizeOperandCondition(c) })),
+      );
+      // Every formula condition must be matched exactly by an operand condition.
+      for (const [field, formulaKeys] of formulaByField) {
+        const opKeys = opByField.get(field);
+        if (!opKeys) {
           errors.push({
             metric: m.name,
-            problem: `${label} formula filters on "${f}" but the ${label} operand does not encode it (formula<->operand drift)`,
+            problem: `${label} formula filters on "${field}" (${describeConditionSet(formulaKeys)}) but the ${label} operand does not encode it (formula<->operand drift)`,
           });
+          continue;
+        }
+        for (const key of formulaKeys) {
+          if (!opKeys.has(key)) {
+            errors.push({
+              metric: m.name,
+              problem: `${label} formula condition "${field}${key.replace('|', '')}" is not encoded by the ${label} operand (operand has ${field}: {${describeConditionSet(opKeys)}}) (formula<->operand drift)`,
+            });
+          }
         }
       }
-      for (const f of opFields) {
-        if (!formulaFields.has(f)) {
+      // Every operand condition must appear in the formula.
+      for (const [field, opKeys] of opByField) {
+        const formulaKeys = formulaByField.get(field);
+        if (!formulaKeys) {
           errors.push({
             metric: m.name,
-            problem: `${label} operand filters on "${f}" but the ${label} formula does not mention it (formula<->operand drift)`,
+            problem: `${label} operand filters on "${field}" (${describeConditionSet(opKeys)}) but the ${label} formula does not mention it (formula<->operand drift)`,
           });
+          continue;
+        }
+        for (const key of opKeys) {
+          if (!formulaKeys.has(key)) {
+            errors.push({
+              metric: m.name,
+              problem: `${label} operand condition "${field}${key.replace('|', '')}" is not present in the ${label} formula (formula has ${field}: {${describeConditionSet(formulaKeys)}}) (formula<->operand drift)`,
+            });
+          }
         }
       }
     }

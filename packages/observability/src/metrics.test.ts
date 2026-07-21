@@ -8,6 +8,7 @@ import {
   metricNames,
   metricFamilies,
   formulaConditionFields,
+  formulaConditions,
   splitFormula,
   type MeasurementDictionary,
 } from './metrics.js';
@@ -231,4 +232,90 @@ test('formula<->operand drift: a numerator/denominator condition swap is caught'
   const errors = validateDictionary(bad as unknown as MeasurementDictionary);
   const swapErrors = errors.filter((e) => e.metric === 'task_pass_rate' && e.problem.includes('drift'));
   assert.ok(swapErrors.length >= 2, `expected numerator+denominator drift, got: ${JSON.stringify(errors)}`);
+});
+
+// --- P1-FINAL-MED-003: operator + value agreement, not just field name -------
+
+test('formulaConditions parses field, operator AND value from each where term', () => {
+  const conds = formulaConditions(
+    'count(task.completed where outcome=accepted and repairCycles=0) / count(task.completed)',
+  );
+  assert.deepEqual(conds, [
+    { field: 'outcome', operator: '=', value: 'accepted' },
+    { field: 'repairCycles', operator: '=', value: '0' },
+  ]);
+});
+
+test('formulaConditions parses != terms', () => {
+  const conds = formulaConditions('count(a.b where failureClass!=workflow-recovery-failure)');
+  assert.deepEqual(conds, [
+    { field: 'failureClass', operator: '!=', value: 'workflow-recovery-failure' },
+  ]);
+});
+
+test('BYPASS (MED-003): a VALUE mismatch is caught — formula =accepted vs operand =rejected', () => {
+  // The old field-only check let this through: the operand filters the right
+  // FIELD (outcome) but the WRONG VALUE (rejected). The metric would silently
+  // compute the opposite of what its formula promises.
+  const bad = clone(loadMeasurementDictionary());
+  const m = bad.metrics.find((x) => x.name === 'task_pass_rate')!;
+  (m.numerator as { filter?: unknown }).filter = { field: 'outcome', equals: 'rejected' };
+  const errors = validateDictionary(bad as unknown as MeasurementDictionary);
+  assert.ok(
+    errors.some(
+      (e) =>
+        e.metric === 'task_pass_rate' &&
+        e.problem.includes('drift') &&
+        e.problem.includes('outcome'),
+    ),
+    `expected a value-drift error, got: ${JSON.stringify(errors)}`,
+  );
+});
+
+test('BYPASS (MED-003): an OPERATOR mismatch is caught — formula =accepted vs operand !=accepted', () => {
+  // Same field, same value, but the operand negates the condition. Field-only
+  // comparison misses this; operator-aware comparison must flag it.
+  const bad = clone(loadMeasurementDictionary());
+  const m = bad.metrics.find((x) => x.name === 'task_pass_rate')!;
+  delete (m.numerator as { filter?: unknown }).filter;
+  (m.numerator as { filter?: unknown }).filter = { field: 'outcome', notEquals: 'accepted' };
+  const errors = validateDictionary(bad as unknown as MeasurementDictionary);
+  assert.ok(
+    errors.some(
+      (e) =>
+        e.metric === 'task_pass_rate' &&
+        e.problem.includes('drift') &&
+        e.problem.includes('outcome'),
+    ),
+    `expected an operator-drift error, got: ${JSON.stringify(errors)}`,
+  );
+});
+
+test('BYPASS (MED-003): a != value mismatch is caught on workflow_recovery_rate', () => {
+  // Formula: `where failureClass!=workflow-recovery-failure`. Flip the operand
+  // to a DIFFERENT excluded value; the field matches but the value does not.
+  const bad = clone(loadMeasurementDictionary());
+  const m = bad.metrics.find((x) => x.name === 'workflow_recovery_rate')!;
+  (m.numerator as { filter?: unknown }).filter = {
+    field: 'failureClass',
+    notEquals: 'artifact-loss',
+  };
+  const errors = validateDictionary(bad as unknown as MeasurementDictionary);
+  assert.ok(
+    errors.some(
+      (e) =>
+        e.metric === 'workflow_recovery_rate' &&
+        e.problem.includes('drift') &&
+        e.problem.includes('failureClass'),
+    ),
+    `expected a !=-value drift error, got: ${JSON.stringify(errors)}`,
+  );
+});
+
+test('a correct operator+value operand still validates (no false positive)', () => {
+  // Sanity: the committed task_pass_rate (formula =accepted, operand equals
+  // accepted) must NOT be flagged — the tightened check has no false positives.
+  const dict = loadMeasurementDictionary();
+  const errors = validateDictionary(dict).filter((e) => e.problem.includes('drift'));
+  assert.deepEqual(errors, [], `no drift expected on committed dict, got: ${JSON.stringify(errors)}`);
 });
