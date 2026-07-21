@@ -1,6 +1,0 @@
-gate: policy-test
-command: pnpm --filter @asep/policy test
-exit_code: 0
-duration_s: 1
-output_sha256: 9a872f87146de847d76fcb7f5b6d0adc7fbb9a12817a1d354d82e7f6ebba94b3
-output_file: gates/policy-test.log

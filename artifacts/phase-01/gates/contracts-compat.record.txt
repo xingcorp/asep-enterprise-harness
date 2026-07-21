@@ -1,6 +1,0 @@
-gate: contracts-compat
-command: pnpm --filter @asep/contracts compat:gate
-exit_code: 0
-duration_s: 0
-output_sha256: ae7b193686811c2bca4f0864a6b95ea303db37b56b7e60355c991db5df65ef09
-output_file: gates/contracts-compat.log

@@ -1,6 +1,0 @@
-gate: check-publication
-command: bash scripts/check-publication.sh
-exit_code: 0
-duration_s: 26
-output_sha256: 2bd7723ddebcc01560137e63e673bf4dd65f9d80e0897237b9b0623c8d1170e2
-output_file: gates/check-publication.log

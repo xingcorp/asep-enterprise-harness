@@ -1,5 +1,0 @@
-
-> asep-enterprise-harness@0.1.0 format:check <REPO>
-> bash scripts/format-check.sh
-
-format-check: PASS

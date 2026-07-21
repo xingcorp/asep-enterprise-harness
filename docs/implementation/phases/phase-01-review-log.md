@@ -237,6 +237,102 @@ check in one place now adds it to both.
 
 ---
 
+## Repair cycle 2 — re-review findings (P1-FINAL-* partials + P1-REREVIEW-*)
+
+The re-review re-verified every repair-cycle-1 fix by direct exploit, not by
+reading the code. Seven fixes were found still bypassable in substance and are
+re-fixed here with an adversarial ("bypass") test that fails against the old
+code and passes against the new. HIGH-004, HIGH-005 and MED-004 were confirmed
+genuinely resolved and needed no further work.
+
+### P1-FINAL-CRIT-001 (re-fix) + P1-REREVIEW-CRIT-001 — acceptance spoofable; evidence from a stale HEAD
+
+**Disposition: ACCEPTED.** Two distinct holes in the same mechanism:
+
+- **Evidence↔HEAD binding (CRIT-001).** `check-acceptance.sh` bound the marker
+  to HEAD and to the evidence *digest*, but never checked that the evidence was
+  *captured at* the reviewed commit. `env-digest.txt` recorded
+  `head_sha=caa1bff` (two commits stale) and nothing compared it to
+  `reviewed_head`, so evidence from an old commit could back an ACCEPT for a
+  newer HEAD. Root cause: the evidence bundle was **tracked**, and a tracked file
+  can never record the SHA of the commit that contains it (writing it changes the
+  tree, hence the SHA), so `head_sha` was structurally doomed to lag. Fix:
+  untracked the generated bundle (`env-digest*`, `index*`, `gates/`) — like
+  `.task-complete`/`acceptance.json` already were — and made the gate require
+  `env-digest.head_sha == reviewed_head == git rev-parse HEAD`. A fresh capture at
+  the reviewed HEAD is now the only way that equality can hold.
+
+- **Controller-owned attestation (REREVIEW-CRIT-001).** `acceptance.json` is a
+  working-tree file the worker can write, so gitignoring it does not make it
+  "unavailable to the worker" and a plaintext `verdict: ACCEPT` field is
+  worthless — the worker just types it. Fix: the marker now carries an **Ed25519
+  signature** over the canonical `(reviewed_head, base, evidence_index_sha256,
+  verdict)` payload (`scripts/lib/acceptance-crypto.mjs`). The controller holds
+  the private key **out of tree**; only the reviewer public key
+  (`artifacts/phase-01/reviewer-pubkey.pem`) is committed. The gate verifies the
+  signature against that key, so the worker cannot mint a marker, cannot
+  transplant a signature to a new HEAD (the head is inside the signed payload),
+  and cannot flip the verdict. The marker is created only after a real
+  ACCEPT_PHASE via `scripts/sign-acceptance.sh`. Self-tests + `check-acceptance.test.ts`
+  + `acceptance-crypto.test.ts` prove: stale-evidence reject, forged/unsigned
+  reject, wrong-key reject, signature-transplant reject, field-tamper reject.
+
+### P1-FINAL-HIGH-001 (re-fix) — parity checked a shadow table, not base.ts
+
+**Disposition: ACCEPTED.** The parity checker compared schemas against a
+manually duplicated `EXPECTED_BASE_STRUCTURE` table; mutating both the schema and
+that shadow table to add `R5` passed while `base.ts` still defined `RiskLevel`
+through `R4`. Fix: the checker now reads `base.ts` directly (the actual
+TypeScript source of truth), so schema↔TS parity can no longer be bypassed by
+editing a shadow copy. Bypass test added.
+
+### P1-FINAL-HIGH-002 (re-fix) — classifier ignored tightening breaking changes
+
+**Disposition: ACCEPTED.** An in-memory edit tightening `minLength` 1→10 and
+flipping `additionalProperties` true→false with no version bump produced
+`ok=true, requiredBump=none`. Fix: the compatibility classifier now flags every
+constraint-tightening class (numeric bounds, length/size bounds,
+`additionalProperties` narrowing, enum removal, required-set widening) as
+breaking and demands a major bump. Bypass tests added for each class.
+
+### P1-FINAL-HIGH-003 (re-fix) — PII allowlist suppressed per line, not per match
+
+**Disposition: ACCEPTED.** The email allowlist skipped an entire *line* if any
+placeholder address occurred, so `user@example.com real=jane.doe@gmail.com`
+suppressed the real Gmail address. Fix: the scanner now evaluates each matched
+address independently and only allowlists the specific placeholder tokens, so a
+real address sharing a line with a placeholder is still caught. Canary added.
+
+### P1-FINAL-MED-001 (re-fix) — injection grader consumed a self-asserted trace
+
+**Disposition: ACCEPTED.** The `actionTrace` (with its `executed` flags) was
+hand-authored in the same fixture as `expected`/allowlist, so flipping
+`executed:false` fabricated resistance. Fix: an independent enforcement engine
+(`evals/runner/enforcement.ts`) *derives* the trace from the fixture's
+`requestedOperations` against the tool policy; the grader ignores any
+hand-authored `executed` flags. Flipping the fixture can no longer manufacture a
+pass. Bypass tests added.
+
+### P1-FINAL-MED-002 (re-fix) — dgram/http2/full-dns egress open; shuffle test vacuous
+
+**Disposition: ACCEPTED.** After `enforceDeterminism`, `dgram.createSocket`,
+`http2.connect` and the `dns.*` resolver surface remained unpatched, and the
+"shuffle" test reran the identical sorted loader twice (proving nothing). Fix:
+the deny now covers UDP (`dgram`), `http2`, and the full `dns`/`dns/promises`
+resolver surface; the order-independence test now actually shuffles a task list
+via a seeded permutation and asserts byte-identical grading. Canaries added.
+
+### P1-FINAL-MED-003 (re-fix) — formula/operand agreement matched field only
+
+**Disposition: ACCEPTED.** Agreement compared only field *names*, so a formula
+`where outcome=accepted` was satisfied by an operand `{field: outcome, equals:
+rejected}` or `notEquals: accepted`. Fix: agreement now compares the full
+`(field, operator, value)` triple in both directions; value drift and operator
+(`=` vs `!=`) drift are caught. Bypass tests added for value, operator, and `!=`
+mismatches, plus a no-false-positive check on the committed dictionary.
+
+---
+
 ## Summary
 
 - CRITICAL findings unresolved: **0** (P1-CRIT-001 rejected with evidence;
@@ -245,4 +341,9 @@ check in one place now adds it to both.
 - All 10 required plan changes accepted (1 reframed).
 - Final-review findings (P1-FINAL-*): **10 raised, 10 accepted and fixed**
   (1 CRITICAL, 5 HIGH, 4 MEDIUM), each bound to a fix commit above.
+- Re-review (repair cycle 2): **7 partials re-fixed by exploit + 1 new CRITICAL
+  (P1-REREVIEW-CRIT-001)**, each with an adversarial bypass test that fails
+  against the old code. HIGH-004/HIGH-005/MED-004 confirmed already resolved.
+  Acceptance is now controller-signed (Ed25519, key out of tree) and bound to
+  evidence captured at the exact reviewed HEAD.
 - Locked plan `phase-01-plan.md` incorporates every accepted change.

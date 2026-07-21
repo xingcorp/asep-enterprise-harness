@@ -1,6 +1,0 @@
-gate: test
-command: pnpm test
-exit_code: 0
-duration_s: 3
-output_sha256: e5821056cf931c0c843d9b1152f118f80f774a0937fc40ef07ae0aec42d6e08e
-output_file: gates/test.log

@@ -1,4 +1,0 @@
-
-> asep-enterprise-harness@0.1.0 typecheck <REPO>
-> tsc -b --pretty false
-

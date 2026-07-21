@@ -1,6 +1,0 @@
-gate: large-file-scan
-command: bash scripts/large-file-scan.sh
-exit_code: 0
-duration_s: 2
-output_sha256: 988a1d3dffd39cdb1e2003c73c8632941cad4f83d3b3d4fb71b6ced87b33f632
-output_file: gates/large-file-scan.log

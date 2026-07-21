@@ -1,6 +1,0 @@
-gate: contracts-test
-command: pnpm --filter @asep/contracts test
-exit_code: 0
-duration_s: 1
-output_sha256: 46e0d6ab65e9bd89e66f1f2227320c217963cd822abd124fd8e0c4c12d910349
-output_file: gates/contracts-test.log

@@ -20,3 +20,15 @@ artifacts/phase-01/acceptance.json
 *.tmp
 # Raw evidence must never enter git; only sanitized manifests are committed.
 artifacts/phase-01/raw/
+# Gate evidence bundle (P1-FINAL-CRIT-001). This is REGENERATED at the reviewed
+# HEAD by scripts/capture-evidence.sh and its env-digest.txt records head_sha.
+# If any of these files were tracked, writing them would move HEAD, so the
+# recorded head_sha could never equal the commit that contains them — the exact
+# staleness bug CRIT-001 flagged (evidence captured at caa1bff backing a marker
+# for a later HEAD). Keeping the bundle untracked is what lets check-acceptance
+# enforce env-digest.head_sha == reviewed_head == current HEAD.
+artifacts/phase-01/env-digest.txt
+artifacts/phase-01/env-digest.sha256
+artifacts/phase-01/index.tsv
+artifacts/phase-01/index.sha256
+artifacts/phase-01/gates/

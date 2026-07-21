@@ -1,6 +1,0 @@
-gate: forbidden-imports
-command: pnpm exec tsx --test scripts/forbidden-imports.test.ts
-exit_code: 0
-duration_s: 1
-output_sha256: e3a86146641e2726498bf174556e93f66e06428c41056c8ce0c8055d9a87128b
-output_file: gates/forbidden-imports.log

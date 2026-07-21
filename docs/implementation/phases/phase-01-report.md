@@ -19,16 +19,24 @@ repository:
     base = `git merge-base main HEAD`. main advanced to 9f60c9d (the plan-approval
     docs commit) after the branch was created, so the true fork point is 9f60c9d,
     not the older 83ba33d starter-import commit named in the locked plan.
-  head_sha: bound-by-acceptance-marker
+  head_sha: bound-by-signed-acceptance-marker
   head_sha_note: >-
     A git object cannot embed its own hash, and HEAD advances on every repair
     commit, so this report does NOT hardcode a head SHA. Completion is instead
-    bound to the reviewed commit by artifacts/phase-01/acceptance.json, which the
-    controller writes AFTER the independent review passes. scripts/check-acceptance.sh
-    verifies marker.reviewed_head == `git rev-parse HEAD`, marker.base == merge-base,
-    and marker.evidence_index_sha256 == sha256(artifacts/phase-01/index.tsv). Any
-    repair lands a new commit, moves HEAD, and instantly invalidates a prior marker
-    (P1-CHANGE-008) — false completion cannot survive a repair cycle.
+    bound to the reviewed commit by a CONTROLLER-SIGNED artifacts/phase-01/acceptance.json,
+    written only AFTER the independent review returns ACCEPT_PHASE. The marker
+    carries an Ed25519 signature over (reviewed_head, base, evidence_index_sha256,
+    verdict); the private key is held out of tree by the controller and only the
+    reviewer public key (artifacts/phase-01/reviewer-pubkey.pem) is committed.
+    scripts/check-acceptance.sh verifies: marker.reviewed_head == `git rev-parse HEAD`,
+    the untracked evidence bundle's env-digest.head_sha == reviewed_head == HEAD
+    (P1-FINAL-CRIT-001 — evidence must be captured at the exact reviewed commit),
+    marker.base == merge-base, marker.evidence_index_sha256 == sha256(index.tsv),
+    verdict == ACCEPT, AND the signature verifies against the reviewer public key
+    (P1-REREVIEW-CRIT-001 — the worker cannot forge acceptance). Any repair lands a
+    new commit, moves HEAD, and instantly invalidates a prior marker; the worker
+    cannot re-sign for the new HEAD (P1-CHANGE-008) — false completion cannot
+    survive a repair cycle.
   worktree: isolated linked worktree; main untouched
   completion: offline (remote push + PR are a separate human-gated step, not a Phase 1 exit criterion)
 
