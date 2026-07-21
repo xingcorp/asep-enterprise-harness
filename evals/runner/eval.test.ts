@@ -32,9 +32,17 @@ test('there are at most 10 synthetic seeds (D4)', () => {
   assert.ok(fixtures.length >= 9, 'expected coverage of all 9 grader categories');
 });
 
-test('every fixture is labelled source: synthetic (D4)', () => {
+test('every fixture is labelled with a synthetic source, never fabricated history (D4)', () => {
+  // Phase 1 fixtures must be synthetic — either a plain synthetic seed or an
+  // adversarial-synthetic one (the prompt-injection task). What is BARRED is a
+  // fixture masquerading as a real `historical` task, which would smuggle in
+  // fabricated provenance. Both synthetic classes are acceptable here.
+  const SYNTHETIC_SOURCES = new Set(['synthetic', 'adversarial-synthetic']);
   for (const { file, task } of allFixtures()) {
-    assert.equal(task.source, 'synthetic', `${file} must be source: synthetic`);
+    assert.ok(
+      SYNTHETIC_SOURCES.has(task.source),
+      `${file} must be a synthetic source (got "${task.source}"); real historical tasks are not a Phase 1 deliverable`,
+    );
   }
 });
 
