@@ -40,21 +40,33 @@ EMAIL_ALLOW='@(example\.(com|org|net)|asep\.dev|localhost|.*\.invalid)|noreply@'
 EXEMPT_REGEX='^(scripts/pii-scan\.sh|scripts/pii-scan\.test\.ts|scripts/check-publication\.sh)$'
 
 scan_paths() {
-  # Args: files. Prints "path:line:match". Returns 0 if any hit, 1 if clean.
-  local found=1 file line
+  # Args: files. Prints "  path:line:match". Returns 0 if any hit, 1 if clean.
+  #
+  # The email allowlist is applied PER MATCH, never per line (P1-FINAL-HIGH-003).
+  # A line like `user@example.com real=jane.doe@gmail.com` mixes a placeholder
+  # with a real address; extracting each email individually and allowlisting
+  # only the placeholder tokens ensures the real gmail is still caught instead
+  # of the whole line being skipped because it happened to contain a placeholder.
+  local found=1 file idx pat lineno matchtext
   for file in "$@"; do
     [ -f "$file" ] || continue
-    for pat in "${PII_PATTERNS[@]}"; do
-      while IFS= read -r line; do
-        # Allowlist placeholder emails.
-        if printf '%s' "$line" | grep -qE '@'; then
-          if printf '%s' "$line" | grep -qiE "$EMAIL_ALLOW"; then
+    for idx in "${!PII_PATTERNS[@]}"; do
+      pat="${PII_PATTERNS[$idx]}"
+      # grep -o extracts EACH match separately (one per output line); -n keeps
+      # the source line number as `lineno:match`. We then decide per match.
+      while IFS= read -r rawmatch; do
+        lineno="${rawmatch%%:*}"
+        matchtext="${rawmatch#*:}"
+        # The email pattern (index 0) is the only one with an allowlist, and it
+        # is applied to the extracted email TOKEN, not the surrounding line.
+        if [ "$idx" -eq 0 ]; then
+          if printf '%s' "$matchtext" | grep -qiE "$EMAIL_ALLOW"; then
             continue
           fi
         fi
-        echo "  ${file}:${line}"
+        echo "  ${file}:${lineno}:${matchtext}"
         found=0
-      done < <(grep -anE "$pat" "$file" 2>/dev/null || true)
+      done < <(grep -anoE "$pat" "$file" 2>/dev/null || true)
     done
   done
   return $found
@@ -78,6 +90,22 @@ self_test() {
     echo "self-test: FAIL (placeholder email wrongly flagged)" >&2; rc=1
   else
     echo "self-test: PASS (placeholder email allowlisted)"
+  fi
+
+  # 2b. BYPASS (P1-FINAL-HIGH-003): a line mixing a placeholder AND a real email
+  #     must still catch the real one. The old per-line allowlist skipped the
+  #     WHOLE line whenever any placeholder appeared, letting the gmail leak.
+  printf 'user@example.com real=jane.doe@gmail.com\n' > "$tmp/mixed.txt"
+  if scan_paths "$tmp/mixed.txt" 2>/dev/null | grep -q 'jane.doe@gmail.com'; then
+    echo "self-test: PASS (real email on a placeholder line is caught)"
+  else
+    echo "self-test: FAIL (real email hidden behind placeholder on same line)" >&2; rc=1
+  fi
+  # And the placeholder on that same mixed line must NOT be reported.
+  if scan_paths "$tmp/mixed.txt" 2>/dev/null | grep -q 'user@example.com'; then
+    echo "self-test: FAIL (placeholder on mixed line wrongly flagged)" >&2; rc=1
+  else
+    echo "self-test: PASS (placeholder on mixed line still allowlisted)"
   fi
 
   # 3. US SSN canary must be caught.
