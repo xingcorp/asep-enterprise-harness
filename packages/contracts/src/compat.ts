@@ -7,9 +7,22 @@
 //
 // Classification rules (conservative — when unsure, escalate to a higher bump):
 //   MAJOR (breaking): a property was removed; an optional property became
-//     required; an enum value was removed; a property's type changed.
+//     required; an enum value was removed; a property's type changed; OR any
+//     validation constraint was TIGHTENED so that data valid under the old
+//     schema can be rejected by the new one (P1-FINAL-HIGH-002):
+//       - minLength increased / maxLength decreased
+//       - minItems increased / maxItems decreased
+//       - minimum increased / maximum decreased (incl. exclusive* forms)
+//       - additionalProperties true -> false (or an object constraint appearing)
+//       - a `pattern` added or changed
+//       - a `format` added or changed
+//       - a `required` list gained a member (also covered per-property)
+//       - `enum` narrowed (values removed)
+//       - `multipleOf` added or made stricter
 //   MINOR (additive): a new optional property was added; a new enum value was
-//     added; a required property was relaxed to optional.
+//     added; a required property was relaxed to optional; a constraint was
+//     LOOSENED (minLength down, maxLength up, additionalProperties false->true,
+//     a pattern/format removed).
 //   PATCH/NONE: description/example/annotation-only changes, or no change.
 
 export type BumpLevel = 'none' | 'patch' | 'minor' | 'major';
@@ -21,6 +34,19 @@ export interface SchemaNode {
   readonly required?: readonly string[];
   readonly items?: SchemaNode;
   readonly version?: string;
+  // Validation constraints whose tightening is breaking (P1-FINAL-HIGH-002).
+  readonly minLength?: number;
+  readonly maxLength?: number;
+  readonly minItems?: number;
+  readonly maxItems?: number;
+  readonly minimum?: number;
+  readonly maximum?: number;
+  readonly exclusiveMinimum?: number | boolean;
+  readonly exclusiveMaximum?: number | boolean;
+  readonly multipleOf?: number;
+  readonly pattern?: string;
+  readonly format?: string;
+  readonly additionalProperties?: boolean | SchemaNode;
   readonly [k: string]: unknown;
 }
 
@@ -99,9 +125,164 @@ function diffNode(
     }
   }
 
+  // Validation-constraint tightening (P1-FINAL-HIGH-002). A constraint change
+  // that can newly REJECT data valid under the old schema is breaking (MAJOR);
+  // a loosening is additive (MINOR).
+  diffConstraints(prev, next, path, out);
+
   // Recurse into array items.
   if (prev.items && next.items) {
     diffNode(prev.items, next.items, `${path}[]`, out);
+  }
+}
+
+// Numeric lower bound of a node, accounting for the JSON-Schema draft-4 boolean
+// exclusiveMinimum form as well as the draft-6+ numeric form.
+function lowerBound(n: SchemaNode): number | undefined {
+  if (typeof n.exclusiveMinimum === 'number') return n.exclusiveMinimum;
+  if (typeof n.minimum === 'number') return n.minimum;
+  return undefined;
+}
+function upperBound(n: SchemaNode): number | undefined {
+  if (typeof n.exclusiveMaximum === 'number') return n.exclusiveMaximum;
+  if (typeof n.maximum === 'number') return n.maximum;
+  return undefined;
+}
+
+// `additionalProperties` is "open" when it is true or absent (default true),
+// and "closed" when it is false or an object subschema constraining extras.
+function additionalPropsOpen(n: SchemaNode): boolean {
+  const ap = n.additionalProperties;
+  if (ap === undefined) return true;
+  if (ap === true) return true;
+  return false; // false or a subschema both restrict what was previously allowed
+}
+
+// Classify every constraint delta on a single node.
+function diffConstraints(
+  prev: SchemaNode,
+  next: SchemaNode,
+  path: string,
+  out: CompatChange[],
+): void {
+  const p = path || '(root)';
+
+  // minLength: increasing rejects previously-valid short strings (breaking).
+  const pMinLen = prev.minLength ?? 0;
+  const nMinLen = next.minLength ?? 0;
+  if (nMinLen > pMinLen) {
+    out.push({ level: 'major', path: p, reason: `minLength tightened ${pMinLen} -> ${nMinLen}` });
+  } else if (nMinLen < pMinLen) {
+    out.push({ level: 'minor', path: p, reason: `minLength relaxed ${pMinLen} -> ${nMinLen}` });
+  }
+
+  // maxLength: decreasing rejects previously-valid long strings (breaking).
+  if (prev.maxLength !== undefined || next.maxLength !== undefined) {
+    const pMax = prev.maxLength ?? Infinity;
+    const nMax = next.maxLength ?? Infinity;
+    if (nMax < pMax) {
+      out.push({ level: 'major', path: p, reason: `maxLength tightened ${prev.maxLength ?? '∞'} -> ${next.maxLength ?? '∞'}` });
+    } else if (nMax > pMax) {
+      out.push({ level: 'minor', path: p, reason: `maxLength relaxed ${prev.maxLength ?? '∞'} -> ${next.maxLength ?? '∞'}` });
+    }
+  }
+
+  // minItems: increasing rejects previously-valid short arrays (breaking).
+  const pMinItems = prev.minItems ?? 0;
+  const nMinItems = next.minItems ?? 0;
+  if (nMinItems > pMinItems) {
+    out.push({ level: 'major', path: p, reason: `minItems tightened ${pMinItems} -> ${nMinItems}` });
+  } else if (nMinItems < pMinItems) {
+    out.push({ level: 'minor', path: p, reason: `minItems relaxed ${pMinItems} -> ${nMinItems}` });
+  }
+
+  // maxItems: decreasing rejects previously-valid long arrays (breaking).
+  if (prev.maxItems !== undefined || next.maxItems !== undefined) {
+    const pMax = prev.maxItems ?? Infinity;
+    const nMax = next.maxItems ?? Infinity;
+    if (nMax < pMax) {
+      out.push({ level: 'major', path: p, reason: `maxItems tightened ${prev.maxItems ?? '∞'} -> ${next.maxItems ?? '∞'}` });
+    } else if (nMax > pMax) {
+      out.push({ level: 'minor', path: p, reason: `maxItems relaxed ${prev.maxItems ?? '∞'} -> ${next.maxItems ?? '∞'}` });
+    }
+  }
+
+  // minimum / exclusiveMinimum: raising the floor rejects previously-valid
+  // smaller numbers (breaking); lowering it is additive.
+  const pLo = lowerBound(prev);
+  const nLo = lowerBound(next);
+  if (pLo !== undefined || nLo !== undefined) {
+    const pv = pLo ?? -Infinity;
+    const nv = nLo ?? -Infinity;
+    if (nv > pv) {
+      out.push({ level: 'major', path: p, reason: `minimum tightened ${pLo ?? '-∞'} -> ${nLo ?? '-∞'}` });
+    } else if (nv < pv) {
+      out.push({ level: 'minor', path: p, reason: `minimum relaxed ${pLo ?? '-∞'} -> ${nLo ?? '-∞'}` });
+    }
+  }
+
+  // maximum / exclusiveMaximum: lowering the ceiling rejects previously-valid
+  // larger numbers (breaking); raising it is additive.
+  const pHi = upperBound(prev);
+  const nHi = upperBound(next);
+  if (pHi !== undefined || nHi !== undefined) {
+    const pv = pHi ?? Infinity;
+    const nv = nHi ?? Infinity;
+    if (nv < pv) {
+      out.push({ level: 'major', path: p, reason: `maximum tightened ${pHi ?? '∞'} -> ${nHi ?? '∞'}` });
+    } else if (nv > pv) {
+      out.push({ level: 'minor', path: p, reason: `maximum relaxed ${pHi ?? '∞'} -> ${nHi ?? '∞'}` });
+    }
+  }
+
+  // multipleOf: adding it, or increasing it (a coarser grid), rejects
+  // previously-valid values (breaking). Removing/decreasing it is additive.
+  if (prev.multipleOf !== next.multipleOf) {
+    const had = typeof prev.multipleOf === 'number';
+    const has = typeof next.multipleOf === 'number';
+    if (has && !had) {
+      out.push({ level: 'major', path: p, reason: `multipleOf added (${next.multipleOf})` });
+    } else if (has && had && next.multipleOf! > prev.multipleOf!) {
+      out.push({ level: 'major', path: p, reason: `multipleOf tightened ${prev.multipleOf} -> ${next.multipleOf}` });
+    } else if (!has && had) {
+      out.push({ level: 'minor', path: p, reason: `multipleOf removed (was ${prev.multipleOf})` });
+    } else {
+      out.push({ level: 'minor', path: p, reason: `multipleOf relaxed ${prev.multipleOf} -> ${next.multipleOf}` });
+    }
+  }
+
+  // pattern: adding or changing a regex can reject previously-valid strings
+  // (breaking). Removing it is additive.
+  if ((prev.pattern ?? '') !== (next.pattern ?? '')) {
+    if (next.pattern && !prev.pattern) {
+      out.push({ level: 'major', path: p, reason: `pattern added (${next.pattern})` });
+    } else if (next.pattern && prev.pattern) {
+      out.push({ level: 'major', path: p, reason: `pattern changed ${prev.pattern} -> ${next.pattern}` });
+    } else {
+      out.push({ level: 'minor', path: p, reason: `pattern removed (was ${prev.pattern})` });
+    }
+  }
+
+  // format: adding or changing a format assertion can reject previously-valid
+  // strings (breaking). Removing it is additive.
+  if ((prev.format ?? '') !== (next.format ?? '')) {
+    if (next.format && !prev.format) {
+      out.push({ level: 'major', path: p, reason: `format added (${next.format})` });
+    } else if (next.format && prev.format) {
+      out.push({ level: 'major', path: p, reason: `format changed ${prev.format} -> ${next.format}` });
+    } else {
+      out.push({ level: 'minor', path: p, reason: `format removed (was ${prev.format})` });
+    }
+  }
+
+  // additionalProperties: open -> closed rejects previously-valid objects that
+  // carried extra keys (breaking). closed -> open is additive.
+  const pOpen = additionalPropsOpen(prev);
+  const nOpen = additionalPropsOpen(next);
+  if (pOpen && !nOpen) {
+    out.push({ level: 'major', path: p, reason: 'additionalProperties tightened (open -> closed)' });
+  } else if (!pOpen && nOpen) {
+    out.push({ level: 'minor', path: p, reason: 'additionalProperties relaxed (closed -> open)' });
   }
 }
 
