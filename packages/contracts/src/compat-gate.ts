@@ -41,10 +41,56 @@ export interface GateResult {
   readonly checked: number;
 }
 
-function majorOfId($id: string | undefined): string | null {
-  if (typeof $id !== 'string') return null;
-  const m = /\/v(\d+)(?:$|\/)/.exec($id);
-  return m ? m[1]! : null;
+// Canonical schema identity (P1-CYCLE4-HIGH-001).
+//
+// Every canonical schema MUST carry an $id of the exact shape
+//   https://asep.dev/schema/<name>/v<major>
+// parsed as a real URL — NOT by substring/regex sniffing, which Codex bypassed
+// by smuggling a "/v2" inside a query string. The name segment is the schema's
+// stable logical identity within a major line; the trailing /v<major> segment is
+// the ONLY place a version major may be encoded. A query, fragment, wrong host,
+// wrong scheme, missing/empty value, or a path that does not match the canonical
+// grammar all fail closed.
+export interface CanonicalId {
+  readonly name: string;
+  readonly major: number;
+}
+
+const CANONICAL_HOST = 'asep.dev';
+const CANONICAL_PATH = /^\/schema\/([a-z][a-z0-9-]*)\/v(\d+)$/;
+
+/**
+ * Parse an $id against the single canonical naming rule. Returns the parsed
+ * identity, or an `error` string explaining exactly why it is not canonical.
+ * There is no substring fallback: the path is taken from a parsed URL so a
+ * query/fragment can never be mistaken for a version segment.
+ */
+export function parseCanonicalId(id: unknown): CanonicalId | { error: string } {
+  if (typeof id !== 'string') return { error: '$id is missing or not a string' };
+  if (id.length === 0) return { error: '$id is an empty string' };
+  let url: URL;
+  try {
+    url = new URL(id);
+  } catch {
+    return { error: `$id is not a parseable URL (${id})` };
+  }
+  if (url.protocol !== 'https:') return { error: `$id must use the https scheme (${id})` };
+  if (url.host !== CANONICAL_HOST) return { error: `$id host must be ${CANONICAL_HOST} (${id})` };
+  if (url.search !== '') return { error: `$id must not carry a query string (${id})` };
+  if (url.hash !== '') return { error: `$id must not carry a fragment (${id})` };
+  const m = CANONICAL_PATH.exec(url.pathname);
+  if (!m) {
+    return { error: `$id path must be /schema/<name>/v<major> (${id})` };
+  }
+  return { name: m[1]!, major: Number(m[2]!) };
+}
+
+/** Parse a semver X.Y.Z, returning its major or an `error` string. */
+export function parseVersionMajor(version: unknown): { major: number } | { error: string } {
+  if (typeof version !== 'string') return { error: 'version is missing or not a string' };
+  const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(version);
+  if (!m) return { error: `version is not a valid semver X.Y.Z (${version})` };
+  return { major: Number(m[1]!) };
 }
 
 function listSchemas(dir: string): string[] {
@@ -79,43 +125,94 @@ export function runCompatGate(
     }
   }
 
+  // Every live schema's canonical $id must be unique across the registry: two
+  // schemas advertising the same identity is an ambiguous contract. We record
+  // (canonical-id -> file) as we validate and flag any collision.
+  const seenIds = new Map<string, string>();
+
   for (const file of live) {
+    const next = load(join(liveDir, file));
+
+    // ---- MANDATORY canonical identity + version (P1-CYCLE4-HIGH-001) --------
+    //
+    // Fail closed BEFORE any compat classification. A missing, empty, malformed,
+    // unversioned, wrong-host, or query/fragment-smuggled $id is rejected here,
+    // as is a non-semver `version`, and any disagreement between the $id major
+    // and the version major. The cycle-4 bypass (breaking change + version 2.0.0
+    // + deleted/unversioned $id) short-circuited because the old majorOfId()
+    // returned null and every coherence check was gated on non-null; the checks
+    // are now UNCONDITIONAL for every live schema.
+    const idParsed = parseCanonicalId(next.$id);
+    const verParsed = parseVersionMajor(next.version);
+    let idMajor: number | null = null;
+    let idName: string | null = null;
+    if ('error' in idParsed) {
+      problems.push(`${file}: ${idParsed.error}`);
+    } else {
+      idMajor = idParsed.major;
+      idName = idParsed.name;
+      const canonical = `https://${CANONICAL_HOST}/schema/${idParsed.name}/v${idParsed.major}`;
+      const prior = seenIds.get(canonical);
+      if (prior !== undefined) {
+        problems.push(`${file}: duplicate $id ${canonical} (already declared by ${prior})`);
+      } else {
+        seenIds.set(canonical, file);
+      }
+    }
+    if ('error' in verParsed) {
+      problems.push(`${file}: ${verParsed.error}`);
+    }
+    if (idMajor !== null && !('error' in verParsed) && idMajor !== verParsed.major) {
+      problems.push(
+        `${file}: $id major /v${idMajor} disagrees with declared version major ${verParsed.major} ` +
+          `(version ${String(next.version)}); the $id major must equal the semantic-version major`,
+      );
+    }
+
     if (!snap.has(file)) {
-      // New schema in this major line — allowed as an additive v1 contract.
+      // New schema in this major line — allowed as an additive contract, but it
+      // still had to pass the identity/version validation above.
       continue;
     }
     checked++;
     const prev = load(join(snapshotDir, file));
-    const next = load(join(liveDir, file));
-    const verdict = checkCompatibility(prev, next);
-    if (!verdict.ok) {
-      problems.push(`${file}: ${verdict.message}`);
+
+    // Logical-identity stability: the snapshot and live $id must name the SAME
+    // logical contract (same /schema/<name>/). A silent swap from /thing/ to
+    // /other/ substitutes one contract for another and is rejected.
+    const prevParsed = parseCanonicalId(prev.$id);
+    if (idName !== null && !('error' in prevParsed) && prevParsed.name !== idName) {
+      problems.push(
+        `${file}: logical identity changed from /${prevParsed.name}/ to /${idName}/ ` +
+          `(a schema file must keep its logical identity; publish a new file for a new contract)`,
+      );
     }
-    // A MAJOR structural change must also rev the $id major segment.
-    if (verdict.requiredBump === 'major') {
-      const prevMajor = majorOfId(prev.$id as string | undefined);
-      const nextMajor = majorOfId(next.$id as string | undefined);
-      if (prevMajor !== null && nextMajor !== null && prevMajor === nextMajor) {
-        problems.push(
-          `${file}: breaking (MAJOR) change but $id major segment did not change (still /v${nextMajor}); a breaking change must publish a new $id major`,
-        );
+
+    // Only run the structural compat classifier when BOTH versions are valid
+    // semver. checkCompatibility throws on a non-semver version; that defect is
+    // already recorded above (verParsed error), so skipping here avoids masking
+    // the clear "not semver" problem with an opaque parse throw. The classifier
+    // is still wrapped defensively so a malformed snapshot cannot crash the gate.
+    const prevVerOk = !('error' in parseVersionMajor(prev.version));
+    if (!('error' in verParsed) && prevVerOk) {
+      let verdict;
+      try {
+        verdict = checkCompatibility(prev, next);
+      } catch (e) {
+        problems.push(`${file}: compat classification failed: ${(e as Error).message}`);
+        continue;
       }
-    }
-    // The $id major segment must AGREE with the declared semantic-version major
-    // (P1-CYCLE3-HIGH-001). Codex bypassed the gate by downgrading BOTH the
-    // version (1.0.0 -> 0.0.0) and the $id (/v1 -> /v0): the two moved together
-    // so the "major differs" check above was satisfied while the version went
-    // backwards. Requiring $id-major == version-major closes the loophole where
-    // a coordinated downgrade masquerades as a forward major publish.
-    const nextIdMajor = majorOfId(next.$id as string | undefined);
-    const nextVersion = next.version;
-    if (nextIdMajor !== null && typeof nextVersion === 'string') {
-      const verMajor = /^(\d+)\./.exec(nextVersion)?.[1] ?? null;
-      if (verMajor !== null && verMajor !== nextIdMajor) {
-        problems.push(
-          `${file}: $id major segment /v${nextIdMajor} disagrees with declared version major ${verMajor} ` +
-            `(version ${nextVersion}); the $id major must equal the semantic-version major`,
-        );
+      if (!verdict.ok) {
+        problems.push(`${file}: ${verdict.message}`);
+      }
+      // A MAJOR structural change must also rev the $id major segment.
+      if (verdict.requiredBump === 'major') {
+        const prevMajor = 'error' in prevParsed ? null : prevParsed.major;
+        if (prevMajor !== null && idMajor !== null && prevMajor === idMajor) {
+          problems.push(
+            `${file}: breaking (MAJOR) change but $id major segment did not change (still /v${idMajor}); a breaking change must publish a new $id major`,
+          );
+        }
       }
     }
   }
@@ -215,6 +312,35 @@ function selfTest(): number {
     rc = 1;
   } else {
     console.log('self-test: PASS ($id-major/version-major disagreement rejected — P1-CYCLE3-HIGH-001)');
+  }
+
+  // Case 6 (P1-CYCLE4-HIGH-001): breaking removal + version 2.0.0 + DELETED $id.
+  // The exact cycle-4 bypass. A missing $id short-circuited the old coherence
+  // checks; now a canonical versioned $id is MANDATORY, so this must FAIL.
+  const noId = JSON.parse(JSON.stringify(broken));
+  noId.version = '2.0.0';
+  delete noId.$id;
+  writeFileSync(join(liveDir, 'thing.schema.json'), JSON.stringify(noId));
+  const r6 = runCompatGate(liveDir, snapDir);
+  if (r6.ok) {
+    console.error('self-test: FAIL (breaking change with a DELETED $id was accepted — CYCLE4-HIGH-001)');
+    rc = 1;
+  } else {
+    console.log('self-test: PASS (missing $id rejected — P1-CYCLE4-HIGH-001)');
+  }
+
+  // Case 7 (P1-CYCLE4-HIGH-001): breaking removal + version 2.0.0 + UNVERSIONED
+  // $id (no /vN segment). Also short-circuited the old checks; must FAIL.
+  const unversioned = JSON.parse(JSON.stringify(broken));
+  unversioned.version = '2.0.0';
+  unversioned.$id = 'https://asep.dev/schema/thing/not-versioned';
+  writeFileSync(join(liveDir, 'thing.schema.json'), JSON.stringify(unversioned));
+  const r7 = runCompatGate(liveDir, snapDir);
+  if (r7.ok) {
+    console.error('self-test: FAIL (breaking change with an UNVERSIONED $id was accepted — CYCLE4-HIGH-001)');
+    rc = 1;
+  } else {
+    console.log('self-test: PASS (unversioned $id rejected — P1-CYCLE4-HIGH-001)');
   }
 
   rmSync(tmp, { recursive: true, force: true });

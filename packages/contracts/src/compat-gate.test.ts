@@ -74,3 +74,226 @@ test('compat-gate --self-test proves reject/accept/$id-major behaviour', () => {
   assert.match(out, /major break with version\+\$id bump accepted/);
   assert.match(out, /major break requires \$id major rev too/);
 });
+
+// ---------------------------------------------------------------------------
+// P1-CYCLE4 HIGH-001 (partial): canonical schema identity + version coherence.
+//
+// Codex bypassed the cycle-3 fix by exploiting that the $id-major checks were
+// only applied when majorOfId() returned non-null. A breaking removal combined
+// with version=2.0.0 and a DELETED or UNVERSIONED $id sailed through because
+// both coherence guards short-circuited on a null major. The repair makes a
+// canonical, versioned $id MANDATORY and enforces $id-major == version-major
+// for every live schema, so a missing/malformed/unversioned/mismatched $id
+// fails closed.
+//
+// These tests reconstruct each bypass shape (RED before the fix) using synthetic
+// live+snapshot dirs so they never touch the committed tree.
+
+interface Schema {
+  [k: string]: unknown;
+}
+
+function withSyntheticDirs(fn: (snapDir: string, liveDir: string) => void): void {
+  const tmp = mkdtempSync(join(tmpdir(), 'asep-compat-identity-'));
+  const snapDir = join(tmp, 'snap');
+  const liveDir = join(tmp, 'live');
+  mkdirSync(snapDir);
+  mkdirSync(liveDir);
+  try {
+    fn(snapDir, liveDir);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
+const BASE_V1: Schema = {
+  $schema: 'https://json-schema.org/draft/2020-12/schema',
+  $id: 'https://asep.dev/schema/thing/v1',
+  version: '1.0.0',
+  title: 'Thing',
+  type: 'object',
+  additionalProperties: false,
+  required: ['a', 'b'],
+  properties: { a: { type: 'string' }, b: { type: 'string' } },
+};
+
+function writeSchema(dir: string, name: string, schema: Schema): void {
+  writeFileSync(join(dir, name), JSON.stringify(schema));
+}
+
+function seedSnapshot(snapDir: string): void {
+  writeSchema(snapDir, 'thing.schema.json', BASE_V1);
+}
+
+// The exact Codex breaking mutation: remove required property `b`.
+function breakingRemoval(base: Schema): Schema {
+  const next = JSON.parse(JSON.stringify(base)) as Schema;
+  const props = next.properties as Record<string, unknown>;
+  delete props.b;
+  next.required = ['a'];
+  return next;
+}
+
+test('HIGH-001 bypass A: breaking change + version 2.0.0 + DELETED $id is rejected', () => {
+  withSyntheticDirs((snapDir, liveDir) => {
+    seedSnapshot(snapDir);
+    const next = breakingRemoval(BASE_V1);
+    next.version = '2.0.0';
+    delete next.$id; // the exact bypass: no $id at all
+    writeSchema(liveDir, 'thing.schema.json', next);
+    const r = runCompatGate(liveDir, snapDir);
+    assert.equal(r.ok, false, 'a schema with no $id must fail the gate');
+    assert.ok(
+      r.problems.some((p) => /\$id/.test(p)),
+      `expected an $id problem, got: ${r.problems.join('; ')}`,
+    );
+  });
+});
+
+test('HIGH-001 bypass B: breaking change + version 2.0.0 + UNVERSIONED $id is rejected', () => {
+  withSyntheticDirs((snapDir, liveDir) => {
+    seedSnapshot(snapDir);
+    const next = breakingRemoval(BASE_V1);
+    next.version = '2.0.0';
+    next.$id = 'https://asep.dev/schema/thing/not-versioned'; // no /vN segment
+    writeSchema(liveDir, 'thing.schema.json', next);
+    const r = runCompatGate(liveDir, snapDir);
+    assert.equal(r.ok, false, 'an unversioned $id must fail the gate');
+    assert.ok(r.problems.some((p) => /\$id/.test(p)));
+  });
+});
+
+test('HIGH-001: an EMPTY $id string is rejected', () => {
+  withSyntheticDirs((snapDir, liveDir) => {
+    seedSnapshot(snapDir);
+    const next = breakingRemoval(BASE_V1);
+    next.version = '2.0.0';
+    next.$id = '';
+    writeSchema(liveDir, 'thing.schema.json', next);
+    const r = runCompatGate(liveDir, snapDir);
+    assert.equal(r.ok, false, 'an empty $id must fail the gate');
+    assert.ok(r.problems.some((p) => /\$id/.test(p)));
+  });
+});
+
+test('HIGH-001: a MALFORMED $id (wrong namespace) is rejected', () => {
+  withSyntheticDirs((snapDir, liveDir) => {
+    seedSnapshot(snapDir);
+    const next = breakingRemoval(BASE_V1);
+    next.version = '2.0.0';
+    next.$id = 'urn:evil:thing:v2'; // not the canonical https://asep.dev/schema/<name>/vN
+    writeSchema(liveDir, 'thing.schema.json', next);
+    const r = runCompatGate(liveDir, snapDir);
+    assert.equal(r.ok, false, 'a malformed $id must fail the gate');
+    assert.ok(r.problems.some((p) => /\$id/.test(p)));
+  });
+});
+
+test('HIGH-001: $id /v1 with declared version 2.0.0 is rejected (major mismatch)', () => {
+  withSyntheticDirs((snapDir, liveDir) => {
+    seedSnapshot(snapDir);
+    const next = breakingRemoval(BASE_V1);
+    next.version = '2.0.0';
+    next.$id = 'https://asep.dev/schema/thing/v1'; // stale major
+    writeSchema(liveDir, 'thing.schema.json', next);
+    const r = runCompatGate(liveDir, snapDir);
+    assert.equal(r.ok, false, '$id-major must equal version-major');
+    assert.ok(r.problems.some((p) => /major/.test(p)));
+  });
+});
+
+test('HIGH-001: $id /v2 with declared version 1.9.0 is rejected (major mismatch)', () => {
+  withSyntheticDirs((snapDir, liveDir) => {
+    seedSnapshot(snapDir);
+    // Additive-only change so the compat classifier does not itself object; the
+    // ONLY defect is the $id-major/version-major disagreement.
+    const next = JSON.parse(JSON.stringify(BASE_V1)) as Schema;
+    next.version = '1.9.0';
+    next.$id = 'https://asep.dev/schema/thing/v2';
+    writeSchema(liveDir, 'thing.schema.json', next);
+    const r = runCompatGate(liveDir, snapDir);
+    assert.equal(r.ok, false, '$id /v2 with version 1.x must be rejected');
+    assert.ok(r.problems.some((p) => /major/.test(p)));
+  });
+});
+
+test('HIGH-001: a misleading query/fragment cannot smuggle a fake version', () => {
+  withSyntheticDirs((snapDir, liveDir) => {
+    seedSnapshot(snapDir);
+    const next = breakingRemoval(BASE_V1);
+    next.version = '2.0.0';
+    // Looks like it contains /v2 but only inside a query string; the canonical
+    // path is still /v1, so the real major is 1 and disagrees with version 2.
+    next.$id = 'https://asep.dev/schema/thing/v1?shadow=/v2';
+    writeSchema(liveDir, 'thing.schema.json', next);
+    const r = runCompatGate(liveDir, snapDir);
+    assert.equal(r.ok, false, 'a query-string /v2 must not launder the version');
+    assert.ok(r.problems.some((p) => /\$id/.test(p)));
+  });
+});
+
+test('HIGH-001: an identity SWAP (name segment changed) is rejected', () => {
+  withSyntheticDirs((snapDir, liveDir) => {
+    seedSnapshot(snapDir);
+    // Same file, same major, valid semver — but the logical identity changed
+    // from /thing/ to /other/. That is a silent contract substitution.
+    const next = JSON.parse(JSON.stringify(BASE_V1)) as Schema;
+    next.$id = 'https://asep.dev/schema/other/v1';
+    writeSchema(liveDir, 'thing.schema.json', next);
+    const r = runCompatGate(liveDir, snapDir);
+    assert.equal(r.ok, false, 'changing the logical identity must be rejected');
+    assert.ok(r.problems.some((p) => /identity/.test(p)));
+  });
+});
+
+test('HIGH-001: DUPLICATE $id across two live schemas is rejected', () => {
+  withSyntheticDirs((snapDir, liveDir) => {
+    // No snapshots needed; two NEW live schemas collide on $id.
+    const a = JSON.parse(JSON.stringify(BASE_V1)) as Schema;
+    const b = JSON.parse(JSON.stringify(BASE_V1)) as Schema;
+    a.$id = 'https://asep.dev/schema/dup/v1';
+    b.$id = 'https://asep.dev/schema/dup/v1';
+    writeSchema(liveDir, 'a.schema.json', a);
+    writeSchema(liveDir, 'b.schema.json', b);
+    const r = runCompatGate(liveDir, snapDir);
+    assert.equal(r.ok, false, 'two schemas sharing an $id must be rejected');
+    assert.ok(r.problems.some((p) => /duplicate/i.test(p)));
+  });
+});
+
+test('HIGH-001: a non-semver version string is rejected', () => {
+  withSyntheticDirs((snapDir, liveDir) => {
+    seedSnapshot(snapDir);
+    const next = JSON.parse(JSON.stringify(BASE_V1)) as Schema;
+    next.version = 'v1'; // not X.Y.Z
+    writeSchema(liveDir, 'thing.schema.json', next);
+    const r = runCompatGate(liveDir, snapDir);
+    assert.equal(r.ok, false, 'a non-semver version must be rejected');
+    assert.ok(r.problems.some((p) => /semver|version/i.test(p)));
+  });
+});
+
+test('HIGH-001 POSITIVE: a valid same-major additive upgrade is accepted', () => {
+  withSyntheticDirs((snapDir, liveDir) => {
+    seedSnapshot(snapDir);
+    // Add an optional property, bump minor, keep $id /v1. Must PASS.
+    const next = JSON.parse(JSON.stringify(BASE_V1)) as Schema;
+    next.version = '1.1.0';
+    (next.properties as Record<string, unknown>).c = { type: 'string' };
+    writeSchema(liveDir, 'thing.schema.json', next);
+    const r = runCompatGate(liveDir, snapDir);
+    assert.equal(r.ok, true, `valid additive upgrade must pass: ${r.problems.join('; ')}`);
+  });
+});
+
+test('HIGH-001 POSITIVE: a governed major migration (version 2.0.0 + $id /v2) is accepted', () => {
+  withSyntheticDirs((snapDir, liveDir) => {
+    seedSnapshot(snapDir);
+    const next = breakingRemoval(BASE_V1);
+    next.version = '2.0.0';
+    next.$id = 'https://asep.dev/schema/thing/v2';
+    writeSchema(liveDir, 'thing.schema.json', next);
+    const r = runCompatGate(liveDir, snapDir);
+    assert.equal(r.ok, true, `governed major migration must pass: ${r.problems.join('; ')}`);
+  });
+});
