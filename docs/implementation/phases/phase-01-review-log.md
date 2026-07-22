@@ -565,4 +565,71 @@ not the site, with the **approved trusted-bootstrap architecture** (ADR 0016):
   fixes REREVIEW-CRIT-001a/b/c and FINAL-MED-001 confirmed genuinely closed and
   left untouched. The bounded Phase 1 network property vs Phase 2 OS-level
   isolation boundary is recorded in ADR 0016, RR-14, and the backlog.
+- Re-review (repair cycle 6): **the residual half of CYCLE5-HIGH-001 closed** —
+  the schema identity/version parser collapsed distinct large majors through an
+  IEEE-754 `Number()` coercion and accepted noncanonical `$id` URL spellings.
+  Fixed at the root (`0a136e7`): majors are carried as canonical decimal strings
+  and compared by string equality, majors above `Number.MAX_SAFE_INTEGER` are
+  rejected, SemVer is strict (no leading zeros), and `$id` canonicality is
+  enforced by exact byte-for-byte re-serialisation (no userinfo, no port, no
+  uppercase, no trailing slash, no leading-zero major). Twelve adversarial tests
+  (RED before the fix) plus two positive controls; no test weakened. CYCLE4-MED-001
+  and FINAL-MED-002 confirmed genuinely closed by cycle-5 review and left untouched.
 - Locked plan `phase-01-plan.md` incorporates every accepted change.
+
+---
+
+## Repair cycle 6 — re-review findings (Codex gpt-5.6-sol @ `e7a2d4e`)
+
+Re-review cycle 5 re-verified the cycle-4 fixes by direct exploit reconstruction
+(verdict `REQUEST_REPAIR` @ 0.99; full record in
+`phase-01-final-independent-review-rereview5.yaml`). Two cycle-4 fixes were
+confirmed genuinely closed and left untouched: **CYCLE4-MED-001** (the canonical
+Node test runner discovers exactly the repository-wide `*.test.*` inventory,
+runs `shell:false`, and emits all seven required SUITE-IDs) and **FINAL-MED-002**
+(the trusted preload bootstrap blocks all 17 declared network probes; omitting
+the preload returns code 98 with `attested=false`). No security/assurance test
+was found weakened. One residual HIGH finding remained and is fixed here with
+adversarial tests that fail against the old code and pass against the new; the
+test-integrity diff adds only new assertions.
+
+### P1-CYCLE5-HIGH-001 — `$id`/version-major coherence bypass via IEEE-754 precision collapse + noncanonical `$id` aliases
+
+**Disposition: ACCEPTED (fixed in `0a136e7`).** Four of the five original
+HIGH-001 bypass shapes were already closed at cycle 5 (missing/empty/unversioned/
+malformed `$id`, `$id`-major≠version-major, identity swap, duplicate `$id`,
+non-semver version). Two residual holes remained in `packages/contracts/src/compat-gate.ts`:
+
+- **Bypass 1 — IEEE-754 precision collapse.** `parseCanonicalId` and
+  `parseVersionMajor` coerced the major token with `Number()`. Two textually
+  distinct majors above `Number.MAX_SAFE_INTEGER` (9007199254740991) collapse to
+  the same float: `$id .../v9007199254740993` and `version 9007199254740992.0.0`
+  both became `9007199254740992`, so `runCompatGate`'s `idMajor !== versionMajor`
+  coherence check saw a false match and a breaking removal passed with
+  `ok=true, requiredBump=major, actualBump=major`. **Root fix:** the major is now
+  carried as its **canonical decimal string** and compared by string equality —
+  never a JS Number — so distinct large majors can never collapse; any major
+  above `MAX_SAFE_INTEGER` is rejected as out of the supported range; and SemVer
+  is strict with no leading zeros in any segment. Reproduced first (adjacent
+  large majors must be distinct or rejected; version/`$id` major above
+  `MAX_SAFE_INTEGER` rejected; leading-zero major/minor/patch rejected; the exact
+  end-to-end `/v9007199254740993` vs `9007199254740992.0.0` gate FAIL).
+- **Bypass 2 — noncanonical `$id` URL aliases.** `parseCanonicalId` only checked
+  host/search/hash and delegated the path to a regex, so `https://user@asep.dev/...`
+  (userinfo), `https://asep.dev:443/...` (an explicit default port the URL parser
+  silently drops), an uppercase scheme/host, a trailing slash, and `/v01`
+  (leading-zero major) were all accepted despite the documented exact canonical
+  form. **Root fix:** after structural validation the identity is re-serialised
+  into the single canonical string `https://asep.dev/schema/<name>/v<major>` and
+  the original input must equal it **byte-for-byte**; userinfo, an explicit port,
+  a query, a fragment, and an out-of-range/leading-zero major are each also
+  rejected with a dedicated message. This is one canonical parser + one canonical
+  naming rule — no per-variant enumeration. Reproduced first (userinfo, `:443`,
+  `/v01`, fragment, query, trailing slash, uppercase scheme, uppercase host each
+  rejected; the exact `:443` alias fails the gate end-to-end; the exact canonical
+  `$id` and a multi-digit `/v42` still parse and pass).
+
+Twelve adversarial tests (RED before the fix, GREEN after) plus two positive
+controls were added to `compat-gate.test.ts`; the twenty pre-existing HIGH-001
+tests and the gate `--self-test` (7/7 cases) stay green. No test was weakened,
+skipped, inverted, or made informational.

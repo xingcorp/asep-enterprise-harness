@@ -1,0 +1,87 @@
+rereview_cycle5:
+  head_verified: e7a2d4e2b7eac96a5cfc94ed207a2babf2d6e50c
+  verdict: REQUEST_REPAIR
+  confidence: 0.99
+  summary: >-
+    HEAD and merge-base were independently verified. Canonical test wiring and
+    the bounded trusted-preload network guard are closed, with no test weakening
+    or Phase 2 leakage. HIGH-001 remains partial: converting unbounded major
+    identifiers to JavaScript Number collapses distinct valid numeric majors,
+    allowing an $id/version-major mismatch to pass coherence checks. The parser
+    also accepts noncanonical URL spellings despite claiming an exact canonical
+    identifier. Evidence has exactly one head_sha matching HEAD; acceptance.json
+    is absent and .task-complete is not acting as acceptance authority.
+  findings_status:
+    - id: P1-FINAL-HIGH-001
+      bypass_reconstructed: yes
+      now_closed: partial
+      evidence: >-
+        Inspected compat-gate.ts and compat-gate.test.ts and directly exercised
+        the exported parsers/classifier. Missing, unversioned, ordinary malformed,
+        normal-size major-mismatched, identity-swapped and duplicate identifiers
+        are rejected by the gate logic; valid same-major and governed-major
+        controls classify as compatible. However, $id
+        /v9007199254740993 and version 9007199254740992.0.0 both parse to Number
+        9007199254740992. A breaking removal then returns compatibility ok=true,
+        requiredBump=major and actualBump=major, so runCompatGate's equality
+        condition accepts two textually different majors. parseCanonicalId also
+        accepted https://user@asep.dev/schema/thing/v1,
+        https://asep.dev:443/schema/thing/v1 and /v01, contrary to its documented
+        exact canonical form.
+    - id: P1-CYCLE4-MED-001
+      bypass_reconstructed: yes
+      now_closed: true
+      evidence: >-
+        package.json invokes node scripts/run-canonical-tests.mjs. Discovery is a
+        recursive Node walk and found exactly the same 24 test files as a
+        repository-wide *.test.* inventory. spawnSync uses shell:false with
+        explicit arguments. The wiring suite passed 8/8, including recursive
+        discovery, required-file existence, marker presence and missing-marker
+        fail-closed cases. A fresh pnpm test emitted all seven required SUITE-IDs
+        and attempted 192 tests, including check-acceptance self-test/forgery
+        cases and both network suites. Its failures in this mandated read-only
+        session were EPERM failures from temporary-file/tsx-IPC creation, not
+        skipped discovery; the current-HEAD evidence capture records 192/192 and
+        canonical-tests PASS.
+    - id: P1-FINAL-MED-002
+      bypass_reconstructed: yes
+      now_closed: true
+      evidence: >-
+        launcher.test.ts passed 6/6. A direct preload-first reconstruction saved
+        dgram.createSocket and net.Socket.prototype.connect at fixture top level,
+        exercised ESM named and CommonJS dgram exports, dns.Resolver.resolve4,
+        new net.Socket().connect, fetch, http.request, https.request and
+        dns.lookup; every network probe threw NetworkDeniedError. The canonical
+        adversarial verdict reported all 17 declared probes blocked, with
+        ProcessEscapeError for child/worker escapes. Omitting the preload returned
+        code 98 with attested=false, no fixture sentinel and no verdict.
+        env.ts, ADR 0016, RR-14 and the backlog accurately bound this to trusted
+        preload ordering and defer hostile native/runtime isolation to Phase 2.
+  test_integrity:
+    weakened_tests_found: no
+    detail: >-
+      git diff 97d1e4e...HEAD over tests, fixtures and package.json showed 579
+      insertions and only the one-for-one package test-command replacement.
+      Existing security expectations were not removed, inverted, skipped or
+      made informational. Added coverage consists of suite markers, canonical
+      runner assertions, schema mutations and trusted-bootstrap adversarial
+      tests; the repair log records and justifies the runner replacement.
+  new_findings:
+    - id: P1-CYCLE5-HIGH-001
+      severity: HIGH
+      summary: >-
+        Schema-major coherence is bypassable through IEEE-754 integer precision
+        collapse and the canonical identifier parser accepts noncanonical aliases.
+      required_repair: >-
+        Preserve major tokens as canonical decimal strings or BigInt, or reject
+        values outside Number.MAX_SAFE_INTEGER; enforce strict SemVer numeric
+        syntax and exact canonical URL serialization with no credentials,
+        explicit port or leading-zero major. Add mutations proving adjacent large
+        majors remain unequal and the noncanonical URL spellings are rejected.
+  remaining_blockers:
+    - P1-CYCLE5-HIGH-001
+  final_recommendation: >-
+    Repair the schema identifier/version parser and add the adversarial mutations,
+    then recapture evidence at the resulting HEAD and re-review. Do not sign
+    acceptance.json yet. After an ACCEPT_PHASE verdict, the controller must sign
+    acceptance.json out of band with the rotated private key.

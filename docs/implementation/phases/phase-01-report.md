@@ -143,6 +143,21 @@ codex_review:
       - P1-CYCLE3-HIGH-001 partial (100fdad): compat gate accepted a breaking change with a missing/unversioned $id because $id-major==version-major was only enforced when a versioned $id parsed. Canonical identity is now fail-closed — every schema MUST carry a non-empty $id parsing under the single https://asep.dev/schema/<name>/vN rule whose major exactly equals the semver major; missing/empty/malformed/unversioned $id, $id-major≠version-major, non-semver version, logical-identity swap and duplicate $id are all hard failures. Self-test cases 6/7 reproduce the exact deleted-/unversioned-$id bypass.
       - P1-CYCLE4-MED-001 new (b5e7ca7): package.json's test script used a shell glob (scripts/**/*.test.ts) that /bin/sh does not expand recursively, silently dropping scripts/check-acceptance.test.ts + forbidden-imports.test.ts from the canonical command. Replaced with a shell-free deterministic Node runner (run-canonical-tests.mjs): recursive discovery, sorted paths, shell:false explicit argv, exact exit-code propagation, full raw capture, and a REQUIRED-SUITE-ID check that fails closed if any critical suite's machine-readable marker is absent even on exit 0. The wiring suite is itself REQUIRED, so the guard cannot be dropped.
       - P1-FINAL-MED-002 partial (70d286c): network deny was still bypassable via an ESM named-import factory (no syncBuiltinESMExports after patch) and a callable captured before enforcement. Fixed the class with the approved trusted-bootstrap architecture (ADR 0016): a canonical launcher spawns node --import <tsx> --import <determinism-preload> <worker-entry> (shell:false, sanitized env stripping NODE_OPTIONS/loaders/inspector); the preload runs enforceDeterminism()+syncBuiltinESMExports() as the first application action and attests; worker-entry asserts attestation before dynamic-importing task/grader code (fail-closed if the preload was skipped). Guarded surfaces cover net/dgram/dns/http/https/http2/tls/global fetch + child_process/worker_threads escape. An honest adversarial fixture driven through the real launcher blocks every egress trick (ESM named, CJS require, constructor egress, microtask-deferred, dynamic re-import, fetch, process/thread escape); a bootstrap-order regression proves the fixture body never evaluates when the preload is omitted. Threat model bounded explicitly: a deterministic-execution guard and defense against accidental egress, NOT a security boundary against arbitrary hostile in-process native/runtime code (RR-14 + Phase 2 OS-isolation backlog).
+  rereview_cycle_5:
+    reviewer: codex gpt-5.6-sol (read-only)
+    reviewed_head: e7a2d4e2b7eac96a5cfc94ed207a2babf2d6e50c
+    verdict_in: REQUEST_REPAIR @ 0.99
+    result: >-
+      2 cycle-4 fixes re-verified by exploit reconstruction and left untouched
+      (CYCLE4-MED-001 canonical Node test runner — recursive discovery matching
+      the repo-wide *.test.* inventory, shell:false, all seven SUITE-IDs;
+      FINAL-MED-002 trusted preload bootstrap — 17/17 network probes blocked,
+      omitting the preload returns code 98 attested=false). No test found
+      weakened. One residual HIGH finding (the remaining half of HIGH-001) fixed
+      in repair cycle 6 with adversarial tests that fail on the old code and pass
+      on the new; the test-integrity diff adds only new assertions.
+    dispositions:
+      - P1-CYCLE5-HIGH-001 (0a136e7): the schema identity/version-major coherence check was bypassable two ways. (1) IEEE-754 precision collapse — parseCanonicalId/parseVersionMajor coerced the major with Number(), so $id .../v9007199254740993 and version 9007199254740992.0.0 both became 9007199254740992 and the idMajor!==versionMajor check saw a false match, passing a breaking removal with ok=true. Fixed by carrying the major as its canonical decimal STRING and comparing by string equality, rejecting any major above Number.MAX_SAFE_INTEGER, and enforcing strict leading-zero-free SemVer. (2) Noncanonical $id aliases — parseCanonicalId accepted userinfo (user@), an explicit :443 port silently dropped by the URL parser, an uppercase scheme/host, a trailing slash, and a leading-zero major (/v01). Fixed by re-serialising the identity into the one canonical https://asep.dev/schema/<name>/v<major> string and requiring the input to equal it byte-for-byte (plus dedicated rejects for userinfo/port/out-of-range major). 12 adversarial tests (RED before) + 2 positive controls; the 20 prior HIGH-001 tests and the gate --self-test (7/7) stay green; no test weakened.
   plan_dispositions:
     - P1-CRIT-001: metrics + evals are DEFINED contracts, not empirically validated; real historical-task collection is a production-pilot dependency, not a Phase 1 exit criterion
     - P1-HIGH-001: schema/type/template drift resolved — JSON Schema is the single authority; TS generated + drift-guarded; templates validated
@@ -217,7 +232,7 @@ production run has exercised them. Collecting a real pilot repository and 30-50
 historical tasks is recorded as a blocking production-pilot dependency, not a
 Phase 1 exit criterion.
 
-The canonical `pnpm verify:all` full gate is green (192 tests via the shell-free
+The canonical `pnpm verify:all` full gate is green (209 tests via the shell-free
 `scripts/run-canonical-tests.mjs`, which fails closed if any REQUIRED critical
 suite is dropped). Per-gate evidence — command,
 exit code, duration, output checksum, tool versions and environment digest — is
