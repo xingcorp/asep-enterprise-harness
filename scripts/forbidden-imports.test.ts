@@ -23,6 +23,10 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
+// Machine-readable suite marker (P1-CYCLE4-MED-001): the canonical runner
+// asserts this line is present so the fitness suite cannot be silently dropped.
+console.log('SUITE-ID: asep-suite:forbidden-imports');
+
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(HERE, '..');
 

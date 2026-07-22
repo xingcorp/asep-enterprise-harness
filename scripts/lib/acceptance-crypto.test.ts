@@ -8,6 +8,10 @@ import { fileURLToPath } from "node:url";
 // @ts-expect-error — .mjs helper has no type declarations; we test its runtime contract.
 import { canonicalPayload, verifyMarker } from "./acceptance-crypto.mjs";
 
+// Machine-readable suite marker (P1-CYCLE4-MED-001): the canonical runner
+// asserts this line is present so this suite cannot be silently dropped.
+console.log("SUITE-ID: asep-suite:acceptance-crypto");
+
 const here = dirname(fileURLToPath(import.meta.url));
 const crypto = join(here, "acceptance-crypto.mjs");
 

@@ -12,6 +12,11 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { runCompatGate } from './compat-gate.js';
 
+// Machine-readable suite marker (P1-CYCLE4-MED-001): the canonical test runner
+// asserts this line appears in captured output, so this suite cannot be silently
+// dropped from the canonical command without turning the gate RED.
+console.log('SUITE-ID: asep-suite:compat-gate');
+
 const HERE = dirname(fileURLToPath(import.meta.url));
 const GATE = join(HERE, 'compat-gate.ts');
 

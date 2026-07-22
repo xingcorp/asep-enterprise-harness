@@ -10,6 +10,11 @@ import dgram from 'node:dgram';
 import { enforceDeterminism, NetworkDeniedError, EVAL_SEED, stableCompare } from './env.js';
 import { loadTasks, runEval, gradeTasks, stableStringify } from './run.js';
 
+// Machine-readable suite marker (P1-CYCLE4-MED-001): the canonical runner
+// asserts this line is present so the network-guard suite cannot be silently
+// dropped from the canonical command.
+console.log('SUITE-ID: asep-suite:eval-network-guard');
+
 // P1-FINAL-MED-002 (cycle-3) PRE-CAPTURE reconstruction. An adversarial grader
 // captures the ORIGINAL factory before enforceDeterminism() runs. Because
 // enforcement is process-global and one-way (and an earlier test in this file

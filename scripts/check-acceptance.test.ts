@@ -6,6 +6,11 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
+// Machine-readable suite marker (P1-CYCLE4-MED-001): the canonical runner
+// asserts this line is present so the acceptance suite (self-test, empty-head,
+// signature-forgery, env-digest-tamper) cannot be silently dropped again.
+console.log("SUITE-ID: asep-suite:acceptance-marker");
+
 const here = dirname(fileURLToPath(import.meta.url));
 const script = join(here, "check-acceptance.sh");
 const crypto = join(here, "lib", "acceptance-crypto.mjs");
