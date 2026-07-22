@@ -67,11 +67,13 @@ rereview_cycle3:
       now_closed: true
       evidence: >-
         Executed the actual scan_paths function against the scanner source,
-        which contains the exact mixed line
-        'user@example.com real=jane.doe@gmail.com'. Output flagged
-        jane.doe@gmail.com while producing no user@example.com hit. The
-        implementation uses grep -o and applies EMAIL_ALLOW to each extracted
-        token.
+        which contains a mixed canary line pairing an allowlisted placeholder
+        (an example.com address) with a real external address on the same line.
+        Output flagged the real external address while producing no hit for the
+        placeholder token. The implementation uses grep -o and applies
+        EMAIL_ALLOW to each extracted token. (Real address elided here so this
+        tracked review record stays clean under the PII gate; see the scanner
+        self-test for the literal canary.)
     - id: P1-FINAL-MED-001
       bypass_reconstructed: yes
       now_closed: partial
