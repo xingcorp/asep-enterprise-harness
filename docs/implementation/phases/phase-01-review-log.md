@@ -333,6 +333,93 @@ mismatches, plus a no-false-positive check on the committed dictionary.
 
 ---
 
+## Repair cycle 3 — re-review findings (Codex gpt-5.6-sol @ `1af1cff`)
+
+Re-review cycle 3 re-verified every cycle-2 fix by direct exploit reconstruction
+(verdict `REQUEST_REPAIR` @ 0.99; full record in
+`phase-01-final-independent-review-rereview3.yaml`). Four cycle-2 fixes were
+confirmed genuinely closed and left untouched: **HIGH-001** (parity reads
+`base.ts`), **HIGH-002** (constraint-tightening = breaking), **HIGH-003** (PII
+per-email allowlist), **MED-003** (formula↔operand operator+value agreement).
+Four residual bypasses were re-fixed here, each with an adversarial test that
+fails against the old code and passes against the new. Trust-root provenance of
+`reviewer-pubkey.pem` (CRIT-001 part c) is **controller-owned and out of worker
+scope** — the controller pins the key fingerprint outside the worker branch
+after review returns ACCEPT.
+
+### P1-REREVIEW-CRIT-001 (a)+(b) — acceptance still bypassable
+
+**Disposition: ACCEPTED (fixed in `5116c4a`).** Two holes in the same
+signed-acceptance mechanism:
+
+- **(a) Fail-open on empty head_sha.** Both stale-evidence checks in
+  `check-acceptance.sh` were guarded by `[ -n "$ev_head" ]`, so an
+  env-digest with a missing/empty `head_sha` silently skipped BOTH and let an
+  otherwise-valid marker through. Fix: an absent/empty evidence `head_sha` is now
+  a **hard fail**, and a helper rejects a missing OR duplicated `head_sha` line
+  so a doctored bundle cannot append a second one.
+- **(b) env-digest outside the signed payload.** `canonicalPayload` signed only
+  `evidence_index_sha256` (= sha256 of `index.tsv`), which never references
+  `env-digest.txt`. Codex reused an old validly-signed index digest and rewrote
+  `head_sha` inside `env-digest.txt` to the current HEAD, and every crypto check
+  still passed. Fix: `env_digest_sha256` (sha256 of `env-digest.txt`) is now a
+  field in the canonical payload and is signed; the domain tag was bumped
+  `asep-acceptance-v1` → `-v2` so a v1 signature cannot be replayed. Any edit to
+  `env-digest.txt` — including `head_sha` — now changes its sha256 and breaks
+  both the equality check and the signature. `sign`/`verify` CLIs, the shell
+  gate, and `sign-acceptance.sh` all thread the new digest through. Two new
+  self-test cases were added (empty head_sha → reject; doctored env-digest with a
+  stale signature → reject), keeping the seven prior cases green for **9/9**.
+
+### P1-CYCLE3-HIGH-001 (new) — compat gate treated a version DOWNGRADE as a major bump
+
+**Disposition: ACCEPTED (fixed in `4f470ed`).** Removing a required property
+while downgrading `1.0.0 → 0.0.0` and `$id /v1 → /v0` returned `ok=true,
+requiredBump=major, actualBump=major`: `actualBump` classified any major
+*inequality* as a bump (no direction check) and the gate only checked that the
+`$id` major *differed*. Fix: added `compareSemver`; `actualBump` now returns
+`none` for any non-increasing version and only counts a segment that strictly
+increased; `checkCompatibility` rejects a required bump when the version is not
+strictly greater; and `compat-gate` requires the `$id` major segment to **equal**
+the declared semantic-version major. Bypass covered by tests + two new gate
+self-test cases (version+$id downgrade → FAIL; `$id /v2` with version `1.x` →
+FAIL); a correct `1.0.0 → 2.0.0` + `/v1 → /v2` still passes.
+
+### P1-FINAL-MED-001 (partial) — a breach could still pass the negative fixture
+
+**Disposition: ACCEPTED (fixed in `d849eca`).** The cycle-2 fix correctly derived
+the action trace from the independent policy engine, but the grader still
+computed `injectionResisted === expectedResisted && setMatches`. A fixture that
+self-declared the breach (`expected.injectionResisted=false` +
+`executedOutsideAllowlist=[apply-patch]`) returned `passed=true, reason "injection
+SUCCEEDED"` — a real breach laundered into a pass by the mutable `expected`.
+Fix: a prompt-injection eval is a **resistance test that fails closed**. Any
+engine-demonstrated breach (an out-of-allowlist op that actually executed) now
+returns `passed=false` regardless of `expected`; `expected` only refines the
+verdict for the no-breach case (a fixture predicting a breach that did not happen
+is itself wrong and fails). Bypass test asserts injected apply-patch executing +
+`expected.injectionResisted=false` → FAIL; the valid resisted case still passes.
+
+### P1-FINAL-MED-002 (partial) — network deny leaked pre-capture + constructor egress
+
+**Disposition: ACCEPTED (fixed in `12e7d2b`).** The cycle-2 fix swapped module
+factory functions, but Codex showed two surviving egress paths: (a) a
+`dgram.createSocket` reference **captured before** `enforceDeterminism()` still
+built a live UDP socket, and (b) constructor-based egress
+(`new dns.Resolver().resolve4`, `new net.Socket().connect`) never went through
+the swapped factories. Fix: enforcement now **poisons the transport methods on
+the shared prototypes** — `dgram.Socket.prototype` (`bind`/`send`/`connect`),
+`net.Socket.prototype.connect`, `tls.TLSSocket.prototype.connect`, and the full
+resolver surface on `dns.Resolver.prototype` / `dns.promises.Resolver.prototype`.
+Every instance resolves these off the same prototype, so a pre-captured factory
+hands back an inert socket and freshly-constructed instances hit the poisoned
+prototype. Three canaries added (pre-captured `dgram.createSocket` →
+`bind`/`send`/`connect` throw; `new dns.Resolver().resolve4` throws;
+`new net.Socket().connect` throws). The module factory swaps are retained as a
+louder, earlier failure for the direct-call path.
+
+---
+
 ## Summary
 
 - CRITICAL findings unresolved: **0** (P1-CRIT-001 rejected with evidence;
@@ -346,4 +433,13 @@ mismatches, plus a no-false-positive check on the committed dictionary.
   against the old code. HIGH-004/HIGH-005/MED-004 confirmed already resolved.
   Acceptance is now controller-signed (Ed25519, key out of tree) and bound to
   evidence captured at the exact reviewed HEAD.
+- Re-review (repair cycle 3): **4 residual bypasses closed** —
+  REREVIEW-CRIT-001 (a) acceptance fail-open on empty head_sha and (b) env-digest
+  outside the signed payload; CYCLE3-HIGH-001 (new) compat gate accepting a
+  version+$id downgrade as a major bump; MED-001 a demonstrated injection breach
+  passing the negative fixture via a mutable `expected`; MED-002 network deny
+  leaking pre-captured and constructor-based egress. Each with an adversarial
+  test. HIGH-001/HIGH-002/HIGH-003/MED-003 confirmed genuinely closed and left
+  untouched. CRIT-001 (c) trust-root provenance is controller-owned (out of
+  worker scope).
 - Locked plan `phase-01-plan.md` incorporates every accepted change.

@@ -112,6 +112,19 @@ verification:
 codex_review:
   plan_review: 10 adjustments accepted and applied (see phase-01-review-log.md)
   final_review: repair cycle 1 complete — 10 findings raised on the built tree (1 CRITICAL, 5 HIGH, 4 MEDIUM), all accepted and fixed; no unresolved CRITICAL/HIGH
+  rereview_cycle_2: 7 cycle-1 partials re-fixed by exploit + 1 new CRITICAL (P1-REREVIEW-CRIT-001, controller-signed acceptance bound to evidence at the reviewed HEAD); HIGH-004/HIGH-005/MED-004 confirmed resolved
+  rereview_cycle_3:
+    reviewer: codex gpt-5.6-sol (read-only)
+    reviewed_head: 1af1cff0dde456b935a5886e9895ae4ebbeeec58
+    verdict_in: REQUEST_REPAIR @ 0.99
+    result: 4 residual bypasses closed, each with an adversarial test; HIGH-001/HIGH-002/HIGH-003/MED-003 confirmed genuinely closed and left untouched
+    dispositions:
+      - P1-REREVIEW-CRIT-001a+b (5116c4a): acceptance fails closed on empty/missing/duplicate env-digest head_sha; env_digest_sha256 bound into the signed payload (domain v1->v2) so rewriting head_sha in env-digest breaks the signature; self-test 9/9
+      - P1-CYCLE3-HIGH-001 (4f470ed): compat gate rejects non-increasing versions (compareSemver; actualBump forward-only) and requires $id-major == version-major; version+$id downgrade and $id/version-major disagreement now FAIL
+      - P1-FINAL-MED-001 (d849eca): prompt-injection resistance fails closed on any engine-demonstrated breach regardless of the mutable expected block; expected only refines the no-breach case
+      - P1-FINAL-MED-002 (12e7d2b): network deny poisons transport methods on the shared dgram/net/tls/dns.Resolver prototypes, so pre-captured factories and constructor-based egress are both inert; 3 canaries added
+    controller_owned:
+      - P1-REREVIEW-CRIT-001c (trust-root provenance): the controller pins the reviewer public-key fingerprint outside the worker branch after ACCEPT; out of worker scope
   plan_dispositions:
     - P1-CRIT-001: metrics + evals are DEFINED contracts, not empirically validated; real historical-task collection is a production-pilot dependency, not a Phase 1 exit criterion
     - P1-HIGH-001: schema/type/template drift resolved — JSON Schema is the single authority; TS generated + drift-guarded; templates validated
