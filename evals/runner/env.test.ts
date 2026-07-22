@@ -10,6 +10,13 @@ import dgram from 'node:dgram';
 import { enforceDeterminism, NetworkDeniedError, EVAL_SEED, stableCompare } from './env.js';
 import { loadTasks, runEval, gradeTasks, stableStringify } from './run.js';
 
+// P1-FINAL-MED-002 (cycle-3) PRE-CAPTURE reconstruction. An adversarial grader
+// captures the ORIGINAL factory before enforceDeterminism() runs. Because
+// enforcement is process-global and one-way (and an earlier test in this file
+// triggers it), the only faithful way to hold the genuine pre-enforcement
+// factory is to grab it at module-load time, before any test body executes.
+const PRE_ENFORCEMENT_DGRAM_CREATE_SOCKET = dgram.createSocket;
+
 // P1-FINAL-MED-002: prove the determinism harness has teeth.
 //
 // (1) Network default-deny is a CANARY: after enforceDeterminism(), every egress
@@ -101,6 +108,79 @@ test('network canary: global fetch is denied', async () => {
   await assert.rejects(
     async () => (globalThis as { fetch: (u: string) => Promise<unknown> }).fetch('http://example.com'),
     NetworkDeniedError,
+  );
+});
+
+// P1-FINAL-MED-002 (cycle-3): the deny must survive PRE-CAPTURE and CONSTRUCTOR
+// egress. Codex showed two holes: (a) capturing dgram.createSocket into a
+// variable BEFORE enforcement then invoking it afterward still created a live
+// UDP socket, and (b) constructor-based egress — `new dns.Resolver().resolve4`
+// and `new net.Socket().connect` — was never patched because only the module
+// factory functions were overridden. Patching the PROTOTYPE methods closes both:
+// a pre-captured factory still builds an object, but the object's transport
+// methods (bind/send/connect/resolve*) all throw, and freshly-constructed
+// instances hit the same poisoned prototype.
+
+test('network canary: a PRE-CAPTURED dgram.createSocket cannot open a live socket', () => {
+  // Use the factory reference captured at MODULE-LOAD time, before any test body
+  // ran enforceDeterminism(). Enforcement is process-global and one-way, so an
+  // earlier test in this file has already swapped dgram.createSocket to the deny
+  // stub — re-reading it here would grab that stub, not the genuine original.
+  // PRE_ENFORCEMENT_DGRAM_CREATE_SOCKET holds the real pre-enforcement factory,
+  // faithfully mirroring an adversarial grader that saved the reference early.
+  const capturedCreateSocket = PRE_ENFORCEMENT_DGRAM_CREATE_SOCKET;
+  enforceDeterminism();
+  // The factory may still hand back a Socket object, but every transport method
+  // on it must throw — so no datagram can actually leave the process.
+  const sock = capturedCreateSocket('udp4');
+  assert.throws(() => sock.bind(0), NetworkDeniedError, 'pre-captured dgram socket.bind must be denied');
+  assert.throws(
+    () => sock.send(Buffer.from('x'), 0, 1, 53, '1.1.1.1'),
+    NetworkDeniedError,
+    'pre-captured dgram socket.send must be denied',
+  );
+  assert.throws(
+    () => (sock as unknown as { connect: (p: number, a: string) => void }).connect(53, '1.1.1.1'),
+    NetworkDeniedError,
+    'pre-captured dgram socket.connect must be denied',
+  );
+});
+
+test('network canary: constructor egress via new dns.Resolver().resolve4 is denied', () => {
+  enforceDeterminism();
+  const resolver = new dns.Resolver();
+  assert.throws(
+    () => (resolver as unknown as { resolve4: (h: string) => void }).resolve4('example.com'),
+    NetworkDeniedError,
+    'new dns.Resolver().resolve4 must be denied',
+  );
+  // Every record helper on the constructed resolver, not just resolve4.
+  for (const m of ['resolve', 'resolve6', 'resolveTxt', 'resolveMx', 'reverse'] as const) {
+    assert.throws(
+      () => (resolver as unknown as Record<string, (h: string) => void>)[m]!('example.com'),
+      NetworkDeniedError,
+      `new dns.Resolver().${m} must be denied`,
+    );
+  }
+});
+
+test('network canary: constructor egress via new net.Socket().connect is denied', () => {
+  enforceDeterminism();
+  const sock = new net.Socket();
+  assert.throws(
+    () => sock.connect(80, '1.1.1.1'),
+    NetworkDeniedError,
+    'new net.Socket().connect must be denied',
+  );
+});
+
+test('network canary: constructor egress via new tls.TLSSocket() connect is denied', () => {
+  enforceDeterminism();
+  // TLSSocket wraps an underlying stream; its connect must be poisoned too.
+  assert.throws(
+    () => (tls.TLSSocket.prototype as unknown as { connect: () => void }).connect(),
+    NetworkDeniedError,
+    'tls.TLSSocket.prototype.connect must be denied',
   );
 });
 

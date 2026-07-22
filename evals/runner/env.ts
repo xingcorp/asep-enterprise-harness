@@ -94,6 +94,72 @@ export function enforceDeterminism(): void {
   // arbitrary UDP exfiltration) that bypasses net/tls entirely.
   (dgram as unknown as { createSocket: unknown }).createSocket = deny('dgram.createSocket');
 
+  // ---- PROTOTYPE-LEVEL DENY (P1-FINAL-MED-002, cycle-3) --------------------
+  //
+  // Overriding only the module factory functions above is NOT enough. Codex
+  // demonstrated two surviving egress paths:
+  //   (a) PRE-CAPTURE: a grader that saved `const f = dgram.createSocket`
+  //       BEFORE enforcement still held the original factory and could build a
+  //       live socket afterward — our factory swap never touched that closure.
+  //   (b) CONSTRUCTOR: `new dns.Resolver().resolve4(...)`, `new net.Socket().
+  //       connect(...)`, and `new tls.TLSSocket().connect(...)` never went
+  //       through the module factory at all, so they were entirely unguarded.
+  //
+  // The fix poisons the TRANSPORT METHODS on the shared PROTOTYPES. Every
+  // socket/resolver instance — however it was constructed, and whether the
+  // factory reference was captured early or late — resolves these methods off
+  // the same prototype object, so the deny is unavoidable. The factory swaps
+  // above are retained as a louder, earlier failure for the common direct-call
+  // path; the prototype poison is the actual containment boundary.
+  const poison = (
+    proto: object | undefined,
+    methods: readonly string[],
+    label: string,
+  ): void => {
+    if (!proto) return;
+    for (const m of methods) {
+      if (typeof (proto as Record<string, unknown>)[m] === 'function') {
+        (proto as Record<string, unknown>)[m] = deny(`${label}.${m}`);
+      }
+    }
+  };
+
+  // UDP: bind/send/connect are the only ways a datagram actually leaves. Poison
+  // them on the Socket prototype so a pre-captured createSocket is inert.
+  poison(
+    (dgram as unknown as { Socket?: { prototype?: object } }).Socket?.prototype,
+    ['bind', 'send', 'connect'],
+    'dgram.Socket',
+  );
+
+  // TCP/TLS: connect on the Socket prototype (net.Socket / tls.TLSSocket) is the
+  // constructor-based egress path. tls.TLSSocket extends net.Socket, but we
+  // poison both prototypes explicitly in case the inheritance chain is bypassed.
+  poison(
+    (net as unknown as { Socket?: { prototype?: object } }).Socket?.prototype,
+    ['connect'],
+    'net.Socket',
+  );
+  poison(
+    (tls as unknown as { TLSSocket?: { prototype?: object } }).TLSSocket?.prototype,
+    ['connect'],
+    'tls.TLSSocket',
+  );
+
+  // DNS: `new dns.Resolver()` carries its own copy of every resolver method on
+  // the prototype, independent of the module-level dns.* functions patched
+  // below. Poison the whole record surface on the prototype.
+  poison(
+    (dns as unknown as { Resolver?: { prototype?: object } }).Resolver?.prototype,
+    DNS_METHODS,
+    'dns.Resolver',
+  );
+  poison(
+    (dns.promises as unknown as { Resolver?: { prototype?: object } }).Resolver?.prototype,
+    DNS_METHODS,
+    'dns.promises.Resolver',
+  );
+
   // http/https client requests.
   (http as unknown as { request: unknown }).request = deny('http.request');
   (http as unknown as { get: unknown }).get = deny('http.get');
