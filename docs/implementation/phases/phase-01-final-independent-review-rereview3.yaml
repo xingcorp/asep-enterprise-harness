@@ -1,0 +1,149 @@
+rereview_cycle3:
+  head_verified: 1af1cff0dde456b935a5886e9895ae4ebbeeec58
+  verdict: REQUEST_REPAIR
+  confidence: 0.99
+  summary: >-
+    Four demonstrated bypasses are closed, but acceptance remains critically
+    bypassable and MED-001/MED-002 remain partial. The exact stale-head mismatch
+    is rejected and wrong-key signatures fail, yet an empty env-digest head_sha
+    fails open, env-digest is not covered by the signed evidence digest, and the
+    reviewer public key has no independently pinned controller provenance.
+    Prompt-injection breaches can still pass by changing expected, and network
+    denial leaks pre-captured and constructor-based egress references. A new
+    compatibility bypass accepts a version downgrade as a major bump. Base
+    9f60c9d and current/evidence head 1af1cff match git. No Phase 2 implementation
+    leakage was found. .task-complete is ignored, untracked, and unused as an
+    acceptance authority. Deferred historical eval collection is not treated as
+    a Phase 1 defect.
+  findings_status:
+    - id: P1-REREVIEW-CRIT-001
+      bypass_reconstructed: yes
+      now_closed: false
+      evidence: >-
+        The exact mismatch branch was executed from verify_marker with
+        ev_head=1111..., reviewed_head=2222..., HEAD=1af1cff... and emitted both
+        mismatch errors. An ephemeral worker key signed the correct tuple but
+        verifyMarker rejected it against reviewer-pubkey.pem; stale-head and
+        signature-transplant inputs also failed. However, executing the same
+        verify_marker with a valid-signature result and ev_head="" produced
+        "acceptance: valid": both stale checks are guarded by -n and therefore
+        fail open when head_sha is absent. More critically, the marker signs only
+        index.tsv; index.tsv contains no env-digest checksum. I reconstructed the
+        stale evidence from caa1bff, changed only the asserted env head to current
+        HEAD, signed the stale index digest in-memory, and all implemented head
+        and crypto checks passed. git history also shows reviewer-pubkey.pem was
+        introduced by worker-authored commit 790be9c with no independently pinned
+        controller fingerprint, so repository history cannot establish that the
+        worker lacks the corresponding private key. --self-test was attempted
+        but this mandated read-only session blocked mktemp with EPERM. Inspection
+        shows its seven cases cover valid, moved-head, changed-index-digest,
+        nonempty stale-head, unsigned, wrong-key, and non-ACCEPT inputs, but omit
+        missing head_sha, unsigned env-digest substitution, and trust-root
+        provenance.
+    - id: P1-FINAL-HIGH-001
+      bypass_reconstructed: yes
+      now_closed: true
+      evidence: >-
+        Imported base-parity.ts directly, parsed packages/contracts/src/base.ts,
+        and checked a schema-only RiskLevel enum
+        [R0,R1,R2,R3,R4,R5]. The checker returned
+        'RiskLevel enum drift — schema=[R0,R1,R2,R3,R4,R5]
+        base=[R0,R1,R2,R3,R4]'. Inspection confirms loadBaseStructure reads
+        base.ts source and no shadow expected table remains.
+    - id: P1-FINAL-HIGH-002
+      bypass_reconstructed: yes
+      now_closed: true
+      evidence: >-
+        Ran checkCompatibility independently for minLength 1->10, maxLength
+        20->10, additionalProperties true->false, adding an existing optional
+        property to required, enum [A,B]->[A], string->number, pattern
+        ^[a-z]+$->^[a-z]{5,}$, minimum 0->10, and maximum 100->90 with version
+        unchanged at 1.0.0. Every case returned ok=false,
+        requiredBump=major, actualBump=none with the expected tightening reason.
+        The live compatibility gate also reported PASS for all 12 unmutated
+        schemas.
+    - id: P1-FINAL-HIGH-003
+      bypass_reconstructed: yes
+      now_closed: true
+      evidence: >-
+        Executed the actual scan_paths function against the scanner source,
+        which contains the exact mixed line
+        'user@example.com real=jane.doe@gmail.com'. Output flagged
+        jane.doe@gmail.com while producing no user@example.com hit. The
+        implementation uses grep -o and applies EMAIL_ALLOW to each extracted
+        token.
+    - id: P1-FINAL-MED-001
+      bypass_reconstructed: yes
+      now_closed: partial
+      evidence: >-
+        The trace is now derived by enforceOperations; supplied executed=true
+        and executed=false claims were both ignored, and an injected allowed
+        apply-patch produced a breach. The compiled grader tests passed 10/10.
+        However, the requested stronger property is still bypassable: with the
+        same injected apply-patch executing, changing expected to
+        injectionResisted=false and executedOutsideAllowlist=[apply-patch]
+        returned passed=true with reason 'injection SUCCEEDED'. Thus the
+        independent trace repair is real, but a breach does not fail the
+        negative fixture regardless of expected.
+    - id: P1-FINAL-MED-002
+      bypass_reconstructed: yes
+      now_closed: partial
+      evidence: >-
+        After enforceDeterminism, direct dgram.createSocket, http2.connect,
+        dns.resolve4, dns.resolve, and dns.lookup calls all threw
+        NetworkDeniedError. Reversing the ten-task discovery array changed its
+        order, while sorted and reversed grading produced identical SHA-256
+        c9f733fe2236625d85f07227024950114017311ed4466c844d9d4f8068f4587c.
+        The deny remains bypassable: capturing dgram.createSocket before
+        enforcement then invoking it afterward successfully created a UDP
+        socket. A new dns.Resolver().resolve4 call and
+        new net.Socket().connect also returned without NetworkDeniedError.
+        Therefore the explicit holes and fake shuffle are fixed, but the required
+        no-pre-capture/full-egress property is not.
+    - id: P1-FINAL-MED-003
+      bypass_reconstructed: yes
+      now_closed: true
+      evidence: >-
+        Mutated scope_violation_rate first to
+        {field: scopeViolation, notEquals: true} and then to
+        {field: scopeViolation, equals: false}, leaving formula
+        scopeViolation=true. validateDictionary returned two drift errors for
+        each mutation, explicitly reporting both the formula-side and
+        operand-side operator/value mismatch. The compiled metrics suite passed
+        26/26.
+  new_findings:
+    - id: P1-CYCLE3-HIGH-001
+      severity: HIGH
+      title: Compatibility gate treats version downgrades as major bumps
+      evidence: >-
+        Removed a required property while changing version 1.0.0->0.0.0 and
+        $id /v1->/v0. checkCompatibility returned ok=true,
+        requiredBump=major, actualBump=major. actualBump classifies any major
+        inequality as a major bump without checking direction, and compat-gate
+        only checks that the $id major differs. This permits a breaking contract
+        to pass by downgrading both identifiers.
+      required_fix: >-
+        Reject non-increasing semantic versions, require the new version to be
+        greater than the snapshot version, and require the $id major segment to
+        equal the declared semantic-version major.
+  remaining_blockers:
+    - >-
+      Bind env-digest.txt, including a mandatory nonempty head_sha, into the
+      controller-signed evidence manifest; reject missing/duplicate head_sha
+      lines and independently pin the controller public-key fingerprint outside
+      the worker-authored branch.
+    - >-
+      Make any engine-derived prompt-injection breach fail a resistance/negative
+      fixture independently of its mutable expected block.
+    - >-
+      Replace module-property monkey-patching with an isolation boundary that
+      also blocks pre-captured functions, dns.Resolver, socket constructors, and
+      equivalent egress paths.
+    - >-
+      Reject semantic-version downgrades and enforce $id-major/version-major
+      agreement.
+  final_recommendation: >-
+    Request another repair cycle. Do not issue the controller acceptance
+    signature until the critical evidence-binding/trust-root bypass and the
+    remaining MED-001/MED-002 and semver-downgrade bypasses are closed with
+    adversarial tests.
