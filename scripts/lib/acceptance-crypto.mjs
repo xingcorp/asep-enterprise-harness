@@ -25,10 +25,19 @@
 //
 // CLI:
 //   acceptance-crypto.mjs keygen <priv.pem> <pub.pem>
-//   acceptance-crypto.mjs sign <priv.pem> <reviewed_head> <base> <ev_sha> <verdict> <reviewer>
+//   acceptance-crypto.mjs sign <priv.pem> <reviewed_head> <base> <ev_sha> <env_sha> <verdict> <reviewer>
 //       -> prints acceptance.json to stdout
-//   acceptance-crypto.mjs verify <marker.json> <pub.pem> <head> <base> <ev_sha>
-//       -> exit 0 if the marker is validly signed AND binds the triple; else exit 1
+//   acceptance-crypto.mjs verify <marker.json> <pub.pem> <head> <base> <ev_sha> <env_sha>
+//       -> exit 0 if the marker is validly signed AND binds the tuple; else exit 1
+//
+// EVIDENCE BINDING (P1-REREVIEW-CRIT-001b): the signed payload covers BOTH the
+// evidence index digest (sha256 of index.tsv) AND the env-digest digest (sha256
+// of env-digest.txt). env-digest.txt records the head_sha the bundle was
+// captured at; index.tsv does NOT reference it. If env-digest were outside the
+// signed scope, an attacker could keep a stale, validly-signed index digest and
+// rewrite head_sha inside env-digest to the current HEAD, and every crypto check
+// would still pass. Binding env_digest_sha256 into the signature makes any edit
+// to env-digest (including head_sha) break verification.
 import {
   generateKeyPairSync,
   sign as edSign,
@@ -38,17 +47,27 @@ import {
 } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 
-const DOMAIN = "asep-acceptance-v1";
+// v2: the payload gained env_digest_sha256 (P1-REREVIEW-CRIT-001b). The domain
+// tag is bumped so a v1 signature (which never covered env-digest) can never be
+// replayed under the v2 scheme.
+const DOMAIN = "asep-acceptance-v2";
 
 // Deterministic canonical payload over the binding fields. Field order and the
-// domain tag are fixed; any change to head/base/evidence/verdict changes the
-// bytes and therefore invalidates a signature.
-export function canonicalPayload({ reviewed_head, base, evidence_index_sha256, verdict }) {
+// domain tag are fixed; any change to head/base/evidence-index/env-digest/verdict
+// changes the bytes and therefore invalidates a signature.
+export function canonicalPayload({
+  reviewed_head,
+  base,
+  evidence_index_sha256,
+  env_digest_sha256,
+  verdict,
+}) {
   return [
     DOMAIN,
     `reviewed_head:${reviewed_head}`,
     `base:${base}`,
     `evidence_index_sha256:${evidence_index_sha256}`,
+    `env_digest_sha256:${env_digest_sha256}`,
     `verdict:${verdict}`,
   ].join("\n");
 }
@@ -58,7 +77,14 @@ export function canonicalPayload({ reviewed_head, base, evidence_index_sha256, v
 // authority both the CLI and any test uses, so the rules cannot drift.
 export function verifyMarker(marker, pubKeyPem, expected) {
   const problems = [];
-  const fields = ["reviewed_head", "base", "evidence_index_sha256", "verdict", "signature"];
+  const fields = [
+    "reviewed_head",
+    "base",
+    "evidence_index_sha256",
+    "env_digest_sha256",
+    "verdict",
+    "signature",
+  ];
   for (const f of fields) {
     if (marker[f] === undefined || marker[f] === null || marker[f] === "") {
       problems.push(`marker missing required field "${f}"`);
@@ -74,6 +100,15 @@ export function verifyMarker(marker, pubKeyPem, expected) {
   }
   if (marker.evidence_index_sha256 !== expected.ev_sha) {
     problems.push(`evidence_index_sha256 ${marker.evidence_index_sha256} != actual ${expected.ev_sha} (evidence changed)`);
+  }
+  // env-digest binding (P1-REREVIEW-CRIT-001b): the marker must name the sha256
+  // of the exact env-digest.txt on disk, and that digest is inside the signed
+  // payload. Rewriting head_sha inside env-digest.txt changes its sha256, so the
+  // marker's env_digest_sha256 no longer matches AND the signature no longer
+  // verifies — a stale index digest can no longer be paired with a doctored
+  // env-digest.
+  if (marker.env_digest_sha256 !== expected.env_sha) {
+    problems.push(`env_digest_sha256 ${marker.env_digest_sha256} != actual ${expected.env_sha} (env-digest changed)`);
   }
   if (marker.verdict !== "ACCEPT") {
     problems.push(`verdict is "${marker.verdict}", not ACCEPT`);
@@ -121,15 +156,16 @@ function main(argv) {
   }
 
   if (cmd === "sign") {
-    const [privPath, reviewed_head, base, ev_sha, verdict, reviewer] = rest;
-    if (!privPath || !reviewed_head || !base || !ev_sha || !verdict) {
-      die("usage: sign <priv.pem> <reviewed_head> <base> <ev_sha> <verdict> [reviewer]");
+    const [privPath, reviewed_head, base, ev_sha, env_sha, verdict, reviewer] = rest;
+    if (!privPath || !reviewed_head || !base || !ev_sha || !env_sha || !verdict) {
+      die("usage: sign <priv.pem> <reviewed_head> <base> <ev_sha> <env_sha> <verdict> [reviewer]");
     }
     const privKey = createPrivateKey(readFileSync(privPath, "utf8"));
     const marker = {
       reviewed_head,
       base,
       evidence_index_sha256: ev_sha,
+      env_digest_sha256: env_sha,
       verdict,
       reviewer: reviewer || "controller",
     };
@@ -140,9 +176,9 @@ function main(argv) {
   }
 
   if (cmd === "verify") {
-    const [markerPath, pubPath, head, base, ev_sha] = rest;
-    if (!markerPath || !pubPath || !head || !base || !ev_sha) {
-      die("usage: verify <marker.json> <pub.pem> <head> <base> <ev_sha>");
+    const [markerPath, pubPath, head, base, ev_sha, env_sha] = rest;
+    if (!markerPath || !pubPath || !head || !base || !ev_sha || !env_sha) {
+      die("usage: verify <marker.json> <pub.pem> <head> <base> <ev_sha> <env_sha>");
     }
     let marker;
     try {
@@ -151,7 +187,7 @@ function main(argv) {
       die(`could not read/parse marker ${markerPath}: ${e.message}`);
     }
     const pubKeyPem = readFileSync(pubPath, "utf8");
-    const { ok, problems } = verifyMarker(marker, pubKeyPem, { head, base, ev_sha });
+    const { ok, problems } = verifyMarker(marker, pubKeyPem, { head, base, ev_sha, env_sha });
     if (ok) {
       process.stdout.write("acceptance-crypto: marker valid (controller-signed, binds HEAD/base/evidence)\n");
       process.exit(0);

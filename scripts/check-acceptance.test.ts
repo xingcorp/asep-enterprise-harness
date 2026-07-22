@@ -38,6 +38,11 @@ test("acceptance self-test proves HEAD + evidence binding and signature enforcem
   assert.match(out, /worker-forged marker without valid signature rejected/);
   assert.match(out, /marker signed by a non-reviewer key rejected/);
   assert.match(out, /non-ACCEPT verdict rejected/);
+  // P1-REREVIEW-CRIT-001a: an empty evidence head_sha must fail closed (no skip).
+  assert.match(out, /empty evidence head_sha rejected fail-closed/);
+  // P1-REREVIEW-CRIT-001b: a doctored env-digest reusing an old signature must be
+  // rejected because env-digest is inside the signed scope.
+  assert.match(out, /substituted\/doctored env-digest rejected/);
 });
 
 // P1-REREVIEW-CRIT-001: a worker-authored plaintext marker (correct HEAD/base/
@@ -84,7 +89,7 @@ test("a signed marker for a stale head is invalid against current HEAD", () => {
   // current HEAD differs.
   const signed = execFileSync(
     "node",
-    [crypto, "sign", priv, staleHead, base, "some-digest", "ACCEPT", "test"],
+    [crypto, "sign", priv, staleHead, base, "some-digest", "some-env-digest", "ACCEPT", "test"],
     { encoding: "utf8" },
   );
   writeFileSync(marker, signed);
@@ -112,7 +117,7 @@ test("a signature cannot be transplanted to a different HEAD (head is inside the
   const headA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
   const headB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
   const signed = JSON.parse(
-    execFileSync("node", [crypto, "sign", priv, headA, base, "digest", "ACCEPT", "test"], {
+    execFileSync("node", [crypto, "sign", priv, headA, base, "digest", "env-digest", "ACCEPT", "test"], {
       encoding: "utf8",
     }),
   );
@@ -124,7 +129,7 @@ test("a signature cannot be transplanted to a different HEAD (head is inside the
   // Verify directly via the crypto helper against headB — must fail.
   let failed = false;
   try {
-    execFileSync("node", [crypto, "verify", marker, pub, headB, base, "digest"], {
+    execFileSync("node", [crypto, "verify", marker, pub, headB, base, "digest", "env-digest"], {
       encoding: "utf8",
     });
   } catch {

@@ -62,17 +62,32 @@ sha256_of() {
 HEAD_SHA="$(git rev-parse HEAD)"
 BASE_SHA="$(git merge-base main HEAD 2>/dev/null || echo NO_MERGE_BASE)"
 EV_SHA="$(sha256_of "$EVIDENCE_INDEX")"
+ENV_SHA="$(sha256_of "$ENV_DIGEST")"
+
+# The env-digest must carry EXACTLY ONE head_sha line (missing => nothing to
+# bind, fail-closed; duplicate => doctored bundle). Reject before reading it.
+HEAD_LINES="$(grep -c '^head_sha:' "$ENV_DIGEST" 2>/dev/null || echo 0)"
+if [ "$HEAD_LINES" -ne 1 ]; then
+  echo "sign-acceptance: FAIL — env-digest $ENV_DIGEST must contain exactly one head_sha line (found $HEAD_LINES)" >&2
+  exit 1
+fi
 EV_HEAD="$(awk -F': ' '/^head_sha:/ {print $2; exit}' "$ENV_DIGEST")"
 
-# Refuse to sign over stale evidence (P1-FINAL-CRIT-001).
+# Refuse to sign over stale evidence (P1-FINAL-CRIT-001) or an empty head.
+if [ -z "$EV_HEAD" ]; then
+  echo "sign-acceptance: FAIL — evidence head_sha is empty/missing in $ENV_DIGEST" >&2
+  exit 1
+fi
 if [ "$EV_HEAD" != "$HEAD_SHA" ]; then
   echo "sign-acceptance: FAIL — evidence head_sha $EV_HEAD != current HEAD $HEAD_SHA" >&2
   echo "  Re-run scripts/capture-evidence.sh at the reviewed HEAD before signing." >&2
   exit 1
 fi
 
-echo "sign-acceptance: signing $VERDICT for HEAD=$HEAD_SHA base=$BASE_SHA evidence=$EV_SHA"
-node "$CRYPTO" sign "$ASEP_REVIEWER_KEY" "$HEAD_SHA" "$BASE_SHA" "$EV_SHA" "$VERDICT" "$REVIEWER" > "$MARKER"
+# Sign over BOTH the evidence-index digest AND the env-digest digest
+# (P1-REREVIEW-CRIT-001b) so a doctored env-digest breaks the signature.
+echo "sign-acceptance: signing $VERDICT for HEAD=$HEAD_SHA base=$BASE_SHA evidence-index=$EV_SHA env-digest=$ENV_SHA"
+node "$CRYPTO" sign "$ASEP_REVIEWER_KEY" "$HEAD_SHA" "$BASE_SHA" "$EV_SHA" "$ENV_SHA" "$VERDICT" "$REVIEWER" > "$MARKER"
 echo "sign-acceptance: wrote $MARKER"
 
 # Verify the freshly written marker end-to-end so we never leave a bad one.
