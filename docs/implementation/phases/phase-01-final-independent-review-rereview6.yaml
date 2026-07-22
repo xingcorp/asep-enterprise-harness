@@ -1,0 +1,63 @@
+rereview_cycle6:
+  head_verified: a150286953862fa33aaa20d06bbc49e9d79fd4ad
+  verdict: ACCEPT_PHASE
+  confidence: 0.99
+  summary: >-
+    Independently verified HEAD and merge-base 9f60c9d2c6da2a00b2dc9e6da188e6cf26f1885e.
+    Both cycle-5 bypasses now fail closed. Large majors are rejected above
+    Number.MAX_SAFE_INTEGER, exact canonical URL serialization rejects aliases,
+    and the end-to-end breaking-removal reconstruction returned ok=false. No
+    CRITICAL, HIGH, or unresolved MEDIUM defect remains.
+  findings_status:
+    - id: P1-CYCLE5-HIGH-001
+      bypass_reconstructed: yes
+      now_closed: true
+      evidence: >-
+        Direct parser calls rejected $id majors 9007199254740992 and
+        9007199254740993 and version majors 9007199254740992.0.0 and
+        9007199254740993.0.0 as out of range, so adjacent unsafe majors cannot
+        collapse. I exercised the real runCompatGate using an in-memory
+        filesystem containing a v1 snapshot and a breaking field removal with
+        $id /v9007199254740993 and version 9007199254740992.0.0; it returned
+        ok=false, checked=1, with separate $id-major and version-major range
+        errors. Userinfo, explicit :443, /v01, uppercase scheme, uppercase host,
+        percent-encoded path, dot-segment normalization, and backslash
+        round-trip aliases were rejected. The exact canonical identifier parsed
+        as name=thing, major="1".
+  test_integrity:
+    weakened_tests_found: no
+    detail: >-
+      The requested diff from e7a2d4e changes only
+      packages/contracts/src/compat-gate.test.ts: 165 additions and one removed
+      single-line import, replaced by a multiline import that still includes
+      and exercises runCompatGate. No fixture or package.json changed; no test
+      was removed, skipped, inverted, made informational, or given a weaker
+      expected outcome.
+  regression_check: >-
+    Canonical Node discovery found 24 sorted test files; all seven required
+    SUITE-IDs exist, are discovered, and have their source markers. The runner
+    retains shell:false and explicit argv. The trusted adversarial launch exited
+    0, attested=true, and blocked all 17 probes; omitting the preload exited 98,
+    attested=false, emitted neither fixture sentinel nor verdict, and reported
+    the explicit fail-closed guard. Two real eval launches were byte-identical
+    with 10 passed, 0 failed, including the prompt-injection case. Direct gate
+    reconstructions for missing, unversioned, and mismatched $id each returned
+    ok=false. The forbidden-import suite passed 3/3. In-memory Ed25519 checks
+    accepted a valid signed tuple and rejected env-digest tampering and a stale
+    head; scripts, evals, package.json, and the trust root are unchanged from
+    e7a2d4e. No Phase 2 runtime/provider/memory/UI implementation leakage was
+    found. The fresh env-digest has exactly one head_sha equal to HEAD and
+    base_sha equal to the merge-base; its recorded SHA-256 matches the file.
+    acceptance.json is absent and check-acceptance fails accordingly;
+    .task-complete is not an acceptance authority. The 30-50 historical tasks
+    remain a production-pilot dependency. ADR 0016, RR-14, and the backlog
+    correctly defer OS-level isolation to Phase 2 and do not claim the preload
+    as a hostile in-process security boundary.
+  new_findings: []
+  remaining_blockers: []
+  final_recommendation: >-
+    Accept Phase 1. The controller must now create and sign
+    artifacts/phase-01/acceptance.json out of band using the rotated
+    controller-held private key, binding this HEAD, merge-base, evidence-index
+    digest, env-digest digest, and ACCEPT verdict. That post-ACCEPT signing step
+    is not a Phase 1 code defect.
