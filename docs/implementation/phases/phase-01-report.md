@@ -75,6 +75,7 @@ deliverables:
   D_evaluation_foundation:
     - evals/schema/eval-task.schema.json (task-ingest contract)
     - evals/runner/{env,graders,run,cli}.ts (deterministic: pinned ordering/seed/locale/tz, network default-deny)
+    - evals/runner/{launcher,worker-entry,determinism-preload,adversarial-entry,adversarial-fixture}.ts (trusted-bootstrap: preload-first ordering + attestation fail-closed; cli routes through the launcher; P1-CYCLE4-MED-002, ADR 0016)
     - evals/fixtures/*.json (10 labelled synthetic seeds covering all 9 grader families incl. negatives)
     - two clean runs produce byte-identical output
   E_measurement_and_evidence:
@@ -125,6 +126,23 @@ codex_review:
       - P1-FINAL-MED-002 (12e7d2b): network deny poisons transport methods on the shared dgram/net/tls/dns.Resolver prototypes, so pre-captured factories and constructor-based egress are both inert; 3 canaries added
     controller_owned:
       - P1-REREVIEW-CRIT-001c (trust-root provenance): the controller pins the reviewer public-key fingerprint outside the worker branch after ACCEPT; out of worker scope
+  rereview_cycle_4:
+    reviewer: codex gpt-5.6-sol (read-only)
+    reviewed_head: 97d1e4ec815e11c33a9abeae45b8fa740ade7615
+    verdict_in: REQUEST_REPAIR @ 0.99
+    result: >-
+      4 cycle-3 fixes re-verified by exploit reconstruction and left untouched
+      (REREVIEW-CRIT-001a empty-head fail-closed, REREVIEW-CRIT-001b env-digest
+      bound into the signed payload, REREVIEW-CRIT-001c controller-held trust
+      root, FINAL-MED-001 breach fails regardless of expected). Three
+      residual/new items fixed in repair cycle 5, each with a reproduction that
+      fails on the old code and passes on the new; no security/assurance test
+      was weakened (test-integrity diff adds only new assertions + new required
+      suites).
+    dispositions:
+      - P1-CYCLE3-HIGH-001 partial (100fdad): compat gate accepted a breaking change with a missing/unversioned $id because $id-major==version-major was only enforced when a versioned $id parsed. Canonical identity is now fail-closed — every schema MUST carry a non-empty $id parsing under the single https://asep.dev/schema/<name>/vN rule whose major exactly equals the semver major; missing/empty/malformed/unversioned $id, $id-major≠version-major, non-semver version, logical-identity swap and duplicate $id are all hard failures. Self-test cases 6/7 reproduce the exact deleted-/unversioned-$id bypass.
+      - P1-CYCLE4-MED-001 new (b5e7ca7): package.json's test script used a shell glob (scripts/**/*.test.ts) that /bin/sh does not expand recursively, silently dropping scripts/check-acceptance.test.ts + forbidden-imports.test.ts from the canonical command. Replaced with a shell-free deterministic Node runner (run-canonical-tests.mjs): recursive discovery, sorted paths, shell:false explicit argv, exact exit-code propagation, full raw capture, and a REQUIRED-SUITE-ID check that fails closed if any critical suite's machine-readable marker is absent even on exit 0. The wiring suite is itself REQUIRED, so the guard cannot be dropped.
+      - P1-FINAL-MED-002 partial (70d286c): network deny was still bypassable via an ESM named-import factory (no syncBuiltinESMExports after patch) and a callable captured before enforcement. Fixed the class with the approved trusted-bootstrap architecture (ADR 0016): a canonical launcher spawns node --import <tsx> --import <determinism-preload> <worker-entry> (shell:false, sanitized env stripping NODE_OPTIONS/loaders/inspector); the preload runs enforceDeterminism()+syncBuiltinESMExports() as the first application action and attests; worker-entry asserts attestation before dynamic-importing task/grader code (fail-closed if the preload was skipped). Guarded surfaces cover net/dgram/dns/http/https/http2/tls/global fetch + child_process/worker_threads escape. An honest adversarial fixture driven through the real launcher blocks every egress trick (ESM named, CJS require, constructor egress, microtask-deferred, dynamic re-import, fetch, process/thread escape); a bootstrap-order regression proves the fixture body never evaluates when the preload is omitted. Threat model bounded explicitly: a deterministic-execution guard and defense against accidental egress, NOT a security boundary against arbitrary hostile in-process native/runtime code (RR-14 + Phase 2 OS-isolation backlog).
   plan_dispositions:
     - P1-CRIT-001: metrics + evals are DEFINED contracts, not empirically validated; real historical-task collection is a production-pilot dependency, not a Phase 1 exit criterion
     - P1-HIGH-001: schema/type/template drift resolved — JSON Schema is the single authority; TS generated + drift-guarded; templates validated
@@ -199,7 +217,9 @@ production run has exercised them. Collecting a real pilot repository and 30-50
 historical tasks is recorded as a blocking production-pilot dependency, not a
 Phase 1 exit criterion.
 
-The canonical `pnpm verify:all` full gate is green (117 tests). Per-gate evidence — command,
+The canonical `pnpm verify:all` full gate is green (192 tests via the shell-free
+`scripts/run-canonical-tests.mjs`, which fails closed if any REQUIRED critical
+suite is dropped). Per-gate evidence — command,
 exit code, duration, output checksum, tool versions and environment digest — is
 in `artifacts/phase-01/`, with absolute paths sanitized so the publication gate
 stays clean. See `phase-01-traceability.md` for the exit-criterion → implementation

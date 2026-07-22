@@ -17,6 +17,7 @@
 | RR-11 | **Raw evidence committed** — sensitive generated output enters git | Low | High | External/ignored raw storage + sanitized committed manifests; secret/path canaries stay outside tracked files (P1-CHANGE-005) | worker/S5 |
 | RR-12 | **CI/local drift** — CI green but local red or vice versa | Medium | Medium | One canonical verify command shared by CI + local; clean-tree assertion (P1-CHANGE-009) | worker/S1 |
 | RR-13 | **Unlawful publication** — dependency license / missing legal approval | Low | High | License present + dependency-license check + provenance + documented approval gate (P1-CHANGE-006) | worker/human |
+| RR-14 | **Eval network guard mistaken for a security sandbox** — the in-process determinism guard is a deterministic-execution bootstrap, not isolation against arbitrary hostile native/runtime code (FFI/WASI/native addon/V8-internals can bypass any in-process monkey-patch) | Medium | High | Phase 1 bounds the claim explicitly (ADR 0016; threat-model note in `evals/runner/env.ts`): code loaded through the canonical launcher cannot capture unguarded supported-network references before the preload runs. Phase 2 MUST enforce network denial OUTSIDE the evaluated process (network namespace, seccomp, gVisor, microVM, or equivalent) — tracked in the P1 backlog "security/network/secret broker" + a new P2 "OS-level eval isolation" item | worker/reviewer (Phase 1) → platform (Phase 2) |
 
 ## Rollback
 

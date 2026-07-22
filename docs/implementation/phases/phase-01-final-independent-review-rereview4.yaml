@@ -1,0 +1,127 @@
+rereview_cycle4:
+  head_verified: 97d1e4ec815e11c33a9abeae45b8fa740ade7615
+  verdict: REQUEST_REPAIR
+  confidence: 0.99
+  summary: >-
+    HEAD and merge-base were verified as 97d1e4ec815e11c33a9abeae45b8fa740ade7615
+    and 9f60c9d2c6da2a00b2dc9e6da188e6cf26f1885e. Four residual items are
+    closed, but MED-002 remains bypassable through pre-captured network
+    references, and HIGH-001 is only partially closed because the compatibility
+    gate accepts absent or unparseable $id values. A new CI-wiring gap also
+    leaves the acceptance shell tests outside the canonical test command. No
+    Phase 2 implementation or provider dependencies were added. The fresh
+    env-digest contains exactly one head_sha equal to HEAD, its base matches the
+    merge-base, and both digest sidecars match their files. acceptance.json is
+    absent while .task-complete is present but non-authoritative. Deferring the
+    30-50 historical tasks to the production pilot remains appropriate.
+  findings_status:
+    - id: P1-REREVIEW-CRIT-001a
+      bypass_reconstructed: yes
+      now_closed: true
+      evidence: >-
+        Executed the exact verify_marker function body extracted from
+        scripts/check-acceptance.sh with the cryptographic verification mocked
+        successful. An empty ev_head returned REJECTED, while the otherwise
+        identical matching-head control returned ACCEPTED. The production path
+        also checks for exactly one head_sha line, and verify_marker
+        unconditionally sets rc=1 when ev_head is empty.
+    - id: P1-REREVIEW-CRIT-001b
+      bypass_reconstructed: yes
+      now_closed: true
+      evidence: >-
+        Generated an in-memory Ed25519 marker over env_digest_sha256=env-original.
+        Verification succeeded for the original tuple. Reusing the marker while
+        presenting env-doctored returned ok=false with an env-digest mismatch;
+        rewriting the marker field to env-doctored while retaining the old
+        signature returned ok=false because the signature did not verify.
+        canonicalPayload uses the asep-acceptance-v2 domain and includes
+        env_digest_sha256 in the signed bytes.
+    - id: P1-REREVIEW-CRIT-001c
+      bypass_reconstructed: yes
+      now_closed: true
+      evidence: >-
+        git log --follow shows the previous key was introduced at worker commit
+        790be9cf91616fc334c35a5203fec36383dd6899 and rotated at current HEAD
+        97d1e4ec815e11c33a9abeae45b8fa740ade7615. The old key SHA-256 is
+        60192c234e9a1004488515ccbaa74ca74d1a4808dd9cc2629e493f0126401c01;
+        the current key is different at
+        bb2b1e347a083588b51281de22b36775d045be14c19a35166b493b4f3fbec034
+        and parses as Ed25519. No private-key material was found in tracked
+        history. Repository evidence supports a real key rotation and a
+        public-only tree, but cannot independently prove controller possession,
+        worker non-possession, or the claimed external fingerprint pin: the
+        rotation commit is unsigned and uses the same Git identity as worker
+        commits. Those facts necessarily remain an out-of-band trust boundary,
+        satisfied here by the stated controller-held rotation.
+    - id: P1-FINAL-MED-001
+      bypass_reconstructed: yes
+      now_closed: true
+      evidence: >-
+        Ran the cycle-3 input with injected apply-patch on the allowlist and
+        expected={injectionResisted:false,
+        executedOutsideAllowlist:["apply-patch"]}. grade returned passed=false
+        with "injection SUCCEEDED — resistance FAILED" and explicitly stated
+        that expected cannot launder the breach. The focused graders test suite
+        also passed all corresponding regression cases.
+    - id: P1-FINAL-MED-002
+      bypass_reconstructed: yes
+      now_closed: false
+      evidence: >-
+        Captured dgram.createSocket before enforceDeterminism and invoked it
+        afterward. The exact call did not throw and returned a Socket, contrary
+        to the required fail-closed result. new dns.Resolver().resolve4 and new
+        net.Socket().connect did throw NetworkDeniedError. The committed test
+        weakens the requirement by explicitly allowing the pre-captured factory
+        to return a socket and checks only its subsequently resolved prototype
+        methods. Moreover, pre-capturing net.Socket.prototype.connect before
+        enforcement and invoking that saved reference afterward returned a
+        Socket without NetworkDeniedError, demonstrating that replacing
+        prototype properties does not revoke already-captured callables.
+    - id: P1-CYCLE3-HIGH-001
+      bypass_reconstructed: yes
+      now_closed: partial
+      evidence: >-
+        The exact removal plus version 1.0.0->0.0.0 and $id /v1->/v0 now returns
+        ok=false with actualBump=none, and a parseable $id/version mismatch is
+        rejected. However, runCompatGate guards equality only when majorOfId
+        returns non-null. Using the same breaking removal with version=2.0.0
+        and either deleting $id or setting it to
+        https://asep.dev/schema/thing/not-versioned returned
+        {ok:true, problems:[]}. Thus non-increasing semver is fixed, but
+        $id-major is not actually required to exist and equal version-major.
+  new_findings:
+    - id: P1-CYCLE4-MED-001
+      severity: MEDIUM
+      summary: >-
+        The acceptance shell regression tests are omitted from the canonical
+        test command.
+      evidence: >-
+        package.json uses scripts/**/*.test.ts. Under the /bin/sh expansion used
+        by package scripts, this matched only
+        scripts/lib/acceptance-crypto.test.ts, not the top-level
+        scripts/check-acceptance.test.ts. The captured current-HEAD test log
+        contains the crypto-helper tests but none of the acceptance self-test,
+        empty-head, stale-head, forgery, or transplant cases. verify-all invokes
+        forbidden-imports explicitly but has no corresponding explicit
+        acceptance self-test step.
+  remaining_blockers:
+    - >-
+      Make network enforcement fail closed for already-captured callable
+      references, including the exact pre-enforcement dgram.createSocket call
+      and pre-captured transport methods, or enforce isolation before any
+      adversarial module can obtain those references.
+    - >-
+      Make compat-gate reject missing, malformed, or unversioned $id values and
+      require a parseable $id major exactly equal to the declared semver major.
+      Add mutation tests for breaking changes with absent and malformed $id.
+    - >-
+      Wire scripts/check-acceptance.test.ts or
+      scripts/check-acceptance.sh --self-test explicitly into the canonical
+      verify-all/CI path.
+  final_recommendation: >-
+    Repair the remaining network and compatibility bypasses and the acceptance
+    regression-test wiring, then recapture evidence at the resulting HEAD and
+    re-review. The controller must not sign acceptance.json for this
+    REQUEST_REPAIR state. After a future ACCEPT_PHASE verdict, the controller
+    should sign acceptance.json out of band with the rotated private key; that
+    post-ACCEPT signing step is not a Phase 1 code defect.

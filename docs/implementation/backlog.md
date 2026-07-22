@@ -34,7 +34,8 @@
 - Mem0 shadow memory;
 - Graphiti brownfield trial;
 - multi-tenant isolation tiers;
-- model routing optimization.
+- model routing optimization;
+- OS-level eval isolation (network namespace / seccomp / gVisor / microVM) — replaces the Phase 1 in-process determinism guard as the enforced network boundary for adversarial task/grader code (ADR 0016; RR-14).
 
 ## P3 — Experiments
 

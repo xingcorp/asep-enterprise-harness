@@ -420,6 +420,116 @@ louder, earlier failure for the direct-call path.
 
 ---
 
+## Repair cycle 4 — re-review findings (Codex gpt-5.6-sol @ `97d1e4e`)
+
+Re-review cycle 4 re-verified every cycle-3 fix by direct exploit reconstruction
+(verdict `REQUEST_REPAIR` @ 0.99; full record in
+`phase-01-final-independent-review-rereview4.yaml`). Four cycle-3 fixes were
+confirmed genuinely closed and left untouched: **REREVIEW-CRIT-001a** (empty
+head_sha fail-closed), **REREVIEW-CRIT-001b** (env-digest bound into the signed
+v2 payload), **REREVIEW-CRIT-001c** (trust-root rotated to a controller-held
+key), and **FINAL-MED-001** (a demonstrated breach fails regardless of
+`expected`). One cycle-3 fix was closed only in part (**CYCLE3-HIGH-001**), the
+network guard was still bypassable (**FINAL-MED-002**), and a new CI-wiring gap
+was raised (**CYCLE4-MED-001**). All three residual/new items are fixed here,
+each with an adversarial test or reproduction that fails against the old code and
+passes against the new. No test was weakened; the test-integrity diff
+(`git diff 97d1e4e...HEAD -- '**/*.test.*' '**/fixtures/**' 'package.json'`) adds
+only new assertions and new required suites.
+
+### P1-CYCLE3-HIGH-001 (partial) — compat gate accepted missing/unversioned `$id`
+
+**Disposition: ACCEPTED (fixed in `100fdad`).** The cycle-3 fix required
+`major($id) == major(version)` only when `majorOfId` returned non-null, so
+`runCompatGate` guarded equality **only when a versioned `$id` was present**. A
+breaking removal with `version=2.0.0` plus either a **deleted** `$id` or an
+**unversioned** `$id` (e.g. `https://asep.dev/schema/thing/not-versioned`)
+returned `{ok:true, problems:[]}` — a canonical schema with no parseable
+version-major slipped the gate entirely. Reproduced all five shapes first
+(missing `$id`; empty `$id`; unversioned `$id`; `$id`-major ≠ semver-major;
+malformed `$id`), then made identity coherence **fail-closed**: every canonical
+schema MUST carry a non-empty string `$id` that parses under the single canonical
+`https://asep.dev/schema/<name>/vN` rule and whose major segment exactly equals
+the declared semver major; a missing/empty/unparseable/unversioned `$id`, an
+`$id`-major≠version-major disagreement, or a non-semver `version` is now a hard
+gate failure. Two new gate self-test cases cover the missing- and
+unversioned-`$id` breaking-change shapes; the valid same-major and governed
+major-migration cases still pass.
+
+### P1-CYCLE4-MED-001 (new) — acceptance shell suites omitted from the canonical test command
+
+**Disposition: ACCEPTED (fixed in `b5e7ca7`).** `package.json`'s test script
+used `tsx --test packages/**/*.test.ts … scripts/**/*.test.ts`. Under the
+`/bin/sh` that `pnpm run` uses, `**` is **not** recursive, so
+`scripts/**/*.test.ts` matched only `scripts/lib/acceptance-crypto.test.ts` and
+silently **dropped** `scripts/check-acceptance.test.ts` (the acceptance
+self-test, empty-head, stale-head, signature-forgery and env-digest-tamper
+cases) and `scripts/forbidden-imports.test.ts` — those suites existed in the repo
+but never ran under `pnpm test`. Reproduced the glob drop empirically first, then
+replaced the shell glob with a deterministic, shell-free Node runner
+(`scripts/run-canonical-tests.mjs` + `scripts/lib/canonical-tests.mjs`):
+recursive `*.test.ts` discovery under the canonical roots, byte-stable sorted
+paths, `node --import tsx --test` with `shell:false` and an explicit arg list,
+exact exit-code propagation, and full raw stdout/stderr capture. Each critical
+suite now emits a machine-readable `SUITE-ID:` marker at module load and the
+runner **fails closed** if any REQUIRED suite's marker is absent from the
+captured output — so a critical suite that is dropped, renamed away, or crashes
+before its first line turns the gate RED even on exit 0. A wiring suite
+(`scripts/run-canonical-tests.test.ts`) proves discovery is recursive, the
+required-suite manifest is covered, and the fail-closed logic rejects
+missing/empty output; the wiring suite is itself in the REQUIRED set, so the
+mechanism that guards every other suite cannot be silently dropped.
+
+### P1-FINAL-MED-002 (partial) — network deny bypassable via pre-captured / ESM-named references
+
+**Disposition: ACCEPTED (fixed in `70d286c`).** The cycle-3 fix poisoned
+transport methods on shared prototypes, but Codex showed the guard was still
+bypassable: an **ESM named-import factory** (`import { createSocket } from
+'node:dgram'`) captured a live factory because `syncBuiltinESMExports()` was
+never called after patching, and a callable **captured before**
+`enforceDeterminism()` kept the original reference (replacing a prototype
+property does not revoke an already-captured callable). The root cause was
+ordering: enforcement could run *after* task/grader modules had already evaluated
+their top-level captures. Reproduced the surviving ESM-named bypass first (the
+factory did **not** throw and a socket **was** created), then fixed the class,
+not the site, with the **approved trusted-bootstrap architecture** (ADR 0016):
+
+- **Preload-first ordering.** A canonical launcher (`evals/runner/launcher.ts`)
+  spawns a fresh Node process with `node --import <tsx> --import
+  <determinism-preload> <worker-entry>` — `shell:false`, explicit arg list,
+  sanitized env (strips `NODE_OPTIONS`/`--require`/`--import`/inspector so a
+  caller cannot inject a pre-preload or a debugger). The preload runs
+  `enforceDeterminism()` as the **first application-level action**, before any
+  task/grader/fixture module evaluates, and calls `syncBuiltinESMExports()` so
+  ESM named bindings are rebuilt to the deny stubs.
+- **Attestation + fail-closed entry.** The preload emits a machine-readable
+  attestation line (with its resolved path) that the launcher requires; a run
+  whose preload did not attest is treated as failed even on exit 0. The
+  worker-entry `assertDeterminismEnforced()` **before** dynamic-importing the
+  runner, so launching the entry without the preload fails closed *before* any
+  task code runs.
+- **Guarded surfaces + escapes.** The deny now covers `net`/`dgram`/`dns`/
+  `http`/`https`/`http2`/`tls`/global `fetch`, plus `child_process` and
+  `worker_threads` escapes (a fresh unguarded context would defeat the guard).
+- **Honest adversarial fixture.** `adversarial-fixture.ts` (driven through the
+  real launcher by `launcher.test.ts`) captures references at module top level
+  via every trick — ESM named import, CJS `require`, constructor egress,
+  microtask-deferred reference, dynamic re-import, `fetch`, `child_process`/
+  `worker_threads` — and every one is blocked. A bootstrap-order regression test
+  launches the entry **without** the preload and asserts the fixture's sentinel
+  side-effect never prints (the entry fails closed before the fixture body
+  evaluates) and no verdict is emitted.
+- **Honest threat model.** ADR 0016 + the `env.ts` docstring state plainly that
+  this is a **deterministic execution guard and defense against accidental
+  egress, NOT a security boundary against arbitrary hostile in-process
+  native/runtime code**; OS-level isolation (network namespace / seccomp /
+  gVisor / microVM) is a Phase 2 deliverable, recorded in the risk register
+  (RR-14) and backlog. The eval CLI (`evals/runner/cli.ts`) now routes through
+  the launcher, so the gate evidence exercises the bootstrap and stays
+  byte-identical across runs.
+
+---
+
 ## Summary
 
 - CRITICAL findings unresolved: **0** (P1-CRIT-001 rejected with evidence;
@@ -442,4 +552,17 @@ louder, earlier failure for the direct-call path.
   test. HIGH-001/HIGH-002/HIGH-003/MED-003 confirmed genuinely closed and left
   untouched. CRIT-001 (c) trust-root provenance is controller-owned (out of
   worker scope).
+- Re-review (repair cycle 4): **1 partial closed, 1 network bypass closed by the
+  approved trusted-bootstrap architecture, and 1 new CI-wiring gap fixed** —
+  CYCLE3-HIGH-001 (partial) compat gate accepting missing/unversioned `$id` for a
+  breaking change (`100fdad`); CYCLE4-MED-001 (new) acceptance shell suites
+  dropped by a non-recursive `/bin/sh` glob, replaced by a deterministic
+  shell-free Node runner with fail-closed required-suite verification (`b5e7ca7`);
+  FINAL-MED-002 (partial) network deny bypassable via ESM-named / pre-captured
+  references, closed with a preload-first trusted launcher + attestation +
+  honest adversarial fixture + bootstrap-order regression (`70d286c`, ADR 0016).
+  Each with an adversarial test/reproduction; no test was weakened. Cycle-3
+  fixes REREVIEW-CRIT-001a/b/c and FINAL-MED-001 confirmed genuinely closed and
+  left untouched. The bounded Phase 1 network property vs Phase 2 OS-level
+  isolation boundary is recorded in ADR 0016, RR-14, and the backlog.
 - Locked plan `phase-01-plan.md` incorporates every accepted change.
