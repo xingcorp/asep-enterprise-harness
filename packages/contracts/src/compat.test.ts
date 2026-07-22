@@ -299,3 +299,53 @@ test('LOOSENING: minLength lowered is MINOR (not breaking)', () => {
   assert.equal(verdict.requiredBump, 'minor');
   assert.equal(verdict.ok, true, verdict.message);
 });
+
+// P1-CYCLE3-HIGH-001: a version DOWNGRADE must never satisfy a required bump.
+// Codex bypass: remove a required property (a MAJOR break) while changing
+// version 1.0.0 -> 0.0.0. actualBump() classified ANY major inequality as
+// "major", so the breaking change sailed through as if it had been bumped.
+test('BYPASS: version DOWNGRADE does not satisfy a required major bump (Codex cycle-3)', () => {
+  const base = loadSchema('finding');
+  const next = clone(base);
+  // Remove a required property => MAJOR break required.
+  const req = (base.required as readonly string[]).slice();
+  assert.ok(req.length > 0, 'finding schema must have at least one required prop');
+  const dropped = req[0]!;
+  next.required = req.filter((r) => r !== dropped);
+  delete (next.properties as Record<string, SchemaNode>)[dropped];
+  // Downgrade the version instead of bumping it.
+  next.version = '0.0.0';
+
+  const verdict = checkCompatibility(base, next as unknown as SchemaNode);
+  assert.equal(verdict.requiredBump, 'major', 'removing a required prop requires major');
+  assert.equal(
+    verdict.ok,
+    false,
+    `a version downgrade (1.x -> 0.0.0) must NOT satisfy a required bump — got ${verdict.message}`,
+  );
+});
+
+// A proper forward major bump for the same break must still PASS.
+test('removing a required property WITH a forward major bump passes', () => {
+  const base = loadSchema('finding');
+  const next = clone(base);
+  const req = (base.required as readonly string[]).slice();
+  const dropped = req[0]!;
+  next.required = req.filter((r) => r !== dropped);
+  delete (next.properties as Record<string, SchemaNode>)[dropped];
+  next.version = '2.0.0';
+
+  const verdict = checkCompatibility(base, next as unknown as SchemaNode);
+  assert.equal(verdict.requiredBump, 'major');
+  assert.equal(verdict.ok, true, `forward major bump must pass — ${verdict.message}`);
+});
+
+// actualBump must only report "major" when the major segment INCREASES, never
+// when it decreases (a downgrade) or merely differs.
+test('actualBump reports a DOWNGRADE as none/decrease, not a major bump', () => {
+  assert.equal(actualBump('1.0.0', '0.0.0'), 'none', 'major downgrade is not a forward bump');
+  assert.equal(actualBump('2.5.0', '1.0.0'), 'none', 'any downgrade is not a forward bump');
+  assert.equal(actualBump('1.0.0', '2.0.0'), 'major', 'forward major bump');
+  assert.equal(actualBump('1.0.0', '1.1.0'), 'minor');
+  assert.equal(actualBump('1.0.0', '1.0.1'), 'patch');
+});

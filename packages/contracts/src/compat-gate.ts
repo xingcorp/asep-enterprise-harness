@@ -101,6 +101,23 @@ export function runCompatGate(
         );
       }
     }
+    // The $id major segment must AGREE with the declared semantic-version major
+    // (P1-CYCLE3-HIGH-001). Codex bypassed the gate by downgrading BOTH the
+    // version (1.0.0 -> 0.0.0) and the $id (/v1 -> /v0): the two moved together
+    // so the "major differs" check above was satisfied while the version went
+    // backwards. Requiring $id-major == version-major closes the loophole where
+    // a coordinated downgrade masquerades as a forward major publish.
+    const nextIdMajor = majorOfId(next.$id as string | undefined);
+    const nextVersion = next.version;
+    if (nextIdMajor !== null && typeof nextVersion === 'string') {
+      const verMajor = /^(\d+)\./.exec(nextVersion)?.[1] ?? null;
+      if (verMajor !== null && verMajor !== nextIdMajor) {
+        problems.push(
+          `${file}: $id major segment /v${nextIdMajor} disagrees with declared version major ${verMajor} ` +
+            `(version ${nextVersion}); the $id major must equal the semantic-version major`,
+        );
+      }
+    }
   }
 
   return { ok: problems.length === 0, problems, checked };
@@ -167,6 +184,37 @@ function selfTest(): number {
     rc = 1;
   } else {
     console.log('self-test: PASS (major break requires $id major rev too)');
+  }
+
+  // Case 4 (P1-CYCLE3-HIGH-001): the Codex downgrade bypass. Remove a required
+  // property (a MAJOR break) while DOWNGRADING both the version (1.0.0 -> 0.0.0)
+  // and the $id (/v1 -> /v0). The two move together, so the "major differs"
+  // check is satisfied, but the version went BACKWARDS. Must FAIL.
+  const downgraded = JSON.parse(JSON.stringify(broken));
+  downgraded.version = '0.0.0';
+  downgraded.$id = 'https://asep.dev/schema/thing/v0';
+  writeFileSync(join(liveDir, 'thing.schema.json'), JSON.stringify(downgraded));
+  const r4 = runCompatGate(liveDir, snapDir);
+  if (r4.ok) {
+    console.error('self-test: FAIL (breaking change with a version+$id DOWNGRADE was accepted — HIGH-001 regression)');
+    rc = 1;
+  } else {
+    console.log('self-test: PASS (breaking change via version+$id downgrade rejected — P1-CYCLE3-HIGH-001)');
+  }
+
+  // Case 5: $id major must agree with the declared version major. Bump version
+  // to 2.0.0 but leave $id at /v1 already covered by Case 3; here we do the
+  // inverse — $id /v2 but version stays 1.x — which must also FAIL.
+  const mismatched = JSON.parse(JSON.stringify(broken));
+  mismatched.version = '1.0.0';
+  mismatched.$id = 'https://asep.dev/schema/thing/v2';
+  writeFileSync(join(liveDir, 'thing.schema.json'), JSON.stringify(mismatched));
+  const r5 = runCompatGate(liveDir, snapDir);
+  if (r5.ok) {
+    console.error('self-test: FAIL ($id major /v2 with version 1.x was accepted — HIGH-001 regression)');
+    rc = 1;
+  } else {
+    console.log('self-test: PASS ($id-major/version-major disagreement rejected — P1-CYCLE3-HIGH-001)');
   }
 
   rmSync(tmp, { recursive: true, force: true });

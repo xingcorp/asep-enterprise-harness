@@ -310,14 +310,32 @@ export function parseSemver(v: string): SemVer {
   return { major: Number(m[1]), minor: Number(m[2]), patch: Number(m[3]) };
 }
 
-/** The actual bump between two semvers (major > minor > patch > none). */
-export function actualBump(prev: string, next: string): BumpLevel {
+/** Ordered comparison of two semvers: <0 if a<b, 0 if equal, >0 if a>b. */
+export function compareSemver(prev: string, next: string): number {
   const a = parseSemver(prev);
   const b = parseSemver(next);
-  if (b.major !== a.major) return 'major';
-  if (b.minor !== a.minor) return 'minor';
-  if (b.patch !== a.patch) return 'patch';
-  return 'none';
+  if (a.major !== b.major) return a.major - b.major;
+  if (a.minor !== b.minor) return a.minor - b.minor;
+  return a.patch - b.patch;
+}
+
+/**
+ * The actual FORWARD bump between two semvers (major > minor > patch > none).
+ *
+ * A bump must move the version UP. A downgrade (next < prev at any segment) or
+ * no change is `none` — it never satisfies a required bump (P1-CYCLE3-HIGH-001).
+ * The earlier version returned `major` for ANY major inequality, so a breaking
+ * change could pass by DOWNGRADING 1.0.0 -> 0.0.0: the classifier saw a "major
+ * difference" and treated it as a major bump.
+ */
+export function actualBump(prev: string, next: string): BumpLevel {
+  // Non-increasing version = no forward bump at all.
+  if (compareSemver(prev, next) >= 0) return 'none';
+  const a = parseSemver(prev);
+  const b = parseSemver(next);
+  if (b.major > a.major) return 'major';
+  if (b.minor > a.minor) return 'minor';
+  return 'patch';
 }
 
 export interface CompatVerdict {
@@ -342,6 +360,26 @@ export function checkCompatibility(prev: SchemaNode, next: SchemaNode): CompatVe
     throw new Error('compat: both schemas must declare a string `version`');
   }
   const actual = actualBump(prevV, nextV);
+  const cmp = compareSemver(prevV, nextV);
+
+  // A change that requires ANY bump must be accompanied by a strictly-increasing
+  // version. A non-increasing version (downgrade or unchanged) can never satisfy
+  // a required bump (P1-CYCLE3-HIGH-001): the earlier code let a breaking change
+  // pass by DOWNGRADING 1.0.0 -> 0.0.0 because a "major difference" was read as a
+  // major bump. We reject that explicitly with a dedicated message so the reason
+  // is unambiguous, then fall back to the bump-magnitude comparison.
+  if (required !== 'none' && cmp >= 0) {
+    return {
+      ok: false,
+      requiredBump: required,
+      actualBump: actual,
+      changes,
+      message:
+        `INCOMPATIBLE: changes require a ${required} bump but version was NOT increased ` +
+        `(${prevV} -> ${nextV}); a downgrade or unchanged version cannot satisfy a required bump`,
+    };
+  }
+
   const ok = ORDER[actual] >= ORDER[required];
   const message = ok
     ? `compatible: changes require ${required}, version bump was ${actual}`
