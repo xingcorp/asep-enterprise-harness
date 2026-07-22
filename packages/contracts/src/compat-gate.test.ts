@@ -10,7 +10,12 @@ import {
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { runCompatGate } from './compat-gate.js';
+import {
+  runCompatGate,
+  parseCanonicalId,
+  parseVersionMajor,
+  type CanonicalId,
+} from './compat-gate.js';
 
 // Machine-readable suite marker (P1-CYCLE4-MED-001): the canonical test runner
 // asserts this line appears in captured output, so this suite cannot be silently
@@ -301,4 +306,163 @@ test('HIGH-001 POSITIVE: a governed major migration (version 2.0.0 + $id /v2) is
     const r = runCompatGate(liveDir, snapDir);
     assert.equal(r.ok, true, `governed major migration must pass: ${r.problems.join('; ')}`);
   });
+});
+
+// ===========================================================================
+// P1-CYCLE5-HIGH-001: IEEE-754 precision collapse + noncanonical URL aliases.
+//
+// Codex re-derived two residual holes in the cycle-4 identity gate:
+//
+//   (1) PRECISION COLLAPSE. Both parsers coerced the major token with Number(),
+//       so two TEXTUALLY DISTINCT majors above Number.MAX_SAFE_INTEGER
+//       (9007199254740991) collapse to the same float. $id .../v9007199254740993
+//       and version 9007199254740992.0.0 both became 9007199254740992, so the
+//       `idMajor !== versionMajor` coherence check saw a false match and a
+//       breaking removal passed with ok=true. The repair keeps the major token
+//       as its canonical decimal STRING and compares by string equality, and
+//       rejects any major above MAX_SAFE_INTEGER as out of the supported range.
+//
+//   (2) NONCANONICAL URL ALIASES. parseCanonicalId only checked host/search/hash
+//       and delegated path shape to a regex, so `https://user@asep.dev/...`
+//       (userinfo), `https://asep.dev:443/...` (explicit port, silently dropped
+//       by the URL parser), and `/v01` (leading-zero major) were accepted even
+//       though the documented canonical form forbids them. The repair enforces
+//       EXACT canonical serialization: no userinfo, no explicit port, a
+//       lowercase host/scheme, no leading-zero major, and the reparsed URL must
+//       byte-for-byte equal the reconstructed canonical string.
+//
+// These tests reconstruct each bypass shape (RED before the fix) and directly
+// exercise the exported parsers plus the end-to-end gate.
+
+// ---- Bypass 1: precision collapse ----------------------------------------
+
+test('CYCLE5-HIGH-001 bypass 1: adjacent large majors are NOT equal (no Number collapse)', () => {
+  const a = parseCanonicalId('https://asep.dev/schema/thing/v9007199254740992');
+  const b = parseCanonicalId('https://asep.dev/schema/thing/v9007199254740993');
+  // Both must reject as out-of-range (safer) OR, if a canonical string major is
+  // retained, they must compare as DISTINCT. Either way they must never be
+  // treated as the same identity. We assert distinctness of whatever the parser
+  // exposes, and that neither silently collapses to the same JS number.
+  const majorOf = (r: CanonicalId | { error: string }): string | null =>
+    'error' in r ? null : String((r as { major: unknown }).major);
+  const ma = majorOf(a);
+  const mb = majorOf(b);
+  if (ma !== null && mb !== null) {
+    assert.notEqual(ma, mb, 'two distinct large majors must not collapse to one value');
+  } else {
+    // At least one was rejected as out-of-range — acceptable and safe.
+    assert.ok(
+      'error' in a || 'error' in b,
+      'majors above MAX_SAFE_INTEGER must be rejected or kept distinct',
+    );
+  }
+});
+
+test('CYCLE5-HIGH-001 bypass 1: version major above MAX_SAFE_INTEGER is rejected', () => {
+  const r = parseVersionMajor('9007199254740992.0.0');
+  assert.ok('error' in r, 'a version major above MAX_SAFE_INTEGER must be rejected');
+});
+
+test('CYCLE5-HIGH-001 bypass 1: $id major above MAX_SAFE_INTEGER is rejected', () => {
+  const r = parseCanonicalId('https://asep.dev/schema/thing/v9007199254740993');
+  assert.ok('error' in r, 'an $id major above MAX_SAFE_INTEGER must be rejected');
+});
+
+test('CYCLE5-HIGH-001 bypass 1: END-TO-END — /v9007199254740993 vs version 9007199254740992.0.0 fails the gate', () => {
+  withSyntheticDirs((snapDir, liveDir) => {
+    seedSnapshot(snapDir);
+    // The exact Codex reconstruction: a breaking removal whose $id major and
+    // version major are TEXTUALLY DIFFERENT but collapse to the same Number.
+    const next = breakingRemoval(BASE_V1);
+    next.version = '9007199254740992.0.0';
+    next.$id = 'https://asep.dev/schema/thing/v9007199254740993';
+    writeSchema(liveDir, 'thing.schema.json', next);
+    const r = runCompatGate(liveDir, snapDir);
+    assert.equal(
+      r.ok,
+      false,
+      'precision-collapsed major mismatch must fail the gate, not pass as ok=true',
+    );
+  });
+});
+
+test('CYCLE5-HIGH-001 bypass 1: a version with a leading-zero major is rejected', () => {
+  const r = parseVersionMajor('01.0.0');
+  assert.ok('error' in r, 'a leading-zero version major must be rejected');
+});
+
+test('CYCLE5-HIGH-001 bypass 1: a version with a leading-zero minor/patch is rejected', () => {
+  assert.ok('error' in parseVersionMajor('1.00.0'), 'leading-zero minor must be rejected');
+  assert.ok('error' in parseVersionMajor('1.0.00'), 'leading-zero patch must be rejected');
+});
+
+// ---- Bypass 2: noncanonical URL aliases ----------------------------------
+
+test('CYCLE5-HIGH-001 bypass 2: userinfo (user@) in $id is rejected', () => {
+  const r = parseCanonicalId('https://user@asep.dev/schema/thing/v1');
+  assert.ok('error' in r, 'an $id carrying userinfo must be rejected');
+});
+
+test('CYCLE5-HIGH-001 bypass 2: explicit port (:443) in $id is rejected', () => {
+  const r = parseCanonicalId('https://asep.dev:443/schema/thing/v1');
+  assert.ok('error' in r, 'an $id with an explicit port must be rejected');
+});
+
+test('CYCLE5-HIGH-001 bypass 2: leading-zero $id major (/v01) is rejected', () => {
+  const r = parseCanonicalId('https://asep.dev/schema/thing/v01');
+  assert.ok('error' in r, 'a leading-zero $id major must be rejected');
+});
+
+test('CYCLE5-HIGH-001 bypass 2: a fragment (#) in $id is rejected', () => {
+  const r = parseCanonicalId('https://asep.dev/schema/thing/v1#frag');
+  assert.ok('error' in r, 'an $id with a fragment must be rejected');
+});
+
+test('CYCLE5-HIGH-001 bypass 2: a query (?) in $id is rejected', () => {
+  const r = parseCanonicalId('https://asep.dev/schema/thing/v1?x=1');
+  assert.ok('error' in r, 'an $id with a query must be rejected');
+});
+
+test('CYCLE5-HIGH-001 bypass 2: a trailing slash in $id is rejected', () => {
+  const r = parseCanonicalId('https://asep.dev/schema/thing/v1/');
+  assert.ok('error' in r, 'an $id with a trailing slash must be rejected');
+});
+
+test('CYCLE5-HIGH-001 bypass 2: an uppercase host in $id is rejected', () => {
+  const r = parseCanonicalId('https://ASEP.dev/schema/thing/v1');
+  assert.ok('error' in r, 'an $id with an uppercase host must be rejected');
+});
+
+test('CYCLE5-HIGH-001 bypass 2: an uppercase scheme in $id is rejected', () => {
+  const r = parseCanonicalId('HTTPS://asep.dev/schema/thing/v1');
+  assert.ok('error' in r, 'an $id with an uppercase scheme must be rejected');
+});
+
+test('CYCLE5-HIGH-001 bypass 2: END-TO-END — a :443 alias cannot smuggle a breaking change', () => {
+  withSyntheticDirs((snapDir, liveDir) => {
+    seedSnapshot(snapDir);
+    const next = breakingRemoval(BASE_V1);
+    next.version = '2.0.0';
+    // A port-carrying alias that the URL parser would normalise away; must be
+    // rejected at parse time so the gate never classifies it.
+    next.$id = 'https://asep.dev:443/schema/thing/v2';
+    writeSchema(liveDir, 'thing.schema.json', next);
+    const r = runCompatGate(liveDir, snapDir);
+    assert.equal(r.ok, false, 'a :443 alias must fail the gate');
+    assert.ok(r.problems.some((p) => /\$id/.test(p)));
+  });
+});
+
+test('CYCLE5-HIGH-001 POSITIVE: the exact canonical $id still parses and passes', () => {
+  const r = parseCanonicalId('https://asep.dev/schema/thing/v1');
+  assert.ok(!('error' in r), `canonical $id must parse: ${JSON.stringify(r)}`);
+  assert.equal((r as CanonicalId).name, 'thing');
+  // Major is exposed as its canonical decimal string.
+  assert.equal(String((r as { major: unknown }).major), '1');
+});
+
+test('CYCLE5-HIGH-001 POSITIVE: a valid multi-digit major (/v42) parses', () => {
+  const r = parseCanonicalId('https://asep.dev/schema/thing/v42');
+  assert.ok(!('error' in r), `multi-digit major must parse: ${JSON.stringify(r)}`);
+  assert.equal(String((r as { major: unknown }).major), '42');
 });

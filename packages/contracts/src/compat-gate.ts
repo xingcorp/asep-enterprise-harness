@@ -41,7 +41,7 @@ export interface GateResult {
   readonly checked: number;
 }
 
-// Canonical schema identity (P1-CYCLE4-HIGH-001).
+// Canonical schema identity (P1-CYCLE4-HIGH-001, hardened P1-CYCLE5-HIGH-001).
 //
 // Every canonical schema MUST carry an $id of the exact shape
 //   https://asep.dev/schema/<name>/v<major>
@@ -51,19 +51,64 @@ export interface GateResult {
 // the ONLY place a version major may be encoded. A query, fragment, wrong host,
 // wrong scheme, missing/empty value, or a path that does not match the canonical
 // grammar all fail closed.
+//
+// P1-CYCLE5-HIGH-001 — two residual holes closed here:
+//
+//   (1) PRECISION COLLAPSE. The major was coerced with Number(), so two
+//       TEXTUALLY DISTINCT majors above Number.MAX_SAFE_INTEGER collapse to the
+//       same IEEE-754 float (e.g. v9007199254740993 and v9007199254740992 both
+//       become 9007199254740992). The coherence check then saw a false match.
+//       The major is now carried as its CANONICAL DECIMAL STRING and compared by
+//       string equality, and any major above MAX_SAFE_INTEGER is rejected as out
+//       of the supported range. Numeric tokens are strict: no leading zeros.
+//
+//   (2) NONCANONICAL URL ALIASES. The parser only checked host/search/hash, so
+//       userinfo (user@), an explicit default port (:443, silently dropped by
+//       the URL parser), an uppercase scheme/host, a trailing slash, and a
+//       leading-zero major (/v01) all slipped through. Canonicality is now
+//       enforced EXACTLY: after structural validation the identity is
+//       re-serialised into the one canonical string and compared byte-for-byte
+//       against the original input. Any deviation fails closed.
 export interface CanonicalId {
   readonly name: string;
-  readonly major: number;
+  /**
+   * The version major as its canonical decimal string (e.g. "1", "42"). Kept as
+   * a string — never a JS Number — so two distinct large majors can never
+   * collapse into one value (P1-CYCLE5-HIGH-001). Values above
+   * Number.MAX_SAFE_INTEGER are rejected at parse time, so this string always
+   * denotes an exactly-representable, leading-zero-free integer.
+   */
+  readonly major: string;
 }
 
 const CANONICAL_HOST = 'asep.dev';
-const CANONICAL_PATH = /^\/schema\/([a-z][a-z0-9-]*)\/v(\d+)$/;
+const CANONICAL_SCHEME = 'https:';
+// Strict numeric token: a single 0, or a non-zero digit followed by more digits.
+// No leading zeros (rejects /v01), no sign, no separators.
+const NUM = '(?:0|[1-9][0-9]*)';
+const CANONICAL_PATH = new RegExp(`^/schema/([a-z][a-z0-9-]*)/v(${NUM})$`);
+const SEMVER = new RegExp(`^(${NUM})\\.(${NUM})\\.(${NUM})$`);
+
+/**
+ * Reject a decimal-string integer that exceeds Number.MAX_SAFE_INTEGER
+ * (9007199254740991). Above that bound distinct integers are no longer
+ * distinguishable once coerced to a JS Number, which is exactly the collapse
+ * Codex exploited. We keep the value as a string but still bound its magnitude
+ * so downstream consumers that DO coerce cannot be surprised.
+ */
+function isSafeInteger(decimal: string): boolean {
+  // Cheap magnitude guard first (MAX_SAFE_INTEGER has 16 digits), then exact.
+  if (decimal.length > 16) return false;
+  return Number(decimal) <= Number.MAX_SAFE_INTEGER;
+}
 
 /**
  * Parse an $id against the single canonical naming rule. Returns the parsed
  * identity, or an `error` string explaining exactly why it is not canonical.
  * There is no substring fallback: the path is taken from a parsed URL so a
- * query/fragment can never be mistaken for a version segment.
+ * query/fragment can never be mistaken for a version segment, and the whole
+ * identity is re-serialised and compared byte-for-byte so no noncanonical
+ * spelling (userinfo, explicit port, uppercase, trailing slash) is accepted.
  */
 export function parseCanonicalId(id: unknown): CanonicalId | { error: string } {
   if (typeof id !== 'string') return { error: '$id is missing or not a string' };
@@ -74,23 +119,50 @@ export function parseCanonicalId(id: unknown): CanonicalId | { error: string } {
   } catch {
     return { error: `$id is not a parseable URL (${id})` };
   }
-  if (url.protocol !== 'https:') return { error: `$id must use the https scheme (${id})` };
-  if (url.host !== CANONICAL_HOST) return { error: `$id host must be ${CANONICAL_HOST} (${id})` };
+  if (url.protocol !== CANONICAL_SCHEME) return { error: `$id must use the https scheme (${id})` };
+  if (url.hostname !== CANONICAL_HOST) return { error: `$id host must be ${CANONICAL_HOST} (${id})` };
+  if (url.username !== '' || url.password !== '') {
+    return { error: `$id must not carry userinfo/credentials (${id})` };
+  }
+  if (url.port !== '') return { error: `$id must not carry an explicit port (${id})` };
   if (url.search !== '') return { error: `$id must not carry a query string (${id})` };
   if (url.hash !== '') return { error: `$id must not carry a fragment (${id})` };
   const m = CANONICAL_PATH.exec(url.pathname);
   if (!m) {
-    return { error: `$id path must be /schema/<name>/v<major> (${id})` };
+    return { error: `$id path must be /schema/<name>/v<major> with a leading-zero-free major (${id})` };
   }
-  return { name: m[1]!, major: Number(m[2]!) };
+  const name = m[1]!;
+  const major = m[2]!;
+  if (!isSafeInteger(major)) {
+    return { error: `$id major v${major} exceeds the supported range (> Number.MAX_SAFE_INTEGER) (${id})` };
+  }
+  // EXACT canonical serialization: reconstruct the one legal spelling and require
+  // the ORIGINAL input to equal it byte-for-byte. This is the single source of
+  // truth for canonicality — it rejects an uppercase scheme/host, a default port
+  // the URL parser would drop, a trailing slash, or any other alias, without
+  // enumerating every variant.
+  const canonical = `${CANONICAL_SCHEME}//${CANONICAL_HOST}/schema/${name}/v${major}`;
+  if (id !== canonical) {
+    return { error: `$id is not in exact canonical form; expected ${canonical} (${id})` };
+  }
+  return { name, major };
 }
 
-/** Parse a semver X.Y.Z, returning its major or an `error` string. */
-export function parseVersionMajor(version: unknown): { major: number } | { error: string } {
+/**
+ * Parse a strict semver X.Y.Z. Each segment is leading-zero-free and the major
+ * must be within Number.MAX_SAFE_INTEGER; the major is returned as its canonical
+ * decimal STRING so it can be compared against the $id major without an
+ * IEEE-754 collapse (P1-CYCLE5-HIGH-001).
+ */
+export function parseVersionMajor(version: unknown): { major: string } | { error: string } {
   if (typeof version !== 'string') return { error: 'version is missing or not a string' };
-  const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(version);
+  const m = SEMVER.exec(version);
   if (!m) return { error: `version is not a valid semver X.Y.Z (${version})` };
-  return { major: Number(m[1]!) };
+  const major = m[1]!;
+  if (!isSafeInteger(major)) {
+    return { error: `version major ${major} exceeds the supported range (> Number.MAX_SAFE_INTEGER) (${version})` };
+  }
+  return { major };
 }
 
 function listSchemas(dir: string): string[] {
@@ -144,7 +216,7 @@ export function runCompatGate(
     // are now UNCONDITIONAL for every live schema.
     const idParsed = parseCanonicalId(next.$id);
     const verParsed = parseVersionMajor(next.version);
-    let idMajor: number | null = null;
+    let idMajor: string | null = null;
     let idName: string | null = null;
     if ('error' in idParsed) {
       problems.push(`${file}: ${idParsed.error}`);
