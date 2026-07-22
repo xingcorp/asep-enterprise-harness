@@ -1,5 +1,5 @@
 // Deterministic execution environment for the eval runner (Codex P1-OPT-002,
-// hardened per P1-FINAL-MED-002).
+// hardened per P1-FINAL-MED-002 / P1-CYCLE4-MED-002).
 //
 // Every source of non-determinism is pinned or denied so that running the same
 // fixtures twice from a clean checkout yields byte-identical output:
@@ -12,8 +12,30 @@
 //     (dgram), http/https client requests, the HTTP/2 client (http2.connect),
 //     and the global fetch(). Any attempt throws the same NetworkDenied error so
 //     a determinism regression fails loud.
+//   - process/thread escape (child_process.*, worker_threads.Worker) is denied
+//     so a grader cannot spawn a fresh, UNGUARDED execution context.
 //
-// The runner imports `enforceDeterminism()` before doing any work.
+// THREAT MODEL (precise — do not overstate):
+//   Phase 1 guarantees that code loaded through the canonical evaluation
+//   launcher cannot capture unguarded supported Node networking references
+//   before the determinism preload, because the preload runs before task/grader
+//   module evaluation. This mechanism is a DETERMINISTIC EXECUTION GUARD and a
+//   defense against ACCIDENTAL egress. It is NOT a security boundary against
+//   arbitrary hostile in-process native/runtime code (a native addon, a raw
+//   syscall via FFI/WASI, or a V8 internals abuse can bypass any in-process
+//   monkey-patch). Phase 2 MUST enforce network denial OUTSIDE the evaluated
+//   process — network namespace, seccomp, gVisor, microVM, or equivalent OS-level
+//   sandbox. See docs/architecture/adr/0016-phase-one-trusted-bootstrap.md.
+//
+// WHY A PRELOAD (not just an import at the top of run.ts): a fixture/grader
+// module can execute code at its own top level (import side effects) and CAPTURE
+// a builtin reference before run.ts's import of this module runs. Enforcing via
+// `node --import <determinism-preload>` makes enforceDeterminism() the FIRST
+// application-level action in the process, before ANY task/grader module is
+// evaluated, and syncBuiltinESMExports() (below) makes even ESM named-import
+// bindings resolve to the deny stubs. The worker-entry additionally calls
+// assertDeterminismEnforced() before dynamic-importing task code, so a launch
+// that skipped the preload fails closed before untrusted modules load.
 
 import dns from 'node:dns';
 import net from 'node:net';
@@ -22,6 +44,9 @@ import http from 'node:http';
 import https from 'node:https';
 import http2 from 'node:http2';
 import dgram from 'node:dgram';
+import child_process from 'node:child_process';
+import worker_threads from 'node:worker_threads';
+import { syncBuiltinESMExports } from 'node:module';
 
 export const EVAL_SEED = 0x5eed_1234;
 export const EVAL_TIMEZONE = 'UTC';
@@ -31,6 +56,20 @@ export class NetworkDeniedError extends Error {
   constructor(via: string) {
     super(`eval-runner: network access is denied in deterministic mode (via ${via})`);
     this.name = 'NetworkDeniedError';
+  }
+}
+
+/**
+ * A process-spawn / thread-spawn escape is denied for the same reason network
+ * is: a deterministic eval must not fork a NEW process or worker thread, because
+ * a child launched WITHOUT the determinism preload would run entirely outside
+ * this guard (its network surface unpatched) — a determinism AND containment
+ * hole. Denied loudly rather than silently.
+ */
+export class ProcessEscapeError extends Error {
+  constructor(via: string) {
+    super(`eval-runner: process/thread creation is denied in deterministic mode (via ${via})`);
+    this.name = 'ProcessEscapeError';
   }
 }
 
@@ -175,7 +214,69 @@ export function enforceDeterminism(): void {
     (globalThis as { fetch: unknown }).fetch = deny('fetch');
   }
 
+  // ---- PROCESS / THREAD ESCAPE DENY -----------------------------------------
+  //
+  // Network poisoning is moot if a grader can spawn a fresh process (or worker
+  // thread) that runs WITHOUT this preload: the child's network surface would be
+  // pristine. Within the declared determinism contract a deterministic eval must
+  // not fork new execution contexts at all, so we deny the spawn surface. These
+  // throw ProcessEscapeError (a distinct class) so evidence can tell a spawn
+  // attempt apart from a direct network attempt.
+  const denyProc = (via: string) => (): never => {
+    throw new ProcessEscapeError(via);
+  };
+  for (const m of ['spawn', 'spawnSync', 'exec', 'execSync', 'execFile', 'execFileSync', 'fork'] as const) {
+    (child_process as unknown as Record<string, unknown>)[m] = denyProc(`child_process.${m}`);
+  }
+  // worker_threads.Worker constructor: replace with a throwing shim.
+  (worker_threads as unknown as { Worker: unknown }).Worker = class {
+    constructor() {
+      throw new ProcessEscapeError('worker_threads.Worker');
+    }
+  };
+
+  // ---- ESM NAMED-EXPORT SYNC (P1-CYCLE4-MED-002) ----------------------------
+  //
+  // All the assignments above mutate the CJS/default export objects and the
+  // prototypes. But a module that did `import { createSocket } from 'node:dgram'`
+  // holds a LIVE BINDING to the ORIGINAL factory captured when the builtin's ESM
+  // facade was first evaluated — mutating the default export object does NOT
+  // update that named binding. Codex's surviving cycle-4 bypass was exactly this:
+  // the named `createSocket` still built a live socket. syncBuiltinESMExports()
+  // rebuilds every builtin's ESM named exports from the (now-patched) CJS export
+  // objects, so `import { createSocket }` and `import { connect }` resolve to the
+  // deny stubs too. This must run AFTER every factory swap above.
+  syncBuiltinESMExports();
+
   enforced = true;
+}
+
+/**
+ * Attestation that the determinism preload has run in THIS process. The trusted
+ * launcher runs enforceDeterminism() via `node --import <preload>` as the first
+ * application action, BEFORE any task/grader module is evaluated. The
+ * worker-entry checks this attestation and refuses to load task code if it is
+ * absent — so a worker launched WITHOUT the preload fails closed before any
+ * fixture (which may capture references at module top level) can be evaluated.
+ */
+export function isDeterminismEnforced(): boolean {
+  return enforced;
+}
+
+/**
+ * Fail-closed guard the worker-entry calls before dynamic-importing any task or
+ * grader module. Throws if the preload did not run, so untrusted module code
+ * never evaluates in an unguarded process.
+ */
+export function assertDeterminismEnforced(): void {
+  if (!enforced) {
+    throw new Error(
+      'eval-runner: determinism preload did NOT run before task load — refusing to ' +
+        'evaluate task/grader modules in an unguarded process (P1-CYCLE4-MED-002). ' +
+        'The evaluation MUST be launched via the canonical launcher ' +
+        '(node --import <determinism-preload> <worker-entry>).',
+    );
+  }
 }
 
 /** Stable string compare used everywhere the runner sorts, independent of locale. */

@@ -93,6 +93,7 @@ export const REQUIRED_SUITES = Object.freeze({
   'asep-suite:acceptance-marker': 'scripts/check-acceptance.test.ts',
   'asep-suite:forbidden-imports': 'scripts/forbidden-imports.test.ts',
   'asep-suite:eval-network-guard': 'evals/runner/env.test.ts',
+  'asep-suite:trusted-bootstrap': 'evals/runner/launcher.test.ts',
   'asep-suite:compat-gate': 'packages/contracts/src/compat-gate.test.ts',
   // The runner's own wiring suite must itself run under the canonical command —
   // otherwise the mechanism that guards every other required suite could be
