@@ -21,6 +21,9 @@
       "path": "../../packages/policy"
     },
     {
+      "path": "../../packages/application"
+    },
+    {
       "path": "../../adapters/agent-mock"
     }
   ]

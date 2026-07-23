@@ -1,45 +1,27 @@
-import type { CodingAgentProvider, ReviewProvider } from '@asep/ports';
-import type { ContextPack, VerificationResult, WorkOrder } from '@asep/contracts';
-import { gatePolicy } from '@asep/policy';
+// workflow-worker — COMPOSITION ROOT ONLY (exit criteria B2, B4).
+//
+// Phase 1 shipped the whole execution kernel here. That coupling is removed:
+// the execution pipeline now lives in @asep/application (exit criterion B1) so
+// the SAME use case is callable from the CLI, this worker, and a future
+// Temporal activity with no worker-only coupling (exit criterion B4).
+//
+// This module is a THIN caller: it wires concrete adapters (ports) to the
+// provider-neutral application use case and forwards the request. It performs
+// NO domain decision, NO persistence query, NO provider call of its own beyond
+// handing the injected adapters to the use case, and NO workflow sequencing —
+// all of that is the application layer's job (exit criterion B5).
 
-export interface Activities {
-  buildContext(order: WorkOrder): Promise<ContextPack>;
-  verify(order: WorkOrder, resultSha: string): Promise<VerificationResult>;
-  persistCheckpoint(input: unknown): Promise<void>;
+import { executeTask, type ExecuteTaskInput, type ExecuteTaskResult } from '@asep/application';
+
+// The worker's only responsibility: forward a fully-composed request to the
+// application use case. A Temporal activity (Phase 3) would call executeTask()
+// with the exact same input shape — this function has no privileged behaviour
+// the activity would lack, which is what exit criterion B4 demands.
+export async function runExecuteTask(input: ExecuteTaskInput): Promise<ExecuteTaskResult> {
+  return executeTask(input);
 }
 
-export async function executeTaskKernel(input: {
-  order: WorkOrder;
-  implementer: CodingAgentProvider;
-  reviewer?: ReviewProvider;
-  activities: Activities;
-}): Promise<{ accepted: boolean; reason: string }> {
-  const policy = gatePolicy(input.order.risk);
-  const context = await input.activities.buildContext(input.order);
-  const attempt = await input.implementer.execute(input.order, context);
-  await input.activities.persistCheckpoint({ phase: 'attempt', attempt });
-
-  if (attempt.status !== 'SUCCEEDED' || !attempt.resultSha) {
-    return { accepted: false, reason: `attempt:${attempt.status}` };
-  }
-
-  const verification = await input.activities.verify(input.order, attempt.resultSha);
-  await input.activities.persistCheckpoint({ phase: 'verification', verification });
-  if (verification.verdict !== 'PASS') return { accepted: false, reason: 'verification_failed' };
-
-  if (policy.independentReviewers > 0) {
-    if (!input.reviewer) return { accepted: false, reason: 'reviewer_required' };
-    // A production implementation passes an immutable diff artifact ID here.
-    const review = await input.reviewer.review({
-      order: input.order,
-      context,
-      diffArtifactId: 'artifact-placeholder' as never,
-      verification,
-      implementerProviderId: input.implementer.providerId
-    });
-    await input.activities.persistCheckpoint({ phase: 'review', review });
-    if (review.verdict !== 'APPROVE') return { accepted: false, reason: `review:${review.verdict}` };
-  }
-
-  return { accepted: true, reason: 'all_required_gates_passed' };
-}
+// Re-export the application seam so a composition root importing the worker sees
+// the same use-case surface, never a worker-local reimplementation.
+export { executeTask } from '@asep/application';
+export type { ExecuteTaskInput, ExecuteTaskResult } from '@asep/application';

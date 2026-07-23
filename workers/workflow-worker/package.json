@@ -14,6 +14,7 @@
     "@asep/domain": "workspace:*",
     "@asep/ports": "workspace:*",
     "@asep/policy": "workspace:*",
+    "@asep/application": "workspace:*",
     "@asep/agent-mock": "workspace:*"
   }
 }

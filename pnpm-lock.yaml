@@ -119,6 +119,9 @@ importers:
       '@asep/agent-mock':
         specifier: workspace:*
         version: link:../../adapters/agent-mock
+      '@asep/application':
+        specifier: workspace:*
+        version: link:../../packages/application
       '@asep/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
