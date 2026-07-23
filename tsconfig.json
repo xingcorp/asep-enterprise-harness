@@ -5,6 +5,7 @@
     { "path": "packages/domain" },
     { "path": "packages/ports" },
     { "path": "packages/policy" },
+    { "path": "packages/application" },
     { "path": "packages/observability" },
     { "path": "adapters/agent-mock" },
     { "path": "adapters/memory-inmemory" },

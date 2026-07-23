@@ -57,6 +57,21 @@ importers:
         specifier: 2.9.0
         version: 2.9.0
 
+  packages/application:
+    dependencies:
+      '@asep/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@asep/domain':
+        specifier: workspace:*
+        version: link:../domain
+      '@asep/policy':
+        specifier: workspace:*
+        version: link:../policy
+      '@asep/ports':
+        specifier: workspace:*
+        version: link:../ports
+
   packages/contracts:
     dependencies:
       ajv:

@@ -55,6 +55,15 @@ export interface ArtifactRef {
   readonly kind: string;
 }
 
+// TenantScope (data-model §1, disp. P2-PLAN-HIGH-003). Derived from
+// authenticated server state — NEVER from client-supplied body fields. Every
+// application use case and every repository method takes it as the first
+// parameter and filters on it, so project A can never read/write project B.
+export interface TenantScope {
+  readonly organizationId: OrganizationId;
+  readonly projectId: ProjectId;
+}
+
 // Shared value-object types referenced by the generated contracts via x-tsType.
 export interface SkillRef { readonly id: string; readonly version: string; }
 export interface Budget {

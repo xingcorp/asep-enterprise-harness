@@ -1,22 +1,38 @@
-import type { CodingAgentProvider } from '@asep/ports';
-import type { AgentAttemptResult, AttemptId, ContextPack, WorkOrder } from '@asep/contracts';
+import type {
+  CodingAgentProvider,
+  AgentExecuteRequest,
+  AgentAttemptObservation,
+} from '@asep/ports';
 
+// Mock coding provider for CI and the vertical-slice driver. It performs NO
+// repository mutation: it returns an UNTRUSTED self-report only (v2 contract,
+// disp. P2-PLAN-HIGH-002). Harness-owned facts (resultSha, changedFiles) are
+// derived by the trusted GitChangeInspector/GitCommitter after the agent exits,
+// so the mock deliberately cannot influence them. Replace with the real Claude
+// adapter in S6.
 export class MockCodingAgentProvider implements CodingAgentProvider {
   readonly providerId = 'mock-agent';
 
-  async execute(order: WorkOrder, context: ContextPack): Promise<AgentAttemptResult> {
+  async execute(req: AgentExecuteRequest): Promise<AgentAttemptObservation> {
+    // Honour request-scoped cancellation immediately if already aborted.
+    if (req.signal.aborted) {
+      return {
+        status: 'BLOCKED',
+        summary: 'Aborted before start.',
+        knownLimitations: ['Request was cancelled via AbortSignal.'],
+        usage: { inputTokens: 0, outputTokens: 0, modelCostUsd: 0, toolCalls: 0, wallClockMs: 0 },
+        eventArtifactRefs: [],
+      };
+    }
     return {
-      attemptId: `attempt-${order.id}` as AttemptId,
-      status: 'SUCCEEDED',
-      startSha: order.baseSha,
-      resultSha: order.baseSha,
-      changedFiles: [],
-      summary: `Mock execution for ${context.objective}`,
-      knownLimitations: ['No repository mutation; replace this adapter with Claude/Codex/OpenHands.'],
-      artifactIds: [],
-      usage: { inputTokens: 0, outputTokens: 0, modelCostUsd: 0, toolCalls: 0, wallClockMs: 1 }
+      status: 'AGENT_DONE',
+      summary: `Mock agent completed for work-order ref ${req.workOrderRef.artifactId}`,
+      knownLimitations: [
+        'No repository mutation; replace this adapter with the Claude coding provider (S6).',
+      ],
+      providerSessionId: `mock-session-${req.attemptId}`,
+      usage: { inputTokens: 0, outputTokens: 0, modelCostUsd: 0, toolCalls: 0, wallClockMs: 1 },
+      eventArtifactRefs: [],
     };
   }
-
-  async cancel(_attemptId: AttemptId): Promise<void> {}
 }
