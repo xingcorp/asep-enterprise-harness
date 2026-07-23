@@ -12,12 +12,48 @@ export type TaskId = Brand<string, 'TaskId'>;
 export type AttemptId = Brand<string, 'AttemptId'>;
 export type ArtifactId = Brand<string, 'ArtifactId'>;
 
+// Phase 2 operational identifiers (data-model §1). ULID-shaped strings generated
+// by the harness; branded so they cannot be crossed with business identifiers.
+export type OrganizationId = Brand<string, 'OrganizationId'>;
+export type RepositoryBindingId = Brand<string, 'RepositoryBindingId'>;
+export type WorkspaceId = Brand<string, 'WorkspaceId'>;
+export type CommandExecutionId = Brand<string, 'CommandExecutionId'>;
+export type PullRequestId = Brand<string, 'PullRequestId'>;
+
 export type RiskLevel = 'R0' | 'R1' | 'R2' | 'R3' | 'R4';
 export type RunStatus =
   | 'DRAFT' | 'DISCOVERY' | 'SPECIFICATION_REVIEW' | 'ARCHITECTURE_REVIEW'
   | 'PLANNING' | 'READY' | 'EXECUTING' | 'VERIFYING' | 'INDEPENDENT_REVIEW'
   | 'REPAIRING' | 'INTEGRATING' | 'PRODUCT_ACCEPTANCE' | 'RELEASE_REHEARSAL'
   | 'WAITING_FOR_APPROVAL' | 'PAUSED' | 'BLOCKED' | 'FAILED' | 'CANCELLED' | 'DONE';
+
+// ---------------------------------------------------------------------------
+// Phase 2 operational lifecycle enums (data-model §4). These govern the
+// harness-owned operational state machines in @asep/domain. They are NOT the
+// business RunStatus above; a Task/Attempt/Lease progresses through these.
+// ---------------------------------------------------------------------------
+
+// Task: no machine transition into ACCEPTED/DONE — WAITING_FOR_HUMAN_REVIEW is
+// terminal for the harness (data-model §4, exit criterion I2).
+export type TaskStatus =
+  | 'PENDING' | 'READY' | 'EXECUTING' | 'VERIFYING'
+  | 'WAITING_FOR_HUMAN_REVIEW' | 'FAILED' | 'BLOCKED' | 'CANCELLED';
+
+export type AttemptStatus =
+  | 'STARTED' | 'AGENT_RUNNING' | 'AGENT_DONE' | 'INSPECTING' | 'VERIFYING'
+  | 'EVIDENCE_BUILT' | 'COMMITTED' | 'PUSHED' | 'PR_OPEN' | 'SUCCEEDED'
+  | 'FAILED' | 'BLOCKED' | 'BUDGET_EXHAUSTED' | 'CANCELLED';
+
+export type LeaseStatus = 'ACTIVE' | 'RELEASED' | 'EXPIRED' | 'QUARANTINED';
+
+// A scoped, hash-carrying reference to an immutable content-addressed artifact.
+// Authoritative links use this shape (artifact id + expected checksum + kind),
+// never an arbitrary path (architecture §6, data-model §3 disp. P2-PLAN-HIGH-004).
+export interface ArtifactRef {
+  readonly artifactId: ArtifactId;
+  readonly sha256: string;
+  readonly kind: string;
+}
 
 // Shared value-object types referenced by the generated contracts via x-tsType.
 export interface SkillRef { readonly id: string; readonly version: string; }

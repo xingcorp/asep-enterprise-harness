@@ -1,0 +1,14 @@
+{
+  "organizationId": "01J000000000000000000ORG0",
+  "projectId": "01J000000000000000000PROJ",
+  "repositoryBindingId": "01J0000000000000000000RB0",
+  "runId": "01J0000000000000000000RUN",
+  "taskId": "01J000000000000000000TASK",
+  "workOrderRef": {
+    "artifactId": "01J000000000000000000WO01",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "kind": "work-order"
+  },
+  "workOrderSchemaVersion": "1.0.0",
+  "envelopeSchemaVersion": "1.0.0"
+}

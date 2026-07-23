@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://asep.dev/schema/run-event/v1",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "title": "RunEvent",
   "description": "Immutable telemetry record emitted by the trusted harness. This is the single source catalog for every metric operand: the measurement dictionary may only reference eventType values and field names defined here.",
   "type": "object",
@@ -64,7 +64,9 @@
     "requirementAccepted": { "type": "boolean" },
     "userJourneySuccess": { "type": "boolean" },
     "tenantId": { "type": "string" },
-    "projectId": { "type": "string", "x-tsType": "ProjectId" }
+    "projectId": { "type": "string", "x-tsType": "ProjectId" },
+    "organizationId": { "type": "string", "description": "Owning organization (additive v1.1.0; disp. P2-PLAN-HIGH-010, exit J2).", "x-tsType": "OrganizationId" },
+    "repositoryBindingId": { "type": "string", "description": "Owning repository binding (additive v1.1.0; disp. P2-PLAN-HIGH-010, exit J2).", "x-tsType": "RepositoryBindingId" }
   },
   "examples": [
     {

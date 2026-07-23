@@ -44,6 +44,8 @@ interface JsonSchema {
 // Names exported by ./base.ts that generated code may import.
 const BASE_EXPORTS = new Set([
   'ProjectId', 'RunId', 'MilestoneId', 'TaskId', 'AttemptId', 'ArtifactId',
+  'OrganizationId', 'RepositoryBindingId', 'WorkspaceId', 'CommandExecutionId',
+  'PullRequestId', 'ArtifactRef',
   'RiskLevel', 'RunStatus', 'SkillRef', 'Budget',
 ]);
 

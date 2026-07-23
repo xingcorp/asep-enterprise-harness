@@ -122,7 +122,16 @@ export function parseBaseStructure(source: string): BaseStructure {
       memberCount++;
       const prop = mm[1]!;
       const optional = mm[2] === '?';
-      const scalar = scalarOf(mm[3]!);
+      let scalar = scalarOf(mm[3]!);
+      // A member typed as a previously-declared branded id resolves to its
+      // underlying scalar: a branded string is `type: string` at the schema
+      // level (e.g. ArtifactRef.artifactId: ArtifactId -> string). Brands are
+      // parsed in the type-alias pass above, so they are already in `out`.
+      if (!scalar) {
+        const memberType = mm[3]!.trim();
+        const brandDesc = out[memberType];
+        if (brandDesc && brandDesc.kind === 'brand') scalar = brandDesc.base;
+      }
       if (!scalar) {
         allScalar = false;
         break;

@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://asep.dev/schema/execution-envelope/v1",
+  "version": "1.0.0",
+  "title": "ExecutionEnvelope",
+  "description": "Operational routing record that crosses the API/CLI/worker/persistence (and future Temporal) boundaries. Separate from the business WorkOrder: the envelope carries the operational identifiers (org/project/repository-binding/run/task/attempt) plus an immutable reference to the WorkOrder and the schema versions in play. Boundary code rejects malformed or unknown envelope versions.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["organizationId", "projectId", "repositoryBindingId", "runId", "taskId", "attemptId", "workOrderRef", "workOrderSchemaVersion", "envelopeSchemaVersion"],
+  "properties": {
+    "organizationId": { "type": "string", "minLength": 1, "x-tsType": "OrganizationId" },
+    "projectId": { "type": "string", "minLength": 1, "x-tsType": "ProjectId" },
+    "repositoryBindingId": { "type": "string", "minLength": 1, "x-tsType": "RepositoryBindingId" },
+    "runId": { "type": "string", "minLength": 1, "x-tsType": "RunId" },
+    "taskId": { "type": "string", "minLength": 1, "x-tsType": "TaskId" },
+    "attemptId": { "type": "string", "minLength": 1, "x-tsType": "AttemptId" },
+    "workOrderRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifactId", "sha256", "kind"],
+      "properties": {
+        "artifactId": { "type": "string", "minLength": 1 },
+        "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "kind": { "type": "string", "minLength": 1 }
+      },
+      "x-tsType": "ArtifactRef"
+    },
+    "workOrderSchemaVersion": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+    "envelopeSchemaVersion": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" }
+  },
+  "examples": [
+    {
+      "organizationId": "01J000000000000000000ORG0",
+      "projectId": "01J000000000000000000PROJ",
+      "repositoryBindingId": "01J0000000000000000000RB0",
+      "runId": "01J0000000000000000000RUN",
+      "taskId": "01J000000000000000000TASK",
+      "attemptId": "01J0000000000000000000ATT",
+      "workOrderRef": {
+        "artifactId": "01J000000000000000000WO01",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "kind": "work-order"
+      },
+      "workOrderSchemaVersion": "1.0.0",
+      "envelopeSchemaVersion": "1.0.0"
+    }
+  ]
+}

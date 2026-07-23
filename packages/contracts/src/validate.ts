@@ -58,7 +58,8 @@ export type ContractName =
   | 'finding'
   | 'verification-plan'
   | 'run-event'
-  | 'skill-manifest';
+  | 'skill-manifest'
+  | 'execution-envelope';
 
 interface RawSchema {
   $id: string;

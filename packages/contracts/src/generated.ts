@@ -3,7 +3,7 @@
 // Regenerate with: pnpm --filter @asep/contracts gen:types
 // The drift-guard test (src/drift.test.ts) fails if this file is stale.
 
-import type { ArtifactId, AttemptId, Budget, ProjectId, RiskLevel, RunId, SkillRef, TaskId } from './base.js';
+import type { ArtifactId, ArtifactRef, AttemptId, Budget, OrganizationId, ProjectId, RepositoryBindingId, RiskLevel, RunId, SkillRef, TaskId } from './base.js';
 
 export interface AcceptanceScenario {
   readonly id: string;
@@ -61,6 +61,19 @@ export interface EvidenceBundle {
   readonly stdoutArtifactId?: ArtifactId;
   readonly stderrArtifactId?: ArtifactId;
 })[];
+}
+
+/** Operational routing record that crosses the API/CLI/worker/persistence (and future Temporal) boundaries. Separate from the business WorkOrder: the envelope carries the operational identifiers (org/project/repository-binding/run/task/attempt) plus an immutable reference to the WorkOrder and the schema versions in play. Boundary code rejects malformed or unknown envelope versions. */
+export interface ExecutionEnvelope {
+  readonly organizationId: OrganizationId;
+  readonly projectId: ProjectId;
+  readonly repositoryBindingId: RepositoryBindingId;
+  readonly runId: RunId;
+  readonly taskId: TaskId;
+  readonly attemptId: AttemptId;
+  readonly workOrderRef: ArtifactRef;
+  readonly workOrderSchemaVersion: string;
+  readonly envelopeSchemaVersion: string;
 }
 
 export interface Finding {
@@ -137,6 +150,8 @@ export interface RunEvent {
   readonly userJourneySuccess?: boolean;
   readonly tenantId?: string;
   readonly projectId?: ProjectId;
+  readonly organizationId?: OrganizationId;
+  readonly repositoryBindingId?: RepositoryBindingId;
 }
 
 export interface SkillManifest {
