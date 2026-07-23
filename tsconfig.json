@@ -13,6 +13,7 @@
     { "path": "adapters/git-worktree" },
     { "path": "adapters/command-runner" },
     { "path": "adapters/agent-claude" },
+    { "path": "adapters/github-app" },
     { "path": "workers/workflow-worker" },
     { "path": "apps/control-plane-api" },
     { "path": "evals" },

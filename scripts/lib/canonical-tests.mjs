@@ -108,6 +108,7 @@ export const REQUIRED_SUITES = Object.freeze({
   'asep-suite:git-worktree': 'adapters/git-worktree/src/git-worktree.test.ts',
   'asep-suite:command-runner': 'adapters/command-runner/src/command-runner.test.ts',
   'asep-suite:agent-claude': 'adapters/agent-claude/src/agent-claude.test.ts',
+  'asep-suite:github-app': 'adapters/github-app/src/github-app.test.ts',
 });
 
 /** The machine-readable marker a suite prints at module load: `SUITE-ID: <id>`. */
