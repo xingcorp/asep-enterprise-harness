@@ -15,9 +15,14 @@
 #   scripts/pii-scan.sh --self-test # prove the scanner catches canaries
 set -euo pipefail
 
-# Force a byte-wise locale: macOS/BSD grep aborts (Abort trap: 6) on invalid
-# multibyte sequences under a UTF-8 locale. C locale + grep -a keeps matching
-# deterministic and crash-free across binary-ish tracked files.
+# Force a byte-wise locale for deterministic, encoding-independent matching.
+#
+# NOTE (macOS): BSD `grep -o` under bash 3.2 aborts intermittently with
+# "Abort trap: 6" (SIGABRT) — a heap bug in the system grep that fires
+# nondeterministically (~25% of runs) regardless of the LC_ALL=C mitigation.
+# Match extraction is therefore delegated to perl (see extract_matches), which
+# is crash-free and produces byte-identical `lineno:match` output. LC_ALL=C is
+# still exported so perl treats input as raw bytes, matching the old semantics.
 export LC_ALL=C LANG=C
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -42,34 +47,52 @@ EXEMPT_REGEX='^(scripts/pii-scan\.sh|scripts/pii-scan\.test\.ts|scripts/check-pu
 scan_paths() {
   # Args: files. Prints "  path:line:match". Returns 0 if any hit, 1 if clean.
   #
+  # SINGLE-PROCESS SCAN (macOS SIGABRT fix). The previous implementation spawned
+  # one match-extractor per (file × pattern) plus a `grep -qiE` per email match —
+  # ~888+ fork/exec for a full repo scan. Under bash 3.2 + the macOS system
+  # allocator that fork volume intermittently aborts the shell with
+  # "Abort trap: 6" (SIGABRT, ~25% of runs). The entire scan is therefore done in
+  # ONE perl invocation: perl walks every file, applies all three patterns, and
+  # applies the email allowlist PER MATCH internally — no per-file/per-match
+  # subprocesses at all.
+  #
   # The email allowlist is applied PER MATCH, never per line (P1-FINAL-HIGH-003).
   # A line like `user@example.com real=jane.doe@gmail.com` mixes a placeholder
-  # with a real address; extracting each email individually and allowlisting
-  # only the placeholder tokens ensures the real gmail is still caught instead
-  # of the whole line being skipped because it happened to contain a placeholder.
-  local found=1 file idx pat lineno matchtext
-  for file in "$@"; do
-    [ -f "$file" ] || continue
-    for idx in "${!PII_PATTERNS[@]}"; do
-      pat="${PII_PATTERNS[$idx]}"
-      # grep -o extracts EACH match separately (one per output line); -n keeps
-      # the source line number as `lineno:match`. We then decide per match.
-      while IFS= read -r rawmatch; do
-        lineno="${rawmatch%%:*}"
-        matchtext="${rawmatch#*:}"
-        # The email pattern (index 0) is the only one with an allowlist, and it
-        # is applied to the extracted email TOKEN, not the surrounding line.
-        if [ "$idx" -eq 0 ]; then
-          if printf '%s' "$matchtext" | grep -qiE "$EMAIL_ALLOW"; then
-            continue
-          fi
-        fi
-        echo "  ${file}:${lineno}:${matchtext}"
-        found=0
-      done < <(grep -anoE "$pat" "$file" 2>/dev/null || true)
-    done
-  done
-  return $found
+  # with a real address; matching each email individually and allowlisting only
+  # the placeholder tokens ensures the real gmail is still caught instead of the
+  # whole line being skipped because it happened to contain a placeholder.
+  #
+  # Patterns/allowlist are passed via the environment so shell quoting never
+  # mangles the regexes. Output is byte-identical to the old `grep -anoE` path
+  # (verified against all three patterns). Returns 0 if any hit, 1 if clean.
+  PII_EMAIL="${PII_PATTERNS[0]}" \
+  PII_PHONE="${PII_PATTERNS[1]}" \
+  PII_SSN="${PII_PATTERNS[2]}" \
+  PII_ALLOW="$EMAIL_ALLOW" \
+  perl -e '
+    my ($email, $phone, $ssn, $allow) =
+      @ENV{qw(PII_EMAIL PII_PHONE PII_SSN PII_ALLOW)};
+    my $found = 0;
+    for my $file (@ARGV) {
+      next unless -f $file;
+      open(my $fh, "<", $file) or next;
+      my $ln = 0;
+      while (my $line = <$fh>) {
+        $ln++;
+        # Email (index 0): allowlist applied to the extracted TOKEN, not the line.
+        while ($line =~ /$email/g) {
+          my $m = $&;
+          next if $m =~ /$allow/i;
+          print "  $file:$ln:$m\n";
+          $found = 1;
+        }
+        while ($line =~ /$phone/g) { print "  $file:$ln:$&\n"; $found = 1; }
+        while ($line =~ /$ssn/g)   { print "  $file:$ln:$&\n"; $found = 1; }
+      }
+      close($fh);
+    }
+    exit($found ? 0 : 1);
+  ' "$@"
 }
 
 self_test() {
