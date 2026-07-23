@@ -99,6 +99,12 @@ export const REQUIRED_SUITES = Object.freeze({
   // otherwise the mechanism that guards every other required suite could be
   // silently dropped, which is the MED-001 defect one level up.
   'asep-suite:canonical-runner': 'scripts/run-canonical-tests.test.ts',
+  // Phase 2 critical suites (exit criterion K4): tenancy/migration/lease and the
+  // content-addressed artifact store. Registered here so a dropped, renamed, or
+  // crash-before-first-line Phase-2 suite turns the gate RED, same mechanism as
+  // the Phase-1 SUITE-IDs above.
+  'asep-suite:persistence-tenancy': 'adapters/persistence/src/persistence.test.ts',
+  'asep-suite:artifact-store': 'adapters/persistence/src/artifact-store.test.ts',
 });
 
 /** The machine-readable marker a suite prints at module load: `SUITE-ID: <id>`. */
