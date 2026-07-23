@@ -59,7 +59,14 @@ export function runCanonicalTests(opts = {}) {
   // (3) Explicit, shell-free child. `node --import tsx --test <files...>` runs
   // TypeScript tests directly; shell:false + an explicit argv means no glob,
   // no word-splitting, no interpolation. Files are passed as discrete args.
-  const args = ['--import', 'tsx', '--test', ...files];
+  // --test-concurrency bounds how many test FILES run in parallel. Several
+  // Phase-2 suites each spin up an in-process pglite (WASM PostgreSQL) instance,
+  // which is memory/CPU heavy; letting the default (≈CPU count) run at once made
+  // the artifact-store suite intermittently time out under contention. Cap the
+  // parallelism so the DB-heavy suites don't starve each other, keeping the gate
+  // deterministic. Overridable via ASEP_TEST_CONCURRENCY for a faster local run.
+  const concurrency = process.env['ASEP_TEST_CONCURRENCY'] ?? '2';
+  const args = ['--import', 'tsx', `--test-concurrency=${concurrency}`, '--test', ...files];
   const child = spawnSync(process.execPath, args, {
     cwd: REPO_ROOT,
     shell: false,
