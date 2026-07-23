@@ -9,6 +9,7 @@
     { "path": "packages/observability" },
     { "path": "adapters/agent-mock" },
     { "path": "adapters/memory-inmemory" },
+    { "path": "adapters/persistence" },
     { "path": "workers/workflow-worker" },
     { "path": "apps/control-plane-api" },
     { "path": "evals" },
