@@ -37,3 +37,18 @@ export function transition(run: RunAggregate, next: RunStatus): RunAggregate {
 export function isTerminal(status: RunStatus): boolean {
   return status === 'DONE' || status === 'FAILED' || status === 'CANCELLED';
 }
+
+// Phase 2 operational state machines (Task / Attempt / WorkspaceLease).
+export {
+  transitionTask,
+  isTaskTerminal,
+  taskReachableStates,
+  transitionAttempt,
+  isAttemptTerminal,
+  attemptReachableStates,
+  transitionLease,
+  isLeaseTerminal,
+  type TaskAggregate,
+  type AttemptAggregate,
+  type WorkspaceLeaseAggregate,
+} from './operational.js';
