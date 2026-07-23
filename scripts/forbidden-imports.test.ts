@@ -39,6 +39,12 @@ const DOMAIN_PACKAGES = [
   'observability',
 ] as const;
 
+// The application layer (exit criterion B3) must also stay free of provider
+// SDKs AND all infrastructure bindings (Fastify, pg, Octokit, AWS, Docker):
+// the execution use case composes only against @asep/ports interfaces, so a
+// concrete infra import here is a layering violation.
+const APPLICATION_PACKAGES = ['application'] as const;
+
 // Forbidden import specifiers. Each entry is matched against the *module
 // specifier* of an import/require (the string in quotes), not arbitrary code,
 // to avoid false positives on comments or identifiers.
@@ -57,6 +63,18 @@ const FORBIDDEN: ReadonlyArray<{ label: string; test: (spec: string) => boolean 
   { label: 'http client lib', test: (s) => /^(axios|undici|got|node-fetch|superagent|request)($|\/)/.test(s) },
 ];
 
+// Infrastructure bindings additionally banned from the domain + application
+// layers (exit criterion B3). These are legitimate in adapters/* and the
+// composition roots (apps/*, workers/*) but never in pure layers.
+const FORBIDDEN_INFRA: ReadonlyArray<{ label: string; test: (spec: string) => boolean }> = [
+  { label: 'Fastify', test: (s) => /^fastify($|\/)/.test(s) },
+  { label: 'PostgreSQL driver', test: (s) => /^(pg|pg-pool|postgres|slonik|drizzle-orm|typeorm|knex)($|\/)/.test(s) },
+  { label: 'Octokit / GitHub SDK', test: (s) => /^(@octokit\/|octokit$)/.test(s) },
+  { label: 'AWS SDK', test: (s) => /^(aws-sdk|@aws-sdk\/)/.test(s) },
+  { label: 'Docker SDK', test: (s) => /^(dockerode|@docker\/)/.test(s) },
+  { label: 'child_process (shell/git)', test: (s) => /^(node:)?child_process$/.test(s) },
+];
+
 // Match ESM import ... from '<spec>' , bare import '<spec>' , dynamic import('<spec>')
 // and CommonJS require('<spec>'). Captures the specifier in group 1|2|3|4.
 const IMPORT_RE =
@@ -73,6 +91,16 @@ function specifiersOf(source: string): string[] {
 
 function firstForbidden(spec: string): string | null {
   for (const rule of FORBIDDEN) {
+    if (rule.test(spec)) return rule.label;
+  }
+  return null;
+}
+
+// Domain rules PLUS infra bindings — applied to the application layer.
+function firstForbiddenAppLayer(spec: string): string | null {
+  const base = firstForbidden(spec);
+  if (base) return base;
+  for (const rule of FORBIDDEN_INFRA) {
     if (rule.test(spec)) return rule.label;
   }
   return null;
@@ -151,4 +179,144 @@ test('self-check: legitimate domain imports are NOT flagged', () => {
   const specs = specifiersOf(ok);
   const flagged = specs.filter((s) => firstForbidden(s) !== null);
   assert.deepEqual(flagged, [], `legitimate imports wrongly flagged: ${flagged.join(', ')}`);
+});
+
+// ---------------------------------------------------------------------------
+// Application-layer layering (exit criterion B3). The execution use case in
+// @asep/application composes ONLY against @asep/ports interfaces + pure policy/
+// domain logic — never a provider SDK and never a concrete infra binding
+// (Fastify, pg, Octokit, AWS, Docker, child_process). It may import @asep/*
+// workspace packages freely.
+// ---------------------------------------------------------------------------
+
+test('application layer imports no provider SDK or infrastructure binding', () => {
+  const violations: string[] = [];
+  let filesScanned = 0;
+  for (const pkg of APPLICATION_PACKAGES) {
+    const srcDir = join(REPO_ROOT, 'packages', pkg, 'src');
+    for (const file of walkTs(srcDir)) {
+      filesScanned++;
+      const source = readFileSync(file, 'utf8');
+      for (const spec of specifiersOf(source)) {
+        const bad = firstForbiddenAppLayer(spec);
+        if (bad) violations.push(`${file}: imports '${spec}' (${bad})`);
+      }
+    }
+  }
+  assert.ok(filesScanned > 0, 'application fitness scanned zero files — glob is broken');
+  assert.deepEqual(
+    violations,
+    [],
+    `forbidden imports found in application layer:\n${violations.join('\n')}`,
+  );
+});
+
+test('self-check: application infra matcher catches seeded infra + provider imports', () => {
+  const seeded = [
+    `import Fastify from 'fastify';`,
+    `import { Pool } from 'pg';`,
+    `import { Octokit } from '@octokit/rest';`,
+    `import { S3Client } from '@aws-sdk/client-s3';`,
+    `import Docker from 'dockerode';`,
+    `import { spawn } from 'node:child_process';`,
+    `import Anthropic from '@anthropic-ai/sdk';`,
+  ].join('\n');
+  const specs = specifiersOf(seeded);
+  const flagged = specs.filter((s) => firstForbiddenAppLayer(s) !== null);
+  assert.equal(flagged.length, 7, `expected all 7 seeded app-layer violations flagged, got ${flagged.length}`);
+});
+
+test('self-check: legitimate application imports (ports/policy/domain) are NOT flagged', () => {
+  const ok = [
+    `import type { CodingAgentProvider } from '@asep/ports';`,
+    `import { approvalFor } from '@asep/policy';`,
+    `import { transitionTask } from '@asep/domain';`,
+    `import type { RiskLevel } from '@asep/contracts';`,
+  ].join('\n');
+  const specs = specifiersOf(ok);
+  const flagged = specs.filter((s) => firstForbiddenAppLayer(s) !== null);
+  assert.deepEqual(flagged, [], `legitimate app imports wrongly flagged: ${flagged.join(', ')}`);
+});
+
+// ---------------------------------------------------------------------------
+// Composition-root discipline (exit criteria B2 + B5). apps/* and workers/*
+// wire adapters to the application use case and forward requests. They must
+// contain NO domain decision, persistence query, provider call or workflow
+// sequencing of their own. This is defined negatively: a handler/root may parse
+// transport, validate, call the use case and map the response, but a raw SQL
+// query, a git/child_process spawn, a provider-SDK instantiation or a direct
+// policy-decision call inside a root is a layering violation (disp.
+// P2-PLAN-LOW-001). The mutation self-test proves the detector rejects each
+// seeded violation and accepts a thin route.
+// ---------------------------------------------------------------------------
+
+const ROOT_PACKAGES: ReadonlyArray<{ base: string; names: readonly string[] }> = [
+  { base: 'apps', names: ['control-plane-api'] },
+  { base: 'workers', names: ['workflow-worker'] },
+];
+
+// Patterns that must never appear in composition-root source. Matched against
+// raw source (not just import specifiers) because the violation is the *use*,
+// not the import.
+const ROOT_FORBIDDEN: ReadonlyArray<{ label: string; test: (src: string) => boolean }> = [
+  { label: 'raw SQL query', test: (s) => /\b(SELECT|INSERT|UPDATE|DELETE)\s+[\s\S]*?\bFROM\b|\.query\s*\(/i.test(s) },
+  { label: 'git / child_process spawn', test: (s) => /\b(spawn|spawnSync|execFile|execFileSync|exec)\s*\(\s*['"`]?git\b/.test(s) || /child_process/.test(s) },
+  { label: 'provider SDK instantiation', test: (s) => /new\s+(Anthropic|OpenAI)\s*\(/.test(s) || /@anthropic-ai\/|(^|[^a-z])openai($|\/)/.test(s) },
+  { label: 'direct policy decision', test: (s) => /\b(admitRisk|gatePolicy|classifyRisk|approvalFor|requiredLevels|classifyFailure)\s*\(/.test(s) },
+];
+
+function rootViolations(source: string): string[] {
+  return ROOT_FORBIDDEN.filter((r) => r.test(source)).map((r) => r.label);
+}
+
+test('composition roots (apps/*, workers/*) contain no domain/persistence/provider/policy logic', () => {
+  const violations: string[] = [];
+  let filesScanned = 0;
+  for (const { base, names } of ROOT_PACKAGES) {
+    for (const name of names) {
+      const srcDir = join(REPO_ROOT, base, name, 'src');
+      for (const file of walkTs(srcDir)) {
+        if (file.endsWith('.test.ts')) continue; // tests may construct fakes/spies
+        filesScanned++;
+        const source = readFileSync(file, 'utf8');
+        for (const bad of rootViolations(source)) {
+          violations.push(`${file}: contains ${bad}`);
+        }
+      }
+    }
+  }
+  assert.ok(filesScanned > 0, 'composition-root arch test scanned zero files — glob is broken');
+  assert.deepEqual(
+    violations,
+    [],
+    `composition-root discipline violated:\n${violations.join('\n')}`,
+  );
+});
+
+test('arch mutation self-test: a seeded SQL/Git/provider/policy call in a handler is REJECTED', () => {
+  const seededSql = `app.get('/x', async () => { const r = await pool.query('SELECT * FROM tasks'); return r; });`;
+  const seededGit = `import { spawn } from 'node:child_process'; spawn('git', ['status']);`;
+  const seededProvider = `const a = new Anthropic({ apiKey: k }); await a.messages.create({});`;
+  const seededPolicy = `app.post('/run', () => { const d = admitRisk(body.risk); return d; });`;
+  assert.ok(rootViolations(seededSql).includes('raw SQL query'), 'seeded SQL not detected');
+  assert.ok(rootViolations(seededGit).includes('git / child_process spawn'), 'seeded git not detected');
+  assert.ok(rootViolations(seededProvider).includes('provider SDK instantiation'), 'seeded provider not detected');
+  assert.ok(rootViolations(seededPolicy).includes('direct policy decision'), 'seeded policy call not detected');
+});
+
+test('arch mutation self-test: a thin route that only parses + forwards to the use case is ACCEPTED', () => {
+  const thinRoute = [
+    `import { runExecuteTask } from '@asep/workflow-worker';`,
+    `app.post('/v1/tasks/:id/execute', async (req, reply) => {`,
+    `  const scope = req.tenantScope;             // from auth hook`,
+    `  const input = parseExecuteRequest(req.body); // transport parsing`,
+    `  const result = await runExecuteTask({ ...input, scope });`,
+    `  return reply.code(200).send(mapResult(result)); // response mapping`,
+    `});`,
+  ].join('\n');
+  assert.deepEqual(
+    rootViolations(thinRoute),
+    [],
+    'a thin forwarding route was wrongly flagged as a composition-root violation',
+  );
 });
