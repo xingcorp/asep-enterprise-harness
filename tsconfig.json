@@ -11,6 +11,7 @@
     { "path": "adapters/memory-inmemory" },
     { "path": "adapters/persistence" },
     { "path": "adapters/git-worktree" },
+    { "path": "adapters/command-runner" },
     { "path": "workers/workflow-worker" },
     { "path": "apps/control-plane-api" },
     { "path": "evals" },

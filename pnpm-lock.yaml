@@ -27,6 +27,19 @@ importers:
         specifier: workspace:*
         version: link:../../packages/ports
 
+  adapters/command-runner:
+    dependencies:
+      '@asep/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+      '@asep/ports':
+        specifier: workspace:*
+        version: link:../../packages/ports
+    devDependencies:
+      '@asep/persistence':
+        specifier: workspace:*
+        version: link:../persistence
+
   adapters/git-worktree:
     dependencies:
       '@asep/contracts':

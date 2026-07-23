@@ -106,6 +106,7 @@ export const REQUIRED_SUITES = Object.freeze({
   'asep-suite:persistence-tenancy': 'adapters/persistence/src/persistence.test.ts',
   'asep-suite:artifact-store': 'adapters/persistence/src/artifact-store.test.ts',
   'asep-suite:git-worktree': 'adapters/git-worktree/src/git-worktree.test.ts',
+  'asep-suite:command-runner': 'adapters/command-runner/src/command-runner.test.ts',
 });
 
 /** The machine-readable marker a suite prints at module load: `SUITE-ID: <id>`. */
