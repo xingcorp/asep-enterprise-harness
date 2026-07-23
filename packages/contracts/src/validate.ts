@@ -1,4 +1,4 @@
-// Runtime schema validation for the 12 canonical ASEP contracts.
+// Runtime schema validation for the 13 canonical ASEP contracts.
 //
 // JSON Schema (schema/*.schema.json) is the single source of truth. This module
 // compiles those schemas once with Ajv (2020-12 dialect) and exposes a small,

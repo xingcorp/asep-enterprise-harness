@@ -1,6 +1,6 @@
 // Deterministic JSON-Schema -> TypeScript contract generator.
 //
-// The 12 canonical contracts under packages/contracts/schema/*.schema.json are
+// The 13 canonical contracts under packages/contracts/schema/*.schema.json are
 // the single source of truth. This generator derives ../generated.ts from them.
 // It is intentionally dependency-free (no json-schema-to-typescript) so the
 // output is fully deterministic and the drift-guard test can regenerate the

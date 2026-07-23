@@ -1,6 +1,6 @@
-// Hand-authored runtime types that are NOT part of the 12 canonical JSON-Schema
+// Hand-authored runtime types that are NOT part of the 13 canonical JSON-Schema
 // contracts. Branded identifiers, lifecycle enums, and the internal execution
-// shapes (agent attempt / verification result) live here. The 12 canonical
+// shapes (agent attempt / verification result) live here. The 13 canonical
 // contract types are generated from schema/*.schema.json into ./generated.ts;
 // they import the shared names below via ./base.js.
 
