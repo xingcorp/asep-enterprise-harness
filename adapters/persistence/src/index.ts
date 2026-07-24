@@ -19,12 +19,14 @@ export type { Migration } from './migrations.js';
 export { MIGRATIONS } from './migrations.js';
 export { migrate, MigrationChecksumError } from './migrator.js';
 
-export type {
-  OrganizationRow, ProjectRow, RepositoryBindingRow, RunRow, TaskRow, AttemptRow,
-} from './repositories.js';
 export {
   OrganizationRepository, ProjectRepository, RepositoryBindingRepository,
-  RunRepository, TaskRepository, AttemptRepository, scopeMatches,
+  RunRepository, TaskRepository, AttemptRepository, PullRequestRepository,
+  scopeMatches,
+} from './repositories.js';
+export type {
+  OrganizationRow, ProjectRow, RepositoryBindingRow, RunRow, TaskRow,
+  AttemptRow, PullRequestRow,
 } from './repositories.js';
 
 export { SqlWorkspaceLeaseRepository } from './lease-repository.js';

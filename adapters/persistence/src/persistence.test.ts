@@ -13,7 +13,7 @@ import { migrate, MigrationChecksumError } from './migrator.js';
 import { MIGRATIONS } from './migrations.js';
 import {
   OrganizationRepository, ProjectRepository, RepositoryBindingRepository,
-  RunRepository, TaskRepository, AttemptRepository,
+  RunRepository, TaskRepository, AttemptRepository, PullRequestRepository,
 } from './repositories.js';
 import { SqlWorkspaceLeaseRepository } from './lease-repository.js';
 import { OptimisticConcurrencyError, ScopeViolationError } from './sql.js';
@@ -297,6 +297,64 @@ test('HIGH-005: attaching an evidence artifact from another project is rejected 
   await assert.rejects(
     () => attempts.attachEvidence(scope, attemptId, 0, {
       artifactId: foreignArtifact as never, sha256: 'd'.repeat(64), kind: 'evidence-bundle',
+    }),
+    /foreign key|violates/i,
+  );
+  await client.close();
+});
+
+// HIGH-008: the PullRequestRepository persists the authoritative PR row so the
+// K1 traceability chain resolves on real state. The upsert is idempotent on
+// (binding, head_branch) and carries a SCOPED evidence ref (composite FK).
+
+test('HIGH-008: PR upsert is idempotent on (binding, head_branch) and persists the scoped evidence ref', async () => {
+  const client = await freshDb();
+  const { scope, binding } = await seedScope(client);
+  const prs = new PullRequestRepository(client);
+  const attemptId = await seedAttempt(client, scope, binding.id);
+  const sha = 'a'.repeat(64);
+  const artifactId = await seedArtifact(client, scope, sha);
+  const first = await prs.upsert(scope, {
+    repositoryBindingId: binding.id, attemptId, forge: 'github',
+    number: 7, headBranch: 'asep/attempt-1', baseBranch: 'main',
+    url: 'https://forge/pr/7', state: 'OPEN',
+    evidenceRef: { artifactId: artifactId as never, sha256: sha, kind: 'evidence-bundle' },
+  });
+  assert.equal(first.number, 7);
+  assert.equal(first.evidenceArtifactId, artifactId);
+  assert.equal(first.evidenceSha256, sha);
+  // A retry with the SAME head branch updates the existing row (no duplicate).
+  const again = await prs.upsert(scope, {
+    repositoryBindingId: binding.id, attemptId, forge: 'github',
+    number: 7, headBranch: 'asep/attempt-1', baseBranch: 'main',
+    url: 'https://forge/pr/7', state: 'OPEN',
+    evidenceRef: { artifactId: artifactId as never, sha256: sha, kind: 'evidence-bundle' },
+  });
+  assert.equal(again.id, first.id, 'the same PR row is reused, not duplicated');
+  assert.ok(again.version > first.version, 'the retry bumps version on the existing row');
+  // Exactly one PR row exists for this (binding, branch).
+  const count = await client.query(
+    `select count(*)::int as n from pull_requests
+     where repository_binding_id = $1 and head_branch = $2`,
+    [binding.id, 'asep/attempt-1'],
+  );
+  assert.equal(count.rows[0]!['n'], 1, 'idempotent upsert never duplicates the PR');
+  await client.close();
+});
+
+test('HIGH-008: a PR naming an evidence artifact from another project is rejected by the DB', async () => {
+  const client = await freshDb();
+  const { scope, binding } = await seedScope(client);
+  const other = await seedScope(client);
+  const prs = new PullRequestRepository(client);
+  const attemptId = await seedAttempt(client, scope, binding.id);
+  const foreignArtifact = await seedArtifact(client, other.scope, 'b'.repeat(64));
+  await assert.rejects(
+    () => prs.upsert(scope, {
+      repositoryBindingId: binding.id, attemptId, forge: 'github',
+      number: 1, headBranch: 'asep/attempt-1', baseBranch: 'main',
+      url: null, state: 'OPEN',
+      evidenceRef: { artifactId: foreignArtifact as never, sha256: 'b'.repeat(64), kind: 'evidence-bundle' },
     }),
     /foreign key|violates/i,
   );

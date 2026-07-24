@@ -14,6 +14,7 @@
 import type {
   OrganizationId, ProjectId, RepositoryBindingId, RunId, TaskId, AttemptId,
   TenantScope, RiskLevel, TaskStatus, AttemptStatus, ArtifactRef, ArtifactId,
+  PullRequestId,
 } from '@asep/contracts';
 import type { SqlExecutor, SqlRow } from './sql.js';
 import { OptimisticConcurrencyError, ScopeViolationError } from './sql.js';
@@ -85,6 +86,25 @@ export interface AttemptRow {
   // this attempt's (org, project) → artifacts, and the expected sha256 is
   // pinned so a swapped-bytes artifact is detectable. Null until evidence is
   // attached (post-commit, pre-push in the pipeline).
+  readonly evidenceArtifactId: ArtifactId | null;
+  readonly evidenceSha256: string | null;
+  readonly version: number;
+}
+
+export interface PullRequestRow {
+  readonly id: PullRequestId;
+  readonly organizationId: OrganizationId;
+  readonly projectId: ProjectId;
+  readonly repositoryBindingId: RepositoryBindingId;
+  readonly attemptId: AttemptId;
+  readonly forge: string;
+  readonly number: number | null;
+  readonly headBranch: string;
+  readonly baseBranch: string;
+  readonly url: string | null;
+  readonly state: string;
+  // Scoped evidence link (HIGH-005/008): composite-FK-bound to this PR's
+  // (org, project) → artifacts, with the expected sha256 pinned.
   readonly evidenceArtifactId: ArtifactId | null;
   readonly evidenceSha256: string | null;
   readonly version: number;
@@ -410,6 +430,95 @@ export class AttemptRepository {
       baseSha: (row['base_sha'] as string | null) ?? null,
       resultSha: (row['result_sha'] as string | null) ?? null,
       agentProviderId: (row['agent_provider_id'] as string | null) ?? null,
+      evidenceArtifactId: (row['evidence_artifact_id'] as ArtifactId | null) ?? null,
+      evidenceSha256: (row['evidence_sha256'] as string | null) ?? null,
+      version: row['version'] as number,
+    };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Pull requests (HIGH-008). Persists the authoritative PR row so the K1
+// traceability chain (PR → evidence → attempt → task → run) resolves on real
+// state, not a transient object. The upsert is idempotent on
+// (repository_binding_id, head_branch) — migration 0006's unique constraint —
+// so a crash-retry updates the existing row rather than opening a duplicate.
+// The evidence link is a SCOPED artifact reference (migration 0009): the
+// composite FK (evidence_artifact_id, org, project) → artifacts makes "the
+// evidence attached to this PR is in MY scope" a DB invariant.
+// ---------------------------------------------------------------------------
+
+export class PullRequestRepository {
+  constructor(private readonly db: SqlExecutor) {}
+
+  // Idempotent upsert keyed on (binding, head_branch). On conflict the existing
+  // row is UPDATEd (number/url/state/evidence) rather than duplicated, so a
+  // resume after the forge upsert but before persistence converges to one row.
+  async upsert(scope: TenantScope, input: {
+    repositoryBindingId: RepositoryBindingId;
+    attemptId: AttemptId;
+    forge: string;
+    number: number | null;
+    headBranch: string;
+    baseBranch: string;
+    url: string | null;
+    state: string;
+    evidenceRef?: ArtifactRef;
+  }): Promise<PullRequestRow> {
+    const id = ulid() as PullRequestId;
+    const evId = input.evidenceRef?.artifactId ?? null;
+    const evSha = input.evidenceRef?.sha256 ?? null;
+    const r = await this.db.query(
+      `insert into pull_requests
+         (id, organization_id, project_id, repository_binding_id, attempt_id, forge,
+          number, head_branch, base_branch, url, state, evidence_artifact_id, evidence_sha256)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+       on conflict (repository_binding_id, head_branch) do update set
+         attempt_id = excluded.attempt_id,
+         number = excluded.number,
+         url = excluded.url,
+         state = excluded.state,
+         evidence_artifact_id = excluded.evidence_artifact_id,
+         evidence_sha256 = excluded.evidence_sha256,
+         updated_at = now(),
+         version = pull_requests.version + 1
+       returning id, organization_id, project_id, repository_binding_id, attempt_id, forge,
+                 number, head_branch, base_branch, url, state,
+                 evidence_artifact_id, evidence_sha256, version`,
+      [
+        id, scope.organizationId, scope.projectId, input.repositoryBindingId, input.attemptId,
+        input.forge, input.number, input.headBranch, input.baseBranch, input.url, input.state,
+        evId, evSha,
+      ],
+    );
+    return this.decode(r.rows[0]!);
+  }
+
+  async getByBranch(scope: TenantScope, repositoryBindingId: RepositoryBindingId, headBranch: string): Promise<PullRequestRow> {
+    const r = await this.db.query(
+      `select id, organization_id, project_id, repository_binding_id, attempt_id, forge,
+              number, head_branch, base_branch, url, state, evidence_artifact_id, evidence_sha256, version
+       from pull_requests
+       where organization_id = $1 and project_id = $2 and repository_binding_id = $3 and head_branch = $4`,
+      [scope.organizationId, scope.projectId, repositoryBindingId, headBranch],
+    );
+    if (r.rowCount === 0) throw new ScopeViolationError('pull_request', headBranch);
+    return this.decode(r.rows[0]!);
+  }
+
+  private decode(row: SqlRow): PullRequestRow {
+    return {
+      id: row['id'] as PullRequestId,
+      organizationId: row['organization_id'] as OrganizationId,
+      projectId: row['project_id'] as ProjectId,
+      repositoryBindingId: row['repository_binding_id'] as RepositoryBindingId,
+      attemptId: row['attempt_id'] as AttemptId,
+      forge: row['forge'] as string,
+      number: (row['number'] as number | null) ?? null,
+      headBranch: row['head_branch'] as string,
+      baseBranch: row['base_branch'] as string,
+      url: (row['url'] as string | null) ?? null,
+      state: row['state'] as string,
       evidenceArtifactId: (row['evidence_artifact_id'] as ArtifactId | null) ?? null,
       evidenceSha256: (row['evidence_sha256'] as string | null) ?? null,
       version: row['version'] as number,
