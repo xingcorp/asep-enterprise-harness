@@ -12,7 +12,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   GitHubAppCredentialProvider, MINIMUM_PERMISSIONS, isExpired,
-  GitHubAppForgeProvider, ForgePushError, scrubToken,
+  GitHubAppForgeProvider, ForgePushError, ForgeAuthExpiredError,
+  isAuthExpiryError, MAX_REMINT_ATTEMPTS, scrubToken,
 } from './index.js';
 import type {
   InstallationAuth, OctokitLike, RepositoryForgeConfig, GitRunner,
@@ -261,8 +262,110 @@ test('H1: a token appearing in a git failure is scrubbed from the thrown error',
 
 test('scrubToken redacts the token and any userinfo form', () => {
   const token = 'ghs_abc';
-  const out = scrubToken(`url https://x-access-token:${token}@github.com and https://user@host`, token);
+  const out = scrubToken(`url https://x-access-token:${token}@host.com and https://user@host`, token);
   assert.ok(!out.includes(token));
   assert.ok(!out.includes('user@host'));
   assert.ok(out.includes('***'));
+});
+
+// ---------------------------------------------------------------------------
+// MED-002 — token expiry / revocation / rotation recovery. A credential that
+// expires or is revoked BETWEEN mint and use is recovered by a bounded re-mint
+// (a fresh token per attempt, never a stale one). A persistently-invalid
+// credential fails closed after the bound; a non-auth failure fails fast.
+// ---------------------------------------------------------------------------
+
+test('MED-002: isAuthExpiryError recognises expiry/revocation signals and ignores unrelated errors', () => {
+  assert.equal(isAuthExpiryError(new Error('Bad credentials')), true);
+  assert.equal(isAuthExpiryError(new Error('token expired')), true);
+  assert.equal(isAuthExpiryError(new Error('requires authentication')), true);
+  assert.equal(isAuthExpiryError({ status: 401, message: 'x' }), true);
+  assert.equal(isAuthExpiryError({ status: 403, message: 'x' }), true);
+  // Unrelated failures are NOT treated as recoverable auth expiry.
+  assert.equal(isAuthExpiryError(new Error('connection reset')), false);
+  assert.equal(isAuthExpiryError(new Error('merge conflict')), false);
+});
+
+test('MED-002: push re-mints a fresh token when the first is revoked mid-operation, then succeeds', async () => {
+  // The first minted token is rejected by git as revoked; the second works.
+  const minted: string[] = [];
+  let n = 0;
+  const auth: InstallationAuth = async () => {
+    const token = `ghs_tok_${n++}`;
+    minted.push(token);
+    return { token, expiresAt: new Date(Date.now() + 3600_000).toISOString() };
+  };
+  let gitCalls = 0;
+  const runner: GitRunner = async () => {
+    gitCalls++;
+    if (gitCalls === 1) throw new Error('fatal: could not read Username: Bad credentials (401)');
+    return { stdout: '', stderr: '', exitCode: 0 };
+  };
+  const creds = new GitHubAppCredentialProvider({ appId: 1, privateKey: 'PEM', installationId: 9 }, auth);
+  const forge = new GitHubAppForgeProvider(creds, throwingOctokit, ['github.com'], runner);
+
+  const { ref } = await forge.pushBranch({ repository, localWorktreePath: '/tmp/wt', branch: attemptBranchStr });
+  assert.equal(ref, `refs/heads/${attemptBranchStr}`);
+  assert.equal(gitCalls, 2, 'the push was retried once after the revoked token');
+  assert.equal(minted.length, 2, 'a FRESH token was minted for the retry');
+  assert.notEqual(minted[0], minted[1], 'the stale token was never reused');
+});
+
+test('MED-002: push fails closed with ForgeAuthExpiredError after the re-mint budget is exhausted', async () => {
+  const auth: InstallationAuth = async () => ({ token: 'ghs_dead', expiresAt: new Date(Date.now() + 3600_000).toISOString() });
+  let gitCalls = 0;
+  const runner: GitRunner = async () => { gitCalls++; throw new Error('401 Bad credentials'); };
+  const creds = new GitHubAppCredentialProvider({ appId: 1, privateKey: 'PEM', installationId: 9 }, auth);
+  const forge = new GitHubAppForgeProvider(creds, throwingOctokit, ['github.com'], runner);
+  await assert.rejects(
+    () => forge.pushBranch({ repository, localWorktreePath: '/tmp/wt', branch: attemptBranchStr }),
+    ForgeAuthExpiredError,
+  );
+  // Initial attempt + MAX_REMINT_ATTEMPTS retries.
+  assert.equal(gitCalls, MAX_REMINT_ATTEMPTS + 1, 'exactly the bounded number of attempts were made');
+});
+
+test('MED-002: a NON-auth push failure fails fast without re-minting', async () => {
+  const minted: string[] = [];
+  const auth: InstallationAuth = async () => { const t = `ghs_${minted.length}`; minted.push(t); return { token: t, expiresAt: new Date(Date.now() + 3600_000).toISOString() }; };
+  let gitCalls = 0;
+  const runner: GitRunner = async () => { gitCalls++; throw new Error('fatal: remote rejected — non-fast-forward'); };
+  const creds = new GitHubAppCredentialProvider({ appId: 1, privateKey: 'PEM', installationId: 9 }, auth);
+  const forge = new GitHubAppForgeProvider(creds, throwingOctokit, ['github.com'], runner);
+  await assert.rejects(
+    () => forge.pushBranch({ repository, localWorktreePath: '/tmp/wt', branch: attemptBranchStr }),
+    ForgePushError,
+  );
+  assert.equal(gitCalls, 1, 'a non-auth failure is not retried');
+  assert.equal(minted.length, 1, 'no re-mint on a non-auth failure');
+});
+
+test('MED-002: PR upsert re-mints on a revoked credential and does NOT open a duplicate', async () => {
+  const store = { prs: [] as FakePr[], nextNumber: 5, calls: [] as string[] };
+  const base = fakeOctokit(store);
+  let listCalls = 0;
+  // First list() call is rejected as revoked; subsequent calls use the real fake.
+  const octokitFor = (token: string): OctokitLike => {
+    const real = base(token);
+    return {
+      pulls: {
+        list: async (params) => {
+          listCalls++;
+          if (listCalls === 1) throw new Error('403 Bad credentials');
+          return real.pulls.list(params);
+        },
+        create: real.pulls.create,
+        update: real.pulls.update,
+      },
+    };
+  };
+  const minted: string[] = [];
+  const auth: InstallationAuth = async () => { const t = `ghs_${minted.length}`; minted.push(t); return { token: t, expiresAt: new Date(Date.now() + 3600_000).toISOString() }; };
+  const creds = new GitHubAppCredentialProvider({ appId: 1, privateKey: 'PEM', installationId: 9 }, auth);
+  const forge = new GitHubAppForgeProvider(creds, octokitFor, ['github.com']);
+
+  const pr = await forge.upsertPullRequest({ repository, headBranch: attemptBranchStr, base: 'main', title: 'T', body: 'B' });
+  assert.equal(pr.number, 5, 'the PR was created after the credential recovery');
+  assert.equal(store.prs.length, 1, 'exactly one PR exists — no duplicate from the retry');
+  assert.ok(minted.length >= 2, 'a fresh token was minted for the retry');
 });
