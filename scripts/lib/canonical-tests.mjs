@@ -124,6 +124,10 @@ export const REQUIRED_SUITES = Object.freeze({
   // Registered so a dropped/renamed observability suite turns the gate RED.
   'asep-suite:observability-spans': 'packages/observability/src/spans.test.ts',
   'asep-suite:observability-audit': 'packages/observability/src/audit.test.ts',
+  // K5/K6 pilot-manifest verifier: the adversarial gate on a COMPLETE verdict
+  // (ten genuine tasks, real provider, unique work orders, resolvable traces).
+  // Registered so a dropped/renamed pilot gate turns the gate RED.
+  'asep-suite:pilot-manifest': 'scripts/pilot/verify-pilot-manifest.test.ts',
 });
 
 /** The machine-readable marker a suite prints at module load: `SUITE-ID: <id>`. */

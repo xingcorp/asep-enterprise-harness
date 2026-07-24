@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://asep.dev/schema/pilot-manifest/v1",
+  "version": "1.0.0",
+  "title": "PilotManifest",
+  "description": "Machine-readable record of the ten genuine pilot tasks that back a Phase-2 COMPLETE verdict (exit criteria K5/K6). Each task is a distinct, human-authorized WorkOrder run through real Claude + real sandbox + real GitHub App + real persistence, reaching WAITING_FOR_HUMAN_REVIEW with a valid PR/evidence chain. The companion verifier (verify-pilot-manifest.mjs) rejects duplicate tasks, fake adapters, failed traces and retry inflation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["manifestVersion", "verdict", "generatedAt", "tasks"],
+  "properties": {
+    "manifestVersion": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+    "verdict": {
+      "type": "string",
+      "enum": ["COMPLETE", "IMPLEMENTATION_COMPLETE_PILOT_PENDING"]
+    },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "tasks": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/pilotTask" }
+    }
+  },
+  "$defs": {
+    "pilotTask": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "taskId", "objective", "risk", "workOrderSha256",
+        "baseSha", "resultSha", "providerSessionId", "providerId",
+        "pullRequestUrl", "evidenceChecksum", "trace", "humanDisposition"
+      ],
+      "properties": {
+        "taskId": { "type": "string", "minLength": 1 },
+        "objective": { "type": "string", "minLength": 1 },
+        "risk": { "type": "string", "enum": ["R0", "R1", "R2", "R3", "R4"] },
+        "workOrderSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "baseSha": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+        "resultSha": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+        "providerSessionId": { "type": "string", "minLength": 1 },
+        "providerId": { "type": "string", "minLength": 1 },
+        "pullRequestUrl": {
+          "type": "string",
+          "pattern": "^https://github\\.com/[^/]+/[^/]+/pull/[0-9]+$"
+        },
+        "evidenceChecksum": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+        "trace": { "$ref": "#/$defs/traceChain" },
+        "humanDisposition": {
+          "type": "string",
+          "enum": ["ACCEPTED", "REJECTED", "CHANGES_REQUESTED", "PENDING"]
+        }
+      }
+    },
+    "traceChain": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Full traceability chain (exit K3): PR -> evidence -> attempt -> task -> run -> project -> repository. Every id must be present and non-empty so a trace can be resolved end to end.",
+      "required": [
+        "pullRequestId", "evidenceArtifactId", "attemptId",
+        "taskId", "runId", "projectId", "organizationId", "repositoryBindingId"
+      ],
+      "properties": {
+        "pullRequestId": { "type": "string", "minLength": 1 },
+        "evidenceArtifactId": { "type": "string", "minLength": 1 },
+        "attemptId": { "type": "string", "minLength": 1 },
+        "taskId": { "type": "string", "minLength": 1 },
+        "runId": { "type": "string", "minLength": 1 },
+        "projectId": { "type": "string", "minLength": 1 },
+        "organizationId": { "type": "string", "minLength": 1 },
+        "repositoryBindingId": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}
