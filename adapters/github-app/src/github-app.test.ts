@@ -132,7 +132,7 @@ test('H3/E1: a real local bare push lands exactly on the namespaced ref', async 
     await runGit(['-C', wt, 'init', '-q', '-b', attemptBranchStr]);
     await writeFile(join(wt, 'f.txt'), 'hello\n');
     await runGit(['-C', wt, 'add', '-A']);
-    await runGit(['-C', wt, '-c', 'user.name=h', '-c', 'user.email=h@e.com', 'commit', '-m', 'work']);
+    await runGit(['-C', wt, '-c', 'user.name=harness', '-c', 'user.email=harness@example.com', 'commit', '-m', 'work']);
 
     // A runner that rewrites the constructed https URL to the local bare path,
     // preserving the EXACT refspec argv the provider chose (the safety property).
