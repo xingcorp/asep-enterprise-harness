@@ -220,15 +220,63 @@ export interface CommitStepInput {
   readonly evidenceId: ArtifactId;       // preallocated, embedded in trailer
   readonly identity: { readonly name: string; readonly email: string };
   readonly extraTrailers?: Record<string, string>;
+  // Two-phase side-effect protocol (HIGH-006). The commit is a durable,
+  // externally-observable effect (it mints a git object) and MUST be wrapped
+  // like push/PR: begin(PENDING) → commit → complete(COMPLETED), keyed by a
+  // fingerprint STABLE across re-runs so a crash after the commit but before
+  // downstream persistence ADOPTS the recorded SHA + evidence id rather than
+  // minting a second, divergent commit with a fresh evidence id.
+  readonly log: SideEffectLog;
+  readonly repositoryBindingId: RepositoryBindingId;
+  readonly leaseId: string;              // fencing token
 }
 
 export interface CommitStepResult {
   readonly step: 'commit';
   readonly status: StepStatus;
   readonly commitSha: string;
+  // The evidence id ACTUALLY bound to this commit. On a fresh commit this is
+  // the caller's preallocated id; on adoption it is the id recorded at first
+  // commit (which the caller MUST use downstream so evidence lands at the id
+  // embedded in the already-pushed commit's trailer, not a fresh one).
+  readonly evidenceId: ArtifactId;
+  readonly adopted: boolean;
+}
+
+// The commit's identity is the ATTEMPT — a single attempt commits at most once.
+// The fingerprint is intentionally independent of the evidence id: a re-run
+// preallocates a fresh evidence id, but that must NOT rebind the same attempt's
+// commit to different inputs (which would fail the fingerprint guard). The
+// committed evidence id is carried in the completion resultRef instead.
+function commitFingerprint(attemptId: AttemptId): string {
+  return `commit:${attemptId}`;
+}
+
+interface CommitResultRef {
+  readonly commitSha: string;
+  readonly evidenceId: string;
 }
 
 export async function commitStep(input: CommitStepInput): Promise<CommitStepResult> {
+  const begun = await input.log.begin(input.scope, {
+    operation: 'commit',
+    repositoryBindingId: input.repositoryBindingId,
+    attemptId: input.attemptId,
+    requestFingerprint: commitFingerprint(input.attemptId),
+    ownerToken: input.leaseId,
+  });
+  // Already COMPLETED for this attempt → adopt the recorded commit SHA + the
+  // evidence id embedded in that commit; do NOT mint a second commit.
+  if (begun.existed && begun.state === 'COMPLETED' && begun.resultRef) {
+    const rec = begun.resultRef as CommitResultRef;
+    return {
+      step: 'commit',
+      status: 'OK',
+      commitSha: rec.commitSha,
+      evidenceId: rec.evidenceId as ArtifactId,
+      adopted: true,
+    };
+  }
   const trailers: Record<string, string> = {
     'ASEP-Attempt': input.attemptId,
     'ASEP-Evidence': input.evidenceId,
@@ -240,7 +288,16 @@ export async function commitStep(input: CommitStepInput): Promise<CommitStepResu
     trailers,
     identity: input.identity,
   });
-  return { step: 'commit', status: 'OK', commitSha };
+  // Persist the commit SHA + the evidence id it embeds so a resume adopts BOTH.
+  const resultRef: CommitResultRef = { commitSha, evidenceId: input.evidenceId };
+  await input.log.complete(input.scope, {
+    operation: 'commit',
+    repositoryBindingId: input.repositoryBindingId,
+    attemptId: input.attemptId,
+    ownerToken: input.leaseId,
+    resultRef,
+  });
+  return { step: 'commit', status: 'OK', commitSha, evidenceId: input.evidenceId, adopted: false };
 }
 
 // ---------------------------------------------------------------------------
@@ -532,7 +589,10 @@ export async function completeToReview(
   // be embedded in the ASEP-Evidence trailer (exit D8).
   const evidenceId = input.store.allocateEvidenceId();
 
-  // Step 5 — harness commit (embeds the preallocated evidence id).
+  // Step 5 — harness commit, wrapped in the two-phase protocol (HIGH-006). On a
+  // resume the commit is ADOPTED: the recorded SHA AND the evidence id embedded
+  // in that already-minted commit come back, so we never mint a second commit
+  // or a divergent evidence id.
   const commit = await commitStep({
     committer: input.committer,
     scope: input.scope,
@@ -541,18 +601,24 @@ export async function completeToReview(
     attemptId: input.attemptId,
     evidenceId,
     identity: input.identity,
+    log: input.log,
+    repositoryBindingId: input.repositoryBindingId,
+    leaseId: input.leaseId,
     ...(input.extraTrailers ? { extraTrailers: input.extraTrailers } : {}),
   });
   if (commit.status === 'STOP') {
     return { stoppedAt: 'commit', verify, commitSha: commit.commitSha };
   }
+  // Downstream evidence MUST land at the id actually embedded in the commit
+  // trailer — the adopted id on a resume, the fresh id on first commit.
+  const committedEvidenceId = commit.evidenceId;
 
-  // Step 6 — build + persist evidence at the preallocated id. resultSha is the
+  // Step 6 — build + persist evidence at the committed id. resultSha is the
   // trusted harness commit SHA (never provider-reported).
   const evidence = await evidenceStep({
     store: input.store,
     scope: input.scope,
-    evidenceId,
+    evidenceId: committedEvidenceId,
     taskId: input.taskId,
     attemptId: input.attemptId,
     baseSha: input.baseSha,

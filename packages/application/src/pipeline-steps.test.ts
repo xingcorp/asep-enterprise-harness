@@ -233,10 +233,50 @@ test('commitStep embeds the preallocated evidence id in the ASEP-Evidence traile
     attemptId,
     evidenceId: 'ev-123' as ArtifactId,
     identity: { name: 'ASEP Bot', email: 'bot@asep.invalid' },
+    log: new MemorySideEffectLog(),
+    repositoryBindingId: bindingId,
+    leaseId: 'lease-1',
   });
   assert.equal(res.commitSha, 'd'.repeat(40));
+  assert.equal(res.adopted, false);
+  assert.equal(res.evidenceId, 'ev-123');
   assert.equal(captured['ASEP-Evidence'], 'ev-123');
   assert.equal(captured['ASEP-Attempt'], attemptId);
+});
+
+// HIGH-006: the commit is wrapped in the two-phase protocol. A crash after the
+// commit but before downstream persistence must ADOPT the recorded commit SHA
+// AND the evidence id embedded in that commit — never mint a second commit or a
+// divergent evidence id (which would strand evidence at an unreferenced id).
+test('commitStep ADOPTS the recorded commit SHA + evidence id on a resume (HIGH-006)', async () => {
+  const log = new MemorySideEffectLog();
+  let commits = 0;
+  const committer: GitCommitter = {
+    async commit() {
+      commits += 1;
+      return { commitSha: 'd'.repeat(40) };
+    },
+  };
+  const first = await commitStep({
+    committer, scope, workspace, allowedPaths: ['src/'], attemptId,
+    evidenceId: 'ev-first' as ArtifactId,
+    identity: { name: 'ASEP Bot', email: 'bot@asep.invalid' },
+    log, repositoryBindingId: bindingId, leaseId: 'lease-1',
+  });
+  assert.equal(first.adopted, false);
+  assert.equal(commits, 1);
+  // Resume with a FRESH preallocated evidence id (as the driver would) — the
+  // commit must be adopted and report the ORIGINAL committed evidence id.
+  const resume = await commitStep({
+    committer, scope, workspace, allowedPaths: ['src/'], attemptId,
+    evidenceId: 'ev-second' as ArtifactId,
+    identity: { name: 'ASEP Bot', email: 'bot@asep.invalid' },
+    log, repositoryBindingId: bindingId, leaseId: 'lease-1',
+  });
+  assert.equal(resume.adopted, true);
+  assert.equal(commits, 1, 'exactly one commit across both runs');
+  assert.equal(resume.commitSha, 'd'.repeat(40));
+  assert.equal(resume.evidenceId, 'ev-first', 'adopts the id embedded in the original commit');
 });
 
 test('evidenceStep sets resultSha to the harness commit SHA and stores at the preallocated id (D8)', async () => {
