@@ -30,6 +30,7 @@ const ITEST_SUFFIX = '.itest.ts';
 // exit — the same fail-closed mechanism the unit runner uses for *.test.ts.
 export const REQUIRED_ITEST_SUITES = Object.freeze({
   'asep-suite:pg-concurrency': 'adapters/persistence/src/concurrency.itest.ts',
+  'asep-suite:sandbox-exec': 'adapters/command-runner/src/sandbox-exec.itest.ts',
 });
 
 export const SUITE_ID_PREFIX = 'SUITE-ID:';

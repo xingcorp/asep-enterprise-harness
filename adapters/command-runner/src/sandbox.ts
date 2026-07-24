@@ -29,8 +29,15 @@ export interface SandboxHandleEx extends SandboxHandle {
   // off this, never off the mere existence of a handle.
   readonly isolationEnforced: boolean;
   // For Docker, the argv that WOULD run a command in the sandbox (the runner or
-  // an integration test can use it); for local, undefined.
+  // an integration test can use it); for local, undefined. Retained for the
+  // existing hardening-flag assertions; the runner uses runFlags + image below.
   readonly dockerRunPrefix?: readonly string[];
+  // The hardened `docker run …` flags WITHOUT the image, so the command runner
+  // can insert `-w <cwd>` and append `<image> <executable> <args…>` to actually
+  // EXECUTE inside the container (disp. P2-FINAL-HIGH-002). undefined for local.
+  readonly runFlags?: readonly string[];
+  // The digest-pinned image the runner appends after its flags. undefined local.
+  readonly image?: string;
 }
 
 function dockerAvailable(): Promise<boolean> {
@@ -75,11 +82,14 @@ export class DockerSandboxProvider implements SandboxProvider {
       // FAIL rather than skip / degrade (F5, disp. P2-PLAN-HIGH-009).
       throw new SandboxUnavailableError('docker CLI or daemon not reachable');
     }
-    // Build the hardened run prefix. --network none gives OS-enforced no network
+    // Build the hardened run flags. --network none gives OS-enforced no network
     // for the verification profile (F4). No -v of the docker socket anywhere.
+    // The writable mounts are the working tree ONLY; Git metadata (.git) is the
+    // caller's responsibility to exclude from writablePaths so it is never
+    // writable inside the sandbox (G3/G5, disp. P2-FINAL-HIGH-002).
     const network = profile === 'verification-no-network' ? 'none' : 'none';
-    const prefix = [
-      'docker', 'run', '--rm',
+    const runFlags = [
+      'run', '--rm',
       '--network', network,
       '--read-only',
       '--tmpfs', '/tmp',
@@ -90,13 +100,16 @@ export class DockerSandboxProvider implements SandboxProvider {
       '--memory', this.cfg.memory ?? '512m',
       ...mount.writablePaths.flatMap((p) => ['-v', `${p}:${p}:rw`]),
       ...mount.readOnlyPaths.flatMap((p) => ['-v', `${p}:${p}:ro`]),
-      this.cfg.imageDigest,
     ];
+    // Back-compat prefix (flags + image) for the existing hardening assertions.
+    const prefix = ['docker', ...runFlags, this.cfg.imageDigest];
     return {
       sandboxId: `docker-${mount.workspaceId}-${Date.now()}`,
       profile,
       isolationEnforced: true,
       dockerRunPrefix: prefix,
+      runFlags,
+      image: this.cfg.imageDigest,
     };
   }
 

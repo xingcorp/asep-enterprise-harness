@@ -15,6 +15,7 @@ import type {
 } from '@asep/ports';
 import { BoundedCapture } from './bounded-capture.js';
 import { resolveEnvironment } from './environment-profiles.js';
+import type { SandboxHandleEx } from './sandbox.js';
 
 function sha256Hex(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex');
@@ -35,19 +36,44 @@ export class TrustedCommandRunner implements CommandRunner {
     private readonly signal?: AbortSignal,
   ) {}
 
-  async run(spec: CommandSpec, _sandbox: SandboxHandle): Promise<CommandResult> {
+  async run(spec: CommandSpec, sandbox: SandboxHandle): Promise<CommandResult> {
     const env = resolveEnvironment(spec.environmentProfile);
     const stdoutCap = new BoundedCapture(spec.outputPolicy.maxEvidenceBytes);
     const stderrCap = new BoundedCapture(spec.outputPolicy.maxEvidenceBytes);
+
+    // Resolve the ACTUAL executable + argv to spawn. When the sandbox enforces
+    // isolation (a Docker handle carrying runFlags + image), the command runs
+    // INSIDE the container: `docker run <flags> -w <cwd> <image> <exe> <args…>`
+    // — OS-enforced no-network / read-only rootfs / dropped caps apply to the
+    // verification command itself, not just to a prefix we throw away (disp.
+    // P2-FINAL-HIGH-002). An honest local (unsandboxed) handle has no runFlags,
+    // so we spawn directly on the host and the handle already advertises
+    // isolationEnforced:false.
+    const ex = sandbox as SandboxHandleEx;
+    const inContainer = Array.isArray(ex.runFlags) && typeof ex.image === 'string';
+    const [exe, argv] = inContainer
+      ? [
+          'docker',
+          [
+            ...(ex.runFlags as readonly string[]),
+            '-w', spec.cwd,
+            ex.image as string,
+            spec.executable,
+            ...spec.args,
+          ],
+        ]
+      : [spec.executable, [...spec.args]];
 
     const result = await new Promise<{
       exitCode: number | null; signal: string | null; timedOut: boolean;
     }>((resolve, reject) => {
       // shell:false is the default for spawn with an argv; we set it explicitly
       // to document the guarantee. detached:true puts the child in its own
-      // process group so we can signal the whole group on timeout/cancel.
-      const child = spawn(spec.executable, [...spec.args], {
-        cwd: spec.cwd,
+      // process group so we can signal the whole group on timeout/cancel. When
+      // running in-container the cwd is irrelevant to docker itself (it uses
+      // -w), so we only set cwd for the host-spawn path.
+      const child = spawn(exe, argv, {
+        cwd: inContainer ? undefined : spec.cwd,
         env,
         shell: false,
         detached: true,
