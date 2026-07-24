@@ -1,0 +1,182 @@
+# Phase 2 — Pilot Runbook (exit criteria M1/M2/M3)
+
+> Operational procedures for running the single-agent vertical slice against a
+> real pilot repository. Covers the dashboard + alert thresholds and explicit
+> stop/rollback conditions (M1), outage-recovery for the artifact store, DB and
+> GitHub plus stale-lease recovery and retention/cleanup (M2), and points to the
+> preserved rehearsal that proves the runbook leads to the documented decisions
+> (M3). Every metric named here exists in `docs/platform/metrics-dictionary.yaml`;
+> every recovery step maps to a real mechanism in the shipped code.
+
+## 0. Scope & preconditions
+
+- Automated pilot completion is restricted to **R0** tasks; **R1** requires a
+  separately recorded human independent-review step; **R2–R4 are deferred**
+  (risk-admission matrix, exit BR1/BR2/I4). Do not attempt a pilot task above R0
+  without the recorded human review.
+- The verification sandbox is **pilot-only** unless the host can enforce OS-level
+  isolation (exit F6). If Docker/gVisor isolation is unavailable, the adapter
+  self-labels pilot-only in code and report — do not claim a production sandbox.
+- Preconditions before any pilot task:
+  - `pnpm verify:all` green from a clean checkout (exit A1/A4).
+  - PostgreSQL, object store (MinIO) and the sandbox provisioned and healthy
+    (exit K4) — the integration gate fails rather than skips if any is down.
+  - GitHub App installed on the pilot repo with the default branch protected so
+    the installation token cannot update or merge it (exit H3).
+
+## 1. Dashboard & metrics requirements (M1)
+
+The pilot dashboard MUST display these metrics (all defined in the metrics
+dictionary). Group them into three panels:
+
+**Correctness / safety**
+- `first_attempt_pass_rate`, `task_pass_rate` — did the harness produce a
+  verifiable change.
+- `false_completion_rate` — the load-bearing safety metric: a task marked done
+  whose evidence does not support completion. Target **0**.
+- `scope_violation_rate` — agent changed files outside the work order scope.
+- `escaped_defect_rate`, `artifact_loss_rate` — post-hoc integrity signals.
+
+**Recovery / reliability**
+- `workflow_recovery_rate` — crash-safe side-effect convergence after a fault
+  (commit/push/PR converge to one commit, one ref, one PR).
+- `mean_time_to_restore_ms`, `change_failure_rate` — outage impact.
+
+**Cost / human load**
+- `cost_per_accepted_task`, `tool_calls_per_task`, `repair_cycles_per_task`.
+- `human_intervention_rate`, `human_minutes_per_task`.
+
+Every span/event on the dashboard MUST carry the full correlation identity
+(org/project/repository/run/task/attempt — exit J1/J2). Filter and drill down by
+those IDs; a panel that cannot resolve a data point to one attempt is a bug.
+
+### Alert / observation thresholds
+
+| Signal | Observe (warn) | Alert (page) |
+|---|---|---|
+| `false_completion_rate` | > 0 over any window | any single confirmed false completion |
+| `scope_violation_rate` | > 5% | > 15% or any R1 violation |
+| `workflow_recovery_rate` | < 100% | < 99% (a fault did not converge) |
+| `artifact_loss_rate` | > 0 | any confirmed loss |
+| `first_attempt_pass_rate` | < 40% | < 20% (agent adding no value) |
+| `cost_per_accepted_task` | > 1.5× baseline | > 3× baseline |
+| provider timeout / quota errors | > 10% of attempts | > 30% or sustained quota exhaustion |
+| GitHub 403/rate-limit | any | sustained (token/permission problem, see §2.3) |
+
+Thresholds are pilot heuristics; record actuals during rehearsal and tune before
+scaling task volume.
+
+## 2. Stop / rollback conditions (M1)
+
+Halt the pilot (stop dispatching new tasks) immediately on any of:
+
+1. **Any confirmed false completion** (`false_completion_rate` > 0 with a real
+   example). This is the one non-negotiable stop condition — the harness claimed
+   done without supporting evidence. Do not resume until root-caused.
+2. **A side effect that did not converge** (`workflow_recovery_rate` < 100%): a
+   second commit, a second PR, or an unexpected remote ref after a crash/restart.
+3. **Any push to a protected ref** or an attempted merge (should be impossible —
+   exit H3/H5 — but if observed, stop and treat as a security incident).
+4. **Confirmed artifact loss or corruption** that read-verification did not
+   catch before use.
+5. **Sandbox isolation failure**: a write from inside the sandbox reaches `.git`
+   internals, refs, config, hooks, or the host mirror (exit E8).
+
+Rollback for a single task is inherently safe by design: the harness only ever
+pushes to an ASEP-namespaced branch and opens a PR — **there is no merge
+capability in Phase 2** (exit H5). To roll back a task, close its PR and delete
+its ASEP branch; the default branch is never touched. No production rollback of
+merged code is possible because nothing is auto-merged.
+
+## 3. Outage-recovery procedures (M2)
+
+### 3.1 Artifact store (object storage) outage
+
+- **Symptom:** `artifact.put`/`get`/`verify` failures; rising `artifact_loss_rate`.
+- **Guarantees in code:** writes are conditional create-only and size+checksum
+  are verified before the metadata commit; an object-write failure does **not**
+  create accepted metadata, and a metadata failure does **not** claim success
+  (exit D4/D7). Raw stdout/stderr is captured and stored **before** any reducer
+  runs, and a required check fails closed if complete evidence cannot be
+  persisted (exit D5).
+- **Recovery:**
+  1. Stop dispatching new tasks; in-flight tasks fail closed at the evidence
+     step rather than proceeding with partial evidence.
+  2. Restore the object store; verify health.
+  3. Run orphan reconciliation: an object written without its committed metadata
+     is an orphan (defined in D7) — reconcile/delete orphans; metadata rows
+     without a verifiable object are quarantined, not served.
+  4. Re-verify a sample of recent artifacts by checksum before resuming.
+
+### 3.2 Database (PostgreSQL) outage / restart
+
+- **Symptom:** repository calls fail; use cases fail closed (every use case and
+  repository method requires a server-derived `TenantScope`/`AuthContext`).
+- **Guarantees in code:** state survives process restart (exit C1); state
+  transitions are optimistic-concurrency guarded (conflicting version update
+  rejected — exit C4); migrations are append-only with checksums and a migration
+  lock serializes concurrent migrators; mid-migration failure recovers and an
+  edited applied migration fails before later migrations run (exit C5).
+- **Recovery:**
+  1. On restart, do **not** re-run tasks blindly. The two-phase side-effect log
+     (`PENDING → COMPLETED/FAILED`, per-tenant semantic key + request
+     fingerprint + fencing) is the source of truth for what already happened
+     (exit C7).
+  2. For each in-flight attempt, reconcile the `PENDING` side-effect row against
+     the remote before deciding retry-vs-adopt: if the external commit/push/PR
+     already landed, adopt it (do not repeat); if not, retry with the same
+     semantic key. Reusing a key with a **different** request fingerprint fails
+     closed.
+  3. Confirm migration checksums match before serving traffic.
+
+### 3.3 GitHub outage / rate limiting / token expiry
+
+- **Symptom:** 5xx from GitHub, 403 rate-limit, or auth-expiry mid push/PR.
+- **Guarantees in code:** a GitHub **App** installation token is minted
+  just-in-time per bounded operation, scoped to the exact repo with minimum
+  permissions, treated as opaque, and never persisted (exit H1/H2). Auth-expiry
+  re-mint reconciles **without replaying a completed side effect**. PR
+  create/update is idempotent (find-by-head-branch upsert — exit H4).
+- **Recovery:**
+  1. On rate-limit, back off and pause dispatch; do not hammer. The push/PR
+     steps are idempotent, so a delayed retry converges (exit C7/H4).
+  2. On token expiry during a push/PR, the adapter re-mints and reconciles; a
+     completed push/PR is adopted, not replayed.
+  3. If 403s persist, treat as a permission/branch-protection problem: verify the
+     installation still scopes only the pilot repo and cannot touch the default
+     branch (exit H3). Do not widen permissions to "fix" it.
+
+### 3.4 Stale-lease recovery
+
+- **Mechanism in code:** a unique active writer/branch lease is enforced; an
+  `ACTIVE` lease past `expires_at` is swept to `EXPIRED` on the next acquire on
+  the same `(binding, branch)`, so a dead holder cannot block a fresh acquire
+  forever (`lease-repository.ts`, exit C3). A concurrent live acquire is denied
+  with `active_writer_lease_held`.
+- **Recovery:** if a worker died holding a lease, the next acquire on that
+  branch sweeps the expired lease automatically. To force it, run the sweep
+  helper (expire stale `ACTIVE` leases past `expires_at`). Never delete lease
+  rows by hand while a worker may still be alive — rely on TTL + heartbeat.
+- **Worktree hygiene:** cleanup is idempotent and a failed worktree is
+  **quarantined, not reused** (exit E7). Do not manually re-point a quarantined
+  worktree at a new attempt.
+
+### 3.5 Retention & cleanup
+
+- Evidence bundles and raw provider events are content-addressed artifacts;
+  retention follows the privacy classes in the metrics dictionary. Full
+  source/prompt/raw tool output is **off by default** (opt-in + documented
+  redaction — exit J3); do not enable raw capture for a pilot without a recorded
+  privacy review.
+- Periodically: expire `EXPIRED`/`RELEASED` leases, reconcile artifact orphans
+  (§3.1), and prune ASEP branches whose PRs are closed/merged by a human.
+- Never prune a side-effect-log row for an in-flight or unreconciled attempt —
+  it is the crash-recovery source of truth.
+
+## 4. Pilot rehearsal (M3)
+
+The preserved rehearsal in `phase-02-pilot-rehearsal.md` walks five injected
+faults — provider timeout, DB restart, object-store outage, stale lease, and
+GitHub rate limiting — and shows, for each, that following this runbook reaches
+the documented stop or recovery decision. Re-run the rehearsal after any change
+to the recovery mechanics referenced above.
