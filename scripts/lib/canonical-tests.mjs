@@ -109,6 +109,12 @@ export const REQUIRED_SUITES = Object.freeze({
   'asep-suite:command-runner': 'adapters/command-runner/src/command-runner.test.ts',
   'asep-suite:agent-claude': 'adapters/agent-claude/src/agent-claude.test.ts',
   'asep-suite:github-app': 'adapters/github-app/src/github-app.test.ts',
+  // S9 crash-safety suites (exit criteria D8/C7): the preallocated-id evidence
+  // store and the two-phase side-effect log carry the correctness guarantees for
+  // resultSha integrity and single-ref/single-PR convergence, so a dropped or
+  // renamed suite must turn the gate RED.
+  'asep-suite:evidence-store': 'adapters/persistence/src/evidence-store.test.ts',
+  'asep-suite:side-effect-log': 'adapters/persistence/src/side-effect-log.test.ts',
 });
 
 /** The machine-readable marker a suite prints at module load: `SUITE-ID: <id>`. */

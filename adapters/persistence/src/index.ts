@@ -36,3 +36,10 @@ export {
 export {
   ContentAddressedArtifactStore, ArtifactChecksumError, ArtifactNotFoundError,
 } from './artifact-store.js';
+
+// Preallocated-id evidence store (S9, exit D8) + two-phase crash-safe
+// side-effect log (S9, exit C7).
+export {
+  ContentAddressedEvidenceStore, EvidenceImmutabilityError, EvidenceNotFoundError,
+} from './evidence-store.js';
+export { SqlSideEffectLog } from './side-effect-log.js';
