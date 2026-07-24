@@ -12,9 +12,11 @@
   "dependencies": {
     "@asep/contracts": "workspace:*",
     "@asep/ports": "workspace:*",
-    "@asep/domain": "workspace:*"
+    "@asep/domain": "workspace:*",
+    "pg": "8.22.0"
   },
   "devDependencies": {
-    "@electric-sql/pglite": "0.5.4"
+    "@electric-sql/pglite": "0.5.4",
+    "@types/pg": "8.11.10"
   }
 }

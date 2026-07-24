@@ -11,6 +11,7 @@ export type {
 export { OptimisticConcurrencyError, ScopeViolationError } from './sql.js';
 
 export { PgliteClient } from './pglite-client.js';
+export { PgPoolClient } from './pg-pool-client.js';
 
 export { ulid, isUlid } from './ulid.js';
 
