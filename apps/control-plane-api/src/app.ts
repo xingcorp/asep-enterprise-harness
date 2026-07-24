@@ -14,7 +14,7 @@ import { OptimisticConcurrencyError, ScopeViolationError } from '@asep/persisten
 import type {
   OrganizationId, ProjectId, RepositoryBindingId, RunId, TaskId, RiskLevel,
 } from '@asep/contracts';
-import { AuthError, organizationContext, tenantScope } from './auth.js';
+import { AuthError, organizationContext, tenantScope, type PrincipalResolver } from './auth.js';
 import {
   parseCreateOrganization, parseCreateProject, parseCreateBinding,
   parseCreateRun, parseCreateTask, type Parsed,
@@ -33,6 +33,10 @@ export interface Repositories {
 
 export interface AppOptions {
   readonly repositories: Repositories;
+  // The authenticated-principal resolver (HIGH-004). The org scope is derived
+  // from a verified bearer credential via this port, NEVER from a client header,
+  // so a caller cannot spoof which organization it acts as.
+  readonly principals: PrincipalResolver;
   // Optional readiness probe (composition root injects a real DB ping). Defaults
   // to always-ready so the pure app can be tested without a live dependency.
   readonly readyCheck?: () => Promise<boolean>;
@@ -49,6 +53,7 @@ function bodyOrThrow<T>(parsed: Parsed<T>, reply: FastifyReply): T | null {
 export function buildApp(opts: AppOptions): FastifyInstance {
   const app = Fastify({ logger: false });
   const repos = opts.repositories;
+  const principals = opts.principals;
   const readyCheck = opts.readyCheck ?? (async () => true);
 
   // Map well-known domain/persistence errors to HTTP status codes centrally, so
@@ -93,7 +98,7 @@ export function buildApp(opts: AppOptions): FastifyInstance {
   });
 
   app.post('/v1/projects', async (req: FastifyRequest, reply: FastifyReply) => {
-    const ctx = organizationContext(req); // 401 if missing/malformed
+    const ctx = await organizationContext(req, principals); // 401 if missing/malformed
     const parsed = parseCreateProject(req.body);
     const body = bodyOrThrow(parsed, reply);
     if (!body) return;
@@ -111,7 +116,7 @@ export function buildApp(opts: AppOptions): FastifyInstance {
   });
 
   app.post('/v1/projects/:projectId/repository-bindings', async (req: FastifyRequest, reply: FastifyReply) => {
-    const scope = tenantScope(req); // 401 if missing/malformed
+    const scope = await tenantScope(req, principals); // 401 if missing/malformed
     const parsed = parseCreateBinding(req.body);
     const body = bodyOrThrow(parsed, reply);
     if (!body) return;
@@ -131,7 +136,7 @@ export function buildApp(opts: AppOptions): FastifyInstance {
   });
 
   app.post('/v1/projects/:projectId/runs', async (req: FastifyRequest, reply: FastifyReply) => {
-    const scope = tenantScope(req);
+    const scope = await tenantScope(req, principals);
     const parsed = parseCreateRun(req.body);
     const body = bodyOrThrow(parsed, reply);
     if (!body) return;
@@ -147,7 +152,7 @@ export function buildApp(opts: AppOptions): FastifyInstance {
   });
 
   app.post('/v1/runs/:runId/tasks', async (req: FastifyRequest, reply: FastifyReply) => {
-    const scope = tenantScope(req);
+    const scope = await tenantScope(req, principals);
     const runId = (req.params as { runId: string }).runId;
     const parsed = parseCreateTask(req.body);
     const body = bodyOrThrow(parsed, reply);
@@ -165,7 +170,7 @@ export function buildApp(opts: AppOptions): FastifyInstance {
   // ----- queries (read) ----------------------------------------------------
 
   app.get('/v1/tasks/:taskId', async (req: FastifyRequest, reply: FastifyReply) => {
-    const scope = tenantScope(req);
+    const scope = await tenantScope(req, principals);
     const taskId = (req.params as { taskId: string }).taskId;
     const task = await repos.tasks.getScoped(scope, taskId as TaskId);
     reply.code(200).send({

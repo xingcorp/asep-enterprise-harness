@@ -16,12 +16,15 @@ import {
 import type { CodingAgentProvider, AgentExecuteRequest, AgentAttemptObservation, GitChangeInspector, GitChangeObservation } from '@asep/ports';
 import type { ArtifactRef } from '@asep/contracts';
 import { buildApp, type Repositories } from './app.js';
-import { ORG_HEADER, PROJECT_HEADER } from './auth.js';
+import { PROJECT_HEADER } from './auth.js';
+import { RepositoryPrincipalResolver } from './principal-resolver.js';
 import { parseArgs, runExecute, formatResult, localDeps, CliUsageError } from './cli.js';
 
 console.log('SUITE-ID: asep-suite:control-plane');
 
-async function buildStore(): Promise<{ repos: Repositories; db: PgliteClient }> {
+async function buildStore(): Promise<{
+  repos: Repositories; db: PgliteClient; principals: RepositoryPrincipalResolver;
+}> {
   const db = await PgliteClient.create();
   await migrate(db);
   const repos: Repositories = {
@@ -32,7 +35,18 @@ async function buildStore(): Promise<{ repos: Repositories; db: PgliteClient }> 
     tasks: new TaskRepository(db),
     attempts: new AttemptRepository(db),
   };
-  return { repos, db };
+  // The authenticated-principal resolver (HIGH-004): the org scope is bound to a
+  // verified bearer token, never a client header. Tests bind a token per org.
+  const principals = new RepositoryPrincipalResolver(repos.projects);
+  return { repos, db, principals };
+}
+
+// Bind a fresh bearer token to an org and return the Authorization header value.
+// Tokens are SERVER state — a caller can never mint one by sending a header.
+function bearerFor(principals: RepositoryPrincipalResolver, organizationId: string): string {
+  const token = `tok-${organizationId}`;
+  principals.bindToken(token, organizationId as never);
+  return `Bearer ${token}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -40,24 +54,25 @@ async function buildStore(): Promise<{ repos: Repositories; db: PgliteClient }> 
 // ---------------------------------------------------------------------------
 
 test('full registration flow: org → project → binding → run → task → query', async () => {
-  const { repos, db } = await buildStore();
-  const app = buildApp({ repositories: repos });
+  const { repos, db, principals } = await buildStore();
+  const app = buildApp({ repositories: repos, principals });
   try {
     const org = await app.inject({
       method: 'POST', url: '/v1/organizations', payload: { name: 'Acme' },
     });
     assert.equal(org.statusCode, 201);
     const organizationId = org.json().organizationId as string;
+    const auth = bearerFor(principals, organizationId);
 
     const project = await app.inject({
       method: 'POST', url: '/v1/projects',
-      headers: { [ORG_HEADER]: organizationId },
+      headers: { authorization: auth },
       payload: { name: 'web', defaultBranch: 'main' },
     });
     assert.equal(project.statusCode, 201);
     const projectId = project.json().projectId as string;
 
-    const scoped = { [ORG_HEADER]: organizationId, [PROJECT_HEADER]: projectId };
+    const scoped = { authorization: auth, [PROJECT_HEADER]: projectId };
 
     const binding = await app.inject({
       method: 'POST', url: `/v1/projects/${projectId}/repository-bindings`,
@@ -102,13 +117,14 @@ test('full registration flow: org → project → binding → run → task → q
 // ---------------------------------------------------------------------------
 
 test('C2: a task from project A is NOT readable under project B scope (IDOR → 404)', async () => {
-  const { repos, db } = await buildStore();
-  const app = buildApp({ repositories: repos });
+  const { repos, db, principals } = await buildStore();
+  const app = buildApp({ repositories: repos, principals });
   try {
     // Two projects under one org.
     const org = await repos.organizations.create({ name: 'Acme' });
     const projA = await repos.projects.create({ organizationId: org.id, name: 'A', defaultBranch: 'main' });
     const projB = await repos.projects.create({ organizationId: org.id, name: 'B', defaultBranch: 'main' });
+    const auth = bearerFor(principals, org.id);
     const scopeA = { organizationId: org.id, projectId: projA.id };
     const bindingA = await repos.bindings.create(scopeA, {
       githubHost: 'github.com', githubOwner: 'acme', githubRepo: 'a', defaultBaseBranch: 'main',
@@ -119,16 +135,63 @@ test('C2: a task from project A is NOT readable under project B scope (IDOR → 
     // Read task A under project B's scope — must fail closed as 404.
     const idor = await app.inject({
       method: 'GET', url: `/v1/tasks/${taskA.id}`,
-      headers: { [ORG_HEADER]: org.id, [PROJECT_HEADER]: projB.id },
+      headers: { authorization: auth, [PROJECT_HEADER]: projB.id },
     });
     assert.equal(idor.statusCode, 404);
 
     // Sanity: the owning scope CAN read it.
     const owner = await app.inject({
       method: 'GET', url: `/v1/tasks/${taskA.id}`,
-      headers: { [ORG_HEADER]: org.id, [PROJECT_HEADER]: projA.id },
+      headers: { authorization: auth, [PROJECT_HEADER]: projA.id },
     });
     assert.equal(owner.statusCode, 200);
+  } finally {
+    await app.close();
+    await db.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// HIGH-004 — the org scope is bound to the CREDENTIAL, not a client header. A
+// caller holding org A's token who selects a project under org B cannot widen
+// access: the membership check fails closed (401), never revealing org B.
+// ---------------------------------------------------------------------------
+
+test('HIGH-004: a token for org A cannot act as org B by selecting org B\'s project (401)', async () => {
+  const { repos, db, principals } = await buildStore();
+  const app = buildApp({ repositories: repos, principals });
+  try {
+    const orgA = await repos.organizations.create({ name: 'A-Corp' });
+    const orgB = await repos.organizations.create({ name: 'B-Corp' });
+    const projB = await repos.projects.create({ organizationId: orgB.id, name: 'B', defaultBranch: 'main' });
+    // The attacker authenticates as org A but tries to select org B's project.
+    const authA = bearerFor(principals, orgA.id);
+    const res = await app.inject({
+      method: 'POST', url: `/v1/projects/${projB.id}/repository-bindings`,
+      headers: { authorization: authA, [PROJECT_HEADER]: projB.id },
+      payload: { githubHost: 'github.com', githubOwner: 'b', githubRepo: 'b', defaultBaseBranch: 'main' },
+    });
+    // Fails closed at auth — the project is not in the authenticated org.
+    assert.equal(res.statusCode, 401);
+  } finally {
+    await app.close();
+    await db.close();
+  }
+});
+
+test('HIGH-004: an unknown/forged bearer token is 401 (org is never client-chosen)', async () => {
+  const { repos, db, principals } = await buildStore();
+  const app = buildApp({ repositories: repos, principals });
+  try {
+    const org = await repos.organizations.create({ name: 'Acme' });
+    const proj = await repos.projects.create({ organizationId: org.id, name: 'web', defaultBranch: 'main' });
+    // A token that was never bound server-side — cannot resolve to any org.
+    const res = await app.inject({
+      method: 'POST', url: `/v1/projects/${proj.id}/repository-bindings`,
+      headers: { authorization: 'Bearer forged-token', [PROJECT_HEADER]: proj.id },
+      payload: { githubHost: 'github.com', githubOwner: 'a', githubRepo: 'b', defaultBaseBranch: 'main' },
+    });
+    assert.equal(res.statusCode, 401);
   } finally {
     await app.close();
     await db.close();
@@ -140,8 +203,8 @@ test('C2: a task from project A is NOT readable under project B scope (IDOR → 
 // ---------------------------------------------------------------------------
 
 test('a project route without a tenant credential is 401', async () => {
-  const { repos, db } = await buildStore();
-  const app = buildApp({ repositories: repos });
+  const { repos, db, principals } = await buildStore();
+  const app = buildApp({ repositories: repos, principals });
   try {
     const res = await app.inject({
       method: 'POST', url: '/v1/projects/ABCDEFGHJKMNPQRSTVWXYZ0123/repository-bindings',
@@ -156,13 +219,13 @@ test('a project route without a tenant credential is 401', async () => {
 });
 
 test('a malformed body is 400 with structural errors (no persistence touched)', async () => {
-  const { repos, db } = await buildStore();
-  const app = buildApp({ repositories: repos });
+  const { repos, db, principals } = await buildStore();
+  const app = buildApp({ repositories: repos, principals });
   try {
     const org = await repos.organizations.create({ name: 'Acme' });
     const res = await app.inject({
       method: 'POST', url: '/v1/projects',
-      headers: { [ORG_HEADER]: org.id },
+      headers: { authorization: bearerFor(principals, org.id) },
       payload: { name: '' }, // empty name + missing defaultBranch
     });
     assert.equal(res.statusCode, 400);
@@ -175,8 +238,8 @@ test('a malformed body is 400 with structural errors (no persistence touched)', 
 });
 
 test('a run referencing a binding from another scope fails closed (404)', async () => {
-  const { repos, db } = await buildStore();
-  const app = buildApp({ repositories: repos });
+  const { repos, db, principals } = await buildStore();
+  const app = buildApp({ repositories: repos, principals });
   try {
     const org = await repos.organizations.create({ name: 'Acme' });
     const projA = await repos.projects.create({ organizationId: org.id, name: 'A', defaultBranch: 'main' });
@@ -188,7 +251,7 @@ test('a run referencing a binding from another scope fails closed (404)', async 
     // Try to create a run under project B referencing project A's binding.
     const res = await app.inject({
       method: 'POST', url: `/v1/projects/${projB.id}/runs`,
-      headers: { [ORG_HEADER]: org.id, [PROJECT_HEADER]: projB.id },
+      headers: { authorization: bearerFor(principals, org.id), [PROJECT_HEADER]: projB.id },
       payload: { repositoryBindingId: bindingA.id, risk: 'R0' },
     });
     assert.equal(res.statusCode, 404);
@@ -203,8 +266,8 @@ test('a run referencing a binding from another scope fails closed (404)', async 
 // ---------------------------------------------------------------------------
 
 test('health/live is always ok; health/ready reflects the injected probe', async () => {
-  const { repos, db } = await buildStore();
-  const app = buildApp({ repositories: repos, readyCheck: async () => false });
+  const { repos, db, principals } = await buildStore();
+  const app = buildApp({ repositories: repos, principals, readyCheck: async () => false });
   try {
     const live = await app.inject({ method: 'GET', url: '/health/live' });
     assert.equal(live.statusCode, 200);

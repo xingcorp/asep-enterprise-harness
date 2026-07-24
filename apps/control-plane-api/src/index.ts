@@ -7,9 +7,12 @@
 export { buildApp, type Repositories, type AppOptions } from './app.js';
 export {
   organizationContext, tenantScope, AuthError,
-  ORG_HEADER, PROJECT_HEADER, ULID_PATTERN,
-  type AuthContext,
+  PROJECT_HEADER, AUTH_HEADER, ULID_PATTERN,
+  type AuthContext, type PrincipalResolver,
 } from './auth.js';
+export {
+  RepositoryPrincipalResolver, type TokenBinding,
+} from './principal-resolver.js';
 export {
   parseCreateOrganization, parseCreateProject, parseCreateBinding,
   parseCreateRun, parseCreateTask,

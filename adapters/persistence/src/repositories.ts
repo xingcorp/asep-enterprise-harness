@@ -132,6 +132,19 @@ export class ProjectRepository {
     return { id, organizationId: input.organizationId, name: input.name, defaultBranch: input.defaultBranch, version: 0 };
   }
 
+  // Authoritative membership check (HIGH-004): does this project row exist AND
+  // belong to the given organization? Parameterized ($1,$2), never
+  // interpolated. Used by the authenticated-principal resolver to verify a
+  // client-selected project actually sits under the token's org before it
+  // becomes a TenantScope — a token for org A cannot select org B's project.
+  async belongsToOrg(organizationId: OrganizationId, id: ProjectId): Promise<boolean> {
+    const r = await this.db.query(
+      'select 1 from projects where id = $1 and organization_id = $2',
+      [id, organizationId],
+    );
+    return r.rowCount > 0;
+  }
+
   // Scoped read: the row must be visible in this scope or we fail closed.
   async getScoped(scope: TenantScope, id: ProjectId): Promise<ProjectRow> {
     const r = await this.db.query(

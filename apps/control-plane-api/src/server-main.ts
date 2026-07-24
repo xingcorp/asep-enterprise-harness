@@ -12,6 +12,24 @@ import {
   RunRepository, TaskRepository, AttemptRepository,
 } from '@asep/persistence';
 import { buildApp, type Repositories } from './app.js';
+import { RepositoryPrincipalResolver, type TokenBinding } from './principal-resolver.js';
+
+// Parse the reference token→org bindings from an env var (a JSON array of
+// {token, organizationId}). Absent/blank means no bindings (every request then
+// fails closed with 401 until real credentials are provisioned) — fail-closed
+// by default, never fail-open. A malformed value is a hard startup error.
+function parseTokenBindings(raw: string | undefined): TokenBinding[] {
+  if (!raw || raw.trim() === '') return [];
+  const parsed: unknown = JSON.parse(raw);
+  if (!Array.isArray(parsed)) throw new Error('ASEP_TOKEN_BINDINGS must be a JSON array');
+  return parsed.map((b): TokenBinding => {
+    const rec = b as { token?: unknown; organizationId?: unknown };
+    if (typeof rec.token !== 'string' || typeof rec.organizationId !== 'string') {
+      throw new Error('ASEP_TOKEN_BINDINGS entries need string token + organizationId');
+    }
+    return { token: rec.token, organizationId: rec.organizationId as TokenBinding['organizationId'] };
+  });
+}
 
 async function main(): Promise<void> {
   const port = Number(process.env['PORT'] ?? 8088);
@@ -32,10 +50,19 @@ async function main(): Promise<void> {
     attempts: new AttemptRepository(db),
   };
 
+  // Authenticated-principal resolver (HIGH-004): the org scope is bound to a
+  // verified bearer token, NEVER a client header. Reference bindings are loaded
+  // from ASEP_TOKEN_BINDINGS (a JSON array of {token, organizationId}); a
+  // production deployment swaps this for an OIDC/JWT validator reading the org
+  // claim, with the same invariant. Membership of a selected project under the
+  // authenticated org is checked authoritatively against the DB seam.
+  const principals = new RepositoryPrincipalResolver(repositories.projects, parseTokenBindings(process.env['ASEP_TOKEN_BINDINGS']));
+
   // Readiness = the DB answers its own trivial probe. The composition root does
   // not author raw SQL; it forwards to the seam's ping() (arch discipline).
   const app = buildApp({
     repositories,
+    principals,
     readyCheck: () => db.ping(),
   });
 
