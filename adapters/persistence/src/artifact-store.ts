@@ -46,6 +46,17 @@ export class ArtifactNotFoundError extends Error {
   }
 }
 
+// A caller-supplied ArtifactRef whose sha256/kind disagrees with the
+// authoritative metadata row (HIGH-005). The ref is a claim; the DB row is the
+// truth. A mismatch means the ref was forged, stale, or points at a different
+// artifact than the caller believes — fail closed, never serve the bytes.
+export class ArtifactRefMismatchError extends Error {
+  constructor(field: 'sha256' | 'kind', expected: string, claimed: string) {
+    super(`artifact ref ${field} mismatch: authoritative ${expected}, ref claimed ${claimed} (fail closed)`);
+    this.name = 'ArtifactRefMismatchError';
+  }
+}
+
 // Tenant/project-namespaced, content-addressed key. Never derived from a
 // user-supplied path (D2/D6). sha256 is validated hex so it cannot smuggle path
 // separators.
@@ -111,6 +122,7 @@ export class ContentAddressedArtifactStore implements ArtifactStore {
 
   async get(scope: TenantScope, ref: ArtifactRef): Promise<ArtifactStream> {
     const row = await this.loadScopedRow(scope, ref.artifactId);
+    this.assertRefMatches(ref, row);
     const bytes = await this.objects.get(row.storageKey);
     // D3: re-hash on read; a mutated/corrupted byte fails closed.
     const actual = sha256Hex(bytes);
@@ -125,6 +137,7 @@ export class ContentAddressedArtifactStore implements ArtifactStore {
 
   async verify(scope: TenantScope, ref: ArtifactRef): Promise<ArtifactVerification> {
     const row = await this.loadScopedRow(scope, ref.artifactId);
+    this.assertRefMatches(ref, row);
     const bytes = await this.objects.get(row.storageKey);
     const actual = sha256Hex(bytes);
     const ok = actual === row.sha256 && bytes.byteLength === row.sizeBytes;
@@ -134,6 +147,23 @@ export class ContentAddressedArtifactStore implements ArtifactStore {
       actualSha256: actual,
       sizeBytes: bytes.byteLength,
     };
+  }
+
+  // HIGH-005: the caller's ArtifactRef carries a claimed sha256 + kind. Those
+  // are assertions, not truth — cross-check them against the authoritative
+  // metadata row before serving any bytes. A forged/stale ref (right id, wrong
+  // checksum or kind) fails closed here, so a manifest or trace cannot smuggle
+  // a mismatched reference past the store (traceability K3, D6).
+  private assertRefMatches(
+    ref: ArtifactRef,
+    row: { sha256: string; kind: string },
+  ): void {
+    if (ref.sha256 !== row.sha256) {
+      throw new ArtifactRefMismatchError('sha256', row.sha256, ref.sha256);
+    }
+    if (ref.kind !== row.kind) {
+      throw new ArtifactRefMismatchError('kind', row.kind, ref.kind);
+    }
   }
 
   // Scoped metadata load: a row outside the caller's TenantScope resolves to

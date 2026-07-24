@@ -20,6 +20,7 @@ import {
 import { FilesystemObjectStore, ObjectExistsError } from './object-store.js';
 import {
   ContentAddressedArtifactStore, ArtifactChecksumError, ArtifactNotFoundError,
+  ArtifactRefMismatchError,
 } from './artifact-store.js';
 import type { ArtifactRef, TenantScope } from '@asep/contracts';
 
@@ -166,6 +167,52 @@ test('D6: identical bytes under two scopes get DIFFERENT tenant-namespaced keys'
   // Both are independently readable within their own scope.
   assert.equal((await store.get(scope, rA)).sizeBytes, content.byteLength);
   assert.equal((await store.get(other, rB)).sizeBytes, content.byteLength);
+  rmSync(dir, { recursive: true, force: true });
+  await client.close();
+});
+
+// ---------------------------------------------------------------------------
+// HIGH-005 — the caller's ArtifactRef carries a CLAIMED sha256 + kind. Those
+// are assertions, not truth; the store cross-checks them against the
+// authoritative metadata row and fails closed on any disagreement (K3, D6).
+// A forged manifest/trace ref cannot smuggle a mismatched reference past get.
+// ---------------------------------------------------------------------------
+
+test('HIGH-005: get with a ref whose sha256 disagrees with metadata fails closed', async () => {
+  const { client, scope, store, dir } = await fresh();
+  const content = bytesOf('authoritative bytes');
+  const sha = sha256Hex(content);
+  const ref = await store.put(scope, { kind: 'git-diff', content, sha256: sha, contentType: 'text/plain' });
+  // Same (valid) id, but a forged checksum in the ref.
+  const forged: ArtifactRef = { ...ref, sha256: 'a'.repeat(64) };
+  await assert.rejects(() => store.get(scope, forged), ArtifactRefMismatchError);
+  await assert.rejects(() => store.verify(scope, forged), ArtifactRefMismatchError);
+  rmSync(dir, { recursive: true, force: true });
+  await client.close();
+});
+
+test('HIGH-005: get with a ref whose kind disagrees with metadata fails closed', async () => {
+  const { client, scope, store, dir } = await fresh();
+  const content = bytesOf('kind-bound bytes');
+  const sha = sha256Hex(content);
+  const ref = await store.put(scope, { kind: 'git-diff', content, sha256: sha, contentType: 'text/plain' });
+  // Right id + right checksum, but the ref claims a different kind.
+  const forged: ArtifactRef = { ...ref, kind: 'evidence-bundle' };
+  await assert.rejects(() => store.get(scope, forged), ArtifactRefMismatchError);
+  await assert.rejects(() => store.verify(scope, forged), ArtifactRefMismatchError);
+  rmSync(dir, { recursive: true, force: true });
+  await client.close();
+});
+
+test('HIGH-005: an intact ref (matching sha256 + kind) still round-trips', async () => {
+  const { client, scope, store, dir } = await fresh();
+  const content = bytesOf('honest ref');
+  const sha = sha256Hex(content);
+  const ref = await store.put(scope, { kind: 'stdout', content, sha256: sha, contentType: 'text/plain' });
+  const got = await store.get(scope, ref);
+  assert.deepEqual([...got.content], [...content]);
+  const v = await store.verify(scope, ref);
+  assert.equal(v.ok, true);
   rmSync(dir, { recursive: true, force: true });
   await client.close();
 });

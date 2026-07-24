@@ -36,6 +36,7 @@ export {
 } from './object-store.js';
 export {
   ContentAddressedArtifactStore, ArtifactChecksumError, ArtifactNotFoundError,
+  ArtifactRefMismatchError,
 } from './artifact-store.js';
 
 // Preallocated-id evidence store (S9, exit D8) + two-phase crash-safe
