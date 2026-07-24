@@ -187,6 +187,54 @@ test('C2b: a task referencing a run from another project is rejected by the DB',
   await client.close();
 });
 
+// HIGH-005: the DB rejects a task/attempt whose repository_binding_id belongs
+// to another project — the composite FK (binding, org, project) → bindings makes
+// "the binding I point at is in MY scope" a DB invariant, not a row filter.
+
+test('HIGH-005: a task naming a binding from another project is rejected by the DB', async () => {
+  const client = await freshDb();
+  const { scope, binding } = await seedScope(client);
+  const other = await seedScope(client);
+  const runs = new RunRepository(client);
+  const tasks = new TaskRepository(client);
+  // A legitimate run in scope A.
+  const run = await runs.create(scope, {
+    repositoryBindingId: binding.id, status: 'EXECUTING', risk: 'R0',
+  });
+  // Point the task at scope A's run but scope B's binding — the binding FK
+  // (bindingB, orgA, projA) has no matching row, so the DB rejects it.
+  await assert.rejects(
+    () => tasks.create(scope, {
+      runId: run.id, repositoryBindingId: other.binding.id, risk: 'R0',
+    }),
+    /foreign key|violates/i,
+  );
+  await client.close();
+});
+
+test('HIGH-005: an attempt naming a binding from another project is rejected by the DB', async () => {
+  const client = await freshDb();
+  const { scope, binding } = await seedScope(client);
+  const other = await seedScope(client);
+  const runs = new RunRepository(client);
+  const tasks = new TaskRepository(client);
+  const attempts = new AttemptRepository(client);
+  const run = await runs.create(scope, {
+    repositoryBindingId: binding.id, status: 'EXECUTING', risk: 'R0',
+  });
+  const task = await tasks.create(scope, {
+    runId: run.id, repositoryBindingId: binding.id, risk: 'R0',
+  });
+  // Attempt in scope A's task but pointing at scope B's binding → rejected.
+  await assert.rejects(
+    () => attempts.create(scope, {
+      taskId: task.id, repositoryBindingId: other.binding.id,
+    }),
+    /foreign key|violates/i,
+  );
+  await client.close();
+});
+
 // ---------------------------------------------------------------------------
 // C3 — unique active writer/branch lease; concurrent attempt is denied.
 // ---------------------------------------------------------------------------

@@ -260,6 +260,29 @@ create table side_effect_records (
 );
 `;
 
+// ---------------------------------------------------------------------------
+// 0008 — composite FK for repository_binding_id on tasks + attempts (C2b).
+//
+// Disp. P2-FINAL-HIGH-005: 0002 gave tasks/attempts a composite FK onto their
+// *parent* (run/task) but left `repository_binding_id` as a bare column — a
+// task or attempt could name a binding that belongs to a DIFFERENT project than
+// the row's own (organization_id, project_id). We add the missing composite FKs
+// so the DB enforces "the binding I point at is in MY tenant scope", not a
+// row-filter in application code. Append-only: 0002's text is unchanged (its
+// recorded checksum stays valid); this migration ALTERs the shipped tables.
+// ---------------------------------------------------------------------------
+const M0008 = `
+alter table tasks
+  add constraint tasks_binding_scoped_fk
+  foreign key (repository_binding_id, organization_id, project_id)
+  references repository_bindings (id, organization_id, project_id);
+
+alter table attempts
+  add constraint attempts_binding_scoped_fk
+  foreign key (repository_binding_id, organization_id, project_id)
+  references repository_bindings (id, organization_id, project_id);
+`;
+
 // Ordered, immutable migration set. Order is by id; the runner asserts it.
 export const MIGRATIONS: readonly Migration[] = Object.freeze([
   { id: '0001_init_tenancy', sql: M0001 },
@@ -269,4 +292,5 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   { id: '0005_command_executions', sql: M0005 },
   { id: '0006_pull_requests', sql: M0006 },
   { id: '0007_audit_side_effects', sql: M0007 },
+  { id: '0008_binding_scoped_fks', sql: M0008 },
 ]);
