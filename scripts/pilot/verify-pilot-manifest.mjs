@@ -194,6 +194,168 @@ export function verifyManifest(manifest) {
   return { ok: reasons.length === 0, reasons };
 }
 
+// ---------------------------------------------------------------------------
+// HIGH-009 — authoritative cross-check. The pure verifyManifest above proves a
+// manifest is internally consistent, but EVERY field it reads is self-declared:
+// a forged manifest with a real-looking providerId, a plausible PR url, an
+// invented evidence checksum and a fabricated trace passes it. That is exactly
+// the K5/PR2-08 hole. This layer resolves each task's claims against the
+// AUTHORITATIVE persistence (the same DB/object-store/forge state the harness
+// wrote) via an injected resolver and fails closed on any absence or mismatch.
+// The resolver is injected (real DB-backed in production, a fake in tests) so
+// this file stays dependency-free.
+//
+// The resolver contract (all methods async, all return null when not found):
+//   resolveAttempt(trace) -> {
+//     attemptId, taskId, runId, repositoryBindingId,
+//     resultSha, evidenceArtifactId, evidenceSha256, providerId
+//   } | null
+//   resolveEvidence(scopeTrace, evidenceArtifactId) -> { sha256, kind } | null
+//   resolvePullRequest(scopeTrace, pullRequestId) -> { number, url, headBranch, attemptId } | null
+//   resolveHumanAuthorization(taskId) -> { disposition, signedBy, signatureValid } | null
+//
+// A manifest claim is honoured only when the authoritative record exists AND
+// agrees with it. The manifest is a claim; persistence is the truth.
+// ---------------------------------------------------------------------------
+
+/**
+ * Cross-check a manifest against authoritative persistence via `resolver`.
+ * Runs the pure structural+semantic gate first (so a malformed manifest never
+ * reaches the resolver), then verifies every self-declared fact against the
+ * persisted record. Async; returns { ok, reasons }. Never throws on bad data —
+ * a resolver error for one task becomes a reason, not a crash.
+ */
+export async function verifyManifestAgainstAuthority(manifest, resolver) {
+  // (0) The self-consistency floor MUST pass first.
+  const base = verifyManifest(manifest);
+  const reasons = [...base.reasons];
+
+  if (!resolver || typeof resolver.resolveAttempt !== 'function') {
+    reasons.push('authoritative cross-check requires a resolver — refusing to honour a self-declared manifest (HIGH-009)');
+    return { ok: false, reasons };
+  }
+  // If the structural gate failed, the tasks array may be garbage; do not feed
+  // it to the resolver. Fail closed on the structural reasons alone.
+  if (base.reasons.some((r) => r.startsWith('schema:'))) {
+    return { ok: false, reasons };
+  }
+
+  const tasks = Array.isArray(manifest.tasks) ? manifest.tasks : [];
+  for (const t of tasks) {
+    const trace = t.trace ?? {};
+    const label = `task "${t.taskId}"`;
+
+    let attempt;
+    try {
+      attempt = await resolver.resolveAttempt(trace);
+    } catch (e) {
+      reasons.push(`${label}: resolver failed to resolve attempt — fail closed (${e && e.message ? e.message : e})`);
+      continue;
+    }
+    if (!attempt) {
+      reasons.push(`${label}: no authoritative attempt for trace.attemptId "${trace.attemptId}" — manifest is not backed by persistence (HIGH-009)`);
+      continue;
+    }
+
+    // The trace hierarchy must MATCH the persisted attempt, not merely be present.
+    if (attempt.taskId !== trace.taskId) {
+      reasons.push(`${label}: persisted attempt.taskId "${attempt.taskId}" != trace.taskId "${trace.taskId}"`);
+    }
+    if (attempt.runId !== trace.runId) {
+      reasons.push(`${label}: persisted attempt.runId "${attempt.runId}" != trace.runId "${trace.runId}"`);
+    }
+    if (attempt.repositoryBindingId !== trace.repositoryBindingId) {
+      reasons.push(`${label}: persisted attempt.repositoryBindingId "${attempt.repositoryBindingId}" != trace.repositoryBindingId "${trace.repositoryBindingId}"`);
+    }
+
+    // resultSha is harness-owned truth; the manifest cannot claim a different one.
+    if (attempt.resultSha !== t.resultSha) {
+      reasons.push(`${label}: manifest resultSha "${t.resultSha}" != persisted attempt.result_sha "${attempt.resultSha}" — forged result (HIGH-009)`);
+    }
+
+    // The provider is read from the PERSISTED attempt, not the manifest's own
+    // providerId — a manifest cannot self-certify it used real Claude.
+    const persistedProvider = String(attempt.providerId ?? '').toLowerCase();
+    for (const prefix of FAKE_PROVIDER_PREFIXES) {
+      if (persistedProvider.startsWith(prefix)) {
+        reasons.push(`${label}: persisted provider "${attempt.providerId}" is a non-real adapter (exit K6, authoritative)`);
+        break;
+      }
+    }
+    if (persistedProvider.length === 0) {
+      reasons.push(`${label}: persisted attempt has no providerId — cannot certify a real agent ran`);
+    }
+
+    // Evidence: the artifact named in the trace must EXIST in the store and its
+    // authoritative sha256 must match the manifest's declared evidenceChecksum
+    // AND the sha256 pinned on the attempt row (the scoped evidence link).
+    const declaredEvidenceSha = String(t.evidenceChecksum ?? '').replace(/^sha256:/, '');
+    let evidence;
+    try {
+      evidence = await resolver.resolveEvidence(trace, trace.evidenceArtifactId);
+    } catch (e) {
+      evidence = null;
+      reasons.push(`${label}: resolver failed to resolve evidence — fail closed (${e && e.message ? e.message : e})`);
+    }
+    if (!evidence) {
+      reasons.push(`${label}: no authoritative evidence artifact for trace.evidenceArtifactId "${trace.evidenceArtifactId}" (HIGH-009)`);
+    } else {
+      if (evidence.sha256 !== declaredEvidenceSha) {
+        reasons.push(`${label}: manifest evidenceChecksum "${declaredEvidenceSha}" != authoritative artifact sha256 "${evidence.sha256}" — forged evidence`);
+      }
+      if (attempt.evidenceSha256 && attempt.evidenceSha256 !== evidence.sha256) {
+        reasons.push(`${label}: attempt.evidence_sha256 "${attempt.evidenceSha256}" != authoritative artifact sha256 "${evidence.sha256}"`);
+      }
+      if (attempt.evidenceArtifactId && attempt.evidenceArtifactId !== trace.evidenceArtifactId) {
+        reasons.push(`${label}: attempt.evidence_artifact_id "${attempt.evidenceArtifactId}" != trace.evidenceArtifactId "${trace.evidenceArtifactId}"`);
+      }
+    }
+
+    // Pull request: the PR named in the trace must EXIST, point at the SAME
+    // attempt, and carry the SAME url the manifest declares.
+    let pr;
+    try {
+      pr = await resolver.resolvePullRequest(trace, trace.pullRequestId);
+    } catch (e) {
+      pr = null;
+      reasons.push(`${label}: resolver failed to resolve pull request — fail closed (${e && e.message ? e.message : e})`);
+    }
+    if (!pr) {
+      reasons.push(`${label}: no authoritative pull request for trace.pullRequestId "${trace.pullRequestId}" (HIGH-009)`);
+    } else {
+      if (pr.url !== t.pullRequestUrl) {
+        reasons.push(`${label}: manifest pullRequestUrl "${t.pullRequestUrl}" != authoritative PR url "${pr.url}" — forged PR link`);
+      }
+      if (pr.attemptId !== trace.attemptId) {
+        reasons.push(`${label}: authoritative PR belongs to attempt "${pr.attemptId}" != trace.attemptId "${trace.attemptId}"`);
+      }
+    }
+
+    // Human authorization: the disposition must come from a SIGNED authoritative
+    // record, not the manifest's self-declared humanDisposition. A COMPLETE
+    // pilot task requires a genuine, signature-verified human handoff (PR2-08).
+    let auth;
+    try {
+      auth = await resolver.resolveHumanAuthorization(trace.taskId);
+    } catch (e) {
+      auth = null;
+      reasons.push(`${label}: resolver failed to resolve human authorization — fail closed (${e && e.message ? e.message : e})`);
+    }
+    if (!auth) {
+      reasons.push(`${label}: no authoritative human authorization for task "${trace.taskId}" — a COMPLETE pilot needs a signed human handoff (PR2-08)`);
+    } else {
+      if (auth.signatureValid !== true) {
+        reasons.push(`${label}: human authorization signature is not valid — refusing to trust an unsigned handoff`);
+      }
+      if (auth.disposition !== t.humanDisposition) {
+        reasons.push(`${label}: manifest humanDisposition "${t.humanDisposition}" != authoritative disposition "${auth.disposition}" — self-declared disposition`);
+      }
+    }
+  }
+
+  return { ok: reasons.length === 0, reasons };
+}
+
 /** Load, JSON-parse and verify a manifest file. Returns { ok, reasons }. */
 export function verifyManifestFile(path) {
   let raw;

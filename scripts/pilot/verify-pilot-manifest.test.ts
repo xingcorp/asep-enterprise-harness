@@ -10,6 +10,7 @@ import assert from 'node:assert/strict';
 // The verifier is plain ESM (.mjs); import its pure functions directly.
 import {
   verifyManifest,
+  verifyManifestAgainstAuthority,
   MIN_PILOT_TASKS,
   // @ts-expect-error - .mjs sibling has no type declarations; runtime import is fine under tsx.
 } from './verify-pilot-manifest.mjs';
@@ -157,4 +158,163 @@ test('an unknown verdict is rejected by the schema enum', () => {
   const res = verifyManifest(makeManifest(MIN_PILOT_TASKS, { verdict: 'DEFINITELY_DONE' }));
   assert.equal(res.ok, false);
   assert.ok(res.reasons.some((r: string) => /^schema:/.test(r)));
+});
+
+// ---------------------------------------------------------------------------
+// HIGH-009 — authoritative cross-check. verifyManifest alone trusts every
+// self-declared field; verifyManifestAgainstAuthority resolves each claim
+// against persisted state via an injected resolver and fails closed on any
+// absence or mismatch. A genuine manifest backed by a matching authority is
+// accepted; every forgery mode (missing attempt, forged resultSha, fake
+// persisted provider, forged evidence checksum, missing/forged PR, unsigned or
+// mismatched human authorization) is rejected.
+// ---------------------------------------------------------------------------
+
+// A resolver that reflects the GENUINE defaults of makeTask/makeManifest, so a
+// pristine manifest cross-checks cleanly. Tests perturb either the manifest or
+// this authority to drive a specific mismatch.
+function genuineAuthority(over: {
+  attempt?: (i: number, base: Record<string, unknown>) => Record<string, unknown> | null;
+  evidence?: (i: number, base: Record<string, unknown>) => Record<string, unknown> | null;
+  pr?: (i: number, base: Record<string, unknown>) => Record<string, unknown> | null;
+  auth?: (i: number, base: Record<string, unknown>) => Record<string, unknown> | null;
+} = {}) {
+  const idxOf = (s: string) => Number(String(s).replace(/[^0-9]/g, ''));
+  const SHA64local = 'a'.repeat(64);
+  return {
+    async resolveAttempt(trace: Record<string, unknown>) {
+      const i = idxOf(trace.taskId as string);
+      const base = {
+        attemptId: `att-${i}`,
+        taskId: `task-${i}`,
+        runId: `run-${i}`,
+        repositoryBindingId: 'rb-1',
+        resultSha: (i + 1).toString(16).padStart(40, '0'),
+        evidenceArtifactId: `ev-${i}`,
+        evidenceSha256: SHA64local,
+        providerId: 'claude:claude-sonnet@cli-1.2.3',
+      };
+      return over.attempt ? over.attempt(i, base) : base;
+    },
+    async resolveEvidence(trace: Record<string, unknown>, _id: string) {
+      const i = idxOf(trace.taskId as string);
+      const base = { sha256: SHA64local, kind: 'evidence-bundle' };
+      return over.evidence ? over.evidence(i, base) : base;
+    },
+    async resolvePullRequest(trace: Record<string, unknown>, _id: string) {
+      const i = idxOf(trace.taskId as string);
+      const base = {
+        number: i + 1,
+        url: `https://github.com/acme/repo/pull/${i + 1}`,
+        headBranch: `asep/${trace.taskId}`,
+        attemptId: `att-${i}`,
+      };
+      return over.pr ? over.pr(i, base) : base;
+    },
+    async resolveHumanAuthorization(taskId: string) {
+      const i = idxOf(taskId);
+      const base = { disposition: 'PENDING', signedBy: 'reviewer@acme', signatureValid: true };
+      return over.auth ? over.auth(i, base) : base;
+    },
+  };
+}
+
+test('HIGH-009: a genuine manifest backed by matching authority is accepted', async () => {
+  const res = await verifyManifestAgainstAuthority(makeManifest(MIN_PILOT_TASKS), genuineAuthority());
+  assert.equal(res.ok, true, res.reasons.join('; '));
+});
+
+test('HIGH-009: cross-check WITHOUT a resolver is refused (no self-declared manifest honoured)', async () => {
+  const res = await verifyManifestAgainstAuthority(makeManifest(MIN_PILOT_TASKS), null);
+  assert.equal(res.ok, false);
+  assert.ok(res.reasons.some((r: string) => /requires a resolver/.test(r)));
+});
+
+test('HIGH-009: a manifest with NO authoritative attempt is rejected', async () => {
+  const authority = genuineAuthority({ attempt: () => null });
+  const res = await verifyManifestAgainstAuthority(makeManifest(MIN_PILOT_TASKS), authority);
+  assert.equal(res.ok, false);
+  assert.ok(res.reasons.some((r: string) => /no authoritative attempt/.test(r)));
+});
+
+test('HIGH-009: a forged resultSha (disagrees with persisted attempt) is rejected', async () => {
+  const authority = genuineAuthority({
+    attempt: (i, base) => ({ ...base, resultSha: 'f'.repeat(40) }),
+  });
+  const res = await verifyManifestAgainstAuthority(makeManifest(MIN_PILOT_TASKS), authority);
+  assert.equal(res.ok, false);
+  assert.ok(res.reasons.some((r: string) => /forged result/.test(r)));
+});
+
+test('HIGH-009: a manifest claiming real Claude but backed by a FAKE persisted provider is rejected (K6 authoritative)', async () => {
+  const authority = genuineAuthority({
+    attempt: (i, base) => ({ ...base, providerId: 'fake:claude' }),
+  });
+  const res = await verifyManifestAgainstAuthority(makeManifest(MIN_PILOT_TASKS), authority);
+  assert.equal(res.ok, false);
+  assert.ok(res.reasons.some((r: string) => /non-real adapter/.test(r)));
+});
+
+test('HIGH-009: a forged evidence checksum (disagrees with the stored artifact) is rejected', async () => {
+  const authority = genuineAuthority({
+    evidence: () => ({ sha256: 'b'.repeat(64), kind: 'evidence-bundle' }),
+  });
+  const res = await verifyManifestAgainstAuthority(makeManifest(MIN_PILOT_TASKS), authority);
+  assert.equal(res.ok, false);
+  assert.ok(res.reasons.some((r: string) => /forged evidence/.test(r)));
+});
+
+test('HIGH-009: a missing authoritative PR is rejected', async () => {
+  const authority = genuineAuthority({ pr: () => null });
+  const res = await verifyManifestAgainstAuthority(makeManifest(MIN_PILOT_TASKS), authority);
+  assert.equal(res.ok, false);
+  assert.ok(res.reasons.some((r: string) => /no authoritative pull request/.test(r)));
+});
+
+test('HIGH-009: a PR url that disagrees with the authoritative record is rejected', async () => {
+  const authority = genuineAuthority({
+    pr: (i, base) => ({ ...base, url: `https://github.com/acme/repo/pull/${9000 + i}` }),
+  });
+  const res = await verifyManifestAgainstAuthority(makeManifest(MIN_PILOT_TASKS), authority);
+  assert.equal(res.ok, false);
+  assert.ok(res.reasons.some((r: string) => /forged PR link/.test(r)));
+});
+
+test('HIGH-009: an UNSIGNED human authorization is rejected (PR2-08)', async () => {
+  const authority = genuineAuthority({
+    auth: (i, base) => ({ ...base, signatureValid: false }),
+  });
+  const res = await verifyManifestAgainstAuthority(makeManifest(MIN_PILOT_TASKS), authority);
+  assert.equal(res.ok, false);
+  assert.ok(res.reasons.some((r: string) => /signature is not valid/.test(r)));
+});
+
+test('HIGH-009: a missing human authorization is rejected (PR2-08)', async () => {
+  const authority = genuineAuthority({ auth: () => null });
+  const res = await verifyManifestAgainstAuthority(makeManifest(MIN_PILOT_TASKS), authority);
+  assert.equal(res.ok, false);
+  assert.ok(res.reasons.some((r: string) => /no authoritative human authorization/.test(r)));
+});
+
+test('HIGH-009: a manifest disposition that disagrees with the authoritative record is rejected', async () => {
+  const authority = genuineAuthority({
+    auth: (i, base) => ({ ...base, disposition: 'REJECTED' }),
+  });
+  const res = await verifyManifestAgainstAuthority(makeManifest(MIN_PILOT_TASKS), authority);
+  assert.equal(res.ok, false);
+  assert.ok(res.reasons.some((r: string) => /self-declared disposition/.test(r)));
+});
+
+test('HIGH-009: a structurally malformed manifest never reaches the resolver', async () => {
+  let resolverCalled = false;
+  const authority = {
+    async resolveAttempt() { resolverCalled = true; return null; },
+    async resolveEvidence() { resolverCalled = true; return null; },
+    async resolvePullRequest() { resolverCalled = true; return null; },
+    async resolveHumanAuthorization() { resolverCalled = true; return null; },
+  };
+  const res = await verifyManifestAgainstAuthority({ verdict: 'COMPLETE', tasks: [] }, authority);
+  assert.equal(res.ok, false);
+  assert.ok(res.reasons.some((r: string) => /^schema:/.test(r)));
+  assert.equal(resolverCalled, false, 'the resolver must not run on a malformed manifest');
 });
