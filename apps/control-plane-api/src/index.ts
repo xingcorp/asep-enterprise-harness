@@ -1,25 +1,21 @@
-import { createServer } from 'node:http';
+// @asep/control-plane-api — public surface (composition root package).
+//
+// The Fastify app factory + the CLI seam are exported so tests can drive them
+// with injected fakes. The runnable entrypoints are server-main.ts (HTTP API)
+// and cli-main.ts (`asep task execute`); both are thin composition roots.
 
-const port = Number(process.env.PORT ?? 8088);
-const server = createServer((req, res) => {
-  res.setHeader('content-type', 'application/json; charset=utf-8');
-  if (req.url === '/health/live') {
-    res.writeHead(200).end(JSON.stringify({ status: 'ok' }));
-    return;
-  }
-  if (req.url === '/health/ready') {
-    res.writeHead(200).end(JSON.stringify({ status: 'ready', dependencies: 'not-yet-wired' }));
-    return;
-  }
-  if (req.url === '/v1/capabilities') {
-    res.writeHead(200).end(JSON.stringify({
-      canonicalState: ['git','postgresql','temporal-history','immutable-artifacts'],
-      providers: ['mock-agent'],
-      experimental: ['rtk-output-reducer','caveman-style-human-summary']
-    }));
-    return;
-  }
-  res.writeHead(404).end(JSON.stringify({ error: 'not_found' }));
-});
-
-server.listen(port, () => console.log(`ASEP control-plane reference API listening on :${port}`));
+export { buildApp, type Repositories, type AppOptions } from './app.js';
+export {
+  organizationContext, tenantScope, AuthError,
+  ORG_HEADER, PROJECT_HEADER, ULID_PATTERN,
+  type AuthContext,
+} from './auth.js';
+export {
+  parseCreateOrganization, parseCreateProject, parseCreateBinding,
+  parseCreateRun, parseCreateTask,
+  type Parsed, type ValidationFailure, type ValidationOk,
+} from './request-schemas.js';
+export {
+  parseArgs, runExecute, formatResult, localDeps,
+  CliUsageError, type CliArgs, type CliDeps,
+} from './cli.js';

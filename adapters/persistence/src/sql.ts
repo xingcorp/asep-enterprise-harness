@@ -26,6 +26,10 @@ export interface SqlExecutor {
 // transactional connection — the node-postgres pooling contract.
 export interface SqlClient extends SqlExecutor {
   transaction<T>(fn: (tx: SqlExecutor) => Promise<T>): Promise<T>;
+  // A dependency-free readiness probe. Returns true when the backend answers a
+  // trivial statement. Lives on the seam so a composition root can wire a
+  // readiness check WITHOUT authoring raw SQL of its own (arch discipline).
+  ping(): Promise<boolean>;
   close(): Promise<void>;
 }
 

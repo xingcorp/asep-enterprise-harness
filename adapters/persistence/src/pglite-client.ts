@@ -72,6 +72,17 @@ export class PgliteClient implements SqlClient {
     }
   }
 
+  // Readiness probe: run a trivial statement and report success. Any error
+  // (backend down, connection lost) surfaces as `false`, never throws.
+  async ping(): Promise<boolean> {
+    try {
+      await this.db.query('select 1');
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   async close(): Promise<void> {
     await this.db.close();
   }

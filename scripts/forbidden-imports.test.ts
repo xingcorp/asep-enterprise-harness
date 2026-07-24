@@ -265,8 +265,21 @@ const ROOT_FORBIDDEN: ReadonlyArray<{ label: string; test: (src: string) => bool
   { label: 'direct policy decision', test: (s) => /\b(admitRisk|gatePolicy|classifyRisk|approvalFor|requiredLevels|classifyFailure)\s*\(/.test(s) },
 ];
 
+// Strip line + block comments before scanning, so the detector matches actual
+// CODE, not documentation — a doc comment describing "spawns git/child_process"
+// is not a composition-root violation, an executed spawn/query is. String
+// literals are deliberately KEPT: an import specifier ('node:child_process') or
+// a call argument ('git') lives in a string and is exactly the code-use we must
+// still catch. This keeps the guard precise without a full parser.
+function stripComments(source: string): string {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, ' ') // block comments
+    .replace(/(^|[^:])\/\/[^\n]*/g, '$1'); // line comments (not URL '://')
+}
+
 function rootViolations(source: string): string[] {
-  return ROOT_FORBIDDEN.filter((r) => r.test(source)).map((r) => r.label);
+  const code = stripComments(source);
+  return ROOT_FORBIDDEN.filter((r) => r.test(code)).map((r) => r.label);
 }
 
 test('composition roots (apps/*, workers/*) contain no domain/persistence/provider/policy logic', () => {

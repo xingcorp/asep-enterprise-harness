@@ -8,11 +8,16 @@
   "scripts": {
     "build": "tsc -b",
     "typecheck": "tsc -b --pretty false",
-    "dev": "tsx watch src/index.ts",
-    "start": "node dist/index.js"
+    "dev": "tsx watch src/server-main.ts",
+    "start": "node dist/server-main.js"
   },
   "dependencies": {
     "@asep/contracts": "workspace:*",
-    "@asep/domain": "workspace:*"
+    "@asep/domain": "workspace:*",
+    "@asep/ports": "workspace:*",
+    "@asep/application": "workspace:*",
+    "@asep/persistence": "workspace:*",
+    "@asep/agent-mock": "workspace:*",
+    "fastify": "5.10.0"
   }
 }

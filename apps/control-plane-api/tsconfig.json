@@ -13,6 +13,18 @@
     },
     {
       "path": "../../packages/domain"
+    },
+    {
+      "path": "../../packages/ports"
+    },
+    {
+      "path": "../../packages/application"
+    },
+    {
+      "path": "../../adapters/persistence"
+    },
+    {
+      "path": "../../adapters/agent-mock"
     }
   ]
 }
