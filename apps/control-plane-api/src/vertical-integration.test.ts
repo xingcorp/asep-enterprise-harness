@@ -264,7 +264,7 @@ test('K1: full vertical slice reaches WAITING_FOR_HUMAN_REVIEW with a real PR + 
       scope,
       workspace: ws.capability,
       allowedPaths: ['feature.txt'],
-      identity: { name: 'ASEP Bot', email: 'bot@asep.local' },
+      identity: { name: 'ASEP Bot', email: 'bot@asep.invalid' },
       store: evidenceStore,
       taskId: task.id,
       attemptId: attempt.id,
