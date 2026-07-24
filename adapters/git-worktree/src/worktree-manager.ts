@@ -63,6 +63,12 @@ export class GitWorktreeManager implements WorkspaceManager, GitChangeInspector,
   // mirror's own main/etc.) are NOT falsely reported as agent-created refs (E3):
   // only a ref that appeared AFTER creation is an agent overstep.
   private readonly baselineRefs = new Map<string, Set<string>>();
+  // The pinned base SHA each worktree was created at (HIGH-007). inspect()
+  // compares the observed HEAD against this snapshot: a detached-HEAD commit
+  // advances HEAD without creating a ref, so this is the only trusted signal
+  // that the untrusted agent committed. Captured at create(), never trusted
+  // from the caller at inspection time.
+  private readonly baseShas = new Map<string, string>();
 
   constructor(
     private readonly cfg: WorktreeManagerConfig,
@@ -123,6 +129,9 @@ export class GitWorktreeManager implements WorkspaceManager, GitChangeInspector,
     // can distinguish a PRE-EXISTING branch (the mirror's main) from a ref the
     // untrusted agent created during its turn (E3).
     this.baselineRefs.set(workspaceId, await this.listRefs(wtPath));
+    // Snapshot the pinned base SHA so inspect() can detect a detached-HEAD
+    // commit (HEAD advanced with no ref created) — HIGH-007.
+    this.baseShas.set(workspaceId, input.baseSha);
     return {
       workspaceId,
       capability: { workspaceId, leaseId: input.leaseId },
@@ -166,11 +175,19 @@ export class GitWorktreeManager implements WorkspaceManager, GitChangeInspector,
     // diff the CURRENT refs against the baseline captured at create() so a
     // pre-existing branch (the mirror's own main) is not falsely flagged — only
     // a ref that appeared AFTER the worktree was created counts as agent-created.
-    const baseline = this.baselineRefs.get(
-      typeof workspace === 'string' ? workspace : workspace.workspaceId,
-    ) ?? new Set<string>();
+    const wsId = typeof workspace === 'string' ? workspace : workspace.workspaceId;
+    const baseline = this.baselineRefs.get(wsId) ?? new Set<string>();
     const currentRefs = await this.listRefs(wtPath);
     const createdRefs = [...currentRefs].filter((r) => !baseline.has(r));
+
+    // HIGH-007: a commit on the detached HEAD advances HEAD WITHOUT creating a
+    // ref, so createdRefs above stays empty. Compare the observed HEAD against
+    // the base SHA snapshotted at create() — any movement means the untrusted
+    // agent committed (the harness's own commit step runs AFTER inspection), an
+    // overstep the caller must stop on. Fail closed if the base was never
+    // snapshotted (unknown provenance).
+    const baseSha = this.baseShas.get(wsId) ?? '';
+    const headMovedFromBase = baseSha === '' || head !== baseSha;
 
     // touchedGitDir: did the agent try to write under .git? A linked worktree's
     // .git is a file; if it became a dir or gained tracked changes we flag it.
@@ -200,7 +217,7 @@ export class GitWorktreeManager implements WorkspaceManager, GitChangeInspector,
       contentType: 'text/x-diff; charset=utf-8',
     });
 
-    return { headSha: head, changedFiles, createdRefs, touchedGitDir, diff: diffRef };
+    return { headSha: head, changedFiles, createdRefs, touchedGitDir, baseSha, headMovedFromBase, diff: diffRef };
   }
 
   // E5: the HARNESS creates the commit, with ASEP trailers. Only files under

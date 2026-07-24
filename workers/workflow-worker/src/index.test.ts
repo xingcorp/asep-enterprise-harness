@@ -38,6 +38,8 @@ const cleanInspector: GitChangeInspector = {
       changedFiles: ['src/x.ts'],
       createdRefs: [],
       touchedGitDir: false,
+      baseSha: 'deadbeef',
+      headMovedFromBase: false,
       diff: ref('git-diff'),
     };
   },

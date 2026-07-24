@@ -126,7 +126,12 @@ export async function inspectStep(input: InspectStepInput): Promise<InspectStepR
   // An agent that created its own commit or touched .git is a policy violation:
   // the harness owns commit identity. Stop the pipeline (the caller classifies
   // it as policy-violation per §18) rather than trust the mutated state.
-  const agentOverstepped = change.touchedGitDir || change.createdRefs.length > 0;
+  // HIGH-007: a detached-HEAD commit advances HEAD without creating a ref, so
+  // createdRefs stays empty and touchedGitDir stays false. headMovedFromBase is
+  // the trusted signal for that case — the harness owns commit identity, so ANY
+  // HEAD movement observed before the harness's own commit step is an overstep.
+  const agentOverstepped =
+    change.touchedGitDir || change.createdRefs.length > 0 || change.headMovedFromBase;
   return {
     step: 'inspect',
     status: agentOverstepped ? 'STOP' : 'OK',

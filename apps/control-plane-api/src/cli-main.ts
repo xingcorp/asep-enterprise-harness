@@ -20,6 +20,8 @@ class NullGitChangeInspector implements GitChangeInspector {
       changedFiles: [],
       createdRefs: [],
       touchedGitDir: false,
+      baseSha: '0'.repeat(40),
+      headMovedFromBase: false,
       diff: { artifactId: ('0'.repeat(26) as unknown as ArtifactRef['artifactId']), sha256: '0'.repeat(64), kind: 'git-diff' },
     };
   }

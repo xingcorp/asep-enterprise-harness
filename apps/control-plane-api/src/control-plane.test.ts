@@ -296,6 +296,8 @@ const cleanChange: GitChangeObservation = {
   changedFiles: ['src/foo.ts'],
   createdRefs: [],
   touchedGitDir: false,
+  baseSha: 'c'.repeat(40),
+  headMovedFromBase: false,
   diff: { artifactId: ('0'.repeat(26) as unknown as ArtifactRef['artifactId']), sha256: 'd'.repeat(64), kind: 'git-diff' },
 };
 

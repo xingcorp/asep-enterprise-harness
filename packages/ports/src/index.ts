@@ -174,6 +174,14 @@ export interface GitChangeObservation {
   readonly changedFiles: readonly string[];
   readonly createdRefs: readonly string[];
   readonly touchedGitDir: boolean;
+  // HIGH-007: the pinned base SHA the worktree was created at, and whether HEAD
+  // moved away from it. A detached-HEAD commit advances HEAD WITHOUT creating a
+  // ref, so createdRefs stays empty; comparing headSha against the snapshotted
+  // base is the only trusted signal that the agent committed. The harness owns
+  // commit identity, so ANY HEAD movement observed at inspection (before the
+  // harness's own commit step) is an overstep.
+  readonly baseSha: string;
+  readonly headMovedFromBase: boolean;
   readonly diff: ArtifactRef;
 }
 
