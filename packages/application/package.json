@@ -14,6 +14,7 @@
     "@asep/contracts": "workspace:*",
     "@asep/domain": "workspace:*",
     "@asep/policy": "workspace:*",
-    "@asep/ports": "workspace:*"
+    "@asep/ports": "workspace:*",
+    "@asep/observability": "workspace:*"
   }
 }

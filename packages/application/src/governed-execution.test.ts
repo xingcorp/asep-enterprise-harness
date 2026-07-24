@@ -37,6 +37,10 @@ import type {
   LeaseDenied,
 } from '@asep/ports';
 import { governedExecution } from './governed-execution.js';
+import {
+  SpanTracer, CapturingTelemetrySink, auditEvent,
+  type AuditEvent, type AuditSink,
+} from '@asep/observability';
 
 console.log('SUITE-ID: asep-suite:governed-execution');
 
@@ -236,4 +240,69 @@ test('an agent that created a ref is stopped at inspect (harness owns commit ide
   const result = await governedExecution(inputWith('R0', h));
   assert.equal(result.stoppedAt, 'inspect');
   assert.equal(h.spies.inspectCalls, 1);
+});
+
+// --- MED-003: runtime span + audit emission at each privileged boundary ------
+
+test('MED-003: an admitted run EMITS a span + audit row per privileged boundary with full correlation', async () => {
+  const h = makeSpies();
+  const sink = new CapturingTelemetrySink();
+  const tracer = new SpanTracer(sink, () => 0);
+  const audits: AuditEvent[] = [];
+  const audit: AuditSink = { async record(e) { audits.push(e); } };
+  const result = await governedExecution({
+    ...inputWith('R0', h),
+    tracer, audit,
+    traceId: 'trace-xyz', runId: 'run-1', taskId: 'task-1', actor: 'harness',
+    now: () => '2026-01-01T00:00:00.000Z',
+  });
+  assert.equal(result.stoppedAt, 'ready-for-completion');
+
+  // Each privileged boundary emitted its J1 span (as asep.span.<name>).
+  const spanNames = sink.events.map((e) => e.name);
+  for (const n of ['asep.span.workspace.lease', 'asep.span.workspace.create', 'asep.span.agent.invoke']) {
+    assert.ok(spanNames.includes(n), `expected span ${n}, got ${spanNames.join(', ')}`);
+  }
+  // Every emitted span carries the full correlation identity (J2).
+  for (const ev of sink.events) {
+    assert.equal(ev.context.organizationId, scope.organizationId);
+    assert.equal(ev.context.repositoryBindingId, repositoryBindingId);
+    assert.equal(ev.context.runId, 'run-1');
+    assert.equal(ev.context.taskId, 'task-1');
+    assert.equal(ev.context.attemptId, attemptId);
+  }
+  // Each privileged boundary emitted its J4 audit action.
+  const actions = audits.map((a) => a.action);
+  assert.deepEqual(
+    actions,
+    ['workspace.lease.acquire', 'workspace.create', 'agent.invoke'],
+    'one audit row per privileged boundary, in order',
+  );
+  for (const a of audits) {
+    assert.equal(a.actor, 'harness');
+    assert.equal(a.context.attemptId, attemptId);
+  }
+});
+
+test('MED-003: with NO tracer/sink wired the use case runs unchanged (emission is optional)', async () => {
+  const h = makeSpies();
+  // No tracer/audit, no run/task ids — pure path, must still complete.
+  const result = await governedExecution(inputWith('R0', h));
+  assert.equal(result.stoppedAt, 'ready-for-completion');
+  assert.equal(h.spies.agentCalls, 1);
+});
+
+test('MED-003: a deferred risk emits NO span/audit (nothing privileged happened)', async () => {
+  const h = makeSpies();
+  const sink = new CapturingTelemetrySink();
+  const tracer = new SpanTracer(sink, () => 0);
+  const audits: AuditEvent[] = [];
+  const audit: AuditSink = { async record(e) { audits.push(e); } };
+  const result = await governedExecution({
+    ...inputWith('R3', h),
+    tracer, audit, traceId: 't', runId: 'run-1', taskId: 'task-1',
+  });
+  assert.equal(result.stoppedAt, 'admission');
+  assert.equal(sink.events.length, 0, 'no span for a deferred risk');
+  assert.equal(audits.length, 0, 'no audit row for a deferred risk');
 });

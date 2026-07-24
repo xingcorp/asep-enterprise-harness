@@ -40,6 +40,10 @@ import type {
   Workspace,
   Lease,
 } from '@asep/ports';
+import type {
+  SpanTracer, AuditSink, CorrelationContext,
+} from '@asep/observability';
+import { auditEvent } from '@asep/observability';
 import { admitRisk, type AdmissionResult } from './risk-admission.js';
 import { agentStep, inspectStep } from './execute-task.js';
 
@@ -79,6 +83,18 @@ export interface GovernedExecutionInput {
   readonly budget: Budget;
   readonly toolPolicy: ToolPolicyProfile;
   readonly signal: AbortSignal;
+
+  // MED-003 runtime observability (all optional so the pure use case still runs
+  // without a wired sink). When provided, each privileged boundary emits a span
+  // through the tracer AND an audit row through the sink, both carrying the full
+  // org/project/repository/run/task/attempt correlation identity (J1/J2/J4).
+  readonly tracer?: SpanTracer;
+  readonly audit?: AuditSink;
+  readonly traceId?: string;
+  readonly runId?: string;
+  readonly taskId?: string;
+  readonly actor?: string;
+  readonly now?: () => string;
 }
 
 export interface GovernedExecutionResult {
@@ -109,6 +125,47 @@ export interface GovernedExecutionResult {
 export async function governedExecution(
   input: GovernedExecutionInput,
 ): Promise<GovernedExecutionResult> {
+  // MED-003: build the full correlation identity once. Spans/audit rows only
+  // emit when the load-bearing hierarchy ids (run/task/attempt) are all present
+  // — a partial context would fail auditEvent()'s closed validation, so we skip
+  // emission rather than throw and abort a real execution.
+  const correlation: CorrelationContext | null =
+    input.runId && input.taskId
+      ? {
+          traceId: input.traceId ?? `trace-${input.attemptId}`,
+          tenantId: input.scope.organizationId,
+          projectId: input.scope.projectId,
+          organizationId: input.scope.organizationId,
+          repositoryBindingId: input.repositoryBindingId,
+          runId: input.runId,
+          taskId: input.taskId,
+          attemptId: input.attemptId,
+        }
+      : null;
+  const actor = input.actor ?? 'harness';
+  const nowIso = input.now ?? (() => new Date().toISOString());
+
+  // Emit a span + an audit row for one privileged boundary, then run it. When no
+  // tracer/sink is wired (or the context is partial) this is a no-op wrapper, so
+  // the pure use case is unchanged. J1 span name + J4 audit action are paired.
+  const observe = async <T>(
+    span: import('@asep/observability').SpanName,
+    action: import('@asep/observability').PrivilegedAction,
+    detail: Readonly<Record<string, unknown>>,
+    fn: () => Promise<T>,
+  ): Promise<T> => {
+    if (!correlation) return fn();
+    if (input.audit) {
+      await input.audit.record(auditEvent({
+        actor, action, context: correlation, occurredAt: nowIso(), detail,
+      }));
+    }
+    if (input.tracer) {
+      return input.tracer.withSpan(span, correlation, fn);
+    }
+    return fn();
+  };
+
   // --- GATE: admission runs before ANY side effect --------------------------
   const admission = admitRisk(input.risk);
   if (!admission.admitted) {
@@ -121,12 +178,15 @@ export async function governedExecution(
   }
 
   // --- side effect 1: acquire the workspace lease (only now) ----------------
-  const lease = await input.leases.acquire(input.scope, {
-    repositoryBindingId: input.repositoryBindingId,
-    branch: input.branch,
-    attemptId: input.attemptId,
-    ttlMs: input.leaseTtlMs,
-  });
+  const lease = await observe(
+    'workspace.lease', 'workspace.lease.acquire', { branch: input.branch },
+    () => input.leases.acquire(input.scope, {
+      repositoryBindingId: input.repositoryBindingId,
+      branch: input.branch,
+      attemptId: input.attemptId,
+      ttlMs: input.leaseTtlMs,
+    }),
+  );
   if (!isLease(lease)) {
     return {
       admission,
@@ -137,23 +197,29 @@ export async function governedExecution(
   }
 
   // --- side effect 2: create the workspace (only after a granted lease) -----
-  const workspace = await input.workspaces.create(input.scope, {
-    repositoryBindingId: input.repositoryBindingId,
-    baseSha: input.baseSha,
-    leaseId: lease.leaseId,
-  });
+  const workspace = await observe(
+    'workspace.create', 'workspace.create', { baseSha: input.baseSha },
+    () => input.workspaces.create(input.scope, {
+      repositoryBindingId: input.repositoryBindingId,
+      baseSha: input.baseSha,
+      leaseId: lease.leaseId,
+    }),
+  );
 
   // --- side effect 3: invoke the agent (untrusted self-report) --------------
-  const agent = await agentStep({
-    provider: input.provider,
-    attemptId: input.attemptId,
-    workOrderRef: input.workOrderRef,
-    contextPackRef: input.contextPackRef,
-    workspace: workspace.capability,
-    budget: input.budget,
-    toolPolicy: input.toolPolicy,
-    signal: input.signal,
-  });
+  const agent = await observe(
+    'agent.invoke', 'agent.invoke', { providerId: input.provider.providerId },
+    () => agentStep({
+      provider: input.provider,
+      attemptId: input.attemptId,
+      workOrderRef: input.workOrderRef,
+      contextPackRef: input.contextPackRef,
+      workspace: workspace.capability,
+      budget: input.budget,
+      toolPolicy: input.toolPolicy,
+      signal: input.signal,
+    }),
+  );
   if (agent.status === 'STOP') {
     return {
       admission,

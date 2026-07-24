@@ -182,6 +182,9 @@ importers:
       '@asep/domain':
         specifier: workspace:*
         version: link:../domain
+      '@asep/observability':
+        specifier: workspace:*
+        version: link:../observability
       '@asep/policy':
         specifier: workspace:*
         version: link:../policy
