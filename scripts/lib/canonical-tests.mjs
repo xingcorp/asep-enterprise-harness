@@ -115,6 +115,10 @@ export const REQUIRED_SUITES = Object.freeze({
   // renamed suite must turn the gate RED.
   'asep-suite:evidence-store': 'adapters/persistence/src/evidence-store.test.ts',
   'asep-suite:side-effect-log': 'adapters/persistence/src/side-effect-log.test.ts',
+  // K1 full vertical integration test: real PG + real temp Git + real worktree
+  // + real artifact + real runner + fake Claude + fake GitHub. Registered so a
+  // dropped/renamed end-to-end suite turns the gate RED.
+  'asep-suite:vertical-integration': 'apps/control-plane-api/src/vertical-integration.test.ts',
 });
 
 /** The machine-readable marker a suite prints at module load: `SUITE-ID: <id>`. */

@@ -125,12 +125,18 @@ importers:
       '@asep/application':
         specifier: workspace:*
         version: link:../../packages/application
+      '@asep/command-runner':
+        specifier: workspace:*
+        version: link:../../adapters/command-runner
       '@asep/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
       '@asep/domain':
         specifier: workspace:*
         version: link:../../packages/domain
+      '@asep/git-worktree':
+        specifier: workspace:*
+        version: link:../../adapters/git-worktree
       '@asep/persistence':
         specifier: workspace:*
         version: link:../../adapters/persistence

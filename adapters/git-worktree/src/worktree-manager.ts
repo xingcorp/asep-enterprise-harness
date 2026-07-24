@@ -58,6 +58,11 @@ export interface WorktreeManagerConfig {
 // the location without trusting a caller-supplied path.
 export class GitWorktreeManager implements WorkspaceManager, GitChangeInspector, GitCommitter {
   private readonly paths = new Map<string, string>();
+  // Refs present in the shared ref store at worktree-creation time. inspect()
+  // diffs the current refs against this baseline so PRE-EXISTING branches (the
+  // mirror's own main/etc.) are NOT falsely reported as agent-created refs (E3):
+  // only a ref that appeared AFTER creation is an agent overstep.
+  private readonly baselineRefs = new Map<string, Set<string>>();
 
   constructor(
     private readonly cfg: WorktreeManagerConfig,
@@ -114,6 +119,10 @@ export class GitWorktreeManager implements WorkspaceManager, GitChangeInspector,
     if (head.stdout.trim() !== input.baseSha) throw new BaseShaError(input.baseSha);
 
     this.paths.set(workspaceId, wtPath);
+    // Snapshot the refs visible from this worktree at creation time so inspect()
+    // can distinguish a PRE-EXISTING branch (the mirror's main) from a ref the
+    // untrusted agent created during its turn (E3).
+    this.baselineRefs.set(workspaceId, await this.listRefs(wtPath));
     return {
       workspaceId,
       capability: { workspaceId, leaseId: input.leaseId },
@@ -126,6 +135,15 @@ export class GitWorktreeManager implements WorkspaceManager, GitChangeInspector,
     const p = this.paths.get(id);
     if (!p) throw new WorktreeContainmentError(`unknown workspace '${id}'`);
     return p;
+  }
+
+  // All branch refs visible from a worktree (the shared ref store), as a set so
+  // inspect() can diff post-agent refs against the create()-time baseline.
+  private async listRefs(wtPath: string): Promise<Set<string>> {
+    const branchList = await runGit(['-C', wtPath, 'branch', '--format=%(refname)'], { allowNonZero: true });
+    return new Set(
+      branchList.stdout.split('\n').map((l) => l.trim()).filter((l) => l.length > 0),
+    );
   }
 
   // E3/E5 trusted observation AFTER the agent exits. The agent never reports
@@ -144,9 +162,15 @@ export class GitWorktreeManager implements WorkspaceManager, GitChangeInspector,
       .map((l) => l.replace(/^.. /, '').replace(/^"(.*)"$/, '$1'));
 
     // E3: any ref the agent created inside the worktree's own refs is a policy
-    // violation. Detached HEAD means no local branch should have advanced.
-    const branchList = await runGit(['-C', wtPath, 'branch', '--format=%(refname)'], { allowNonZero: true });
-    const createdRefs = branchList.stdout.split('\n').map((l) => l.trim()).filter((l) => l.length > 0);
+    // violation. Detached HEAD means no local branch should have advanced. We
+    // diff the CURRENT refs against the baseline captured at create() so a
+    // pre-existing branch (the mirror's own main) is not falsely flagged — only
+    // a ref that appeared AFTER the worktree was created counts as agent-created.
+    const baseline = this.baselineRefs.get(
+      typeof workspace === 'string' ? workspace : workspace.workspaceId,
+    ) ?? new Set<string>();
+    const currentRefs = await this.listRefs(wtPath);
+    const createdRefs = [...currentRefs].filter((r) => !baseline.has(r));
 
     // touchedGitDir: did the agent try to write under .git? A linked worktree's
     // .git is a file; if it became a dir or gained tracked changes we flag it.

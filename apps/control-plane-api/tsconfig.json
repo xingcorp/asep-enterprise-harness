@@ -25,6 +25,12 @@
     },
     {
       "path": "../../adapters/agent-mock"
+    },
+    {
+      "path": "../../adapters/git-worktree"
+    },
+    {
+      "path": "../../adapters/command-runner"
     }
   ]
 }

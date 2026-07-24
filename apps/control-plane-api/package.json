@@ -18,6 +18,8 @@
     "@asep/application": "workspace:*",
     "@asep/persistence": "workspace:*",
     "@asep/agent-mock": "workspace:*",
+    "@asep/git-worktree": "workspace:*",
+    "@asep/command-runner": "workspace:*",
     "fastify": "5.10.0"
   }
 }

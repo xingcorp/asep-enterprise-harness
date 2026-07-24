@@ -211,6 +211,66 @@ test('E3/E5: inspector derives change from git; harness commit carries ASEP trai
 });
 
 // --------------------------------------------------------------------------
+// E3 — a PRE-EXISTING mirror branch (main) must NOT be reported as an
+// agent-created ref. inspect() diffs current refs against the create()-time
+// baseline, so only a ref that appeared during the agent's turn counts as an
+// overstep. Without the baseline, every worktree spawned from a mirror with a
+// `main` branch would falsely report createdRefs=[refs/heads/main] and STOP the
+// pipeline at inspection for ALL real runs.
+// --------------------------------------------------------------------------
+
+test('E3: a pre-existing mirror branch is NOT flagged as an agent-created ref', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'asep-gw-'));
+  try {
+    const { mirror, baseSha } = await seedMirror(dir);
+    const store = await artifactStore(dir);
+    const root = join(dir, 'wt');
+    await mkdir(root, { recursive: true });
+    const mgr = new GitWorktreeManager(
+      { workspaceRoot: root, mirrorPath: mirror, repositoryBindingId: bindingId }, store,
+    );
+    const ws = await mgr.create(scope, { repositoryBindingId: bindingId, baseSha, leaseId: 'l' });
+    const wtPath = mgr['paths'].get(ws.workspaceId)!;
+    await writeFile(join(wtPath, 'feature.txt'), 'agent change\n');
+
+    const obs = await mgr.inspect(scope, ws.capability);
+    // The mirror's own `refs/heads/main` exists at creation → NOT agent-created.
+    assert.deepEqual(obs.createdRefs, [], 'pre-existing mirror branch must not count as agent-created');
+    assert.equal(obs.touchedGitDir, false);
+    assert.ok(obs.changedFiles.includes('feature.txt'));
+    await mgr.cleanup(scope, ws.workspaceId);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('E3: a ref the agent creates AFTER worktree creation IS flagged as an overstep', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'asep-gw-'));
+  try {
+    const { mirror, baseSha } = await seedMirror(dir);
+    const store = await artifactStore(dir);
+    const root = join(dir, 'wt');
+    await mkdir(root, { recursive: true });
+    const mgr = new GitWorktreeManager(
+      { workspaceRoot: root, mirrorPath: mirror, repositoryBindingId: bindingId }, store,
+    );
+    const ws = await mgr.create(scope, { repositoryBindingId: bindingId, baseSha, leaseId: 'l' });
+    const wtPath = mgr['paths'].get(ws.workspaceId)!;
+    // Simulate an overstepping agent creating a branch ref during its turn.
+    await runGit(['-C', wtPath, 'branch', 'agent-made-this']);
+
+    const obs = await mgr.inspect(scope, ws.capability);
+    assert.ok(
+      obs.createdRefs.includes('refs/heads/agent-made-this'),
+      'a ref created after the baseline must be reported as an overstep',
+    );
+    await mgr.cleanup(scope, ws.workspaceId);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// --------------------------------------------------------------------------
 // E6 — path/symlink containment under workspace root.
 // --------------------------------------------------------------------------
 
