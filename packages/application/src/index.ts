@@ -30,6 +30,13 @@ export {
 } from './execute-task.js';
 
 export {
+  governedExecution,
+  type GovernedStop,
+  type GovernedExecutionInput,
+  type GovernedExecutionResult,
+} from './governed-execution.js';
+
+export {
   verifyStep,
   commitStep,
   evidenceStep,

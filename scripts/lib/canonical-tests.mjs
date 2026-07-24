@@ -134,6 +134,11 @@ export const REQUIRED_SUITES = Object.freeze({
   // fail-closed logic runs under the fast unit runner; the live-backend proof is
   // the *.itest.ts suites under scripts/integration/run-integration.mjs.
   'asep-suite:integration-gate': 'scripts/integration/run-integration.test.ts',
+  // HIGH-003 governed-execution: proves the TOP-LEVEL use case runs admission
+  // BEFORE any lease/workspace/agent/inspect side effect — R2..R4 defer with
+  // every downstream port spy at exactly zero calls. Registered so a dropped or
+  // renamed admission-ordering suite turns the gate RED.
+  'asep-suite:governed-execution': 'packages/application/src/governed-execution.test.ts',
 });
 
 /** The machine-readable marker a suite prints at module load: `SUITE-ID: <id>`. */
