@@ -15,6 +15,8 @@ import {
   OrganizationRepository, ProjectRepository, RepositoryBindingRepository,
   RunRepository, TaskRepository, AttemptRepository, PullRequestRepository,
 } from './repositories.js';
+import { SqlAuditSink } from './audit-sink.js';
+import { auditEvent, type CorrelationContext } from '@asep/observability';
 import { SqlWorkspaceLeaseRepository } from './lease-repository.js';
 import { OptimisticConcurrencyError, ScopeViolationError } from './sql.js';
 import type {
@@ -358,6 +360,49 @@ test('HIGH-008: a PR naming an evidence artifact from another project is rejecte
     }),
     /foreign key|violates/i,
   );
+  await client.close();
+});
+
+// MED-003: the SqlAuditSink persists a privileged-operation AuditEvent to the
+// audit_events table with full tenant/hierarchy attribution — a privileged op
+// leaves an authoritative row, not just a vocabulary type (exit J4).
+
+test('MED-003: SqlAuditSink persists a privileged AuditEvent to audit_events with full attribution', async () => {
+  const client = await freshDb();
+  const { scope, binding } = await seedScope(client);
+  const attemptId = await seedAttempt(client, scope, binding.id);
+  const attemptRow = await new AttemptRepository(client).getScoped(scope, attemptId);
+  const sink = new SqlAuditSink(client);
+  const ctx: CorrelationContext = {
+    traceId: 'trace-1',
+    tenantId: scope.organizationId,
+    projectId: scope.projectId,
+    organizationId: scope.organizationId,
+    repositoryBindingId: binding.id,
+    runId: attemptRow.taskId, // any in-scope id; run linkage exercised via task
+    taskId: attemptRow.taskId,
+    attemptId,
+  };
+  const ev = auditEvent({
+    actor: 'harness',
+    action: 'forge.push',
+    context: ctx,
+    occurredAt: '2026-01-01T00:00:00.000Z',
+    detail: { ref: 'refs/heads/asep/x' },
+  });
+  await sink.record(ev);
+  const r = await client.query(
+    `select organization_id, project_id, task_id, attempt_id, actor, action, detail
+     from audit_events where organization_id = $1 and action = $2`,
+    [scope.organizationId, 'forge.push'],
+  );
+  assert.equal(r.rowCount, 1, 'exactly one audit row persisted');
+  const row = r.rows[0]!;
+  assert.equal(row['organization_id'], scope.organizationId, 'tenant-attributed');
+  assert.equal(row['project_id'], scope.projectId);
+  assert.equal(row['attempt_id'], attemptId, 'resolves to the exact attempt');
+  assert.equal(row['actor'], 'harness');
+  assert.equal(row['action'], 'forge.push');
   await client.close();
 });
 

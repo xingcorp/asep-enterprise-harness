@@ -2,6 +2,14 @@ export interface CorrelationContext {
   readonly traceId: string;
   readonly tenantId: string;
   readonly projectId: string;
+  // MED-003: the full correlation identity a span/audit row must be able to
+  // carry. organizationId is the authenticated tenant root (distinct from the
+  // legacy tenantId string), and repositoryBindingId ties an event to the exact
+  // repo it acted on. Both optional so pure/unit contexts stay minimal, but the
+  // pipeline instrumentation populates them so J2/J4 rows resolve to one point
+  // in the org/project/repository/run/task/attempt hierarchy.
+  readonly organizationId?: string;
+  readonly repositoryBindingId?: string;
   readonly runId?: string;
   readonly taskId?: string;
   readonly attemptId?: string;

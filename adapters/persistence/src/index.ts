@@ -47,3 +47,7 @@ export {
   ContentAddressedEvidenceStore, EvidenceImmutabilityError, EvidenceNotFoundError,
 } from './evidence-store.js';
 export { SqlSideEffectLog } from './side-effect-log.js';
+
+// PostgreSQL-backed AuditSink (exit J4, disp. P2-FINAL-MED-003). Persists the
+// pure @asep/observability AuditEvent to the audit_events table.
+export { SqlAuditSink } from './audit-sink.js';

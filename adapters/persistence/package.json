@@ -13,6 +13,7 @@
     "@asep/contracts": "workspace:*",
     "@asep/ports": "workspace:*",
     "@asep/domain": "workspace:*",
+    "@asep/observability": "workspace:*",
     "pg": "8.22.0"
   },
   "devDependencies": {

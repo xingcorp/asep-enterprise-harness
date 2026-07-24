@@ -112,6 +112,9 @@ importers:
       '@asep/domain':
         specifier: workspace:*
         version: link:../../packages/domain
+      '@asep/observability':
+        specifier: workspace:*
+        version: link:../../packages/observability
       '@asep/ports':
         specifier: workspace:*
         version: link:../../packages/ports
