@@ -119,6 +119,11 @@ export const REQUIRED_SUITES = Object.freeze({
   // + real artifact + real runner + fake Claude + fake GitHub. Registered so a
   // dropped/renamed end-to-end suite turns the gate RED.
   'asep-suite:vertical-integration': 'apps/control-plane-api/src/vertical-integration.test.ts',
+  // J observability suites (exit criteria J1/J2/J4): the closed span vocabulary
+  // + correlation-identity tracer and the privileged-operation audit vocabulary.
+  // Registered so a dropped/renamed observability suite turns the gate RED.
+  'asep-suite:observability-spans': 'packages/observability/src/spans.test.ts',
+  'asep-suite:observability-audit': 'packages/observability/src/audit.test.ts',
 });
 
 /** The machine-readable marker a suite prints at module load: `SUITE-ID: <id>`. */

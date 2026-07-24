@@ -49,3 +49,30 @@ export {
   type EvidenceInput,
   type RawCheckCapture,
 } from './evidence.js';
+
+// OTel-style span vocabulary + tracer (exit J1/J2) and the capturing sink used
+// by tests and a Temporal-shaped in-memory exporter.
+export {
+  SPAN_NAMES,
+  isSpanName,
+  SpanTracer,
+  CapturingTelemetrySink,
+  type SpanName,
+  type SpanStatus,
+  type SpanRecord,
+  type SpanHandle,
+  type Clock,
+  type CapturedEvent,
+} from './spans.js';
+
+// Privileged-operation audit vocabulary (exit J4). The concrete
+// PostgreSQL-backed sink lives in adapters/persistence; this is the pure shape
+// + the closed set of auditable privileged actions.
+export {
+  PRIVILEGED_ACTIONS,
+  isPrivilegedAction,
+  auditEvent,
+  type PrivilegedAction,
+  type AuditEvent,
+  type AuditSink,
+} from './audit.js';
