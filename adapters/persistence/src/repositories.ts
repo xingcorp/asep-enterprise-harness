@@ -13,7 +13,7 @@
 
 import type {
   OrganizationId, ProjectId, RepositoryBindingId, RunId, TaskId, AttemptId,
-  TenantScope, RiskLevel, TaskStatus, AttemptStatus, ArtifactRef,
+  TenantScope, RiskLevel, TaskStatus, AttemptStatus, ArtifactRef, ArtifactId,
 } from '@asep/contracts';
 import type { SqlExecutor, SqlRow } from './sql.js';
 import { OptimisticConcurrencyError, ScopeViolationError } from './sql.js';
@@ -81,6 +81,12 @@ export interface AttemptRow {
   readonly baseSha: string | null;
   readonly resultSha: string | null;
   readonly agentProviderId: string | null;
+  // Scoped evidence link (HIGH-005): the artifact id is composite-FK-bound to
+  // this attempt's (org, project) → artifacts, and the expected sha256 is
+  // pinned so a swapped-bytes artifact is detectable. Null until evidence is
+  // attached (post-commit, pre-push in the pipeline).
+  readonly evidenceArtifactId: ArtifactId | null;
+  readonly evidenceSha256: string | null;
   readonly version: number;
 }
 
@@ -338,13 +344,15 @@ export class AttemptRepository {
       id, organizationId: scope.organizationId, projectId: scope.projectId,
       taskId: input.taskId, repositoryBindingId: input.repositoryBindingId,
       status: 'STARTED', baseSha: input.baseSha ?? null, resultSha: null,
-      agentProviderId: input.agentProviderId ?? null, version: 0,
+      agentProviderId: input.agentProviderId ?? null,
+      evidenceArtifactId: null, evidenceSha256: null, version: 0,
     };
   }
 
   async getScoped(scope: TenantScope, id: AttemptId): Promise<AttemptRow> {
     const r = await this.db.query(
-      `select id, organization_id, project_id, task_id, repository_binding_id, status, base_sha, result_sha, agent_provider_id, version
+      `select id, organization_id, project_id, task_id, repository_binding_id, status, base_sha, result_sha, agent_provider_id,
+              evidence_artifact_id, evidence_sha256, version
        from attempts where id = $1 and organization_id = $2 and project_id = $3`,
       [id, scope.organizationId, scope.projectId],
     );
@@ -374,6 +382,23 @@ export class AttemptRepository {
     return expectedVersion + 1;
   }
 
+  // Attach the SCOPED evidence reference (HIGH-005): the artifact id is
+  // composite-FK-bound to this attempt's (org, project) → artifacts, so the DB
+  // rejects an evidence artifact from another scope. The expected sha256 is
+  // pinned alongside so a later swapped-bytes artifact is detectable. Called
+  // post-commit, pre-push, once a real evidence artifact row exists.
+  async attachEvidence(
+    scope: TenantScope, id: AttemptId, expectedVersion: number, ref: ArtifactRef,
+  ): Promise<number> {
+    const r = await this.db.query(
+      `update attempts set evidence_artifact_id = $4, evidence_sha256 = $5, version = version + 1
+       where id = $1 and organization_id = $2 and project_id = $3 and version = $6`,
+      [id, scope.organizationId, scope.projectId, ref.artifactId, ref.sha256, expectedVersion],
+    );
+    if (r.rowCount === 0) throw new OptimisticConcurrencyError('attempt', id, expectedVersion);
+    return expectedVersion + 1;
+  }
+
   private decode(row: SqlRow): AttemptRow {
     return {
       id: row['id'] as AttemptId,
@@ -385,6 +410,8 @@ export class AttemptRepository {
       baseSha: (row['base_sha'] as string | null) ?? null,
       resultSha: (row['result_sha'] as string | null) ?? null,
       agentProviderId: (row['agent_provider_id'] as string | null) ?? null,
+      evidenceArtifactId: (row['evidence_artifact_id'] as ArtifactId | null) ?? null,
+      evidenceSha256: (row['evidence_sha256'] as string | null) ?? null,
       version: row['version'] as number,
     };
   }

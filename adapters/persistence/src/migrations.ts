@@ -283,6 +283,39 @@ alter table attempts
   references repository_bindings (id, organization_id, project_id);
 `;
 
+// ---------------------------------------------------------------------------
+// 0009 — scoped evidence-artifact FK + expected checksum on attempts +
+// pull_requests (C2b/D6, disp. P2-FINAL-HIGH-005).
+//
+// 0002/0006 carried `evidence_bundle_ref jsonb` — an unconstrained blob that
+// could name any artifact id (or none), in any scope, with no expected
+// checksum. An authoritative evidence link must be a SCOPED artifact reference:
+// the artifact row it points at has to exist AND sit in the SAME tenant scope,
+// and the link must pin the expected sha256 so a swapped-bytes artifact is
+// detectable. We drop the JSONB (it has no writer yet — safe) and add:
+//   - evidence_artifact_id char(26) — composite FK (id, org, project) → artifacts
+//   - evidence_sha256      text     — the expected content hash of that artifact
+// The composite FK makes "the evidence I attach is in MY scope" a DB invariant.
+// Append-only: earlier migrations' text is unchanged (checksums stay valid).
+// ---------------------------------------------------------------------------
+const M0009 = `
+alter table attempts drop column evidence_bundle_ref;
+alter table attempts add column evidence_artifact_id char(26);
+alter table attempts add column evidence_sha256 text;
+alter table attempts
+  add constraint attempts_evidence_scoped_fk
+  foreign key (evidence_artifact_id, organization_id, project_id)
+  references artifacts (id, organization_id, project_id);
+
+alter table pull_requests drop column evidence_bundle_ref;
+alter table pull_requests add column evidence_artifact_id char(26);
+alter table pull_requests add column evidence_sha256 text;
+alter table pull_requests
+  add constraint pull_requests_evidence_scoped_fk
+  foreign key (evidence_artifact_id, organization_id, project_id)
+  references artifacts (id, organization_id, project_id);
+`;
+
 // Ordered, immutable migration set. Order is by id; the runner asserts it.
 export const MIGRATIONS: readonly Migration[] = Object.freeze([
   { id: '0001_init_tenancy', sql: M0001 },
@@ -293,4 +326,5 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   { id: '0006_pull_requests', sql: M0006 },
   { id: '0007_audit_side_effects', sql: M0007 },
   { id: '0008_binding_scoped_fks', sql: M0008 },
+  { id: '0009_scoped_evidence_refs', sql: M0009 },
 ]);

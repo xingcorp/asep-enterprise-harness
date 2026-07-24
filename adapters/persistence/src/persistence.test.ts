@@ -235,6 +235,74 @@ test('HIGH-005: an attempt naming a binding from another project is rejected by 
   await client.close();
 });
 
+// HIGH-005: an attempt's evidence link is a SCOPED artifact reference. The
+// composite FK (evidence_artifact_id, org, project) → artifacts makes "the
+// evidence I attach lives in MY scope" a DB invariant; the pinned sha256 lets a
+// swapped-bytes artifact be detected later.
+
+// Seed an artifacts row directly (attempt_id null) so evidence-FK behaviour can
+// be exercised without the full pipeline. Returns the artifact id + sha.
+async function seedArtifact(
+  client: Awaited<ReturnType<typeof freshDb>>, scope: TenantScope, sha: string,
+): Promise<string> {
+  const id = 'E'.repeat(26).slice(0, 25) + String(Math.floor(Math.random() * 10));
+  await client.query(
+    `insert into artifacts
+       (id, organization_id, project_id, attempt_id, kind, sha256, size_bytes, storage_key, content_type)
+     values ($1, $2, $3, null, 'evidence-bundle', $4, 10, $5, 'application/json')`,
+    [id, scope.organizationId, scope.projectId, sha, `k/${id}`],
+  );
+  return id;
+}
+
+async function seedAttempt(
+  client: Awaited<ReturnType<typeof freshDb>>, scope: TenantScope, bindingId: RepositoryBindingId,
+): Promise<AttemptId> {
+  const runs = new RunRepository(client);
+  const tasks = new TaskRepository(client);
+  const attempts = new AttemptRepository(client);
+  const run = await runs.create(scope, { repositoryBindingId: bindingId, status: 'EXECUTING', risk: 'R0' });
+  const task = await tasks.create(scope, { runId: run.id, repositoryBindingId: bindingId, risk: 'R0' });
+  const attempt = await attempts.create(scope, { taskId: task.id, repositoryBindingId: bindingId });
+  return attempt.id;
+}
+
+test('HIGH-005: attaching an in-scope evidence artifact ref persists id + expected sha', async () => {
+  const client = await freshDb();
+  const { scope, binding } = await seedScope(client);
+  const attempts = new AttemptRepository(client);
+  const attemptId = await seedAttempt(client, scope, binding.id);
+  const sha = 'c'.repeat(64);
+  const artifactId = await seedArtifact(client, scope, sha);
+  const v = await attempts.attachEvidence(scope, attemptId, 0, {
+    artifactId: artifactId as never, sha256: sha, kind: 'evidence-bundle',
+  });
+  assert.equal(v, 1);
+  const row = await attempts.getScoped(scope, attemptId);
+  assert.equal(row.evidenceArtifactId, artifactId);
+  assert.equal(row.evidenceSha256, sha);
+  await client.close();
+});
+
+test('HIGH-005: attaching an evidence artifact from another project is rejected by the DB', async () => {
+  const client = await freshDb();
+  const { scope, binding } = await seedScope(client);
+  const other = await seedScope(client);
+  const attempts = new AttemptRepository(client);
+  const attemptId = await seedAttempt(client, scope, binding.id);
+  // An evidence artifact that lives in scope B.
+  const foreignArtifact = await seedArtifact(client, other.scope, 'd'.repeat(64));
+  // Attaching it to scope A's attempt has no matching (id, orgA, projA) row in
+  // artifacts, so the composite FK rejects it.
+  await assert.rejects(
+    () => attempts.attachEvidence(scope, attemptId, 0, {
+      artifactId: foreignArtifact as never, sha256: 'd'.repeat(64), kind: 'evidence-bundle',
+    }),
+    /foreign key|violates/i,
+  );
+  await client.close();
+});
+
 // ---------------------------------------------------------------------------
 // C3 — unique active writer/branch lease; concurrent attempt is denied.
 // ---------------------------------------------------------------------------
