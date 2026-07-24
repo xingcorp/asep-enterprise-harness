@@ -28,6 +28,21 @@ function sha256Hex(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex');
 }
 
+// Optional hardened-sandbox descriptor (disp. P2-FINAL-HIGH-002). When present,
+// the agent CLI is executed INSIDE a digest-pinned container via
+// `docker run <runFlags> -w <workdir> -e <allowlisted env…> <image> <exe> <args…>`
+// — OS-enforced network/rootfs/caps isolation applies to the agent itself, not
+// just to a prefix we throw away. The allowlisted ASEP_* / PATH / HOME / LANG
+// env is injected with explicit `-e` flags and the docker process runs with a
+// CLEAN host env, so NO host credential (GITHUB_TOKEN, *_TOKEN, AWS_*) can leak
+// into the container even if it is present in the harness process (G3/G5). When
+// absent, the CLI is spawned directly on the host (pilot-only / unit-test path).
+export interface AgentSandboxConfig {
+  readonly image: string;                 // digest-pinned image ref
+  readonly runFlags: readonly string[];   // hardened `docker run` flags (no image)
+  readonly workdir: string;               // -w working dir inside the container
+}
+
 export interface ClaudeProviderConfig {
   // PINNED executable + model + CLI version (G1). Recorded on every observation
   // artifact so a run's provenance is unambiguous.
@@ -35,6 +50,10 @@ export interface ClaudeProviderConfig {
   readonly model: string;              // e.g. 'claude-sonnet-4-20250514'
   readonly cliVersion: string;         // pinned, asserted against `--version` in live mode
   readonly maxTurns: number;
+  // When set, the agent runs in-container (see AgentSandboxConfig). Optional so
+  // the fake-CLI contract suite keeps exercising the real spawn/stdout boundary
+  // on the host; the live in-container proof lives in *.itest.ts.
+  readonly sandbox?: AgentSandboxConfig;
 }
 
 // The adapter needs a scope + artifact store to persist the raw event stream.
@@ -76,7 +95,7 @@ export class ClaudeCodingProvider implements CodingAgentProvider {
     // CLI argv (shell:false). The model + turn budget are pinned; the work-order
     // and context-pack are passed BY REFERENCE (immutable artifact id + sha), so
     // the agent reads them from the store, and we record exactly which bytes.
-    const args = [
+    const cliArgs = [
       '--model', this.cfg.model,
       '--output-format', 'stream-json',
       '--max-turns', String(this.cfg.maxTurns),
@@ -87,14 +106,48 @@ export class ClaudeCodingProvider implements CodingAgentProvider {
       '--workspace', req.workspace.workspaceId,
     ];
 
+    const agentEnv = this.agentEnv(req);
+
+    // Resolve the ACTUAL process to spawn + the env it runs under. In sandbox
+    // mode the agent executes INSIDE the container: the allowlisted env is
+    // injected via explicit `-e KEY=VALUE` docker flags and the docker process
+    // itself runs with a CLEAN environment ({}), so no host credential can leak
+    // into the container even if present in the harness (G3/G5). In host mode
+    // (fake-CLI unit path) we spawn the CLI directly with the allowlisted env.
+    let exe: string;
+    let args: string[];
+    let spawnEnv: Record<string, string>;
+    if (this.cfg.sandbox) {
+      const sb = this.cfg.sandbox;
+      const envFlags = Object.entries(agentEnv).flatMap(([k, v]) => ['-e', `${k}=${v}`]);
+      exe = 'docker';
+      args = [
+        ...sb.runFlags,
+        '-w', sb.workdir,
+        ...envFlags,
+        sb.image,
+        this.cfg.executable,
+        ...cliArgs,
+      ];
+      // The docker CLI process only needs PATH to locate the `docker` binary.
+      // Docker forwards ONLY the explicit `-e` vars into the container, so the
+      // host env of this process can never leak host credentials INTO the agent
+      // — the container env is exactly the allowlist injected above (G3/G5).
+      spawnEnv = { PATH: process.env['PATH'] ?? '/usr/bin:/bin' };
+    } else {
+      exe = this.cfg.executable;
+      args = cliArgs;
+      spawnEnv = agentEnv;
+    }
+
     const started = Date.now();
     let stdout = '';
     let stderr = '';
     const outcome = await new Promise<
       { kind: 'exit'; code: number | null } | { kind: 'error'; err: Error }
     >((resolve) => {
-      const child = spawn(this.cfg.executable, args, {
-        env: this.agentEnv(req),
+      const child = spawn(exe, args, {
+        env: spawnEnv,
         shell: false,
         stdio: ['ignore', 'pipe', 'pipe'],
       });

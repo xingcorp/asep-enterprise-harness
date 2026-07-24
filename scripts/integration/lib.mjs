@@ -31,6 +31,7 @@ const ITEST_SUFFIX = '.itest.ts';
 export const REQUIRED_ITEST_SUITES = Object.freeze({
   'asep-suite:pg-concurrency': 'adapters/persistence/src/concurrency.itest.ts',
   'asep-suite:sandbox-exec': 'adapters/command-runner/src/sandbox-exec.itest.ts',
+  'asep-suite:agent-sandbox': 'adapters/agent-claude/src/agent-sandbox.itest.ts',
 });
 
 export const SUITE_ID_PREFIX = 'SUITE-ID:';

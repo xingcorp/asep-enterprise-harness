@@ -10,5 +10,5 @@
 export type { ClaudeEvent, ParsedStream } from './event-parser.js';
 export { parseEventLine, parseStream, MalformedEventError } from './event-parser.js';
 
-export type { ClaudeProviderConfig } from './claude-provider.js';
+export type { ClaudeProviderConfig, AgentSandboxConfig } from './claude-provider.js';
 export { ClaudeCodingProvider } from './claude-provider.js';
