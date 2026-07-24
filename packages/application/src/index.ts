@@ -37,6 +37,21 @@ export {
 } from './governed-execution.js';
 
 export {
+  createOrganization,
+  createProject,
+  createRepositoryBinding,
+  createRun,
+  createTask,
+  getTask,
+  type RegistrationRepositories,
+  type OrganizationCreatePort,
+  type ProjectCreatePort,
+  type BindingPort,
+  type RunPort,
+  type TaskPort,
+} from './registration.js';
+
+export {
   verifyStep,
   commitStep,
   evidenceStep,

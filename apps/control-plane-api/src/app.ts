@@ -12,8 +12,12 @@ import type {
 } from '@asep/persistence';
 import { OptimisticConcurrencyError, ScopeViolationError } from '@asep/persistence';
 import type {
-  OrganizationId, ProjectId, RepositoryBindingId, RunId, TaskId, RiskLevel,
+  RepositoryBindingId, RunId, TaskId, RiskLevel,
 } from '@asep/contracts';
+import {
+  createOrganization, createProject, createRepositoryBinding,
+  createRun, createTask, getTask, type RegistrationRepositories,
+} from '@asep/application';
 import { AuthError, organizationContext, tenantScope, type PrincipalResolver } from './auth.js';
 import {
   parseCreateOrganization, parseCreateProject, parseCreateBinding,
@@ -93,7 +97,7 @@ export function buildApp(opts: AppOptions): FastifyInstance {
     const parsed = parseCreateOrganization(req.body);
     const body = bodyOrThrow(parsed, reply);
     if (!body) return;
-    const org = await repos.organizations.create({ name: body.name });
+    const org = await createOrganization(repos, { name: body.name });
     reply.code(201).send({ organizationId: org.id, name: org.name });
   });
 
@@ -102,8 +106,7 @@ export function buildApp(opts: AppOptions): FastifyInstance {
     const parsed = parseCreateProject(req.body);
     const body = bodyOrThrow(parsed, reply);
     if (!body) return;
-    const project = await repos.projects.create({
-      organizationId: ctx.organizationId,
+    const project = await createProject(repos, ctx.organizationId, {
       name: body.name,
       defaultBranch: body.defaultBranch,
     });
@@ -120,7 +123,7 @@ export function buildApp(opts: AppOptions): FastifyInstance {
     const parsed = parseCreateBinding(req.body);
     const body = bodyOrThrow(parsed, reply);
     if (!body) return;
-    const binding = await repos.bindings.create(scope, {
+    const binding = await createRepositoryBinding(repos, scope, {
       githubHost: body.githubHost,
       githubOwner: body.githubOwner,
       githubRepo: body.githubRepo,
@@ -140,12 +143,8 @@ export function buildApp(opts: AppOptions): FastifyInstance {
     const parsed = parseCreateRun(req.body);
     const body = bodyOrThrow(parsed, reply);
     if (!body) return;
-    // Verify the binding is visible in this scope before creating the run
-    // (fails closed with 404 via ScopeViolationError in the error handler).
-    await repos.bindings.getScoped(scope, body.repositoryBindingId as RepositoryBindingId);
-    const run = await repos.runs.create(scope, {
+    const run = await createRun(repos, scope, {
       repositoryBindingId: body.repositoryBindingId as RepositoryBindingId,
-      status: 'READY',
       risk: body.risk as RiskLevel,
     });
     reply.code(201).send({ runId: run.id, status: run.status, risk: run.risk });
@@ -157,9 +156,7 @@ export function buildApp(opts: AppOptions): FastifyInstance {
     const parsed = parseCreateTask(req.body);
     const body = bodyOrThrow(parsed, reply);
     if (!body) return;
-    await repos.runs.getScoped(scope, runId as RunId); // 404 if not in scope
-    const task = await repos.tasks.create(scope, {
-      runId: runId as RunId,
+    const task = await createTask(repos, scope, runId as RunId, {
       repositoryBindingId: body.repositoryBindingId as RepositoryBindingId,
       risk: body.risk as RiskLevel,
       ...(body.baseSha === undefined ? {} : { baseSha: body.baseSha }),
@@ -172,7 +169,7 @@ export function buildApp(opts: AppOptions): FastifyInstance {
   app.get('/v1/tasks/:taskId', async (req: FastifyRequest, reply: FastifyReply) => {
     const scope = await tenantScope(req, principals);
     const taskId = (req.params as { taskId: string }).taskId;
-    const task = await repos.tasks.getScoped(scope, taskId as TaskId);
+    const task = await getTask(repos, scope, taskId as TaskId);
     reply.code(200).send({
       taskId: task.id,
       runId: task.runId,
@@ -180,7 +177,7 @@ export function buildApp(opts: AppOptions): FastifyInstance {
       status: task.status,
       risk: task.risk,
       baseSha: task.baseSha,
-      resultSha: null,
+      resultSha: task.resultSha ?? null,
     });
   });
 

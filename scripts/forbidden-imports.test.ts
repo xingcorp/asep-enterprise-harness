@@ -263,6 +263,14 @@ const ROOT_FORBIDDEN: ReadonlyArray<{ label: string; test: (src: string) => bool
   { label: 'git / child_process spawn', test: (s) => /\b(spawn|spawnSync|execFile|execFileSync|exec)\s*\(\s*['"`]?git\b/.test(s) || /child_process/.test(s) },
   { label: 'provider SDK instantiation', test: (s) => /new\s+(Anthropic|OpenAI)\s*\(/.test(s) || /@anthropic-ai\/|(^|[^a-z])openai($|\/)/.test(s) },
   { label: 'direct policy decision', test: (s) => /\b(admitRisk|gatePolicy|classifyRisk|approvalFor|requiredLevels|classifyFailure)\s*\(/.test(s) },
+  // Direct persistence-repository call (disp. P2-FINAL-MED-004). B2/B5 require a
+  // handler to forward to an application use case, never to invoke a repository
+  // method itself. A call of the shape `repos.<name>.<method>(` or
+  // `repositories.<name>.<method>(` is a repository invocation inside the root —
+  // the handler bypassing the application layer. Passing the bundle AS AN
+  // ARGUMENT to a use case (`createRun(repos, ...)`) is fine: that is not a
+  // `repos.x.y(` call, so it does not match.
+  { label: 'direct repository call', test: (s) => /\brepos(itories)?\.\w+\.\w+\s*\(/.test(s) },
 ];
 
 // Strip line + block comments before scanning, so the detector matches actual
@@ -315,6 +323,12 @@ test('arch mutation self-test: a seeded SQL/Git/provider/policy call in a handle
   assert.ok(rootViolations(seededGit).includes('git / child_process spawn'), 'seeded git not detected');
   assert.ok(rootViolations(seededProvider).includes('provider SDK instantiation'), 'seeded provider not detected');
   assert.ok(rootViolations(seededPolicy).includes('direct policy decision'), 'seeded policy call not detected');
+  // A handler that calls a repository method directly bypasses the application
+  // layer (B2/B5) and must be rejected.
+  const seededRepoCall = `app.post('/run', async () => { const r = await repos.runs.create(scope, {}); return r; });`;
+  const seededReposLong = `app.get('/t/:id', async () => repositories.tasks.getScoped(scope, id));`;
+  assert.ok(rootViolations(seededRepoCall).includes('direct repository call'), 'seeded repos.x.y() call not detected');
+  assert.ok(rootViolations(seededReposLong).includes('direct repository call'), 'seeded repositories.x.y() call not detected');
 });
 
 test('arch mutation self-test: a thin route that only parses + forwards to the use case is ACCEPTED', () => {
