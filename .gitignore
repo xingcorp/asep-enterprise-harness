@@ -10,6 +10,11 @@ dist/
 .idea/
 # Phase 1 additions
 .task-complete
+# Phase 2 implementation-complete sentinel (L4): written into the working tree
+# only after report + green gate + clean tree + honest verdict. Like
+# .task-complete it is a gitignored working-tree marker, never committed, so the
+# verify:all clean-tree assertion stays honest.
+.phase-02-implementation-complete
 # Acceptance marker: written into the working tree AFTER review passes and binds
 # the reviewed HEAD (reviewed_head). Committing it would move HEAD and invalidate
 # its own binding, so it is a gitignored working-tree artifact (like .task-complete),
