@@ -11,6 +11,7 @@
     "build": "tsc -b",
     "typecheck": "tsc -b --pretty false",
     "test": "node scripts/run-canonical-tests.mjs",
+    "test:integration": "node scripts/integration/run-integration.mjs",
     "format:check": "bash scripts/format-check.sh",
     "scan:secret": "bash scripts/secret-scan.sh",
     "scan:large-file": "bash scripts/large-file-scan.sh",
@@ -24,6 +25,7 @@
   },
   "devDependencies": {
     "@types/node": "^24.10.0",
+    "pg": "8.22.0",
     "tsx": "^4.23.1",
     "typescript": "^7.0.2"
   },

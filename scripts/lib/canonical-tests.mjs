@@ -128,6 +128,12 @@ export const REQUIRED_SUITES = Object.freeze({
   // (ten genuine tasks, real provider, unique work orders, resolvable traces).
   // Registered so a dropped/renamed pilot gate turns the gate RED.
   'asep-suite:pilot-manifest': 'scripts/pilot/verify-pilot-manifest.test.ts',
+  // HIGH-001 integration-gate negative tests: prove the gate goes RED (never a
+  // silent skip) when a backend is absent, an image is not digest-pinned,
+  // discovery finds nothing, or a required itest marker is missing. The
+  // fail-closed logic runs under the fast unit runner; the live-backend proof is
+  // the *.itest.ts suites under scripts/integration/run-integration.mjs.
+  'asep-suite:integration-gate': 'scripts/integration/run-integration.test.ts',
 });
 
 /** The machine-readable marker a suite prints at module load: `SUITE-ID: <id>`. */
