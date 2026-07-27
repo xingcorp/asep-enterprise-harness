@@ -65,6 +65,53 @@ export class SandboxUnavailableError extends Error {
 
 const DIGEST_PINNED = /@sha256:[0-9a-f]{64}$/;
 
+/**
+ * PURE builder for the hardened `docker run` flags (disp. P2-FINAL-HIGH-002).
+ *
+ * Extracted from DockerSandboxProvider.start() so the hardening invariants
+ * (--network none, --read-only, --cap-drop ALL, no-new-privileges, pid/cpu/mem
+ * limits, never a docker socket) can be asserted DETERMINISTICALLY by the unit
+ * suite on every host, with no docker daemon and therefore no
+ * "catch SandboxUnavailableError → pass" escape hatch. The review flagged that
+ * escape hatch as always-green: on a Docker-less host it asserted nothing while
+ * still reporting a pass.
+ *
+ * The live proof that these flags are actually ENFORCED by the OS (network
+ * canary, read-only rootfs, exit-code fidelity) is the in-container integration
+ * suite adapters/command-runner/src/sandbox-exec.itest.ts, which runs under the
+ * integration gate against a real daemon and fails closed when docker is absent.
+ */
+export function buildSandboxRunFlags(
+  profile: 'verification-no-network' | 'agent-restricted-egress',
+  mount: WorkspaceMount,
+  cfg: Omit<DockerSandboxConfig, 'imageDigest'> = {},
+): readonly string[] {
+  // Both profiles are network-isolated at the OS level in Phase 2: the harness
+  // never grants an agent egress, so 'agent-restricted-egress' also resolves to
+  // `--network none` rather than a policy-advisory allowlist.
+  const network = profile === 'verification-no-network' ? 'none' : 'none';
+  return [
+    'run', '--rm',
+    '--network', network,
+    '--read-only',
+    '--tmpfs', '/tmp',
+    '--cap-drop', 'ALL',
+    '--security-opt', 'no-new-privileges',
+    '--pids-limit', String(cfg.pids ?? 256),
+    '--cpus', cfg.cpus ?? '1',
+    '--memory', cfg.memory ?? '512m',
+    // Writable mounts are the working tree ONLY. Git metadata (.git) is excluded
+    // by the caller so it can never be written from inside the sandbox (G3/G5).
+    ...mount.writablePaths.flatMap((p) => ['-v', `${p}:${p}:rw`]),
+    ...mount.readOnlyPaths.flatMap((p) => ['-v', `${p}:${p}:ro`]),
+  ];
+}
+
+/** PURE digest-pin check, so a mutable tag is rejected before any provisioning. */
+export function isDigestPinned(imageRef: string): boolean {
+  return DIGEST_PINNED.test(imageRef);
+}
+
 export class DockerSandboxProvider implements SandboxProvider {
   constructor(private readonly cfg: DockerSandboxConfig) {
     if (!DIGEST_PINNED.test(cfg.imageDigest)) {
@@ -82,25 +129,15 @@ export class DockerSandboxProvider implements SandboxProvider {
       // FAIL rather than skip / degrade (F5, disp. P2-PLAN-HIGH-009).
       throw new SandboxUnavailableError('docker CLI or daemon not reachable');
     }
-    // Build the hardened run flags. --network none gives OS-enforced no network
-    // for the verification profile (F4). No -v of the docker socket anywhere.
-    // The writable mounts are the working tree ONLY; Git metadata (.git) is the
-    // caller's responsibility to exclude from writablePaths so it is never
-    // writable inside the sandbox (G3/G5, disp. P2-FINAL-HIGH-002).
-    const network = profile === 'verification-no-network' ? 'none' : 'none';
-    const runFlags = [
-      'run', '--rm',
-      '--network', network,
-      '--read-only',
-      '--tmpfs', '/tmp',
-      '--cap-drop', 'ALL',
-      '--security-opt', 'no-new-privileges',
-      '--pids-limit', String(this.cfg.pids ?? 256),
-      '--cpus', this.cfg.cpus ?? '1',
-      '--memory', this.cfg.memory ?? '512m',
-      ...mount.writablePaths.flatMap((p) => ['-v', `${p}:${p}:rw`]),
-      ...mount.readOnlyPaths.flatMap((p) => ['-v', `${p}:${p}:ro`]),
-    ];
+    // Build the hardened run flags via the PURE builder above, so the unit suite
+    // asserts the exact same flag set this code path uses (one authority, no
+    // drift) and --network none gives OS-enforced no network for verification
+    // (F4). No -v of the docker socket anywhere.
+    const runFlags = buildSandboxRunFlags(profile, mount, {
+      ...(this.cfg.cpus !== undefined ? { cpus: this.cfg.cpus } : {}),
+      ...(this.cfg.memory !== undefined ? { memory: this.cfg.memory } : {}),
+      ...(this.cfg.pids !== undefined ? { pids: this.cfg.pids } : {}),
+    });
     // Back-compat prefix (flags + image) for the existing hardening assertions.
     const prefix = ['docker', ...runFlags, this.cfg.imageDigest];
     return {

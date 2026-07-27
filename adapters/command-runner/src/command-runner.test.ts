@@ -17,6 +17,7 @@ import { BoundedCapture, TRUNCATION_MARKER } from './bounded-capture.js';
 import { resolveEnvironment, UnknownEnvironmentProfileError } from './environment-profiles.js';
 import {
   DockerSandboxProvider, LocalUnsandboxedProvider, SandboxUnavailableError,
+  buildSandboxRunFlags, isDigestPinned,
   type SandboxHandleEx,
 } from './sandbox.js';
 import type { CommandSpec, SandboxHandle } from '@asep/ports';
@@ -226,29 +227,65 @@ test('F5: a non-digest-pinned image is rejected at construction', () => {
   );
 });
 
-test('F5: a digest-pinned Docker sandbox builds a hardened run prefix', async () => {
-  const provider = new DockerSandboxProvider({
-    imageDigest: `node@sha256:${'a'.repeat(64)}`,
+// The hardening invariants are asserted on the PURE flag builder (disp.
+// P2-FINAL-HIGH-002). The previous shape wrapped provider.start() in
+// try/catch and treated SandboxUnavailableError as acceptable evidence — on any
+// host without a docker daemon it therefore asserted NOTHING while still
+// reporting a pass (always-green). buildSandboxRunFlags is the exact function
+// DockerSandboxProvider.start() uses, so these assertions are deterministic on
+// every host and cannot be satisfied by an absent daemon.
+//
+// The live proof that the OS actually ENFORCES these flags is
+// sandbox-exec.itest.ts (network canary, read-only rootfs, exit-code fidelity),
+// which runs under the integration gate against a real daemon and fails closed.
+test('F5: the sandbox run flags carry every hardening invariant (no docker needed)', () => {
+  const flags = buildSandboxRunFlags('verification-no-network', {
+    workspaceId: 'W'.repeat(26) as never,
+    readOnlyPaths: [], writablePaths: [],
   });
-  // If docker is unavailable this throws SandboxUnavailableError (fail-closed,
-  // never a silent skip). If available, the prefix must carry every hardening
-  // flag. Either outcome is acceptable evidence; we assert whichever occurs.
-  try {
-    const handle = await provider.start('verification-no-network', {
-      workspaceId: 'W'.repeat(26) as never,
-      readOnlyPaths: [], writablePaths: [],
-    }) as SandboxHandleEx;
-    assert.equal(handle.isolationEnforced, true);
-    const p = handle.dockerRunPrefix!.join(' ');
-    assert.ok(p.includes('--network none'), 'no network');
-    assert.ok(p.includes('--read-only'), 'read-only rootfs');
-    assert.ok(p.includes('--cap-drop ALL'), 'caps dropped');
-    assert.ok(p.includes('--security-opt no-new-privileges'), 'no-new-privileges');
-    assert.ok(p.includes('--pids-limit'), 'pid limit');
-    assert.ok(!p.includes('docker.sock'), 'no docker socket mounted');
-  } catch (err) {
-    assert.ok(err instanceof SandboxUnavailableError, 'fails closed when docker absent');
-  }
+  const p = flags.join(' ');
+  assert.ok(p.includes('--network none'), 'no network');
+  assert.ok(p.includes('--read-only'), 'read-only rootfs');
+  assert.ok(p.includes('--cap-drop ALL'), 'caps dropped');
+  assert.ok(p.includes('--security-opt no-new-privileges'), 'no-new-privileges');
+  assert.ok(p.includes('--pids-limit'), 'pid limit');
+  assert.ok(p.includes('--cpus'), 'cpu limit');
+  assert.ok(p.includes('--memory'), 'memory limit');
+  assert.ok(!p.includes('docker.sock'), 'no docker socket mounted');
+  assert.ok(!p.includes('--privileged'), 'never privileged');
+});
+
+test('F4: the agent profile is ALSO network-isolated at the OS level', () => {
+  const flags = buildSandboxRunFlags('agent-restricted-egress', {
+    workspaceId: 'W'.repeat(26) as never,
+    readOnlyPaths: [], writablePaths: [],
+  });
+  // Phase 2 grants no agent egress: this must be OS-enforced `--network none`,
+  // not a policy-advisory allowlist the agent could ignore.
+  assert.ok(flags.join(' ').includes('--network none'), 'agent profile has no network');
+});
+
+test('F5/G3: only the working tree is writable; .git metadata is never mounted rw', () => {
+  const flags = buildSandboxRunFlags('verification-no-network', {
+    workspaceId: 'W'.repeat(26) as never,
+    readOnlyPaths: ['/ro/dep'],
+    writablePaths: ['/wt/tree'],
+  });
+  const p = flags.join(' ');
+  assert.ok(p.includes('-v /wt/tree:/wt/tree:rw'), 'the working tree is writable');
+  assert.ok(p.includes('-v /ro/dep:/ro/dep:ro'), 'declared read-only paths are ro');
+  assert.ok(!/\.git\S*:rw/.test(p), 'no .git path is ever mounted writable');
+});
+
+test('F5: a digest-pinned image is accepted and a mutable tag is rejected (pure)', () => {
+  assert.equal(isDigestPinned(`node@sha256:${'a'.repeat(64)}`), true);
+  assert.equal(isDigestPinned('node:20'), false);
+  assert.equal(isDigestPinned('node@sha256:short'), false);
+  // And the constructor enforces it, so a tag never reaches a daemon.
+  assert.throws(
+    () => new DockerSandboxProvider({ imageDigest: 'postgres:17' }),
+    SandboxUnavailableError,
+  );
 });
 
 test('F6: the local fallback is honestly labelled pilot-only, no isolation', async () => {

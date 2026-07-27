@@ -20,4 +20,5 @@ export { TrustedCommandRunner } from './command-runner.js';
 export type { SandboxHandleEx, DockerSandboxConfig } from './sandbox.js';
 export {
   DockerSandboxProvider, LocalUnsandboxedProvider, SandboxUnavailableError,
+  buildSandboxRunFlags, isDigestPinned,
 } from './sandbox.js';
