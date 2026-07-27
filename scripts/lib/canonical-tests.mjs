@@ -139,6 +139,12 @@ export const REQUIRED_SUITES = Object.freeze({
   // every downstream port spy at exactly zero calls. Registered so a dropped or
   // renamed admission-ordering suite turns the gate RED.
   'asep-suite:governed-execution': 'packages/application/src/governed-execution.test.ts',
+  // MED-006 executable pilot rehearsal: the five injected faults run against
+  // REAL mechanisms (PGlite DB restart / side-effect reconciliation, filesystem
+  // object-store outage, real lease TTL-sweep) and assert the documented
+  // recovery decision on real state. Registered so a dropped/renamed rehearsal
+  // suite turns the gate RED.
+  'asep-suite:pilot-rehearsal': 'adapters/persistence/src/pilot-rehearsal.test.ts',
 });
 
 /** The machine-readable marker a suite prints at module load: `SUITE-ID: <id>`. */
