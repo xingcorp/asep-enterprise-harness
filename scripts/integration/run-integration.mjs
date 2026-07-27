@@ -40,6 +40,27 @@ const PG_DB = 'asep';
 const MINIO_USER = 'asepminio';
 const MINIO_PASSWORD = 'asepminio-secret';
 
+// ---------------------------------------------------------------------------
+// Fault-injection hooks for the gate's OWN negative tests (disp.
+// P2-FINAL-HIGH-001). HIGH-001 demands proof that a MISSING backend turns the
+// required job RED rather than skipping. The only honest way to prove that is to
+// actually run this CLI with a backend deliberately absent and observe a
+// non-zero exit, so the absence is injectable:
+//
+//   ASEP_ITEST_OMIT_BACKEND=postgres,minio  — do NOT start those containers; the
+//       health check must then fail the gate (never skip it).
+//   ASEP_ITEST_DOCKER_BIN=/nonexistent/docker — probe this binary FIRST, so a
+//       bogus value proves "no docker → RED".
+//   ASEP_ITEST_HEALTH_ATTEMPTS=n — shrink the readiness budget so a negative
+//       test fails fast instead of burning the full 40s.
+//
+// These only ever make the gate STRICTER (they can cause a red, never a green),
+// so they cannot be abused to fake a pass.
+const OMITTED_BACKENDS = new Set(
+  (process.env.ASEP_ITEST_OMIT_BACKEND ?? '').split(',').map((s) => s.trim()).filter(Boolean),
+);
+const HEALTH_ATTEMPTS = Number(process.env.ASEP_ITEST_HEALTH_ATTEMPTS ?? '40');
+
 function fail(msg) {
   process.stderr.write(`integration-gate: FAIL — ${msg}\n`);
   return 1;
@@ -59,7 +80,10 @@ async function pgReady(url) {
 }
 
 async function main() {
-  const docker = resolveDocker();
+  const dockerCandidates = process.env.ASEP_ITEST_DOCKER_BIN
+    ? [process.env.ASEP_ITEST_DOCKER_BIN]
+    : undefined;
+  const docker = dockerCandidates ? resolveDocker(dockerCandidates) : resolveDocker();
   if (!docker) {
     return fail(
       'no working docker binary found — the integration gate REQUIRES a real ' +
@@ -86,31 +110,41 @@ async function main() {
   const s3Endpoint = `http://127.0.0.1:${MINIO_PORT}`;
 
   try {
-    process.stdout.write(`integration-gate: starting PostgreSQL (${IMAGES.postgres})\n`);
-    runContainer(docker.bin, {
-      image: IMAGES.postgres,
-      name: PG_NAME,
-      env: { POSTGRES_USER: PG_USER, POSTGRES_PASSWORD: PG_PASSWORD, POSTGRES_DB: PG_DB },
-      ports: [`${PG_PORT}:5432`],
-    });
+    if (OMITTED_BACKENDS.has('postgres')) {
+      process.stdout.write('integration-gate: PostgreSQL DELIBERATELY OMITTED (negative test)\n');
+    } else {
+      process.stdout.write(`integration-gate: starting PostgreSQL (${IMAGES.postgres})\n`);
+      runContainer(docker.bin, {
+        image: IMAGES.postgres,
+        name: PG_NAME,
+        env: { POSTGRES_USER: PG_USER, POSTGRES_PASSWORD: PG_PASSWORD, POSTGRES_DB: PG_DB },
+        ports: [`${PG_PORT}:5432`],
+      });
+    }
 
-    process.stdout.write(`integration-gate: starting MinIO (${IMAGES.minio})\n`);
-    runContainer(docker.bin, {
-      image: IMAGES.minio,
-      name: MINIO_NAME,
-      env: { MINIO_ROOT_USER: MINIO_USER, MINIO_ROOT_PASSWORD: MINIO_PASSWORD },
-      ports: [`${MINIO_PORT}:9000`],
-      args: ['server', '/data'],
-    });
+    if (OMITTED_BACKENDS.has('minio')) {
+      process.stdout.write('integration-gate: MinIO DELIBERATELY OMITTED (negative test)\n');
+    } else {
+      process.stdout.write(`integration-gate: starting MinIO (${IMAGES.minio})\n`);
+      runContainer(docker.bin, {
+        image: IMAGES.minio,
+        name: MINIO_NAME,
+        env: { MINIO_ROOT_USER: MINIO_USER, MINIO_ROOT_PASSWORD: MINIO_PASSWORD },
+        ports: [`${MINIO_PORT}:9000`],
+        args: ['server', '/data'],
+      });
+    }
 
-    const pgOk = await waitReady(() => pgReady(pgUrl), { attempts: 40, intervalMs: 1000 });
+    const pgOk = await waitReady(() => pgReady(pgUrl), {
+      attempts: HEALTH_ATTEMPTS, intervalMs: 1000,
+    });
     if (!pgOk) return fail(`PostgreSQL never became healthy at ${pgUrl}`);
     process.stdout.write('integration-gate: PostgreSQL healthy\n');
 
     const minioOk = await waitReady(async () => {
       const r = await fetch(`${s3Endpoint}/minio/health/live`).catch(() => null);
       return !!r && r.ok;
-    }, { attempts: 40, intervalMs: 1000 });
+    }, { attempts: HEALTH_ATTEMPTS, intervalMs: 1000 });
     if (!minioOk) return fail(`MinIO never became healthy at ${s3Endpoint}`);
     process.stdout.write('integration-gate: MinIO healthy\n');
 

@@ -15,6 +15,7 @@ import { assertDigestPinned, DIGEST_PINNED, IMAGES } from './images.mjs';
 import { discoverItestFiles, missingRequiredItestSuites, REQUIRED_ITEST_SUITES, suiteMarker, resolveDocker, waitReady } from './lib.mjs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { readFileSync } from 'node:fs';
 
 console.log('SUITE-ID: asep-suite:integration-gate');
 
@@ -109,4 +110,141 @@ test('waitReady treats a throwing probe as not-ready (never leaks the error)', a
 test('resolveDocker returns null when no candidate binary responds (→ gate RED)', () => {
   const r = resolveDocker(['/nonexistent/docker-xyz', '/also/not/here']);
   assert.equal(r, null);
+});
+
+// ---------------------------------------------------------------------------
+// compose.yaml <-> images.mjs digest parity (disp. P2-FINAL-HIGH-001).
+//
+// The review flagged compose.yaml pinning postgres/minio by MUTABLE TAG while
+// the gate pinned by digest. Both are now digest-pinned, and this test keeps
+// them byte-identical forever: `pnpm infra:up` (developer) and the integration
+// gate (CI) must provision the SAME immutable backend build, or the suites are
+// proven against something other than what a developer runs. Re-pointing one
+// without the other turns this RED.
+// ---------------------------------------------------------------------------
+
+test('compose.yaml pins postgres + minio BY DIGEST (no mutable tag)', () => {
+  const compose = readFileSync(join(REPO_ROOT, 'compose.yaml'), 'utf8');
+  const images = [...compose.matchAll(/^\s*image:\s*(\S+)\s*$/gm)].map((m) => m[1] as string);
+  const pg = images.filter((i) => i.startsWith('postgres'));
+  const minio = images.filter((i) => i.startsWith('minio/minio'));
+  assert.ok(pg.length >= 1, 'compose declares a postgres image');
+  assert.ok(minio.length >= 1, 'compose declares a minio image');
+  for (const ref of [...pg, ...minio]) {
+    assert.match(ref, DIGEST_PINNED, `compose image '${ref}' must be @sha256-pinned, not a tag`);
+  }
+});
+
+test('compose.yaml digests are IDENTICAL to the integration gate images', () => {
+  const compose = readFileSync(join(REPO_ROOT, 'compose.yaml'), 'utf8');
+  const images = [...compose.matchAll(/^\s*image:\s*(\S+)\s*$/gm)].map((m) => m[1] as string);
+  assert.ok(
+    images.includes(IMAGES.postgres),
+    `compose postgres digest must equal the gate's (${IMAGES.postgres})`,
+  );
+  assert.ok(
+    images.includes(IMAGES.minio),
+    `compose minio digest must equal the gate's (${IMAGES.minio})`,
+  );
+});
+
+test('compose.yaml health-checks BOTH postgres and minio (gate can wait, not race)', () => {
+  const compose = readFileSync(join(REPO_ROOT, 'compose.yaml'), 'utf8');
+  // Split into top-level service blocks and assert each of the two backends the
+  // integration gate depends on declares its own healthcheck.
+  const serviceBlock = (name: string): string => {
+    const start = compose.indexOf(`\n  ${name}:`);
+    assert.notEqual(start, -1, `compose declares a '${name}' service`);
+    const rest = compose.slice(start + 1);
+    const next = rest.search(/\n {2}\w[\w-]*:\n/);
+    return next === -1 ? rest : rest.slice(0, next);
+  };
+  for (const svc of ['postgres', 'minio']) {
+    assert.match(
+      serviceBlock(svc),
+      /healthcheck:/,
+      `service '${svc}' must declare a healthcheck so readiness is waited on`,
+    );
+  }
+});
+
+// ---------------------------------------------------------------------------
+// The end-to-end fail-closed proof is REGISTERED as a required integration
+// suite. HIGH-001's core demand ("a deliberately-unavailable backend turns the
+// required job RED") is proven by gate-fail-closed.itest.ts spawning the real
+// CLI; if that suite were dropped or renamed, the gate must go RED rather than
+// quietly lose its own negative proof.
+// ---------------------------------------------------------------------------
+
+test('the e2e fail-closed suite is a REQUIRED integration suite', () => {
+  assert.equal(
+    REQUIRED_ITEST_SUITES['asep-suite:gate-fail-closed'],
+    'scripts/integration/gate-fail-closed.itest.ts',
+  );
+  // And a run that never printed its marker is reported missing (→ RED).
+  const missing = missingRequiredItestSuites('');
+  assert.ok(
+    missing.some((m: { id: string }) => m.id === 'asep-suite:gate-fail-closed'),
+    'a dropped fail-closed suite turns the gate RED',
+  );
+});
+
+// ---------------------------------------------------------------------------
+// CI wiring fitness (disp. P2-FINAL-HIGH-001).
+//
+// The review's HIGH-001 was precisely that CI ran only `verify:all` — a shallow
+// gate that never provisioned a backend — so real-backend claims were green by
+// absence. A deep integration job now exists; these tests keep it MANDATORY.
+// Deleting the job, gating it behind `if:`, or marking it continue-on-error
+// would restore the exact defect, so each of those turns this suite RED.
+// ---------------------------------------------------------------------------
+
+const ciWorkflow = (): string =>
+  readFileSync(join(REPO_ROOT, '.github', 'workflows', 'ci.yml'), 'utf8');
+
+// The `integration:` job block, i.e. from its key to the next top-level job key.
+function integrationJobBlock(): string {
+  const ci = ciWorkflow();
+  const start = ci.indexOf('\n  integration:');
+  assert.notEqual(start, -1, 'CI must declare a top-level `integration:` job');
+  const rest = ci.slice(start + 1);
+  const next = rest.search(/\n {2}\w[\w-]*:\n/);
+  return next === -1 ? rest : rest.slice(0, next);
+}
+
+test('CI declares a required integration job that runs the deep gate', () => {
+  const block = integrationJobBlock();
+  assert.match(
+    block,
+    /pnpm test:integration/,
+    'the integration job must run the real-backend gate (pnpm test:integration)',
+  );
+});
+
+test('the CI integration job is UNCONDITIONAL and cannot soft-fail', () => {
+  const block = integrationJobBlock();
+  // Strip comments: prose may legitimately mention these keys while explaining
+  // why they are absent. Only real YAML keys matter.
+  const yamlOnly = block
+    .split('\n')
+    .filter((l) => !/^\s*#/.test(l))
+    .join('\n');
+  assert.ok(
+    !/^\s*continue-on-error:/m.test(yamlOnly),
+    'integration must not be continue-on-error — its failure has to fail CI',
+  );
+  assert.ok(
+    !/^\s*if:/m.test(yamlOnly),
+    'integration must not be conditional — a skipped deep gate is the HIGH-001 defect',
+  );
+});
+
+test('the CI integration job asserts a real Docker daemon before running suites', () => {
+  const block = integrationJobBlock();
+  assert.match(block, /docker version/, 'the job proves docker exists rather than skipping');
+  assert.match(
+    block,
+    /--network none/,
+    'the job proves the sandbox can run network-isolated before trusting F4',
+  );
 });
