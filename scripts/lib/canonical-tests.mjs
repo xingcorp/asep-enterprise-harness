@@ -145,6 +145,13 @@ export const REQUIRED_SUITES = Object.freeze({
   // recovery decision on real state. Registered so a dropped/renamed rehearsal
   // suite turns the gate RED.
   'asep-suite:pilot-rehearsal': 'adapters/persistence/src/pilot-rehearsal.test.ts',
+  // HIGH-008 forge port conformance: the ONE type that both `implements
+  // ForgeProvider` and drives the GitHub App adapter. Proves the real adapter is
+  // reachable through the application port (pushing the EXACT harness commit
+  // from a detached worktree to a real bare remote), that ref safety and tenant
+  // scoping hold through the seam, and that no merge capability exists.
+  // Registered so a dropped/renamed conformance suite turns the gate RED.
+  'asep-suite:forge-port-adapter': 'adapters/github-app/src/port-adapter.test.ts',
 });
 
 /** The machine-readable marker a suite prints at module load: `SUITE-ID: <id>`. */

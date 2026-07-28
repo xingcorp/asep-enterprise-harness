@@ -19,3 +19,17 @@ export {
   GitHubAppForgeProvider, ForgePushError, ForgeAuthExpiredError,
   isAuthExpiryError, MAX_REMINT_ATTEMPTS, scrubToken,
 } from './forge-provider.js';
+
+// Port conformance seam (disp. P2-FINAL-HIGH-008): the ONLY type that both
+// `implements ForgeProvider` and drives the GitHub App adapter, so the compiler
+// fails if the port and the adapter ever drift apart again.
+export type { ForgeBindingResolver } from './port-adapter.js';
+export { GitHubAppForgePort } from './port-adapter.js';
+
+// Production resolver for that seam: answers (scope, bindingId) -> (forge
+// coordinates, local repo path) from the authoritative store, delegating tenant
+// scoping to the DB and failing closed when the numeric forge id is absent.
+export type { ForgeBindingReader, LocalRepoLocator } from './binding-resolver.js';
+export {
+  SqlForgeBindingResolver, ForgeBindingIncompleteError,
+} from './binding-resolver.js';

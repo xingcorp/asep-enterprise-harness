@@ -14,7 +14,10 @@ export type { ForgeIdentity } from './remote-url.js';
 export { buildCloneUrl, rejectRawRemoteUrl, RemoteIdentityError } from './remote-url.js';
 
 export type { AttemptRefIdentity, SafeRefspec } from './ref-safety.js';
-export { attemptBranch, safeRefspecFor, RefSafetyError, PROTECTED_REFS } from './ref-safety.js';
+export {
+  attemptBranch, safeRefspecFor, safeCommitRefspecFor, RefSafetyError, PROTECTED_REFS,
+  FULL_SHA_PATTERN,
+} from './ref-safety.js';
 
 export type { WorktreeManagerConfig } from './worktree-manager.js';
 export {

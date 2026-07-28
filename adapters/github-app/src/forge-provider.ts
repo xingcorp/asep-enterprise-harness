@@ -20,7 +20,9 @@
 //                (find-by-head-branch → update, else create).
 //   H5           NO merge method is wired anywhere in this adapter.
 
-import { runGit as defaultRunGit, buildCloneUrl, safeRefspecFor } from '@asep/git-worktree';
+import {
+  runGit as defaultRunGit, buildCloneUrl, safeRefspecFor, safeCommitRefspecFor,
+} from '@asep/git-worktree';
 import type { ForgeIdentity } from '@asep/git-worktree';
 import type { GitHubAppCredentialProvider } from './credential-provider.js';
 
@@ -117,6 +119,12 @@ export interface PushInput {
   readonly localWorktreePath: string; // where the harness commit lives
   readonly branch: string;            // MUST be an ASEP attempt branch
   readonly expectedRemoteSha?: string;// enables --force-with-lease, never plain force
+  // The EXACT harness commit to publish (disp. P2-FINAL-HIGH-008). When present
+  // the refspec pushes this immutable object id to the safe namespaced ref, so
+  // the bytes landing on the remote are exactly the commit verification and
+  // evidence were bound to — and a detached worktree (which has no local branch
+  // of that name) can still be pushed. Omitted → legacy local-branch refspec.
+  readonly commitSha?: string;
 }
 
 export interface PullRequestResult {
@@ -164,7 +172,11 @@ export class GitHubAppForgeProvider {
   async pushBranch(input: PushInput): Promise<{ ref: string }> {
     // (1) Build the ONLY safe refspec. Throws on any protected/malformed target.
     // Done ONCE, before any mint, so a bad ref never mints a token (H3).
-    const safe = safeRefspecFor(input.branch, input.expectedRemoteSha);
+    // With an explicit commitSha the source is that immutable object id; the
+    // DESTINATION is validated by the same single authority either way.
+    const safe = input.commitSha
+      ? safeCommitRefspecFor(input.commitSha, input.branch, input.expectedRemoteSha)
+      : safeRefspecFor(input.branch, input.expectedRemoteSha);
 
     // (2) Construct the transport URL from validated identity (never raw).
     const baseUrl = buildCloneUrl(input.repository.identity, this.allowedHosts);

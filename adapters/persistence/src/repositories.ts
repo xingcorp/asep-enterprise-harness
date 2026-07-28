@@ -46,6 +46,14 @@ export interface RepositoryBindingRow {
   readonly githubOwner: string;
   readonly githubRepo: string;
   readonly defaultBaseBranch: string;
+  // The forge's numeric repository id (disp. P2-FINAL-HIGH-008). The column has
+  // existed since M0001 but was never surfaced, so nothing outside the DB could
+  // read it — which made a PRODUCTION ForgeBindingResolver impossible to write,
+  // because JIT token minting scopes a token to `repositoryIds: [id]` (H2). It
+  // is optional: a binding may be registered before the numeric id is known,
+  // and a resolver MUST fail closed rather than mint an unscoped token when it
+  // is absent.
+  readonly githubRepositoryId?: number;
   readonly version: number;
 }
 
@@ -199,29 +207,43 @@ export class RepositoryBindingRepository {
 
   async create(scope: TenantScope, input: {
     githubHost: string; githubOwner: string; githubRepo: string; defaultBaseBranch: string;
+    githubRepositoryId?: number;
   }): Promise<RepositoryBindingRow> {
     const id = ulid() as RepositoryBindingId;
     await this.db.query(
       `insert into repository_bindings
-        (id, organization_id, project_id, forge, github_host, github_owner, github_repo, default_base_branch)
-       values ($1, $2, $3, 'github', $4, $5, $6, $7)`,
-      [id, scope.organizationId, scope.projectId, input.githubHost, input.githubOwner, input.githubRepo, input.defaultBaseBranch],
+        (id, organization_id, project_id, forge, github_host, github_owner, github_repo,
+         default_base_branch, github_repository_id)
+       values ($1, $2, $3, 'github', $4, $5, $6, $7, $8)`,
+      [id, scope.organizationId, scope.projectId, input.githubHost, input.githubOwner,
+        input.githubRepo, input.defaultBaseBranch, input.githubRepositoryId ?? null],
     );
     return {
       id, organizationId: scope.organizationId, projectId: scope.projectId,
       githubHost: input.githubHost, githubOwner: input.githubOwner,
-      githubRepo: input.githubRepo, defaultBaseBranch: input.defaultBaseBranch, version: 0,
+      githubRepo: input.githubRepo, defaultBaseBranch: input.defaultBaseBranch,
+      ...(input.githubRepositoryId === undefined
+        ? {}
+        : { githubRepositoryId: input.githubRepositoryId }),
+      version: 0,
     };
   }
 
   async getScoped(scope: TenantScope, id: RepositoryBindingId): Promise<RepositoryBindingRow> {
     const r = await this.db.query(
-      `select id, organization_id, project_id, github_host, github_owner, github_repo, default_base_branch, version
+      `select id, organization_id, project_id, github_host, github_owner, github_repo,
+              default_base_branch, github_repository_id, version
        from repository_bindings where id = $1 and organization_id = $2 and project_id = $3`,
       [id, scope.organizationId, scope.projectId],
     );
     if (r.rowCount === 0) throw new ScopeViolationError('repository_binding', id);
     const row = r.rows[0]!;
+    // A bigint column comes back as a string from node-postgres and as a number
+    // from PGlite; normalise so both seams yield the same row shape.
+    const rawForgeId = row['github_repository_id'];
+    const forgeId = rawForgeId === null || rawForgeId === undefined
+      ? undefined
+      : Number(rawForgeId);
     return {
       id: row['id'] as RepositoryBindingId,
       organizationId: row['organization_id'] as OrganizationId,
@@ -230,6 +252,7 @@ export class RepositoryBindingRepository {
       githubOwner: row['github_owner'] as string,
       githubRepo: row['github_repo'] as string,
       defaultBaseBranch: row['default_base_branch'] as string,
+      ...(forgeId === undefined ? {} : { githubRepositoryId: forgeId }),
       version: row['version'] as number,
     };
   }

@@ -97,4 +97,43 @@ export function safeRefspecFor(branch: string, expectedRemoteSha?: string): Safe
   return expectedRemoteSha ? { ...base, forceWithLeaseExpectedSha: expectedRemoteSha } : base;
 }
 
-export { PROTECTED_REFS };
+// A full 40-hex Git object id. An abbreviated SHA is rejected: an ambiguous
+// prefix could resolve to a different object on the remote side.
+const FULL_SHA = /^[0-9a-f]{40}$/;
+
+/**
+ * Validate a branch AND an exact commit SHA, returning the safe refspec that
+ * pushes THAT EXACT OBJECT to the ASEP-namespaced target ref.
+ *
+ * Why this exists alongside safeRefspecFor (disp. P2-FINAL-HIGH-008): the
+ * harness commits on a DETACHED worktree, so there is no local branch named
+ * `asep/<run>/<task>/<attempt>` for a `refs/heads/x:refs/heads/x` refspec to
+ * resolve. Pushing the SHA directly is also strictly stronger: the bytes that
+ * land on the remote are exactly the commit that verification and evidence were
+ * bound to, not whatever a mutable local branch happens to point at.
+ *
+ * Every guarantee of safeRefspecFor is preserved: the TARGET is still generated
+ * under the ASEP namespace and run through the same validation, so a protected,
+ * malformed, tag, or option-like destination stays unrepresentable, and force is
+ * still only expressible as --force-with-lease against a recorded SHA.
+ */
+export function safeCommitRefspecFor(
+  commitSha: string,
+  branch: string,
+  expectedRemoteSha?: string,
+): SafeRefspec {
+  // Reuse the single authority for target validation — no second policy here.
+  const safe = safeRefspecFor(branch, expectedRemoteSha);
+  if (!FULL_SHA.test(commitSha)) {
+    throw new RefSafetyError(
+      `'${commitSha}' is not a full 40-hex commit SHA; refusing to push an ambiguous object`,
+    );
+  }
+  // Source is an immutable object id, destination is the validated safe ref. No
+  // leading '+', so this can never mean force; deletion is unrepresentable.
+  const refspec = `${commitSha}:refs/heads/${safe.branch}`;
+  const base: SafeRefspec = { branch: safe.branch, refspec };
+  return expectedRemoteSha ? { ...base, forceWithLeaseExpectedSha: expectedRemoteSha } : base;
+}
+
+export { PROTECTED_REFS, FULL_SHA as FULL_SHA_PATTERN };
