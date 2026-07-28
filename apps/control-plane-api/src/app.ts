@@ -16,9 +16,13 @@ import type {
 } from '@asep/contracts';
 import {
   createOrganization, createProject, createRepositoryBinding,
-  createRun, createTask, getTask, type RegistrationRepositories,
+  createRun, createTask, getTask, CapabilityError,
+  type RegistrationRepositories,
 } from '@asep/application';
-import { AuthError, organizationContext, tenantScope, type PrincipalResolver } from './auth.js';
+import {
+  AuthError, ForbiddenError, CAP_CREATE_ORGANIZATION,
+  organizationContext, operatorContext, tenantScope, type PrincipalResolver,
+} from './auth.js';
 import {
   parseCreateOrganization, parseCreateProject, parseCreateBinding,
   parseCreateRun, parseCreateTask, type Parsed,
@@ -69,6 +73,14 @@ export function buildApp(opts: AppOptions): FastifyInstance {
       reply.code(401).send({ error: 'unauthorized' });
       return;
     }
+    // Authenticated-but-not-permitted is 403, NOT 401 (disp. P2-FINAL-HIGH-004).
+    // Both the transport guard (ForbiddenError) and the use case's own capability
+    // check (CapabilityError) land here, so the answer is the same whichever
+    // layer refused.
+    if (err instanceof ForbiddenError || err instanceof CapabilityError) {
+      reply.code(403).send({ error: 'forbidden' });
+      return;
+    }
     if (err instanceof ScopeViolationError) {
       reply.code(404).send({ error: 'not_found' });
       return;
@@ -89,15 +101,27 @@ export function buildApp(opts: AppOptions): FastifyInstance {
 
   // ----- registration (mutating) ------------------------------------------
 
-  // Create an organization. Org creation is the scope root, so it needs no
-  // TenantScope — but the caller must still be an authenticated principal whose
-  // org header matches the row it creates (a client cannot mint an arbitrary org
-  // id: the id is server-generated).
+  // Create an organization (disp. P2-FINAL-HIGH-004). Org creation is the scope
+  // ROOT, so there is no TenantScope to authorise it against — but C2 requires a
+  // server-derived AuthContext for EVERY use case, so this route is authorised by
+  // a PLATFORM-OPERATOR credential carrying an explicit `organizations:create`
+  // capability. Authentication is enforced BEFORE the body is even parsed, so an
+  // anonymous request can never reach the use case:
+  //   missing/unknown credential → 401 · operator without the capability → 403
+  // A tenant (org-scoped) token resolves to no operator, so it cannot mint orgs.
   app.post('/v1/organizations', async (req: FastifyRequest, reply: FastifyReply) => {
+    const operator = await operatorContext(req, principals, CAP_CREATE_ORGANIZATION);
     const parsed = parseCreateOrganization(req.body);
     const body = bodyOrThrow(parsed, reply);
     if (!body) return;
-    const org = await createOrganization(repos, { name: body.name });
+    // The server-derived platform context is passed THROUGH to the use case,
+    // which re-checks the capability itself (defence in depth: a future non-HTTP
+    // caller cannot skip the check by not going through this route).
+    const org = await createOrganization(
+      repos,
+      { principalId: operator.principalId, capabilities: operator.capabilities },
+      { name: body.name },
+    );
     reply.code(201).send({ organizationId: org.id, name: org.name });
   });
 

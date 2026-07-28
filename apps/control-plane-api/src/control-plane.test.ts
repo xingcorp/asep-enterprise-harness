@@ -15,8 +15,9 @@ import {
 } from '@asep/persistence';
 import type { CodingAgentProvider, AgentExecuteRequest, AgentAttemptObservation, GitChangeInspector, GitChangeObservation } from '@asep/ports';
 import type { ArtifactRef } from '@asep/contracts';
+import { createOrganization } from '@asep/application';
 import { buildApp, type Repositories } from './app.js';
-import { PROJECT_HEADER } from './auth.js';
+import { PROJECT_HEADER, CAP_CREATE_ORGANIZATION } from './auth.js';
 import { RepositoryPrincipalResolver } from './principal-resolver.js';
 import { parseArgs, runExecute, formatResult, localDeps, CliUsageError } from './cli.js';
 
@@ -41,6 +42,15 @@ async function buildStore(): Promise<{
   return { repos, db, principals };
 }
 
+// A PLATFORM-OPERATOR credential holding organizations:create (HIGH-004). Org
+// creation sits above the tenancy tree, so it is authorised by this capability
+// rather than by a TenantScope. Server state — never mintable over HTTP.
+const OPERATOR_TOKEN = 'op-token-with-create-capability';
+function operatorAuth(principals: RepositoryPrincipalResolver): string {
+  principals.bindOperator(OPERATOR_TOKEN, 'operator-1', [CAP_CREATE_ORGANIZATION]);
+  return `Bearer ${OPERATOR_TOKEN}`;
+}
+
 // Bind a fresh bearer token to an org and return the Authorization header value.
 // Tokens are SERVER state — a caller can never mint one by sending a header.
 function bearerFor(principals: RepositoryPrincipalResolver, organizationId: string): string {
@@ -58,7 +68,9 @@ test('full registration flow: org → project → binding → run → task → q
   const app = buildApp({ repositories: repos, principals });
   try {
     const org = await app.inject({
-      method: 'POST', url: '/v1/organizations', payload: { name: 'Acme' },
+      method: 'POST', url: '/v1/organizations',
+      headers: { authorization: operatorAuth(principals) },
+      payload: { name: 'Acme' },
     });
     assert.equal(org.statusCode, 201);
     const organizationId = org.json().organizationId as string;
@@ -194,6 +206,142 @@ test('HIGH-004: an unknown/forged bearer token is 401 (org is never client-chose
     assert.equal(res.statusCode, 401);
   } finally {
     await app.close();
+    await db.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// HIGH-004 (org creation) — POST /v1/organizations is NOT anonymous.
+//
+// The re-review found this route completely unauthenticated: anyone could mint
+// an organization, contradicting C2's "a server-derived AuthContext is required
+// by every application use case". Org creation is the scope ROOT so it cannot be
+// authorised by a TenantScope; it now requires a PLATFORM-OPERATOR credential
+// holding `organizations:create`. These tests prove each refusal path fails
+// CLOSED *and* that no row was created — a 4xx that still wrote would be worse
+// than useless.
+// ---------------------------------------------------------------------------
+
+// Count organizations through the repository seam so "no org was created" is
+// asserted against real persisted state, not against the HTTP body.
+async function orgCount(db: PgliteClient): Promise<number> {
+  const r = await db.query('select count(*)::int as n from organizations', []);
+  return (r.rows[0] as { n: number }).n;
+}
+
+test('HIGH-004: POST /v1/organizations with NO credential is 401 and creates NOTHING', async () => {
+  const { repos, db, principals } = await buildStore();
+  const app = buildApp({ repositories: repos, principals });
+  try {
+    const before = await orgCount(db);
+    const res = await app.inject({
+      method: 'POST', url: '/v1/organizations',
+      // deliberately no Authorization header
+      payload: { name: 'Attacker Corp' },
+    });
+    assert.equal(res.statusCode, 401, 'an anonymous org creation must fail closed');
+    assert.equal(await orgCount(db), before, 'no organization row may be created');
+  } finally {
+    await app.close();
+    await db.close();
+  }
+});
+
+test('HIGH-004: POST /v1/organizations with an unknown token is 401 and creates NOTHING', async () => {
+  const { repos, db, principals } = await buildStore();
+  const app = buildApp({ repositories: repos, principals });
+  try {
+    const before = await orgCount(db);
+    const res = await app.inject({
+      method: 'POST', url: '/v1/organizations',
+      headers: { authorization: 'Bearer never-bound-server-side' },
+      payload: { name: 'Attacker Corp' },
+    });
+    assert.equal(res.statusCode, 401);
+    assert.equal(await orgCount(db), before, 'no organization row may be created');
+  } finally {
+    await app.close();
+    await db.close();
+  }
+});
+
+test('HIGH-004: a TENANT token cannot mint an organization (403/401, creates NOTHING)', async () => {
+  const { repos, db, principals } = await buildStore();
+  const app = buildApp({ repositories: repos, principals });
+  try {
+    // A perfectly valid ORG-SCOPED tenant credential. Privilege escalation to
+    // "create new organizations" must not follow from holding one.
+    const existing = await repos.organizations.create({ name: 'Acme' });
+    const tenantAuth = bearerFor(principals, existing.id);
+    const before = await orgCount(db);
+    const res = await app.inject({
+      method: 'POST', url: '/v1/organizations',
+      headers: { authorization: tenantAuth },
+      payload: { name: 'Escalated Corp' },
+    });
+    assert.ok(
+      res.statusCode === 401 || res.statusCode === 403,
+      `a tenant credential must be refused, got ${res.statusCode}`,
+    );
+    assert.equal(await orgCount(db), before, 'no organization row may be created');
+  } finally {
+    await app.close();
+    await db.close();
+  }
+});
+
+test('HIGH-004: an operator WITHOUT organizations:create is 403 and creates NOTHING', async () => {
+  const { repos, db, principals } = await buildStore();
+  const app = buildApp({ repositories: repos, principals });
+  try {
+    // Authenticated as a real platform operator, but holding a different
+    // capability — authenticated is not authorised.
+    principals.bindOperator('op-readonly', 'operator-ro', ['organizations:read']);
+    const before = await orgCount(db);
+    const res = await app.inject({
+      method: 'POST', url: '/v1/organizations',
+      headers: { authorization: 'Bearer op-readonly' },
+      payload: { name: 'No Capability Corp' },
+    });
+    assert.equal(res.statusCode, 403, 'authenticated-but-unauthorised is 403, not 401');
+    assert.equal(await orgCount(db), before, 'no organization row may be created');
+  } finally {
+    await app.close();
+    await db.close();
+  }
+});
+
+test('HIGH-004: an operator WITH organizations:create succeeds (201) — the gate is not blanket-deny', async () => {
+  const { repos, db, principals } = await buildStore();
+  const app = buildApp({ repositories: repos, principals });
+  try {
+    const before = await orgCount(db);
+    const res = await app.inject({
+      method: 'POST', url: '/v1/organizations',
+      headers: { authorization: operatorAuth(principals) },
+      payload: { name: 'Legit Corp' },
+    });
+    assert.equal(res.statusCode, 201);
+    assert.equal(await orgCount(db), before + 1, 'exactly one organization created');
+  } finally {
+    await app.close();
+    await db.close();
+  }
+});
+
+// The use case itself must refuse, not merely the route: a second (non-HTTP)
+// caller wiring its own transport cannot bypass the capability check.
+test('HIGH-004: createOrganization USE CASE fails closed without the capability', async () => {
+  const { repos, db } = await buildStore();
+  try {
+    const before = await orgCount(db);
+    await assert.rejects(
+      () => createOrganization(repos, { principalId: 'p', capabilities: [] }, { name: 'X' }),
+      (e: Error) => e.name === 'CapabilityError',
+      'the application use case must enforce the capability itself',
+    );
+    assert.equal(await orgCount(db), before, 'no organization row may be created');
+  } finally {
     await db.close();
   }
 });

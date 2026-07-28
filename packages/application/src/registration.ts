@@ -69,9 +69,40 @@ export interface RegistrationRepositories {
 
 // --- use cases ---------------------------------------------------------------
 
+// The capability an operator principal must hold to create an organization.
+// Declared in the APPLICATION layer (not only at the transport edge) so the rule
+// is enforced by the use case itself — a second, non-HTTP caller cannot bypass
+// it by wiring a different route (disp. P2-FINAL-HIGH-004).
+export const CAP_CREATE_ORGANIZATION = 'organizations:create';
+
+// Thrown when an authenticated principal lacks the required capability. The
+// composition root maps it to 403; distinct from an authentication failure.
+export class CapabilityError extends Error {
+  constructor(capability: string) {
+    super(`principal lacks capability '${capability}'`);
+    this.name = 'CapabilityError';
+  }
+}
+
+// A server-derived PLATFORM principal. Organization creation is the scope ROOT,
+// so no TenantScope exists yet to authorise it — C2's "every use case receives a
+// server-derived AuthContext" is satisfied by this platform-level context
+// instead of exempting the endpoint.
+export interface PlatformAuthContext {
+  readonly principalId: string;
+  readonly capabilities: readonly string[];
+}
+
 export async function createOrganization(
-  repos: RegistrationRepositories, input: { name: string },
+  repos: RegistrationRepositories,
+  auth: PlatformAuthContext,
+  input: { name: string },
 ): Promise<{ id: OrganizationId; name: string }> {
+  // Fail closed INSIDE the use case: an unauthorised principal never reaches
+  // persistence, regardless of which caller (HTTP, CLI, worker) invoked it.
+  if (!auth.capabilities.includes(CAP_CREATE_ORGANIZATION)) {
+    throw new CapabilityError(CAP_CREATE_ORGANIZATION);
+  }
   return repos.organizations.create({ name: input.name });
 }
 

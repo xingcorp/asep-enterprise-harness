@@ -38,6 +38,32 @@ export class AuthError extends Error {
   }
 }
 
+// Authenticated but NOT permitted (disp. P2-FINAL-HIGH-004). Distinct from
+// AuthError so the transport maps it to 403 rather than 401: the credential is
+// genuine, the capability is missing. Collapsing the two would make an
+// authorisation hole indistinguishable from an authentication one.
+export class ForbiddenError extends Error {
+  constructor(reason: string) {
+    super(`forbidden: ${reason}`);
+    this.name = 'ForbiddenError';
+  }
+}
+
+// A platform-level (non-tenant) principal. Organization creation is the scope
+// ROOT — there is no organization to scope it to yet — so it cannot be
+// authorised by a TenantScope. It is instead authorised by an operator
+// credential holding an explicit capability. This keeps C2's rule intact ("every
+// use case receives a server-derived AuthContext") for the one endpoint that
+// sits above the tenancy tree, rather than exempting it.
+export interface OperatorPrincipal {
+  readonly principalId: string;
+  readonly capabilities: readonly string[];
+}
+
+// The capability required to create an organization. Named as a constant so the
+// route, the resolver and the tests agree on one string.
+export const CAP_CREATE_ORGANIZATION = 'organizations:create';
+
 // Resolves a verified credential to the organization it is bound to. The org
 // principal is SERVER state — it can never be chosen by the caller. Returns
 // undefined for an unknown/invalid token so the caller fails closed with 401.
@@ -46,6 +72,12 @@ export class AuthError extends Error {
 export interface PrincipalResolver {
   organizationForToken(token: string): Promise<OrganizationId | undefined>;
   projectBelongsToOrg(org: OrganizationId, project: ProjectId): Promise<boolean>;
+  // Resolve a bearer credential to a PLATFORM-level operator principal (disp.
+  // P2-FINAL-HIGH-004). Returns undefined when the token is unknown or is only
+  // an org-scoped tenant credential, so the caller fails closed. Separate from
+  // organizationForToken because these are different principal classes: a
+  // tenant token must NOT be able to mint new organizations.
+  operatorForToken(token: string): Promise<OperatorPrincipal | undefined>;
 }
 
 // ULID grammar — the same id shape the persistence layer generates. Reject
@@ -102,6 +134,27 @@ export async function tenantScope(
   const belongs = await resolver.projectBelongsToOrg(ctx.organizationId, project as ProjectId);
   if (!belongs) throw new AuthError('project not in authenticated organization');
   return { organizationId: ctx.organizationId, projectId: project as ProjectId };
+}
+
+// Derive the PLATFORM operator principal for organization creation (HIGH-004).
+// Fails closed in three distinct ways:
+//   - no/malformed bearer credential            → AuthError    (401)
+//   - credential resolves to no operator        → AuthError    (401)
+//   - operator lacks organizations:create       → ForbiddenError (403)
+// An org-scoped tenant token resolves to no operator, so a tenant credential can
+// never mint an organization.
+export async function operatorContext(
+  req: FastifyRequest,
+  resolver: PrincipalResolver,
+  capability: string = CAP_CREATE_ORGANIZATION,
+): Promise<OperatorPrincipal> {
+  const token = bearerToken(req);
+  const operator = await resolver.operatorForToken(token);
+  if (!operator) throw new AuthError('credential is not a platform operator');
+  if (!operator.capabilities.includes(capability)) {
+    throw new ForbiddenError(`principal lacks capability '${capability}'`);
+  }
+  return operator;
 }
 
 export { PROJECT_HEADER, AUTH_HEADER, ULID as ULID_PATTERN };
