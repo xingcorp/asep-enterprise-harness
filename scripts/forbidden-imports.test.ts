@@ -271,6 +271,41 @@ const ROOT_FORBIDDEN: ReadonlyArray<{ label: string; test: (src: string) => bool
   // ARGUMENT to a use case (`createRun(repos, ...)`) is fine: that is not a
   // `repos.x.y(` call, so it does not match.
   { label: 'direct repository call', test: (s) => /\brepos(itories)?\.\w+\.\w+\s*\(/.test(s) },
+  // The MED-004 regression escaped the rule above because the offending root did
+  // NOT go through a `repos.` bundle: it held its own locals
+  // (`const attemptsRepo = new AttemptRepository(client)`) and then invoked them
+  // directly (`attemptsRepo.attachEvidence(...)`). CONSTRUCTING an adapter is
+  // legitimate wiring; INVOKING a method on it is a persistence call inside the
+  // root. So we match a call on any identifier whose name ends in Repo/Repository
+  // (plus the store/log adapters a root may only ever construct and inject).
+  // Two shapes are matched. (a) A camelCase adapter local whose name ENDS in
+  // Repo/Repository/Store — the prefix is required and the suffix capitalised, so
+  // an unrelated local string named `repo` (`repo.replace(/\.git$/, '')` in the
+  // request schemas) is NOT a persistence call and stays accepted. (b) The
+  // remaining injected adapter names, which have no such suffix, listed
+  // explicitly. `new X(...)` is neutralised first so CONSTRUCTION never matches.
+  {
+    label: 'direct persistence adapter call',
+    test: (s) => {
+      const code = s.replace(/\bnew\s+[\w$.]+\s*\(/g, 'new (');
+      return (
+        /\b[\w$]+(?:Repo|Repository|Store)\s*\.\s*[\w$]+\s*\(/.test(code) ||
+        /\b(?:sideEffectLog|sideEffects|auditSink)\s*\.\s*[\w$]+\s*\(/.test(code)
+      );
+    },
+  },
+  // Orchestration itself (disp. P2-FINAL-MED-004). The application layer owns the
+  // governed sequence; a root that calls a pipeline step or the governed-execution
+  // driver is sequencing the workflow in apps/*, which is exactly the regression.
+  // Calling ONE application use case (runVerticalSliceWorkflow, runExecuteTask, …)
+  // is the allowed shape and deliberately does not match.
+  {
+    label: 'application pipeline step invocation',
+    test: (s) =>
+      /\b(governedExecution|completeToReview|verifyStep|commitStep|evidenceStep|pushStep|upsertPrStep|setReviewStep)\s*\(/.test(
+        s,
+      ),
+  },
 ];
 
 // Strip line + block comments before scanning, so the detector matches actual
@@ -345,6 +380,72 @@ test('arch mutation self-test: a seeded SQL/Git/provider/policy call in a handle
   const seededReposLong = `app.get('/t/:id', async () => repositories.tasks.getScoped(scope, id));`;
   assert.ok(rootViolations(seededRepoCall).includes('direct repository call'), 'seeded repos.x.y() call not detected');
   assert.ok(rootViolations(seededReposLong).includes('direct repository call'), 'seeded repositories.x.y() call not detected');
+});
+
+// The MED-004 regression shape specifically: a root that constructs its OWN
+// repository locals and then drives them + the application pipeline steps. The
+// original `repos.x.y(` rule was blind to it, so these self-tests pin the widened
+// rules against the exact code that escaped the gate.
+test('arch mutation self-test: locally-constructed repository/store CALLS in a root are REJECTED', () => {
+  const seededLocalRepo = [
+    `const attemptsRepo = new AttemptRepository(client);`,
+    `const v = await attemptsRepo.attachEvidence(scope, id, version, ref);`,
+  ].join('\n');
+  assert.ok(
+    rootViolations(seededLocalRepo).includes('direct persistence adapter call'),
+    'seeded attemptsRepo.attachEvidence() call not detected',
+  );
+
+  const seededStoreCall = `const ref = await evidenceStore.putEvidence(scope, bundle);`;
+  assert.ok(
+    rootViolations(seededStoreCall).includes('direct persistence adapter call'),
+    'seeded evidenceStore.putEvidence() call not detected',
+  );
+
+  const seededSideEffectLog = `await sideEffectLog.record(scope, { kind: 'PUSH' });`;
+  assert.ok(
+    rootViolations(seededSideEffectLog).includes('direct persistence adapter call'),
+    'seeded sideEffectLog.record() call not detected',
+  );
+
+  // CONSTRUCTION ONLY is legitimate wiring and must stay accepted, otherwise a
+  // composition root could not do its job at all.
+  const constructionOnly = [
+    `const attemptsRepo = new AttemptRepository(client);`,
+    `const evidenceStore = new ContentAddressedEvidenceStore(client, objects);`,
+    `return runVerticalSliceWorkflow({ repositories: { attempts: attemptsRepo }, evidence: evidenceStore });`,
+  ].join('\n');
+  assert.deepEqual(
+    rootViolations(constructionOnly),
+    [],
+    'constructing + injecting adapters was wrongly flagged as a persistence call',
+  );
+});
+
+test('arch mutation self-test: pipeline-step orchestration in a root is REJECTED', () => {
+  const seededGoverned = `const g = await governedExecution({ scope, leases, workspaces });`;
+  const seededComplete = `const r = await completeToReview({ change, runner, sandbox });`;
+  const seededStep = `const c = await commitStep({ scope, workspace, allowedPaths });`;
+  assert.ok(
+    rootViolations(seededGoverned).includes('application pipeline step invocation'),
+    'seeded governedExecution() call not detected',
+  );
+  assert.ok(
+    rootViolations(seededComplete).includes('application pipeline step invocation'),
+    'seeded completeToReview() call not detected',
+  );
+  assert.ok(
+    rootViolations(seededStep).includes('application pipeline step invocation'),
+    'seeded commitStep() call not detected',
+  );
+
+  // Driving ONE application use case is the required shape, not a violation.
+  const useCaseOnly = `const outcome = await runVerticalSliceWorkflow({ risk: 'R0', baseSha });`;
+  assert.deepEqual(
+    rootViolations(useCaseOnly),
+    [],
+    'calling a single application use case was wrongly flagged as orchestration',
+  );
 });
 
 // The test-suite exemption must cover EXACTLY the test suffixes and nothing

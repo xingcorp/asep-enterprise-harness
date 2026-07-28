@@ -55,6 +55,21 @@ export {
 } from './registration.js';
 
 export {
+  runVerticalSliceWorkflow,
+  type VerticalSliceWorkflowInput,
+  type VerticalSliceWorkflowResult,
+  type VerticalSliceRepositories,
+  type SliceWorkspaceBackend,
+  type SliceOrganizationPort,
+  type SliceProjectPort,
+  type SliceBindingPort,
+  type SliceRunPort,
+  type SliceTaskPort,
+  type SliceAttemptPort,
+  type SlicePullRequestPort,
+} from './vertical-slice-workflow.js';
+
+export {
   verifyStep,
   commitStep,
   evidenceStep,
