@@ -25,6 +25,16 @@
 //
 // The nested gate runs are given DISTINCT ports so they can never collide with
 // the outer gate's live containers.
+//
+// BUDGETS ARE ASYMMETRIC ON PURPOSE. Each negative case must fail at the health
+// check for the backend it claims to be about, which means every OTHER backend it
+// starts has to be given a realistic budget to come up. A single global
+// 2-attempt budget made the "MinIO missing" case die on the cold-start
+// PostgreSQL check instead — exit code still non-zero, so the weak form of the
+// assertion passed while proving nothing whatsoever about MinIO. Each case below
+// therefore shrinks ONLY the budget of the backend it omits, and asserts on the
+// specific health-check message, so a case that stops failing for its stated
+// reason turns RED instead of passing for the wrong one.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -53,7 +63,9 @@ function runGate(env: Record<string, string>): GateRun {
     maxBuffer: 32 * 1024 * 1024,
     env: {
       ...process.env,
-      // Fast failure for the negative paths: 2 attempts x 1s, not 40.
+      // Default: fast failure for the negative paths (2 attempts x 1s, not 40).
+      // Individual cases override the PER-BACKEND budgets so that the backend a
+      // case genuinely expects to come up gets a realistic window.
       ASEP_ITEST_HEALTH_ATTEMPTS: '2',
       // Ports distinct from the outer gate's live containers (55440 / 59000).
       ASEP_ITEST_PG_PORT: '55441',
@@ -83,8 +95,17 @@ test('HIGH-001 e2e: NO DOCKER makes the required gate exit NON-ZERO (never skip)
 // ---------------------------------------------------------------------------
 
 test('HIGH-001 e2e: a MISSING PostgreSQL makes the required gate exit NON-ZERO', () => {
-  const run = runGate({ ASEP_ITEST_OMIT_BACKEND: 'postgres' });
+  // PG is the FIRST health check, so a tiny budget is enough to reach it. Proof
+  // the run got past docker resolution is asserted below.
+  const run = runGate({
+    ASEP_ITEST_OMIT_BACKEND: 'postgres',
+    ASEP_ITEST_PG_HEALTH_ATTEMPTS: '2',
+  });
   assert.notEqual(run.status, 0, `gate must fail when PG is absent; output:\n${run.out}`);
+  // The run genuinely reached the provisioning stage (docker resolved, suites
+  // discovered) rather than dying earlier for an unrelated reason.
+  assert.match(run.out, /itest suite\(s\) discovered/,
+    'the run got past docker resolution and discovery');
   assert.match(run.out, /PostgreSQL never became healthy/,
     'the gate fails on the PG health check rather than proceeding');
   assert.ok(!/integration-gate: PASS/.test(run.out), 'no PASS banner without PostgreSQL');
@@ -97,8 +118,20 @@ test('HIGH-001 e2e: a MISSING PostgreSQL makes the required gate exit NON-ZERO',
 // ---------------------------------------------------------------------------
 
 test('HIGH-001 e2e: a MISSING object store (MinIO) makes the required gate exit NON-ZERO', () => {
-  const run = runGate({ ASEP_ITEST_OMIT_BACKEND: 'minio' });
+  // This case starts a REAL PostgreSQL and omits only MinIO, so PG must be given
+  // a full cold-start budget: the whole point is to get PAST the PG health check
+  // and fail at the MinIO one. MinIO's own budget stays tiny so the run is quick.
+  const run = runGate({
+    ASEP_ITEST_OMIT_BACKEND: 'minio',
+    ASEP_ITEST_PG_HEALTH_ATTEMPTS: '40',
+    ASEP_ITEST_MINIO_HEALTH_ATTEMPTS: '2',
+  });
   assert.notEqual(run.status, 0, `gate must fail when MinIO is absent; output:\n${run.out}`);
+  // Proof the run genuinely REACHED the object-store check: PostgreSQL came up
+  // healthy first. Without this, a failure anywhere earlier would satisfy the
+  // exit-code assertion while proving nothing about the object store.
+  assert.match(run.out, /PostgreSQL healthy/,
+    'the run got past PG, so the failure below is genuinely about the object store');
   assert.match(run.out, /MinIO never became healthy/,
     'the gate fails on the MinIO health check rather than proceeding');
   assert.ok(!/integration-gate: PASS/.test(run.out), 'no PASS banner without the object store');

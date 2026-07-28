@@ -290,6 +290,22 @@ function rootViolations(source: string): string[] {
   return ROOT_FORBIDDEN.filter((r) => r.test(code)).map((r) => r.label);
 }
 
+// Test suites are exempt from composition-root discipline: a test legitimately
+// constructs fakes/spies, drives repositories directly to assert on real rows,
+// and spawns real git/docker to prove behaviour against real backends. That is
+// the POINT of an integration proof, not a layering violation.
+//
+// Both suffixes are listed deliberately. The exemption originally covered only
+// `.test.ts`; when the real-backend integration suites (`*.itest.ts`) were added
+// they fell OUTSIDE it and were scanned as if they were shipped production code,
+// so the K1 real-backend proof (which must read repository rows and run a docker
+// preflight) tripped the detector. Exempting them applies the pre-existing
+// rationale to the integration variant — it does NOT relax any pattern: every
+// ROOT_FORBIDDEN rule still applies in full to all non-test root source.
+function isTestSuite(file: string): boolean {
+  return file.endsWith('.test.ts') || file.endsWith('.itest.ts');
+}
+
 test('composition roots (apps/*, workers/*) contain no domain/persistence/provider/policy logic', () => {
   const violations: string[] = [];
   let filesScanned = 0;
@@ -297,7 +313,7 @@ test('composition roots (apps/*, workers/*) contain no domain/persistence/provid
     for (const name of names) {
       const srcDir = join(REPO_ROOT, base, name, 'src');
       for (const file of walkTs(srcDir)) {
-        if (file.endsWith('.test.ts')) continue; // tests may construct fakes/spies
+        if (isTestSuite(file)) continue; // tests may construct fakes/spies
         filesScanned++;
         const source = readFileSync(file, 'utf8');
         for (const bad of rootViolations(source)) {
@@ -329,6 +345,22 @@ test('arch mutation self-test: a seeded SQL/Git/provider/policy call in a handle
   const seededReposLong = `app.get('/t/:id', async () => repositories.tasks.getScoped(scope, id));`;
   assert.ok(rootViolations(seededRepoCall).includes('direct repository call'), 'seeded repos.x.y() call not detected');
   assert.ok(rootViolations(seededReposLong).includes('direct repository call'), 'seeded repositories.x.y() call not detected');
+});
+
+// The test-suite exemption must cover EXACTLY the test suffixes and nothing
+// else. If it ever widened to production source, a real handler could smuggle in
+// a repository call or a git spawn and the composition-root gate would go quiet.
+test('arch self-test: the test-suite exemption covers *.test.ts / *.itest.ts ONLY', () => {
+  // Exempt: unit and integration suites legitimately hold fakes + real backends.
+  assert.equal(isTestSuite('/repo/apps/control-plane-api/src/app.test.ts'), true);
+  assert.equal(isTestSuite('/repo/apps/control-plane-api/src/vertical-slice.itest.ts'), true);
+  // NOT exempt: shipped composition-root source stays fully governed.
+  assert.equal(isTestSuite('/repo/apps/control-plane-api/src/app.ts'), false);
+  assert.equal(isTestSuite('/repo/apps/control-plane-api/src/vertical-slice.ts'), false);
+  assert.equal(isTestSuite('/repo/apps/control-plane-api/src/cli-main.ts'), false);
+  // A filename merely CONTAINING 'test' is not a suite and must stay governed.
+  assert.equal(isTestSuite('/repo/apps/control-plane-api/src/test-helpers.ts'), false);
+  assert.equal(isTestSuite('/repo/apps/control-plane-api/src/latest.ts'), false);
 });
 
 test('arch mutation self-test: a thin route that only parses + forwards to the use case is ACCEPTED', () => {

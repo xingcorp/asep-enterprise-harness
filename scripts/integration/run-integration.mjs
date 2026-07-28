@@ -52,14 +52,28 @@ const MINIO_PASSWORD = 'asepminio-secret';
 //   ASEP_ITEST_DOCKER_BIN=/nonexistent/docker — probe this binary FIRST, so a
 //       bogus value proves "no docker → RED".
 //   ASEP_ITEST_HEALTH_ATTEMPTS=n — shrink the readiness budget so a negative
-//       test fails fast instead of burning the full 40s.
+//       test fails fast instead of burning the full 40s. Per-backend overrides
+//       (ASEP_ITEST_PG_HEALTH_ATTEMPTS / ASEP_ITEST_MINIO_HEALTH_ATTEMPTS) exist
+//       because the negative tests need ASYMMETRIC budgets: the "MinIO missing"
+//       case must still let the REAL PostgreSQL it started become healthy (cold
+//       postgres init takes several seconds) so the run actually REACHES the
+//       MinIO health check it is meant to prove. With one global 2-attempt
+//       budget the run died on the PG check instead and proved nothing about
+//       MinIO — the failure mode this knob removes.
 //
 // These only ever make the gate STRICTER (they can cause a red, never a green),
-// so they cannot be abused to fake a pass.
+// so they cannot be abused to fake a pass: a backend that is genuinely required
+// must still become healthy on its own budget or the gate goes RED.
 const OMITTED_BACKENDS = new Set(
   (process.env.ASEP_ITEST_OMIT_BACKEND ?? '').split(',').map((s) => s.trim()).filter(Boolean),
 );
 const HEALTH_ATTEMPTS = Number(process.env.ASEP_ITEST_HEALTH_ATTEMPTS ?? '40');
+const PG_HEALTH_ATTEMPTS = Number(
+  process.env.ASEP_ITEST_PG_HEALTH_ATTEMPTS ?? HEALTH_ATTEMPTS,
+);
+const MINIO_HEALTH_ATTEMPTS = Number(
+  process.env.ASEP_ITEST_MINIO_HEALTH_ATTEMPTS ?? HEALTH_ATTEMPTS,
+);
 
 function fail(msg) {
   process.stderr.write(`integration-gate: FAIL — ${msg}\n`);
@@ -136,7 +150,7 @@ async function main() {
     }
 
     const pgOk = await waitReady(() => pgReady(pgUrl), {
-      attempts: HEALTH_ATTEMPTS, intervalMs: 1000,
+      attempts: PG_HEALTH_ATTEMPTS, intervalMs: 1000,
     });
     if (!pgOk) return fail(`PostgreSQL never became healthy at ${pgUrl}`);
     process.stdout.write('integration-gate: PostgreSQL healthy\n');
@@ -144,7 +158,7 @@ async function main() {
     const minioOk = await waitReady(async () => {
       const r = await fetch(`${s3Endpoint}/minio/health/live`).catch(() => null);
       return !!r && r.ok;
-    }, { attempts: HEALTH_ATTEMPTS, intervalMs: 1000 });
+    }, { attempts: MINIO_HEALTH_ATTEMPTS, intervalMs: 1000 });
     if (!minioOk) return fail(`MinIO never became healthy at ${s3Endpoint}`);
     process.stdout.write('integration-gate: MinIO healthy\n');
 
