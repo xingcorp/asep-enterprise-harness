@@ -32,8 +32,12 @@ import {
   RunRepository, TaskRepository, AttemptRepository, SqlWorkspaceLeaseRepository,
   ContentAddressedArtifactStore, FilesystemObjectStore,
   ContentAddressedEvidenceStore, SqlSideEffectLog, PullRequestRepository,
+  SqlAuditSink,
   type SqlClient,
 } from '@asep/persistence';
+import {
+  SpanTracer, CapturingTelemetrySink, type CapturedEvent,
+} from '@asep/observability';
 import {
   GitWorktreeManager, runGit, attemptBranch, safeRefspecFor,
 } from '@asep/git-worktree';
@@ -177,6 +181,11 @@ export interface VerticalSliceResult {
   readonly stoppedAt: string;
   readonly taskStatus: string;
   readonly sandboxIsolationEnforced: boolean;
+  // MED-003: the spans this run ACTUALLY emitted through the tracer, and the
+  // audit sink the rows were written to. Exposed so a caller asserts on real
+  // emission (and on real `audit_events` rows in PostgreSQL) rather than on the
+  // mere existence of instrumentation code.
+  readonly emittedSpans: readonly CapturedEvent[];
   // Live handles so a caller can assert on real persisted rows afterwards.
   readonly repos: {
     readonly runs: RunRepository;
@@ -226,6 +235,16 @@ export async function runVerticalSlice(input: VerticalSliceInput): Promise<Verti
   const attempt = await attempts.create(scope, {
     taskId: task.id, repositoryBindingId: binding.id, baseSha,
   });
+
+  // --- MED-003: REAL observability on the real path -------------------------
+  // The finding was that instrumentation existed but nothing on the runnable
+  // path emitted it: governedExecution was called with no tracer/audit, so the
+  // J1/J2/J4 claims rested on unit fakes only. Wire both here, against the SAME
+  // SqlClient the slice persists to, so spans are genuinely emitted and audit
+  // rows land in the `audit_events` table of the real database.
+  const telemetry = new CapturingTelemetrySink();
+  const tracer = new SpanTracer(telemetry);
+  const auditSink = new SqlAuditSink(client);
 
   // --- real artifact store + evidence store + side-effect log ---------------
   const objects = new FilesystemObjectStore(join(dir, 'objects'));
@@ -315,6 +334,11 @@ export async function runVerticalSlice(input: VerticalSliceInput): Promise<Verti
     signal: new AbortController().signal,
     runId: run.id,
     taskId: task.id,
+    // MED-003: real emission on the real path (J1/J2/J4).
+    tracer,
+    audit: auditSink,
+    traceId: `trace-${attempt.id}`,
+    actor: 'harness',
   });
   if (governed.stoppedAt !== 'ready-for-completion') {
     throw new Error(`governed execution stopped early at '${governed.stoppedAt}'`);
@@ -420,6 +444,7 @@ export async function runVerticalSlice(input: VerticalSliceInput): Promise<Verti
     stoppedAt: result.stoppedAt,
     taskStatus: result.task!.status,
     sandboxIsolationEnforced: isolationEnforced,
+    emittedSpans: telemetry.events,
     repos: { runs, tasks, attempts, prs, evidenceStore },
   };
 }

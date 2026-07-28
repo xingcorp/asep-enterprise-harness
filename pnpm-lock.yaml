@@ -149,6 +149,9 @@ importers:
       '@asep/git-worktree':
         specifier: workspace:*
         version: link:../../adapters/git-worktree
+      '@asep/observability':
+        specifier: workspace:*
+        version: link:../../packages/observability
       '@asep/persistence':
         specifier: workspace:*
         version: link:../../adapters/persistence

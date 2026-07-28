@@ -154,6 +154,56 @@ test('K1 (REAL backends): full governed slice on pg.Pool PostgreSQL + a real Doc
     assert.equal(evidenceBack.taskId, r.taskId, 'evidence → task');
     assert.equal(evidenceBack.resultSha, r.commitSha,
       'D8: evidence resultSha is the harness commit SHA');
+
+    // --- MED-003: observability EMITTED for real (J1/J2/J4) ------------------
+    // The finding was that instrumentation existed but nothing on the runnable
+    // path emitted it, so the J1/J2/J4 claims rested on unit fakes. These
+    // assertions are on what this REAL run actually produced: spans that came
+    // out of the tracer, and audit rows read back out of PostgreSQL.
+    const spanNames = r.emittedSpans.map((e) => e.name);
+    for (const expected of [
+      'asep.span.workspace.lease', 'asep.span.workspace.create', 'asep.span.agent.invoke',
+    ]) {
+      assert.ok(spanNames.includes(expected),
+        `J1: expected span ${expected}; emitted: ${spanNames.join(', ') || '(none)'}`);
+    }
+    // J2: every emitted span resolves to ONE point in the hierarchy.
+    for (const ev of r.emittedSpans) {
+      assert.equal(ev.context.organizationId, r.scope.organizationId, 'J2: span carries org');
+      assert.equal(ev.context.projectId, r.scope.projectId, 'J2: span carries project');
+      assert.equal(ev.context.repositoryBindingId, r.repositoryBindingId,
+        'J2: span carries the repository binding');
+      assert.equal(ev.context.runId, r.runId, 'J2: span carries run');
+      assert.equal(ev.context.taskId, r.taskId, 'J2: span carries task');
+      assert.equal(ev.context.attemptId, r.attemptId, 'J2: span carries attempt');
+    }
+
+    // J4: the privileged operations left real, tenant-attributed rows in the
+    // `audit_events` table of the live database — queried here, not asserted on
+    // an in-memory double.
+    const auditRows = await client.query(
+      `select action, organization_id, project_id, run_id, task_id, attempt_id, actor
+         from audit_events
+        where attempt_id = $1
+        order by occurred_at, id`,
+      [r.attemptId],
+    );
+    assert.ok(auditRows.rowCount >= 3,
+      `J4: expected an audit row per privileged boundary in PostgreSQL, got ${auditRows.rowCount}`);
+    const actions = auditRows.rows.map((row) => row['action']);
+    for (const expected of [
+      'workspace.lease.acquire', 'workspace.create', 'agent.invoke',
+    ]) {
+      assert.ok(actions.includes(expected),
+        `J4: expected audit action ${expected} persisted; got: ${actions.join(', ')}`);
+    }
+    for (const row of auditRows.rows) {
+      assert.equal(row['organization_id'], r.scope.organizationId, 'J4: row attributed to org');
+      assert.equal(row['project_id'], r.scope.projectId, 'J4: row attributed to project');
+      assert.equal(row['run_id'], r.runId, 'J4: row attributed to run');
+      assert.equal(row['task_id'], r.taskId, 'J4: row attributed to task');
+      assert.equal(row['actor'], 'harness', 'J4: row carries the actor');
+    }
   } finally {
     await client.close();
     await rm(dir, { recursive: true, force: true });

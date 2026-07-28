@@ -15,6 +15,7 @@
     "@asep/contracts": "workspace:*",
     "@asep/domain": "workspace:*",
     "@asep/ports": "workspace:*",
+    "@asep/observability": "workspace:*",
     "@asep/application": "workspace:*",
     "@asep/persistence": "workspace:*",
     "@asep/agent-mock": "workspace:*",

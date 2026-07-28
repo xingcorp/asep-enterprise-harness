@@ -18,6 +18,9 @@
       "path": "../../packages/ports"
     },
     {
+      "path": "../../packages/observability"
+    },
+    {
       "path": "../../packages/application"
     },
     {
