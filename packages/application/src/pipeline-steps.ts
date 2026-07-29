@@ -107,6 +107,36 @@ export interface VerifyStepInput {
   readonly planId: string;
   readonly risk: RiskLevel;
   readonly checks: readonly VerificationCheckSpec[];
+  // Is OS-enforced sandbox isolation MANDATORY for this execution (disp.
+  // P2-FINAL-HIGH-002, exit E8)? Resolved by the composition root from the
+  // deployment environment and passed in, because the requirement is a
+  // deployment fact and this layer may not read process.env (exit B3).
+  //
+  // FAIL-CLOSED DEFAULT: an ABSENT value means 'required'. The review's finding
+  // was that nothing refused an unsandboxed provider; making the safe value the
+  // default means a caller must explicitly opt into the pilot waiver, and any
+  // new call site is protected without being edited.
+  readonly sandboxRequirement?: SandboxRequirement;
+}
+
+// The two deployment postures for sandbox isolation. Declared HERE (application
+// layer) rather than imported from the command-runner adapter so the use case
+// carries no adapter dependency (exit B3); the adapter's resolver returns the
+// same two tokens.
+export type SandboxRequirement = 'required' | 'waived-pilot-only';
+
+// Isolation was mandatory but the started sandbox does not enforce it. Thrown
+// rather than returned so no verification result can ever be produced from an
+// unsandboxed execution — there is no path where a caller reads a verdict and
+// ignores the breach.
+export class SandboxIsolationRequiredError extends Error {
+  constructor(sandboxId: string, profile: string) {
+    super(
+      `sandbox isolation is required but sandbox '${sandboxId}' (profile '${profile}') ` +
+        'does not enforce it — refusing to run verification commands unsandboxed',
+    );
+    this.name = 'SandboxIsolationRequiredError';
+  }
 }
 
 export interface VerifyStepResult {
@@ -132,6 +162,18 @@ export async function verifyStep(input: VerifyStepInput): Promise<VerifyStepResu
   const missing = [...mandatoryLevels].filter((l) => !coveredMandatory.has(l));
 
   const handle = await input.sandbox.start('verification-no-network', input.mount);
+  // E8/HIGH-002: assert the STARTED handle actually enforces isolation when the
+  // deployment requires it, BEFORE any command runs. The check reads the port's
+  // own `isolationEnforced` flag (declared on SandboxHandle, so no adapter type
+  // is imported) and treats an ABSENT flag as NOT enforced — unknown isolation is
+  // never a permission. On breach the sandbox is stopped and the step throws, so
+  // an unsandboxed provider substituted anywhere below the port can never produce
+  // a verification verdict.
+  const requirement: SandboxRequirement = input.sandboxRequirement ?? 'required';
+  if (requirement === 'required' && handle.isolationEnforced !== true) {
+    await input.sandbox.stop(handle);
+    throw new SandboxIsolationRequiredError(handle.sandboxId, handle.profile);
+  }
   const executions: VerificationCheckExecution[] = [];
   try {
     for (const check of input.checks) {
@@ -532,6 +574,9 @@ export interface CompleteToReviewInput {
   readonly planId: string;
   readonly risk: RiskLevel;
   readonly checks: readonly VerificationCheckSpec[];
+  // Sandbox posture (E8). Forwarded to verifyStep, where an ABSENT value means
+  // 'required' — so this driver is fail-closed by default too.
+  readonly sandboxRequirement?: SandboxRequirement;
   // Commit.
   readonly committer: GitCommitter;
   readonly scope: TenantScope;
@@ -580,6 +625,7 @@ export async function completeToReview(
     planId: input.planId,
     risk: input.risk,
     checks: input.checks,
+    ...(input.sandboxRequirement ? { sandboxRequirement: input.sandboxRequirement } : {}),
   });
   if (verify.status === 'STOP') {
     return { stoppedAt: 'verify', verify };

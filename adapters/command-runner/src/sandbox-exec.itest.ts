@@ -167,6 +167,79 @@ test('F5 (in-container): writes INTO the writable working-tree mount persist to 
 });
 
 // ---------------------------------------------------------------------------
+// HIGH-002 — the nested `.git` overlay is READ-ONLY through the writable parent.
+//
+// The review's exact finding: the slice mounted the whole worktree `rw`, and a
+// linked worktree's `.git` indirection lives INSIDE that tree, so `.git` was
+// writable through the parent mount. The unit suite only asserted that no mount
+// spec literally said `.git:rw`, which a parent `rw` bind satisfies vacuously.
+// This test ATTEMPTS THE WRITE for real and requires the kernel to refuse it.
+// ---------------------------------------------------------------------------
+
+test('HIGH-002 (in-container): rewriting .git through the writable parent mount FAILS', async () => {
+  const { client, store, scope, dir } = await harness();
+  try {
+    // A linked-worktree-shaped layout: `.git` is a FILE nested in the tree.
+    await writeFile(join(dir, '.git'), 'gitdir: /somewhere/real/.git/worktrees/w\n');
+    const before = await readFile(join(dir, '.git'), 'utf8');
+
+    const provider = new DockerSandboxProvider({ imageDigest: ALPINE });
+    const handle = (await provider.start('verification-no-network', {
+      workspaceId: 'W'.repeat(26) as WorkspaceId,
+      readOnlyPaths: [],
+      writablePaths: [dir],
+      readOnlyOverlayPaths: [join(dir, '.git')],
+    })) as SandboxHandleEx;
+    assert.equal(handle.isolationEnforced, true);
+
+    const runner = new TrustedCommandRunner(scope, store);
+    // Repoint the gitdir from inside the sandbox. Under the nested :ro bind the
+    // write must fail with EROFS; the exit code is propagated deliberately.
+    const res = await runner.run(
+      spec(dir, {
+        executable: 'sh',
+        args: ['-c', `printf 'gitdir: /pwned\\n' > ${dir}/.git 2>&1; RC=$?; echo "EXIT=$RC"; exit $RC`],
+      }),
+      handle,
+    );
+    const out = new TextDecoder().decode((await store.get(scope, res.stdout)).content);
+    assert.ok(!out.includes('EXIT=0'), `writing .git must fail under the ro overlay; got: ${out}`);
+    assert.notEqual(res.exitCode, 0, 'the .git write attempt reports a non-zero result');
+
+    // And the host bytes are untouched: the guarantee is real, not cosmetic.
+    assert.equal(await readFile(join(dir, '.git'), 'utf8'), before, '.git bytes are unchanged on the host');
+  } finally {
+    await client.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('HIGH-002 (in-container): the working tree AROUND .git stays writable', async () => {
+  const { client, store, scope, dir } = await harness();
+  try {
+    await writeFile(join(dir, '.git'), 'gitdir: /somewhere/real/.git/worktrees/w\n');
+    const provider = new DockerSandboxProvider({ imageDigest: ALPINE });
+    const handle = (await provider.start('verification-no-network', {
+      workspaceId: 'W'.repeat(26) as WorkspaceId,
+      readOnlyPaths: [],
+      writablePaths: [dir],
+      readOnlyOverlayPaths: [join(dir, '.git')],
+    })) as SandboxHandleEx;
+    const runner = new TrustedCommandRunner(scope, store);
+    // The overlay must pin ONLY .git — the agent still needs to edit source.
+    const res = await runner.run(
+      spec(dir, { executable: 'sh', args: ['-c', `printf 'src' > ${dir}/feature.txt`] }),
+      handle,
+    );
+    assert.equal(res.exitCode, 0, 'source files in the working tree remain writable');
+    assert.equal(await readFile(join(dir, 'feature.txt'), 'utf8'), 'src');
+  } finally {
+    await client.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // G5 — exact in-container exit code preserved (no 1 -> 0 coercion).
 // ---------------------------------------------------------------------------
 

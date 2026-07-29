@@ -18,6 +18,7 @@ import { resolveEnvironment, UnknownEnvironmentProfileError } from './environmen
 import {
   DockerSandboxProvider, LocalUnsandboxedProvider, SandboxUnavailableError,
   buildSandboxRunFlags, isDigestPinned,
+  resolveSandboxRequirement, assertSandboxSatisfiesRequirement, SandboxRequiredError,
   type SandboxHandleEx,
 } from './sandbox.js';
 import type { CommandSpec, SandboxHandle } from '@asep/ports';
@@ -277,6 +278,46 @@ test('F5/G3: only the working tree is writable; .git metadata is never mounted r
   assert.ok(!/\.git\S*:rw/.test(p), 'no .git path is ever mounted writable');
 });
 
+// The review's HIGH-002 finding: excluding `.git` from writablePaths did NOT
+// protect it, because a linked worktree's `.git` lives INSIDE the working tree
+// and `-v <wt>:<wt>:rw` made it writable through the parent mount. The fix is a
+// NESTED read-only bind layered over the writable parent, so the guarantee is
+// OS-enforced. These assertions pin the flag shape; the live proof that the
+// kernel actually refuses the write is sandbox-exec.itest.ts.
+test('HIGH-002: a nested .git overlay is bound read-only OVER the writable parent', () => {
+  const flags = buildSandboxRunFlags('verification-no-network', {
+    workspaceId: 'W'.repeat(26) as never,
+    readOnlyPaths: [],
+    writablePaths: ['/wt/tree'],
+    readOnlyOverlayPaths: ['/wt/tree/.git'],
+  });
+  const p = flags.join(' ');
+  assert.ok(p.includes('-v /wt/tree:/wt/tree:rw'), 'the working tree stays writable');
+  assert.ok(
+    p.includes('-v /wt/tree/.git:/wt/tree/.git:ro'),
+    'the nested .git path is bound read-only over the writable parent',
+  );
+  // The nested bind must come AFTER the parent in argv order, mirroring the
+  // deepest-destination-last layering the daemon applies.
+  assert.ok(
+    p.indexOf('/wt/tree/.git:/wt/tree/.git:ro') > p.indexOf('/wt/tree:/wt/tree:rw'),
+    'the read-only overlay is layered after the writable parent',
+  );
+  assert.ok(!/\.git\S*:rw/.test(p), 'the .git path is never rw');
+});
+
+test('HIGH-002: a mount with no overlay paths emits no extra binds (back-compat)', () => {
+  const withOut = buildSandboxRunFlags('verification-no-network', {
+    workspaceId: 'W'.repeat(26) as never,
+    readOnlyPaths: [], writablePaths: ['/wt/tree'],
+  });
+  const withEmpty = buildSandboxRunFlags('verification-no-network', {
+    workspaceId: 'W'.repeat(26) as never,
+    readOnlyPaths: [], writablePaths: ['/wt/tree'], readOnlyOverlayPaths: [],
+  });
+  assert.deepEqual(withOut, withEmpty, 'an absent and an empty overlay list agree');
+});
+
 test('F5: a digest-pinned image is accepted and a mutable tag is rejected (pure)', () => {
   assert.equal(isDigestPinned(`node@sha256:${'a'.repeat(64)}`), true);
   assert.equal(isDigestPinned('node:20'), false);
@@ -297,4 +338,86 @@ test('F6: the local fallback is honestly labelled pilot-only, no isolation', asy
   assert.equal(handle.isolationEnforced, false);
   assert.ok(handle.profile.includes('PILOT-ONLY'), 'profile name warns pilot-only');
   assert.ok(handle.profile.includes('NO-ISOLATION'));
+});
+
+// ---------------------------------------------------------------------------
+// HIGH-002 (second defect) — the sandbox is MANDATORY, not optional.
+//
+// The review found that nothing made isolation required: a composition root
+// could hand in LocalUnsandboxedProvider and the governed path ran happily. The
+// requirement resolver is fail-closed and the production waiver is refused, so
+// an unsandboxed provider substituted anywhere below the port is caught at
+// runtime by assertSandboxSatisfiesRequirement().
+// ---------------------------------------------------------------------------
+
+test('E8: an absent/unknown sandbox mode resolves to REQUIRED (fail closed)', () => {
+  assert.equal(resolveSandboxRequirement({}), 'required');
+  assert.equal(resolveSandboxRequirement({ ASEP_SANDBOX_MODE: '' }), 'required');
+  assert.equal(resolveSandboxRequirement({ ASEP_SANDBOX_MODE: 'anything-else' }), 'required');
+  // A near-miss must NOT be read as the waiver.
+  assert.equal(resolveSandboxRequirement({ ASEP_SANDBOX_MODE: 'pilot' }), 'required');
+  assert.equal(
+    resolveSandboxRequirement({ ASEP_SANDBOX_MODE: 'PILOT-UNSANDBOXED' }),
+    'required',
+    'the waiver token is exact and case-sensitive',
+  );
+});
+
+test('E8: the pilot waiver is honoured OUTSIDE production and REFUSED in production', () => {
+  assert.equal(
+    resolveSandboxRequirement({ ASEP_SANDBOX_MODE: 'pilot-unsandboxed' }),
+    'waived-pilot-only',
+  );
+  for (const deployment of ['production', 'PRODUCTION', ' Production ']) {
+    assert.throws(
+      () => resolveSandboxRequirement({
+        ASEP_SANDBOX_MODE: 'pilot-unsandboxed',
+        ASEP_DEPLOYMENT_MODE: deployment,
+      }),
+      SandboxRequiredError,
+      `the waiver must be refused when ASEP_DEPLOYMENT_MODE=${deployment}`,
+    );
+  }
+});
+
+test('E8: an unsandboxed handle FAILS CLOSED against a required requirement', async () => {
+  const local = await new LocalUnsandboxedProvider().start('verification-no-network', {
+    workspaceId: 'W'.repeat(26) as never,
+    readOnlyPaths: [], writablePaths: [],
+  });
+  assert.throws(
+    () => assertSandboxSatisfiesRequirement(local, 'required'),
+    SandboxRequiredError,
+    'a provider with no OS-enforced isolation cannot satisfy a required sandbox',
+  );
+  // The waived pilot path accepts it — the waiver is the ONLY way through.
+  assertSandboxSatisfiesRequirement(local, 'waived-pilot-only');
+});
+
+test('E8: an ABSENT isolationEnforced flag is treated as NOT enforced (no silent pass)', () => {
+  // A handle from a third provider that never declares the flag must not be
+  // read as isolated: unknown isolation is never a permission.
+  const silent: SandboxHandle = { sandboxId: 'unknown', profile: 'verification-no-network' };
+  assert.throws(
+    () => assertSandboxSatisfiesRequirement(silent, 'required'),
+    SandboxRequiredError,
+  );
+});
+
+test('E8: a handle that DOES enforce isolation satisfies the requirement', () => {
+  const enforced: SandboxHandleEx = {
+    sandboxId: 'docker-1',
+    profile: 'verification-no-network',
+    isolationEnforced: true,
+  };
+  assertSandboxSatisfiesRequirement(enforced, 'required'); // must not throw
+});
+
+test('E8: a near-miss of the waiver token is NOT the waiver', () => {
+  for (const mode of ['off', 'none', 'false', 'pilot-unsandboxed-x', 'unsandboxed']) {
+    assert.equal(
+      resolveSandboxRequirement({ ASEP_SANDBOX_MODE: mode }), 'required',
+      `mode '${mode}' must NOT waive isolation`,
+    );
+  }
 });

@@ -124,9 +124,40 @@ function fakeRunner(results: Record<string, Partial<CommandResult>>): CommandRun
   };
 }
 
+// A sandbox that DOES enforce OS isolation — the shape every production
+// provider must report (exit E8). It declares `isolationEnforced: true`, because
+// verifyStep now refuses to run commands under a handle that cannot prove
+// isolation (disp. P2-FINAL-HIGH-002).
 const fakeSandbox: SandboxProvider = {
   async start(): Promise<SandboxHandle> {
-    return { sandboxId: 'sbx-1', profile: 'verification-no-network' };
+    return { sandboxId: 'sbx-1', profile: 'verification-no-network', isolationEnforced: true };
+  },
+  async stop(): Promise<void> {},
+};
+
+// A sandbox that does NOT enforce isolation (the honest pilot/no-isolation
+// shape), plus a stop() counter so a test can prove the refusal still releases
+// the sandbox rather than leaking it.
+function unsandboxedProvider(): SandboxProvider & { stops: () => number } {
+  let stops = 0;
+  return {
+    async start(): Promise<SandboxHandle> {
+      return {
+        sandboxId: 'local-1',
+        profile: 'verification-no-network (PILOT-ONLY, NO-ISOLATION)',
+        isolationEnforced: false,
+      };
+    },
+    async stop(): Promise<void> { stops++; },
+    stops: () => stops,
+  };
+}
+
+// A sandbox whose handle never declares the flag at all — a third-party provider
+// that is silent about isolation. Unknown isolation is never a permission.
+const silentSandbox: SandboxProvider = {
+  async start(): Promise<SandboxHandle> {
+    return { sandboxId: 'mystery-1', profile: 'verification-no-network' };
   },
   async stop(): Promise<void> {},
 };
@@ -215,6 +246,92 @@ test('verifyStep FAILS CLOSED when a mandatory assurance level is missing from t
   });
   assert.equal(res.status, 'STOP');
   assert.equal(res.result.verdict, 'ERROR');
+});
+
+// --- E8 / HIGH-002: the sandbox is MANDATORY, not merely labelled ------------
+//
+// The review's finding was that an unsandboxed provider was honestly LABELLED
+// but never REFUSED, so the governed path could run verification commands
+// straight on the host. verifyStep now asserts the STARTED handle enforces
+// isolation before the first command, and the requirement defaults to
+// 'required' when the caller says nothing — so a new call site is protected
+// without being edited.
+
+test('E8: verifyStep REFUSES an unsandboxed provider by default (no requirement passed)', async () => {
+  const provider = unsandboxedProvider();
+  let ran = 0;
+  const inner = fakeRunner({});
+  const countingRunner: CommandRunner = {
+    async run(spec: CommandSpec, handle: SandboxHandle): Promise<CommandResult> {
+      ran++;
+      return inner.run(spec, handle);
+    },
+  };
+  await assert.rejects(
+    () => verifyStep({
+      runner: countingRunner,
+      sandbox: provider,
+      mount,
+      planId: 'plan-1',
+      risk: 'R0',
+      checks: r0Checks(),
+    }),
+    /sandbox isolation is required/,
+    'an unsandboxed provider must be refused when nothing waives isolation',
+  );
+  // The refusal happens BEFORE any command runs — not after collecting output.
+  assert.equal(ran, 0, 'no verification command may execute unsandboxed');
+  // …and the sandbox is still released, so the refusal does not leak it.
+  assert.equal(provider.stops(), 1, 'the refused sandbox must still be stopped');
+});
+
+test('E8: verifyStep REFUSES a handle that is silent about isolation', async () => {
+  await assert.rejects(
+    () => verifyStep({
+      runner: fakeRunner({}),
+      sandbox: silentSandbox,
+      mount,
+      planId: 'plan-1',
+      risk: 'R0',
+      checks: r0Checks(),
+    }),
+    /sandbox isolation is required/,
+    'an absent isolationEnforced flag is not a permission',
+  );
+});
+
+test('E8: the explicit pilot waiver ALLOWS an unsandboxed run (the gate is not blanket-deny)', async () => {
+  const res = await verifyStep({
+    runner: fakeRunner({}),
+    sandbox: unsandboxedProvider(),
+    mount,
+    planId: 'plan-1',
+    risk: 'R0',
+    checks: r0Checks(),
+    sandboxRequirement: 'waived-pilot-only',
+  });
+  assert.equal(res.status, 'OK');
+  assert.equal(res.result.verdict, 'PASS');
+});
+
+test('E8: completeToReview REFUSES an unsandboxed provider before ANY side effect', async () => {
+  // The driver must throw out of verification, so no commit/push/PR is attempted.
+  let commits = 0;
+  const committer: GitCommitter = {
+    async commit() { commits += 1; return { commitSha: 'd'.repeat(40) }; },
+  };
+  const forge = fakeForge(prRef);
+  await assert.rejects(
+    () => completeToReview(driverInput({
+      sandbox: unsandboxedProvider(),
+      committer,
+      forge,
+    })),
+    /sandbox isolation is required/,
+  );
+  assert.equal(commits, 0, 'no commit may be created unsandboxed');
+  assert.equal(forge.pushes, 0, 'no push may occur unsandboxed');
+  assert.equal(forge.upserts, 0, 'no PR may be opened unsandboxed');
 });
 
 // --- commitStep + evidenceStep (D8) ----------------------------------------

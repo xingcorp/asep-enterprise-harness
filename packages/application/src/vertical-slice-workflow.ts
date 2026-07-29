@@ -49,7 +49,10 @@ import type {
 } from '@asep/ports';
 import type { SpanTracer, AuditSink } from '@asep/observability';
 import { governedExecution } from './governed-execution.js';
-import { completeToReview, type VerificationCheckSpec } from './pipeline-steps.js';
+import {
+  completeToReview, SandboxIsolationRequiredError,
+  type VerificationCheckSpec, type SandboxRequirement,
+} from './pipeline-steps.js';
 
 // --- repository ports (structural; the concrete repositories satisfy them) ----
 //
@@ -166,6 +169,10 @@ export interface VerticalSliceWorkflowInput {
   // rather than a prebuilt runner bound to a placeholder scope.
   readonly runnerFor: (input: { scope: TenantScope }) => CommandRunner;
   readonly sandbox: SandboxProvider;
+  // Sandbox posture (disp. P2-FINAL-HIGH-002, exit E8). ABSENT means 'required',
+  // so the slice refuses to run verification under a provider that does not
+  // enforce OS isolation unless the caller explicitly passes the pilot waiver.
+  readonly sandboxRequirement?: SandboxRequirement;
   readonly forge: ForgeProvider;
 
   // Observability (MED-003): real emission on the real path when wired.
@@ -327,14 +334,34 @@ export async function runVerticalSliceWorkflow(
     { id: 'L0-workspace', level: 'L0', category: 'workspace', mandatory: true, command: check },
     { id: 'L1-static', level: 'L1', category: 'static', mandatory: true, command: check },
   ];
-  const mount = { workspaceId, readOnlyPaths: [], writablePaths: [wtPath] };
+  // The working tree is writable, but the `.git` indirection NESTED inside it is
+  // pinned read-only through the parent mount (disp. P2-FINAL-HIGH-002). Leaving
+  // it merely absent from writablePaths was insufficient: the rw parent bind made
+  // it writable anyway. The separator is spelled literally rather than via
+  // node:path so this use case stays free of host-path machinery (exit B3); the
+  // adapter turns it into an OS-enforced nested read-only bind.
+  const mount = {
+    workspaceId,
+    readOnlyPaths: [],
+    writablePaths: [wtPath],
+    readOnlyOverlayPaths: [`${wtPath}/.git`],
+  };
 
   // Probe the sandbox the verification commands will run in, so the caller can
   // assert OS-enforced isolation was genuinely in effect (HIGH-002).
+  const sandboxRequirement: SandboxRequirement = input.sandboxRequirement ?? 'required';
   const probe = await input.sandbox.start('verification-no-network', mount);
   const sandboxIsolationEnforced =
     (probe as { isolationEnforced?: boolean }).isolationEnforced === true;
   await input.sandbox.stop(probe);
+  // E8: refuse the whole slice BEFORE the first side effect when isolation is
+  // mandatory but absent. Doing it here (not only inside verifyStep) means the
+  // run stops before any commit/push/PR, so an unsandboxed provider can never
+  // reach the forge. verifyStep re-asserts it on the handle it actually uses, so
+  // neither layer trusts the other's check.
+  if (sandboxRequirement === 'required' && !sandboxIsolationEnforced) {
+    throw new SandboxIsolationRequiredError(probe.sandboxId, probe.profile);
+  }
 
   // --- verify → commit → evidence → push → PR → review gate ----------------
   const result = await completeToReview({
@@ -346,6 +373,7 @@ export async function runVerticalSliceWorkflow(
     planId: `plan-${input.risk}`,
     risk: input.risk,
     checks,
+    sandboxRequirement,
     committer: git.committer,
     scope,
     workspace: workspace.capability,

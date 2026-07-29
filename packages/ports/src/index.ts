@@ -232,12 +232,27 @@ export interface CommandResult {
 export interface SandboxHandle {
   readonly sandboxId: string;
   readonly profile: string;
+  // Does the OS/container ACTUALLY enforce this profile's isolation (disp.
+  // P2-FINAL-HIGH-002, exit E8/F6)? Declared on the PORT — not only on the
+  // Docker adapter's handle — so a use case can fail closed when isolation is
+  // mandatory without importing an adapter type (exit B3). Optional for
+  // backwards compatibility, and every consumer must treat an absent value as
+  // NOT enforced: unknown isolation is never a permission.
+  readonly isolationEnforced?: boolean;
 }
 
 export interface WorkspaceMount {
   readonly workspaceId: WorkspaceId;
   readonly readOnlyPaths: readonly string[];
   readonly writablePaths: readonly string[];
+  // Paths that must be read-only EVEN THOUGH they are nested inside a writable
+  // path (disp. P2-FINAL-HIGH-002). A linked worktree carries its `.git`
+  // indirection INSIDE the working tree, so mounting the tree `rw` also made
+  // `.git` writable through the parent mount: an agent could rewrite the gitdir
+  // pointer from inside the sandbox. Listing it here makes the sandbox layer a
+  // nested read-only bind over the writable parent, so the write fails at the
+  // OS level rather than being merely discouraged.
+  readonly readOnlyOverlayPaths?: readonly string[];
 }
 
 export interface SandboxProvider {

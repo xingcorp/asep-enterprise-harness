@@ -260,6 +260,14 @@ test('K1: full vertical slice reaches WAITING_FOR_HUMAN_REVIEW with a real PR + 
       planId: 'plan-R0',
       risk: 'R0',
       checks,
+      // This FAST seam test runs the verification commands on the host through
+      // LocalUnsandboxedProvider, so it must state the pilot waiver explicitly
+      // (disp. P2-FINAL-HIGH-002 / exit E8). The default is 'required', which
+      // REFUSES an unsandboxed provider — the authoritative K1 proof
+      // (vertical-slice.itest.ts) takes that default against a real Docker
+      // sandbox. Naming the waiver here is what keeps the unsandboxed path
+      // impossible to reach by accident anywhere else.
+      sandboxRequirement: 'waived-pilot-only',
       committer: manager,
       scope,
       workspace: ws.capability,

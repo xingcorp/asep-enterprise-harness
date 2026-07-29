@@ -77,6 +77,8 @@ export {
   upsertPrStep,
   setReviewStep,
   completeToReview,
+  SandboxIsolationRequiredError,
+  type SandboxRequirement,
   type VerificationCheckSpec,
   type VerificationCheckExecution,
   type VerifyStepInput,

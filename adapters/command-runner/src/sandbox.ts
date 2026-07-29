@@ -100,10 +100,18 @@ export function buildSandboxRunFlags(
     '--pids-limit', String(cfg.pids ?? 256),
     '--cpus', cfg.cpus ?? '1',
     '--memory', cfg.memory ?? '512m',
-    // Writable mounts are the working tree ONLY. Git metadata (.git) is excluded
-    // by the caller so it can never be written from inside the sandbox (G3/G5).
+    // Writable mounts are the working tree ONLY.
     ...mount.writablePaths.flatMap((p) => ['-v', `${p}:${p}:rw`]),
     ...mount.readOnlyPaths.flatMap((p) => ['-v', `${p}:${p}:ro`]),
+    // NESTED read-only binds layered OVER a writable parent (disp.
+    // P2-FINAL-HIGH-002). Merely *excluding* `.git` from writablePaths was not
+    // enough: a linked worktree's `.git` indirection lives INSIDE the working
+    // tree, so `-v <wt>:<wt>:rw` made it writable through the parent mount and
+    // an agent could repoint the gitdir from inside the sandbox. Docker orders
+    // bind mounts by destination depth, so a `:ro` bind on the nested path is
+    // applied after (on top of) the writable parent and the kernel rejects the
+    // write with EROFS. This is OS-enforced, not advisory.
+    ...(mount.readOnlyOverlayPaths ?? []).flatMap((p) => ['-v', `${p}:${p}:ro`]),
   ];
 }
 
@@ -152,6 +160,73 @@ export class DockerSandboxProvider implements SandboxProvider {
 
   async stop(_handle: SandboxHandle): Promise<void> {
     // --rm containers self-remove on exit; nothing persistent to tear down.
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Deployment-mode sandbox requirement (disp. P2-FINAL-HIGH-002, exit E8).
+//
+// The review's second HIGH-002 defect: nothing MADE the sandbox mandatory. Every
+// composition root could hand in LocalUnsandboxedProvider (or, for the agent, no
+// AgentSandboxConfig at all) and the governed path would run happily with no
+// isolation. The honest `isolationEnforced:false` label documented the hole; it
+// did not close it.
+//
+// The requirement is resolved from the environment and is FAIL-CLOSED:
+//   * absent / unrecognised config           → 'required'
+//   * ASEP_SANDBOX_MODE=pilot-unsandboxed    → waived, PILOT ONLY
+//   * …and that waiver is REJECTED outright when ASEP_DEPLOYMENT_MODE=production,
+//     so a production deployment can never opt out of isolation, however the env
+//     is set.
+// ---------------------------------------------------------------------------
+
+export type SandboxRequirement = 'required' | 'waived-pilot-only';
+
+export class SandboxRequiredError extends Error {
+  constructor(reason: string) {
+    super(`sandbox isolation is required: ${reason}`);
+    this.name = 'SandboxRequiredError';
+  }
+}
+
+const PILOT_WAIVER = 'pilot-unsandboxed';
+
+/**
+ * Resolve whether OS-enforced sandbox isolation is mandatory for this process.
+ * Defaults to 'required' for ANY input that does not carry the explicit pilot
+ * waiver, and refuses the waiver entirely in production.
+ */
+export function resolveSandboxRequirement(
+  env: Readonly<Record<string, string | undefined>>,
+): SandboxRequirement {
+  const mode = (env['ASEP_SANDBOX_MODE'] ?? '').trim();
+  const deployment = (env['ASEP_DEPLOYMENT_MODE'] ?? '').trim().toLowerCase();
+  if (mode !== PILOT_WAIVER) return 'required';
+  if (deployment === 'production') {
+    // A waiver present in a production environment is a configuration error, not
+    // a permission. Fail closed rather than silently downgrade isolation.
+    throw new SandboxRequiredError(
+      `ASEP_SANDBOX_MODE=${PILOT_WAIVER} is not permitted when ASEP_DEPLOYMENT_MODE=production`,
+    );
+  }
+  return 'waived-pilot-only';
+}
+
+/**
+ * Assert a started sandbox actually satisfies the resolved requirement. Called
+ * on the real path with the real handle, so an unsandboxed provider substituted
+ * anywhere below the port is caught at runtime rather than trusted.
+ */
+export function assertSandboxSatisfiesRequirement(
+  handle: SandboxHandle,
+  requirement: SandboxRequirement,
+): void {
+  if (requirement !== 'required') return;
+  const enforced = (handle as SandboxHandleEx).isolationEnforced === true;
+  if (!enforced) {
+    throw new SandboxRequiredError(
+      `sandbox '${handle.sandboxId}' (profile '${handle.profile}') does not enforce isolation`,
+    );
   }
 }
 

@@ -17,8 +17,12 @@ export {
 export type { CommandRunnerConfig } from './command-runner.js';
 export { TrustedCommandRunner } from './command-runner.js';
 
-export type { SandboxHandleEx, DockerSandboxConfig } from './sandbox.js';
+export type {
+  SandboxHandleEx, DockerSandboxConfig, SandboxRequirement,
+} from './sandbox.js';
 export {
   DockerSandboxProvider, LocalUnsandboxedProvider, SandboxUnavailableError,
   buildSandboxRunFlags, isDigestPinned,
+  resolveSandboxRequirement, assertSandboxSatisfiesRequirement,
+  SandboxRequiredError,
 } from './sandbox.js';
