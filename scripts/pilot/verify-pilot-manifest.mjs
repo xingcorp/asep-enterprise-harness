@@ -22,12 +22,25 @@
 //        - the trace chain is internally consistent (trace.taskId == taskId)
 //          and end-to-end resolvable (every hierarchy id present — K3).
 //
+// It performs a THIRD, decisive layer:
+//   3. AUTHORITATIVE — every self-declared fact (resultSha, provider, evidence
+//      checksum, PR url, human disposition) is resolved against the real
+//      database and rejected on absence or disagreement. The CLI runs this by
+//      DEFAULT (disp. P2-FINAL-HIGH-009): the previous entrypoint called only
+//      layers 1-2, so a manifest of ten entirely invented tasks exited 0.
+//
 // Usage:
-//   node scripts/pilot/verify-pilot-manifest.mjs <manifest.json>
+//   ASEP_PG_URL=... ASEP_REVIEWER_PUBLIC_KEY=... \
+//     node scripts/pilot/verify-pilot-manifest.mjs <manifest.json>
+//   node scripts/pilot/verify-pilot-manifest.mjs <manifest.json> --self-check-only
 // Exit 0 = manifest backs its verdict; non-zero + reasons on stderr otherwise.
+// A COMPLETE verdict is REJECTED under --self-check-only by construction.
 
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import {
+  createResolverFromEnv, PG_URL_ENV, REVIEWER_KEY_ENV,
+} from './authority-resolver.mjs';
 
 // A COMPLETE verdict must be backed by at least this many genuine pilot tasks
 // (exit K5: "ten genuine tasks"). Fewer means the verdict must fall back to
@@ -356,38 +369,125 @@ export async function verifyManifestAgainstAuthority(manifest, resolver) {
   return { ok: reasons.length === 0, reasons };
 }
 
-/** Load, JSON-parse and verify a manifest file. Returns { ok, reasons }. */
-export function verifyManifestFile(path) {
+/** Read + JSON-parse a manifest file. Returns { parsed } or { reasons }. */
+function loadManifest(path) {
   let raw;
   try {
     raw = readFileSync(path, 'utf8');
   } catch (e) {
-    return { ok: false, reasons: [`cannot read manifest "${path}": ${e.message}`] };
+    return { reasons: [`cannot read manifest "${path}": ${e.message}`] };
   }
-  let parsed;
   try {
-    parsed = JSON.parse(raw);
+    return { parsed: JSON.parse(raw) };
   } catch (e) {
-    return { ok: false, reasons: [`manifest "${path}" is not valid JSON: ${e.message}`] };
+    return { reasons: [`manifest "${path}" is not valid JSON: ${e.message}`] };
   }
-  return verifyManifest(parsed);
 }
+
+/**
+ * SELF-CONSISTENCY ONLY. Load and run the pure structural+semantic gate.
+ *
+ * DANGER (disp. P2-FINAL-HIGH-009): every fact this checks is self-declared by
+ * the manifest. Passing here does NOT mean the pilot happened — that was exactly
+ * the defect (the CLI called this and printed "OK" for ten invented tasks). It
+ * remains exported because it is the floor the authority cross-check runs first,
+ * and it is legitimately useful for authoring/linting a manifest. It must NEVER
+ * be the gate on a COMPLETE verdict; `assertVerdictAllowedWithoutAuthority`
+ * below enforces that at the CLI boundary.
+ */
+export function verifyManifestFile(path) {
+  const loaded = loadManifest(path);
+  if (loaded.reasons) return { ok: false, reasons: loaded.reasons };
+  return verifyManifest(loaded.parsed);
+}
+
+/**
+ * THE PRODUCTION GATE. Load a manifest and verify it against authoritative
+ * persistence via `resolver`. This is what the CLI runs.
+ */
+export async function verifyManifestFileAgainstAuthority(path, resolver) {
+  const loaded = loadManifest(path);
+  if (loaded.reasons) return { ok: false, reasons: loaded.reasons };
+  return verifyManifestAgainstAuthority(loaded.parsed, resolver);
+}
+
+/**
+ * A COMPLETE verdict may NEVER be honoured from self-declared data. When the
+ * caller asked to skip the authority cross-check, only the explicitly
+ * pilot-pending verdict can pass. Returns a reason string, or null when allowed.
+ */
+export function assertVerdictAllowedWithoutAuthority(manifest) {
+  if (manifest && manifest.verdict === 'COMPLETE') {
+    return (
+      'a COMPLETE verdict cannot be verified without the authoritative cross-check ' +
+      '(--self-check-only checks only self-declared fields; see HIGH-009). Re-run ' +
+      `with ${PG_URL_ENV} + ${REVIEWER_KEY_ENV} pointing at the authoritative database.`
+    );
+  }
+  return null;
+}
+
+const USAGE =
+  'usage: verify-pilot-manifest.mjs <manifest.json> [--self-check-only]\n' +
+  '\n' +
+  'By default the manifest is cross-checked against AUTHORITATIVE persistence:\n' +
+  `  ${PG_URL_ENV}              postgres connection string (required)\n` +
+  `  ${REVIEWER_KEY_ENV}  path to the reviewer ed25519 public-key PEM (required)\n` +
+  '\n' +
+  '--self-check-only skips that cross-check and validates ONLY self-declared\n' +
+  'fields. A COMPLETE verdict is REJECTED in that mode by design.\n';
 
 // CLI entry: run only when invoked directly, not when imported by the test.
 const invokedDirectly =
   process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
 if (invokedDirectly) {
-  const path = process.argv[2];
+  const argv = process.argv.slice(2);
+  const selfCheckOnly = argv.includes('--self-check-only');
+  const path = argv.find((a) => !a.startsWith('--'));
   if (!path) {
-    process.stderr.write('usage: verify-pilot-manifest.mjs <manifest.json>\n');
+    process.stderr.write(USAGE);
     process.exit(2);
   }
-  const { ok, reasons } = verifyManifestFile(path);
-  if (ok) {
-    process.stdout.write(`pilot manifest OK: ${path}\n`);
+
+  const reject = (reasons) => {
+    process.stderr.write(`pilot manifest REJECTED: ${path}\n`);
+    for (const r of reasons) process.stderr.write(`  - ${r}\n`);
+    process.exit(1);
+  };
+
+  if (selfCheckOnly) {
+    const loaded = loadManifest(path);
+    if (loaded.reasons) reject(loaded.reasons);
+    // A COMPLETE verdict is never honoured from self-declared data.
+    const blocked = assertVerdictAllowedWithoutAuthority(loaded.parsed);
+    if (blocked) reject([blocked]);
+    const { ok, reasons } = verifyManifest(loaded.parsed);
+    if (!ok) reject(reasons);
+    process.stdout.write(
+      `pilot manifest self-consistent (NOT authority-checked): ${path}\n`,
+    );
     process.exit(0);
   }
-  process.stderr.write(`pilot manifest REJECTED: ${path}\n`);
-  for (const r of reasons) process.stderr.write(`  - ${r}\n`);
-  process.exit(1);
+
+  // Production path: resolve against the authoritative database. Any failure to
+  // BUILD the resolver (missing env, unreadable key, no driver) is a rejection —
+  // never a silent fallback to the self-declared check.
+  let handle;
+  try {
+    handle = await createResolverFromEnv(process.env);
+  } catch (e) {
+    reject([e && e.message ? e.message : String(e)]);
+  }
+  try {
+    const { ok, reasons } = await verifyManifestFileAgainstAuthority(path, handle.resolver);
+    if (!ok) reject(reasons);
+    process.stdout.write(`pilot manifest OK (authority-checked): ${path}\n`);
+  } finally {
+    try {
+      await handle.close();
+    } catch {
+      // Closing the pool must never change the verdict.
+    }
+  }
+  process.exit(0);
 }

@@ -316,6 +316,47 @@ alter table pull_requests
   references artifacts (id, organization_id, project_id);
 `;
 
+// ---------------------------------------------------------------------------
+// 0010 — human_authorizations: the AUTHORITATIVE record of a signed human
+// review handoff (disp. P2-FINAL-HIGH-009, risk PR2-08).
+//
+// The pilot manifest declared `humanDisposition` per task and nothing anywhere
+// persisted a human decision, so the COMPLETE gate had no truth to check the
+// claim against — a fabricated manifest could assert ten reviewed tasks. This
+// table is that truth: one row per (task) carrying WHO decided, WHAT they
+// decided, and a detached cryptographic signature over the exact decision
+// payload. The verifier resolves the manifest against this table and verifies
+// the signature with the reviewer public key, so a disposition cannot be
+// self-declared and a row cannot be forged by whoever can write the DB.
+//
+// Scoping mirrors the rest of the model: composite FKs onto (id, org, project)
+// for task and attempt, so an authorization can never reference another
+// tenant's task. `signature` is a base64 ed25519 signature over the canonical
+// payload (see scripts/pilot/human-authorization-crypto.mjs) — it is NOT a
+// secret, it is public verification material.
+// ---------------------------------------------------------------------------
+const M0010 = `
+create table human_authorizations (
+  id                  char(26) primary key,
+  organization_id     char(26) not null,
+  project_id          char(26) not null,
+  task_id             char(26) not null,
+  attempt_id          char(26) not null,
+  pull_request_id     char(26) not null,
+  disposition         text not null check (disposition in
+    ('ACCEPTED','REJECTED','CHANGES_REQUESTED','PENDING')),
+  reviewed_result_sha text not null,
+  signed_by           text not null,
+  signature           text not null,
+  signed_at           timestamptz not null default now(),
+  foreign key (task_id, organization_id, project_id)
+    references tasks (id, organization_id, project_id),
+  foreign key (attempt_id, organization_id, project_id)
+    references attempts (id, organization_id, project_id),
+  unique (organization_id, project_id, task_id)
+);
+`;
+
 // Ordered, immutable migration set. Order is by id; the runner asserts it.
 export const MIGRATIONS: readonly Migration[] = Object.freeze([
   { id: '0001_init_tenancy', sql: M0001 },
@@ -327,4 +368,5 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   { id: '0007_audit_side_effects', sql: M0007 },
   { id: '0008_binding_scoped_fks', sql: M0008 },
   { id: '0009_scoped_evidence_refs', sql: M0009 },
+  { id: '0010_human_authorizations', sql: M0010 },
 ]);

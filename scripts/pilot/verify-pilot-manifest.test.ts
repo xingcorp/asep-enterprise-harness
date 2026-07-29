@@ -7,6 +7,12 @@
 // it cannot be silently dropped.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { generateKeyPairSync } from 'node:crypto';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 // The verifier is plain ESM (.mjs); import its pure functions directly.
 import {
   verifyManifest,
@@ -14,6 +20,15 @@ import {
   MIN_PILOT_TASKS,
   // @ts-expect-error - .mjs sibling has no type declarations; runtime import is fine under tsx.
 } from './verify-pilot-manifest.mjs';
+import {
+  createSqlAuthorityResolver,
+  createResolverFromEnv,
+  // @ts-expect-error - .mjs sibling has no type declarations; runtime import is fine under tsx.
+} from './authority-resolver.mjs';
+import {
+  signAuthorization,
+  // @ts-expect-error - .mjs sibling has no type declarations; runtime import is fine under tsx.
+} from './human-authorization-crypto.mjs';
 
 console.log('SUITE-ID: asep-suite:pilot-manifest');
 
@@ -317,4 +332,193 @@ test('HIGH-009: a structurally malformed manifest never reaches the resolver', a
   assert.equal(res.ok, false);
   assert.ok(res.reasons.some((r: string) => /^schema:/.test(r)));
   assert.equal(resolverCalled, false, 'the resolver must not run on a malformed manifest');
+});
+
+// ---------------------------------------------------------------------------
+// HIGH-009 — THE REAL CLI. The defect was never in verifyManifestAgainstAuthority
+// (which already existed and worked); it was that the CLI entrypoint called the
+// self-declared path instead, so piping a manifest of ten fabricated tasks into
+// the real command printed "pilot manifest OK" and exited 0. These tests SPAWN
+// the actual CLI — the same argv an operator or CI job would use — because only
+// that reproduces the finding. Asserting on the exported functions would have
+// passed throughout the defect's lifetime.
+// ---------------------------------------------------------------------------
+
+const CLI = join(dirname(fileURLToPath(import.meta.url)), 'verify-pilot-manifest.mjs');
+
+// Run the CLI with an EMPTY-ish env by default: the production path must not be
+// satisfiable by whatever happens to be exported in the developer's shell.
+function runCli(args: string[], env: Record<string, string> = {}) {
+  const r = spawnSync(process.execPath, [CLI, ...args], {
+    encoding: 'utf8',
+    shell: false,
+    env: { PATH: process.env['PATH'] ?? '', ...env },
+  });
+  return { code: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
+}
+
+function writeManifest(manifest: unknown): string {
+  const dir = mkdtempSync(join(tmpdir(), 'asep-pilot-'));
+  const p = join(dir, 'pilot-manifest.json');
+  writeFileSync(p, JSON.stringify(manifest, null, 2));
+  return p;
+}
+
+test('HIGH-009 (CLI): a FORGED ten-task COMPLETE manifest is REJECTED by the real command', () => {
+  // This manifest is internally perfect and entirely invented — exactly the
+  // artifact that previously exited 0 with "pilot manifest OK".
+  const path = writeManifest(makeManifest(MIN_PILOT_TASKS));
+  const res = runCli([path]);
+  assert.notEqual(res.code, 0, `forged COMPLETE manifest must not exit 0; got ${res.code}: ${res.stdout}`);
+  assert.ok(!/pilot manifest OK/.test(res.stdout), 'the CLI must not print OK for a self-declared manifest');
+  assert.match(res.stderr, /REJECTED/);
+  // And the reason names the missing authority wiring, not some incidental error.
+  assert.match(res.stderr, /ASEP_PG_URL/);
+});
+
+test('HIGH-009 (CLI): --self-check-only REFUSES to honour a COMPLETE verdict', () => {
+  const path = writeManifest(makeManifest(MIN_PILOT_TASKS));
+  const res = runCli([path, '--self-check-only']);
+  assert.notEqual(res.code, 0);
+  assert.match(res.stderr, /COMPLETE verdict cannot be verified without the authoritative cross-check/);
+});
+
+test('HIGH-009 (CLI): --self-check-only DOES accept an honest PILOT_PENDING manifest', () => {
+  const path = writeManifest(
+    makeManifest(0, { verdict: 'IMPLEMENTATION_COMPLETE_PILOT_PENDING' }),
+  );
+  const res = runCli([path, '--self-check-only']);
+  assert.equal(res.code, 0, res.stderr);
+  assert.match(res.stdout, /self-consistent \(NOT authority-checked\)/);
+});
+
+test('HIGH-009 (CLI): a missing reviewer public key is a REJECTION, not a downgrade', () => {
+  const path = writeManifest(makeManifest(MIN_PILOT_TASKS));
+  // PG url present, signing key absent: the gate must still refuse rather than
+  // fall back to trusting the manifest's own humanDisposition.
+  const res = runCli([path], { ASEP_PG_URL: 'postgresql://unused:5432/db' });
+  assert.notEqual(res.code, 0);
+  assert.match(res.stderr, /ASEP_REVIEWER_PUBLIC_KEY/);
+});
+
+// ---------------------------------------------------------------------------
+// HIGH-009 — the production resolver. Driven against a fake SQL executor that
+// records the exact (text, params) it is asked, so we prove:
+//   * every lookup is tenant-scoped and parameter-bound (no interpolation);
+//   * `signatureValid` is the result of REAL ed25519 verification over the row's
+//     own canonical payload — a fabricated or post-signing-edited row is false.
+// ---------------------------------------------------------------------------
+
+type Captured = { text: string; params: readonly unknown[] };
+
+function fakeDb(rowsFor: (text: string, params: readonly unknown[]) => Record<string, unknown>[]) {
+  const calls: Captured[] = [];
+  return {
+    calls,
+    async query(text: string, params: readonly unknown[] = []) {
+      calls.push({ text, params });
+      const rows = rowsFor(text, params);
+      return { rows, rowCount: rows.length };
+    },
+  };
+}
+
+const keys = generateKeyPairSync('ed25519');
+const REVIEWER_PUB = keys.publicKey.export({ type: 'spki', format: 'pem' }).toString();
+const REVIEWER_PRIV = keys.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
+
+function signedAuthRow(over: Record<string, unknown> = {}) {
+  const decision = {
+    task_id: 'task-1',
+    attempt_id: 'att-1',
+    pull_request_id: 'pr-1',
+    disposition: 'ACCEPTED',
+    reviewed_result_sha: 'b'.repeat(40),
+    signed_by: 'reviewer@acme',
+  };
+  const signed = signAuthorization(decision, REVIEWER_PRIV);
+  // `over` is applied AFTER signing on purpose: that is the tamper scenario.
+  return { ...signed, ...over };
+}
+
+test('HIGH-009 (resolver): a genuinely signed authorization reports signatureValid=true', async () => {
+  const db = fakeDb(() => [signedAuthRow()]);
+  const resolver = createSqlAuthorityResolver(db, { reviewerPublicKeyPem: REVIEWER_PUB });
+  const auth = await resolver.resolveHumanAuthorization('task-1', {
+    organizationId: 'org-1', projectId: 'proj-1',
+  });
+  assert.equal(auth.signatureValid, true);
+  assert.equal(auth.disposition, 'ACCEPTED');
+});
+
+test('HIGH-009 (resolver): a disposition EDITED after signing reports signatureValid=false', async () => {
+  // The row says ACCEPTED but the signature covers PENDING's payload — flipping
+  // the decision in the database cannot produce a valid signature.
+  const db = fakeDb(() => [signedAuthRow({ disposition: 'REJECTED' })]);
+  const resolver = createSqlAuthorityResolver(db, { reviewerPublicKeyPem: REVIEWER_PUB });
+  const auth = await resolver.resolveHumanAuthorization('task-1', {
+    organizationId: 'org-1', projectId: 'proj-1',
+  });
+  assert.equal(auth.signatureValid, false, 'an edited decision must not verify');
+});
+
+test('HIGH-009 (resolver): a FABRICATED row (inserted by whoever can write the DB) does not verify', async () => {
+  const db = fakeDb(() => [{
+    task_id: 'task-1', attempt_id: 'att-1', pull_request_id: 'pr-1',
+    disposition: 'ACCEPTED', reviewed_result_sha: 'c'.repeat(40),
+    signed_by: 'attacker@evil', signature: Buffer.alloc(64).toString('base64'),
+  }]);
+  const resolver = createSqlAuthorityResolver(db, { reviewerPublicKeyPem: REVIEWER_PUB });
+  const auth = await resolver.resolveHumanAuthorization('task-1', {
+    organizationId: 'org-1', projectId: 'proj-1',
+  });
+  assert.equal(auth.signatureValid, false);
+});
+
+test('HIGH-009 (resolver): every lookup is tenant-scoped and fully parameter-bound', async () => {
+  const trace = {
+    organizationId: 'org-1', projectId: 'proj-1', attemptId: 'att-1',
+    taskId: 'task-1', evidenceArtifactId: 'ev-1', pullRequestId: 'pr-1',
+  };
+  const db = fakeDb(() => []);
+  const resolver = createSqlAuthorityResolver(db, { reviewerPublicKeyPem: REVIEWER_PUB });
+  await resolver.resolveAttempt(trace);
+  await resolver.resolveEvidence(trace, 'ev-1');
+  await resolver.resolvePullRequest(trace, 'pr-1');
+  await resolver.resolveHumanAuthorization('task-1', trace);
+
+  assert.equal(db.calls.length, 4);
+  for (const call of db.calls) {
+    assert.match(call.text, /organization_id = \$\d/, `scoped by org: ${call.text}`);
+    assert.match(call.text, /project_id = \$\d/, `scoped by project: ${call.text}`);
+    assert.ok(call.params.includes('org-1'), 'org id is bound as a parameter');
+    assert.ok(call.params.includes('proj-1'), 'project id is bound as a parameter');
+    // Nothing tenant-identifying may be spliced into the SQL text itself.
+    assert.ok(!call.text.includes('org-1'), 'no interpolated org id in SQL');
+  }
+});
+
+test('HIGH-009 (resolver): a resolver cannot be built WITHOUT a reviewer public key', () => {
+  const db = fakeDb(() => []);
+  assert.throws(
+    () => createSqlAuthorityResolver(db, { reviewerPublicKeyPem: '' }),
+    /requires a reviewer public key/,
+  );
+});
+
+test('HIGH-009 (resolver): createResolverFromEnv fails closed on missing env', async () => {
+  await assert.rejects(() => createResolverFromEnv({}), /ASEP_PG_URL is not set/);
+  await assert.rejects(
+    () => createResolverFromEnv({ ASEP_PG_URL: 'postgresql://x/y' }),
+    /ASEP_REVIEWER_PUBLIC_KEY is not set/,
+  );
+});
+
+test('HIGH-009 (resolver): an absent authoritative row resolves to null (verifier fails closed)', async () => {
+  const db = fakeDb(() => []);
+  const resolver = createSqlAuthorityResolver(db, { reviewerPublicKeyPem: REVIEWER_PUB });
+  assert.equal(await resolver.resolveAttempt({ organizationId: 'o', projectId: 'p', attemptId: 'a' }), null);
+  assert.equal(await resolver.resolveEvidence({ organizationId: 'o', projectId: 'p' }, 'ev'), null);
+  assert.equal(await resolver.resolvePullRequest({ organizationId: 'o', projectId: 'p' }, 'pr'), null);
+  assert.equal(await resolver.resolveHumanAuthorization('t', { organizationId: 'o', projectId: 'p' }), null);
 });

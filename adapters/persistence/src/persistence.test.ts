@@ -66,6 +66,7 @@ test('C5: full migration set applies forward on a clean DB', async () => {
     'organizations', 'projects', 'repository_bindings', 'runs', 'tasks',
     'attempts', 'workspace_leases', 'artifacts', 'command_executions',
     'pull_requests', 'audit_events', 'side_effect_records', 'schema_migrations',
+    'human_authorizations',
   ]) {
     assert.ok(tables.includes(t), `expected table ${t} to exist`);
   }
@@ -301,6 +302,104 @@ test('HIGH-005: attaching an evidence artifact from another project is rejected 
       artifactId: foreignArtifact as never, sha256: 'd'.repeat(64), kind: 'evidence-bundle',
     }),
     /foreign key|violates/i,
+  );
+  await client.close();
+});
+
+// ---------------------------------------------------------------------------
+// HIGH-009 — human_authorizations (migration 0010) is the AUTHORITATIVE record
+// of a signed human review handoff. Before it, a pilot manifest's
+// `humanDisposition` had no truth to be checked against. These tests prove the
+// table's DB-enforced invariants: one authorization per task, tenant-scoped
+// composite FKs onto task AND attempt, and a closed disposition enum. The
+// signature-verification behaviour is proven in the pilot-manifest suite.
+// ---------------------------------------------------------------------------
+
+// Create run + task + attempt and return BOTH ids: an authorization row must
+// reference a task and an attempt that live in the same scope.
+async function seedTaskAndAttempt(
+  client: Awaited<ReturnType<typeof freshDb>>, scope: TenantScope, bindingId: RepositoryBindingId,
+): Promise<{ taskId: string; attemptId: AttemptId }> {
+  const runs = new RunRepository(client);
+  const tasks = new TaskRepository(client);
+  const attempts = new AttemptRepository(client);
+  const run = await runs.create(scope, { repositoryBindingId: bindingId, status: 'EXECUTING', risk: 'R0' });
+  const task = await tasks.create(scope, { runId: run.id, repositoryBindingId: bindingId, risk: 'R0' });
+  const attempt = await attempts.create(scope, { taskId: task.id, repositoryBindingId: bindingId });
+  return { taskId: task.id, attemptId: attempt.id };
+}
+
+async function insertAuthorization(
+  client: Awaited<ReturnType<typeof freshDb>>,
+  scope: TenantScope,
+  input: { taskId: string; attemptId: string; disposition?: string; prId?: string },
+): Promise<void> {
+  await client.query(
+    `insert into human_authorizations
+       (id, organization_id, project_id, task_id, attempt_id, pull_request_id,
+        disposition, reviewed_result_sha, signed_by, signature)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+    [
+      'H'.repeat(25) + String(Math.floor(Math.random() * 10)),
+      scope.organizationId, scope.projectId, input.taskId, input.attemptId,
+      input.prId ?? 'P'.repeat(26),
+      input.disposition ?? 'ACCEPTED', 'e'.repeat(40), 'reviewer@acme', 'c2ln',
+    ],
+  );
+}
+
+test('HIGH-009: a signed authorization for an in-scope task+attempt persists', async () => {
+  const client = await freshDb();
+  const { scope, binding } = await seedScope(client);
+  const { taskId, attemptId } = await seedTaskAndAttempt(client, scope, binding.id);
+  await insertAuthorization(client, scope, { taskId, attemptId });
+  const r = await client.query(
+    `select disposition, signed_by, signature from human_authorizations
+     where task_id = $1 and organization_id = $2 and project_id = $3`,
+    [taskId, scope.organizationId, scope.projectId],
+  );
+  assert.equal(r.rowCount, 1);
+  assert.equal(r.rows[0]!['disposition'], 'ACCEPTED');
+  assert.equal(r.rows[0]!['signed_by'], 'reviewer@acme');
+  await client.close();
+});
+
+test('HIGH-009: a SECOND authorization for the same task is rejected by the DB', async () => {
+  const client = await freshDb();
+  const { scope, binding } = await seedScope(client);
+  const { taskId, attemptId } = await seedTaskAndAttempt(client, scope, binding.id);
+  await insertAuthorization(client, scope, { taskId, attemptId, disposition: 'PENDING' });
+  // One human decision per task: a second row cannot be stacked on to upgrade a
+  // PENDING handoff into an ACCEPTED one.
+  await assert.rejects(
+    () => insertAuthorization(client, scope, { taskId, attemptId, disposition: 'ACCEPTED' }),
+    /unique|duplicate/i,
+  );
+  await client.close();
+});
+
+test('HIGH-009: an authorization naming ANOTHER tenant\'s task is rejected by the composite FK', async () => {
+  const client = await freshDb();
+  const { scope, binding } = await seedScope(client);
+  const other = await seedScope(client);
+  const mine = await seedTaskAndAttempt(client, scope, binding.id);
+  const theirs = await seedTaskAndAttempt(client, other.scope, other.binding.id);
+  // Scope A cannot authorize scope B's task: there is no (taskId, orgA, projA)
+  // row in tasks, so the composite FK refuses the insert.
+  await assert.rejects(
+    () => insertAuthorization(client, scope, { taskId: theirs.taskId, attemptId: mine.attemptId }),
+    /foreign key|violates/i,
+  );
+  await client.close();
+});
+
+test('HIGH-009: an unknown disposition is rejected by the enum check', async () => {
+  const client = await freshDb();
+  const { scope, binding } = await seedScope(client);
+  const { taskId, attemptId } = await seedTaskAndAttempt(client, scope, binding.id);
+  await assert.rejects(
+    () => insertAuthorization(client, scope, { taskId, attemptId, disposition: 'TOTALLY_FINE' }),
+    /check|constraint|violates/i,
   );
   await client.close();
 });
