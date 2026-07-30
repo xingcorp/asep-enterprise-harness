@@ -111,6 +111,44 @@ export class GitHubAppForgePort implements ForgeProvider {
     };
   }
 
+  // --- crash-recovery reconciliation (disp. P2-FINAL-HIGH-006) --------------
+  //
+  // Read-only lookups the application uses to decide retry-vs-adopt when it
+  // resumes onto a PENDING push/PR record. Both translate governed identity into
+  // resolved coordinates exactly like the write paths above, so a binding from
+  // another tenant cannot be reconciled either.
+
+  async resolveRef(scope: TenantScope, input: {
+    repositoryBindingId: RepositoryBindingId;
+    branch: string;
+  }): Promise<string | null> {
+    // No local repo path: `ls-remote` reads the remote directly, so this probe
+    // needs no working tree (and must not depend on one existing on a resume).
+    const { repository } = await this.resolver.resolve(scope, input.repositoryBindingId);
+    return this.inner.resolveRef({
+      repository,
+      branch: input.branch,
+    });
+  }
+
+  async findPullRequest(scope: TenantScope, input: {
+    repositoryBindingId: RepositoryBindingId;
+    headBranch: string;
+  }): Promise<PullRequestRef | null> {
+    const { repository } = await this.resolver.resolve(scope, input.repositoryBindingId);
+    const pr = await this.inner.findPullRequest({
+      repository,
+      headBranch: input.headBranch,
+    });
+    if (!pr) return null;
+    return {
+      number: pr.number,
+      url: pr.url,
+      headBranch: pr.headBranch,
+      baseBranch: pr.baseBranch,
+    };
+  }
+
   // NOTE: no merge method — H5. The port does not declare one and this class
   // adds nothing beyond the port, so no merge capability is reachable.
 }

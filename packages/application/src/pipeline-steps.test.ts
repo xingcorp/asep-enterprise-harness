@@ -528,7 +528,15 @@ class MemorySideEffectLog implements SideEffectLog {
   }
 }
 
-function fakeForge(pr: PullRequestRef): ForgeProvider & { pushes: number; upserts: number } {
+// A transport-level forge double. `remote` models what is ALREADY on the forge,
+// so a test can exercise the HIGH-006 reconciliation paths: with an empty remote
+// the reconcile lookups answer null (the effect never landed → perform it), and
+// a seeded remote makes them answer with the real ref/PR (→ adopt, never
+// re-call). Counting pushes/upserts is what proves no duplicate side effect.
+function fakeForge(
+  pr: PullRequestRef,
+  remote: { ref?: string | null; pr?: PullRequestRef | null } = {},
+): ForgeProvider & { pushes: number; upserts: number } {
   let pushes = 0;
   let upserts = 0;
   return {
@@ -536,6 +544,8 @@ function fakeForge(pr: PullRequestRef): ForgeProvider & { pushes: number; upsert
     get upserts() { return upserts; },
     async pushBranch() { pushes += 1; },
     async upsertPullRequest() { upserts += 1; return pr; },
+    async resolveRef() { return remote.ref ?? null; },
+    async findPullRequest() { return remote.pr ?? null; },
   } as ForgeProvider & { pushes: number; upserts: number };
 }
 
@@ -595,6 +605,91 @@ test('upsertPrStep ADOPTS the recorded PR ref on retry (no duplicate PR)', async
   assert.equal(retry.adopted, true);
   assert.equal(retry.pr.number, 7);
   assert.equal(forge.upserts, 1, 'PR upsert must NOT be replayed once COMPLETED');
+});
+
+// HIGH-006 (cycle 3): a crash AFTER the forge call but BEFORE complete() leaves
+// the record PENDING. The log alone cannot say whether the effect landed, so the
+// step must ask the REMOTE by natural key before re-calling. These four tests
+// pin both directions for push and PR: effect present on the remote → adopt
+// without re-calling; effect absent → perform it.
+
+test('pushStep RECONCILES a PENDING record against the remote and adopts a landed push (HIGH-006)', async () => {
+  const log = new MemorySideEffectLog();
+  // The remote already carries this exact commit on the branch: the push landed
+  // before the crash, even though the record never reached COMPLETED.
+  const forge = fakeForge(prRef, { ref: 'd'.repeat(40) });
+  const input = {
+    forge, log, scope, repositoryBindingId: bindingId, attemptId,
+    branch: 'asep/attempt-1', commitSha: 'd'.repeat(40), leaseId: 'lease-1',
+  };
+  // Leave a PENDING row exactly as a crash between push and complete would.
+  await log.begin(scope, {
+    operation: 'push', repositoryBindingId: bindingId, attemptId,
+    requestFingerprint: `push:${input.branch}@${input.commitSha}`,
+    ownerToken: 'lease-1', naturalKey: input.branch,
+  });
+  const res = await pushStep(input);
+  assert.equal(res.adopted, true, 'a landed push must be adopted, not replayed');
+  assert.equal(res.pushed, false);
+  assert.equal(forge.pushes, 0, 'the forge must NOT be called again');
+  assert.equal([...log.rows.values()][0]!.state, 'COMPLETED', 'the record is finished');
+});
+
+test('pushStep PERFORMS the push when a PENDING record has no matching remote ref (HIGH-006)', async () => {
+  const log = new MemorySideEffectLog();
+  // Remote has nothing: the crash happened BEFORE the push reached the forge.
+  const forge = fakeForge(prRef, { ref: null });
+  const input = {
+    forge, log, scope, repositoryBindingId: bindingId, attemptId,
+    branch: 'asep/attempt-1', commitSha: 'd'.repeat(40), leaseId: 'lease-1',
+  };
+  await log.begin(scope, {
+    operation: 'push', repositoryBindingId: bindingId, attemptId,
+    requestFingerprint: `push:${input.branch}@${input.commitSha}`,
+    ownerToken: 'lease-1', naturalKey: input.branch,
+  });
+  const res = await pushStep(input);
+  assert.equal(res.pushed, true, 'an un-landed push must actually be performed');
+  assert.equal(forge.pushes, 1);
+  assert.equal([...log.rows.values()][0]!.state, 'COMPLETED');
+});
+
+test('upsertPrStep RECONCILES a PENDING record and adopts an existing PR (HIGH-006)', async () => {
+  const log = new MemorySideEffectLog();
+  // The PR already exists on the forge for this head branch.
+  const forge = fakeForge(prRef, { pr: prRef });
+  const input = {
+    forge, log, scope, repositoryBindingId: bindingId, attemptId,
+    headBranch: 'asep/attempt-1', base: 'main', title: 't', body: 'b', leaseId: 'lease-1',
+  };
+  await log.begin(scope, {
+    operation: 'pr-upsert', repositoryBindingId: bindingId, attemptId,
+    requestFingerprint: `pr:${input.headBranch}->${input.base}`,
+    ownerToken: 'lease-1', naturalKey: input.headBranch,
+  });
+  const res = await upsertPrStep(input);
+  assert.equal(res.adopted, true, 'an existing PR must be adopted, not re-upserted');
+  assert.equal(res.pr.number, 7);
+  assert.equal(forge.upserts, 0, 'the forge must NOT be called again');
+  assert.equal([...log.rows.values()][0]!.state, 'COMPLETED');
+});
+
+test('upsertPrStep PERFORMS the upsert when a PENDING record has no remote PR (HIGH-006)', async () => {
+  const log = new MemorySideEffectLog();
+  const forge = fakeForge(prRef, { pr: null });
+  const input = {
+    forge, log, scope, repositoryBindingId: bindingId, attemptId,
+    headBranch: 'asep/attempt-1', base: 'main', title: 't', body: 'b', leaseId: 'lease-1',
+  };
+  await log.begin(scope, {
+    operation: 'pr-upsert', repositoryBindingId: bindingId, attemptId,
+    requestFingerprint: `pr:${input.headBranch}->${input.base}`,
+    ownerToken: 'lease-1', naturalKey: input.headBranch,
+  });
+  const res = await upsertPrStep(input);
+  assert.equal(res.adopted, false, 'a missing PR must actually be created');
+  assert.equal(forge.upserts, 1);
+  assert.equal([...log.rows.values()][0]!.state, 'COMPLETED');
 });
 
 test('reusing a side-effect key with a DIFFERENT fingerprint fails closed', async () => {

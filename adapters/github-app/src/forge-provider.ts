@@ -275,6 +275,72 @@ export class GitHubAppForgeProvider {
     }
     throw new ForgeAuthExpiredError('pr-upsert', MAX_REMINT_ATTEMPTS + 1);
   }
+
+  // --- crash-recovery reconciliation (disp. P2-FINAL-HIGH-006, exit C7) ------
+  //
+  // Ask the REMOTE what is actually there, so a resume that finds a PENDING
+  // record can distinguish "the effect landed before the crash" from "it never
+  // ran" instead of blindly re-calling. Both are READ-ONLY: they publish
+  // nothing, so running them on a resume is always safe.
+
+  // The commit SHA the remote ref currently points at, or null when absent.
+  // `ls-remote` is a read; the ref name is still passed through the single
+  // ref-safety authority so a malformed/protected target cannot be probed.
+  async resolveRef(input: {
+    repository: RepositoryForgeConfig;
+    branch: string;
+  }): Promise<string | null> {
+    const safe = safeRefspecFor(input.branch);
+    const baseUrl = buildCloneUrl(input.repository.identity, this.allowedHosts);
+    const { token } = await this.credentials.mintForRepository(input.repository.repositoryId);
+    const authedUrl = baseUrl.replace(/^https:\/\//, 'https://x-access-token:' + token + '@');
+    try {
+      const res = await this.runGit(
+        ['ls-remote', '--', authedUrl, `refs/heads/${safe.branch}`],
+        { timeoutMs: 60_000 },
+      );
+      const line = res.stdout.trim();
+      if (line === '') return null;                    // ref does not exist yet
+      const sha = line.split(/\s+/)[0] ?? '';
+      return /^[0-9a-f]{40}$/.test(sha) ? sha : null;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new ForgePushError(scrub(msg, token));
+    }
+  }
+
+  // The PR whose head is `headBranch`, or null when none exists. Reuses the same
+  // find-by-head-branch query the idempotent upsert uses, so reconciliation and
+  // upsert agree on what "already there" means.
+  async findPullRequest(input: {
+    repository: RepositoryForgeConfig;
+    headBranch: string;
+  }): Promise<PullRequestResult | null> {
+    const { identity, repositoryId } = input.repository;
+    const owner = identity.githubOwner;
+    const repo = identity.githubRepo.replace(/\.git$/, '');
+    for (let attempt = 0; attempt <= MAX_REMINT_ATTEMPTS; attempt++) {
+      const { token } = await this.credentials.mintForRepository(repositoryId);
+      const octokit = this.octokitFor(token);
+      try {
+        const existing = await octokit.pulls.list({
+          owner, repo, head: `${owner}:${input.headBranch}`, state: 'all',
+        });
+        const match = existing.data.find((pr) => pr.head.ref === input.headBranch);
+        if (!match) return null;
+        return {
+          number: match.number,
+          url: match.html_url,
+          headBranch: match.head.ref,
+          baseBranch: match.base.ref,
+        };
+      } catch (err) {
+        if (isAuthExpiryError(err)) continue;
+        throw err;
+      }
+    }
+    throw new ForgeAuthExpiredError('pr-find', MAX_REMINT_ATTEMPTS + 1);
+  }
 }
 
 export { scrub as scrubToken };

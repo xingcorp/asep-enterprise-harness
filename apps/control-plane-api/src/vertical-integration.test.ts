@@ -137,6 +137,31 @@ class LocalBareForgeProvider implements ForgeProvider {
     this.prs.set(input.headBranch, pr);
     return pr;
   }
+
+  // Crash-recovery reconciliation (HIGH-006): read-only lookups against the REAL
+  // bare remote / the in-memory PR table, so the pipeline can tell "the effect
+  // landed" from "it never ran" without re-pushing or re-opening.
+  async resolveRef(_scope: TenantScope, input: {
+    repositoryBindingId: RepositoryBindingId;
+    branch: string;
+  }): Promise<string | null> {
+    const safe = safeRefspecFor(input.branch);
+    const res = await runGit(
+      ['ls-remote', '--', this.remoteBarePath, `refs/heads/${safe.branch}`],
+      { allowNonZero: true },
+    );
+    const line = res.stdout.trim();
+    if (line === '') return null;
+    const sha = line.split(/\s+/)[0] ?? '';
+    return /^[0-9a-f]{40}$/.test(sha) ? sha : null;
+  }
+
+  async findPullRequest(_scope: TenantScope, input: {
+    repositoryBindingId: RepositoryBindingId;
+    headBranch: string;
+  }): Promise<PullRequestRef | null> {
+    return this.prs.get(input.headBranch) ?? null;
+  }
 }
 
 async function artifactStoreFor(client: PgliteClient, objectsDir: string): Promise<ArtifactStore> {

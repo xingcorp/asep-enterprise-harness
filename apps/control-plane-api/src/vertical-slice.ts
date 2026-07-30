@@ -137,6 +137,30 @@ export class LocalBareForgeProvider implements ForgeProvider {
     this.prs.set(input.headBranch, pr);
     return pr;
   }
+
+  // --- crash-recovery reconciliation (HIGH-006) ------------------------------
+  // A REAL `ls-remote` against the bare remote: the resume asks what the remote
+  // actually holds instead of blindly re-pushing.
+  async resolveRef(_scope: TenantScope, input: {
+    repositoryBindingId: RepositoryBindingId;
+    branch: string;
+  }): Promise<string | null> {
+    const r = await runGit(
+      ['ls-remote', this.remoteBarePath, `refs/heads/${input.branch}`],
+      { allowNonZero: true },
+    );
+    const line = r.stdout.split('\n').find((l) => l.trim() !== '');
+    if (!line) return null;
+    const sha = line.split(/\s+/)[0];
+    return sha && /^[0-9a-f]{40}$/.test(sha) ? sha : null;
+  }
+
+  async findPullRequest(_scope: TenantScope, input: {
+    repositoryBindingId: RepositoryBindingId;
+    headBranch: string;
+  }): Promise<PullRequestRef | null> {
+    return this.prs.get(input.headBranch) ?? null;
+  }
 }
 
 export interface VerticalSliceInput {

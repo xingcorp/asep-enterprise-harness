@@ -308,6 +308,25 @@ export interface ForgeProvider {
     title: string;
     body: string;
   }): Promise<PullRequestRef>;
+  // --- crash-recovery reconciliation (disp. P2-FINAL-HIGH-006, exit C7) ------
+  //
+  // A resume that finds a PENDING push/PR record cannot tell whether the effect
+  // reached the forge before the crash. Re-calling blindly is what the two-phase
+  // protocol exists to prevent, so the caller first asks the REMOTE what is
+  // actually there — the natural-key reconciliation the protocol requires.
+  //
+  // resolveRef returns the commit SHA the remote ref currently points at, or
+  // null when the ref does not exist (the push never landed).
+  resolveRef(scope: TenantScope, input: {
+    repositoryBindingId: RepositoryBindingId;
+    branch: string;
+  }): Promise<string | null>;
+  // findPullRequest returns the PR whose head is `headBranch`, or null when no
+  // PR exists yet (the upsert never landed).
+  findPullRequest(scope: TenantScope, input: {
+    repositoryBindingId: RepositoryBindingId;
+    headBranch: string;
+  }): Promise<PullRequestRef | null>;
 }
 
 // ---------------------------------------------------------------------------

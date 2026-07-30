@@ -478,6 +478,29 @@ export async function pushStep(input: PushStepInput): Promise<PushStepResult> {
   if (begun.existed && begun.state === 'COMPLETED') {
     return { step: 'push', status: 'OK', pushed: false, adopted: true };
   }
+  // Crash-after-push-before-complete (HIGH-006): the record is still PENDING, so
+  // we cannot tell from the log alone whether the ref reached the remote. Ask the
+  // REMOTE (natural key = the branch) before re-pushing. When the ref already
+  // points at exactly this commit the push landed, so adopt it and finish the
+  // record instead of re-calling the forge.
+  if (begun.existed && begun.state === 'PENDING') {
+    const remoteSha = await input.forge.resolveRef(input.scope, {
+      repositoryBindingId: input.repositoryBindingId,
+      branch: input.branch,
+    });
+    if (remoteSha === input.commitSha) {
+      await input.log.complete(input.scope, {
+        operation: 'push',
+        repositoryBindingId: input.repositoryBindingId,
+        attemptId: input.attemptId,
+        ownerToken: input.leaseId,
+        naturalKey: input.branch,
+      });
+      return { step: 'push', status: 'OK', pushed: false, adopted: true };
+    }
+    // Ref absent, or pointing elsewhere → the push for THIS commit did not
+    // land; performing it below is safe (pushBranch still enforces ref safety).
+  }
   await input.forge.pushBranch(input.scope, {
     repositoryBindingId: input.repositoryBindingId,
     branch: input.branch,
@@ -541,6 +564,28 @@ export async function upsertPrStep(input: UpsertPrStepInput): Promise<UpsertPrSt
       pr: begun.resultRef as PullRequestRef,
       adopted: true,
     };
+  }
+  // Crash-after-upsert-before-complete (HIGH-006): a PENDING record cannot tell
+  // us whether the PR was already opened. Ask the FORGE by natural key (the head
+  // branch) before calling upsert again, and adopt an existing PR so a resume
+  // converges on ONE pull request.
+  if (begun.existed && begun.state === 'PENDING') {
+    const existing = await input.forge.findPullRequest(input.scope, {
+      repositoryBindingId: input.repositoryBindingId,
+      headBranch: input.headBranch,
+    });
+    if (existing) {
+      await input.log.complete(input.scope, {
+        operation: 'pr-upsert',
+        repositoryBindingId: input.repositoryBindingId,
+        attemptId: input.attemptId,
+        ownerToken: input.leaseId,
+        resultRef: existing,
+        naturalKey: input.headBranch,
+      });
+      return { step: 'upsert-pr', status: 'OK', pr: existing, adopted: true };
+    }
+    // No PR for this head branch → the upsert did not land; safe to perform.
   }
   const pr = await input.forge.upsertPullRequest(input.scope, {
     repositoryBindingId: input.repositoryBindingId,
