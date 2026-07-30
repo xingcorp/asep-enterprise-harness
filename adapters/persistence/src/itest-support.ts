@@ -52,3 +52,40 @@ export async function migratedClient(max = 4): Promise<{ client: SqlClient; pool
   await migrate(client);
   return { client, pool };
 }
+
+// The env vars the integration gate sets to the live MinIO/S3 backend (disp.
+// P2-REREVIEW-MED-NEW-001). Unset in a normal unit run — requireS3Config()
+// throws so a misrouted artifact suite fails closed rather than skipping.
+export const S3_ENV = {
+  endpoint: 'ASEP_S3_ENDPOINT',
+  accessKey: 'ASEP_S3_ACCESS_KEY',
+  secretKey: 'ASEP_S3_SECRET_KEY',
+  region: 'ASEP_S3_REGION',
+} as const;
+
+export interface ItestS3Config {
+  readonly endpoint: string;
+  readonly region: string;
+  readonly accessKeyId: string;
+  readonly secretAccessKey: string;
+}
+
+export function requireS3Config(): ItestS3Config {
+  const endpoint = process.env[S3_ENV.endpoint];
+  const accessKeyId = process.env[S3_ENV.accessKey];
+  const secretAccessKey = process.env[S3_ENV.secretKey];
+  if (!endpoint || !accessKeyId || !secretAccessKey) {
+    throw new Error(
+      `${S3_ENV.endpoint}/${S3_ENV.accessKey}/${S3_ENV.secretKey} are not set — ` +
+        `the artifact object-store suite requires a real S3-compatible backend ` +
+        `(MinIO). This suite must run under the integration gate, never bare. ` +
+        `Failing closed rather than skipping (P2-REREVIEW-MED-NEW-001).`,
+    );
+  }
+  return {
+    endpoint,
+    accessKeyId,
+    secretAccessKey,
+    region: process.env[S3_ENV.region] ?? 'us-east-1',
+  };
+}

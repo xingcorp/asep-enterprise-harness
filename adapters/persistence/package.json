@@ -11,9 +11,10 @@
   },
   "dependencies": {
     "@asep/contracts": "workspace:*",
-    "@asep/ports": "workspace:*",
     "@asep/domain": "workspace:*",
     "@asep/observability": "workspace:*",
+    "@asep/ports": "workspace:*",
+    "@aws-sdk/client-s3": "3.1093.0",
     "pg": "8.22.0"
   },
   "devDependencies": {

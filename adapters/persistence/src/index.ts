@@ -34,7 +34,7 @@ export { SqlWorkspaceLeaseRepository } from './lease-repository.js';
 // Content-addressed immutable artifact store (S3).
 export type { ObjectStore } from './object-store.js';
 export {
-  FilesystemObjectStore, ObjectExistsError, ObjectNotFoundError,
+  FilesystemObjectStore, S3ObjectStore, ObjectExistsError, ObjectNotFoundError,
 } from './object-store.js';
 export {
   ContentAddressedArtifactStore, ArtifactChecksumError, ArtifactNotFoundError,

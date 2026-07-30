@@ -41,6 +41,11 @@ export const REQUIRED_ITEST_SUITES = Object.freeze({
   // dropping or renaming the end-to-end suite turns the gate RED (disp.
   // P2-REREVIEW-MED-NEW-002).
   'asep-suite:vertical-slice-real': 'apps/control-plane-api/src/vertical-slice.itest.ts',
+  // MinIO artifact-bytes proof: drives the ObjectStore contract (put/get/
+  // create-only/checksum) against a REAL S3-compatible bucket, so a broken S3
+  // path turns the gate RED instead of silently passing on the filesystem
+  // backend (disp. P2-REREVIEW-MED-NEW-001).
+  'asep-suite:object-store-s3': 'adapters/persistence/src/object-store-s3.itest.ts',
 });
 
 export const SUITE_ID_PREFIX = 'SUITE-ID:';
