@@ -143,8 +143,16 @@ export class ClaudeCodingProvider implements CodingAgentProvider {
     const started = Date.now();
     let stdout = '';
     let stderr = '';
+    // G3 wall-clock timeout: the budget's maxWallClockMinutes is an ENFORCED
+    // deadline, not advice. Without a timer a hung/silent agent pins the attempt
+    // forever — AbortSignal only helps when something else notices. On expiry the
+    // child is SIGKILLed and the attempt reports TIMED_OUT, so the caller fails
+    // closed with the raw stream captured up to that point.
+    const timeoutMs = Math.max(1, Math.round(req.budget.maxWallClockMinutes * 60_000));
     const outcome = await new Promise<
-      { kind: 'exit'; code: number | null } | { kind: 'error'; err: Error }
+      | { kind: 'exit'; code: number | null }
+      | { kind: 'error'; err: Error }
+      | { kind: 'timeout' }
     >((resolve) => {
       const child = spawn(exe, args, {
         env: spawnEnv,
@@ -152,17 +160,29 @@ export class ClaudeCodingProvider implements CodingAgentProvider {
         stdio: ['ignore', 'pipe', 'pipe'],
       });
 
+      let timer: NodeJS.Timeout | undefined;
+      const clear = () => { if (timer !== undefined) clearTimeout(timer); };
       const onAbort = () => { try { child.kill('SIGKILL'); } catch { /* gone */ } };
       if (req.signal.aborted) onAbort();
       else req.signal.addEventListener('abort', onAbort, { once: true });
 
+      timer = setTimeout(() => {
+        // Kill the whole process (SIGKILL, not SIGTERM: a wedged agent may ignore
+        // a polite signal) and resolve as a timeout regardless of the exit event.
+        try { child.kill('SIGKILL'); } catch { /* gone */ }
+        req.signal.removeEventListener('abort', onAbort);
+        resolve({ kind: 'timeout' });
+      }, timeoutMs);
+
       child.stdout.on('data', (d: Buffer) => { stdout += d.toString('utf8'); });
       child.stderr.on('data', (d: Buffer) => { stderr += d.toString('utf8'); });
       child.on('error', (err) => {
+        clear();
         req.signal.removeEventListener('abort', onAbort);
         resolve({ kind: 'error', err });
       });
       child.on('close', (code) => {
+        clear();
         req.signal.removeEventListener('abort', onAbort);
         resolve({ kind: 'exit', code });
       });
@@ -185,6 +205,23 @@ export class ClaudeCodingProvider implements CodingAgentProvider {
     }
 
     if (req.signal.aborted) return this.aborted('cancelled during execution', eventRef);
+
+    if (outcome.kind === 'timeout') {
+      // G3: the wall-clock budget was exhausted and the child was SIGKILLed. This
+      // is BUDGET_EXHAUSTED, not FAILED: the attempt did not fail on its merits,
+      // it ran out of its allotted time. The raw stream captured up to the kill is
+      // already persisted above, so evidence of the partial run survives.
+      return {
+        status: 'BUDGET_EXHAUSTED',
+        summary: `Claude attempt exceeded its wall-clock budget of ${req.budget.maxWallClockMinutes} minute(s) and was terminated.`,
+        knownLimitations: [`wall-clock timeout after ${timeoutMs}ms (SIGKILL)`],
+        usage: {
+          inputTokens: 0, outputTokens: 0, modelCostUsd: 0, toolCalls: 0,
+          wallClockMs: Date.now() - started,
+        },
+        eventArtifactRefs: eventRef ? [eventRef] : [],
+      };
+    }
 
     if (outcome.kind === 'error') {
       return this.failed(`provider process error: ${outcome.err.message}`, eventRef);

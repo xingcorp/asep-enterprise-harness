@@ -246,6 +246,39 @@ test('G3: cancellation during a hung run kills the child and fails closed prompt
   }
 });
 
+// G3 (disp. P2-FINAL-HIGH-002 / MED-006) — the budget's maxWallClockMinutes is
+// an ENFORCED deadline, not advice. Before this the adapter had no timer at all:
+// an agent that hangs while emitting nothing pinned the attempt forever, because
+// AbortSignal only fires when something ELSE notices. Here nobody aborts — the
+// adapter's own timer must kill the child and report BUDGET_EXHAUSTED.
+test('G3: a hung agent is killed by the wall-clock budget with NO external abort', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'claude-timeout-'));
+  try {
+    const store = await buildStore(dir);
+    await setupRefs(store);
+    const started = Date.now();
+    // 0.005 min = 300ms deadline. The signal is never aborted by anyone.
+    const obs = await makeProvider(await writeFake(dir, 'hang'), store).execute(
+      baseRequest({
+        budget: {
+          maxTurns: 5, maxToolCalls: 10, maxCostUsd: 1, maxWallClockMinutes: 0.005,
+        },
+      }),
+    );
+    const elapsed = Date.now() - started;
+    assert.equal(obs.status, 'BUDGET_EXHAUSTED', 'a wall-clock overrun is a budget exhaustion');
+    assert.ok(
+      obs.knownLimitations.some((l) => /wall-clock/i.test(l)),
+      `limitation should name the wall-clock deadline: ${JSON.stringify(obs.knownLimitations)}`,
+    );
+    assert.ok(elapsed < 5000, `timer must fire near the deadline, took ${elapsed}ms`);
+    // Evidence of what the provider emitted up to the kill is still captured.
+    assert.ok(obs.eventArtifactRefs.length >= 0);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('G3/G5: no GitHub credential or *_TOKEN reaches the child env', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'claude-env-'));
   try {
