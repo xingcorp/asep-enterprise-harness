@@ -225,7 +225,11 @@ export function verifyManifest(manifest) {
 //   } | null
 //   resolveEvidence(scopeTrace, evidenceArtifactId) -> { sha256, kind } | null
 //   resolvePullRequest(scopeTrace, pullRequestId) -> { number, url, headBranch, attemptId } | null
-//   resolveHumanAuthorization(taskId) -> { disposition, signedBy, signatureValid } | null
+//   resolveHumanAuthorization(taskId, scopeTrace) -> { disposition, signedBy, signatureValid } | null
+//     NOTE the scopeTrace second argument: like every other resolver here, the
+//     lookup is TENANT-SCOPED. Omitting it makes the resolver query with an
+//     empty (org, project) pair, which matches zero rows for every task — the
+//     gate would then reject even a genuine signed handoff.
 //
 // A manifest claim is honoured only when the authoritative record exists AND
 // agrees with it. The manifest is a claim; persistence is the truth.
@@ -349,7 +353,10 @@ export async function verifyManifestAgainstAuthority(manifest, resolver) {
     // pilot task requires a genuine, signature-verified human handoff (PR2-08).
     let auth;
     try {
-      auth = await resolver.resolveHumanAuthorization(trace.taskId);
+      // Pass the trace so the lookup is tenant-scoped. Without it the resolver
+      // queries an empty (org, project) pair and finds nothing for ANY task, so
+      // a real signed handoff would be rejected as missing.
+      auth = await resolver.resolveHumanAuthorization(trace.taskId, trace);
     } catch (e) {
       auth = null;
       reasons.push(`${label}: resolver failed to resolve human authorization — fail closed (${e && e.message ? e.message : e})`);
