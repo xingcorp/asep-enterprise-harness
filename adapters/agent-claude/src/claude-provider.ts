@@ -43,6 +43,31 @@ export interface AgentSandboxConfig {
   readonly workdir: string;               // -w working dir inside the container
 }
 
+// Explicit acknowledgement that this provider will run the agent DIRECTLY on the
+// host with no OS-enforced isolation (disp. P2-FINAL-HIGH-002, exit E8/G3/G5).
+//
+// THE FINDING. `sandbox` being merely optional meant a caller that forgot to
+// configure it silently got a host-execution agent — the E8 isolation invariant
+// could be lost by omission rather than by decision. Isolation must be the
+// DEFAULT and its absence must be a deliberate, visible choice.
+//
+// So an unsandboxed provider is now unconstructible unless the caller passes
+// this literal. Test suites that deliberately exercise the real spawn/stdout
+// boundary on the host pass it; a production root cannot obtain it by accident,
+// and `productionSeams` never passes it (its `sandbox` field is required).
+export const HOST_EXECUTION_WAIVER = 'pilot-only-no-agent-isolation' as const;
+
+export class AgentIsolationRequiredError extends Error {
+  constructor() {
+    super(
+      'ClaudeCodingProvider requires an OS-enforced sandbox: pass cfg.sandbox, or ' +
+      `explicitly set cfg.hostExecutionWaiver = '${HOST_EXECUTION_WAIVER}' to accept ` +
+      'UNISOLATED host execution (fail closed rather than silently dropping isolation)',
+    );
+    this.name = 'AgentIsolationRequiredError';
+  }
+}
+
 export interface ClaudeProviderConfig {
   // PINNED executable + model + CLI version (G1). Recorded on every observation
   // artifact so a run's provenance is unambiguous.
@@ -50,10 +75,12 @@ export interface ClaudeProviderConfig {
   readonly model: string;              // e.g. 'claude-sonnet-4-20250514'
   readonly cliVersion: string;         // pinned, asserted against `--version` in live mode
   readonly maxTurns: number;
-  // When set, the agent runs in-container (see AgentSandboxConfig). Optional so
-  // the fake-CLI contract suite keeps exercising the real spawn/stdout boundary
-  // on the host; the live in-container proof lives in *.itest.ts.
+  // When set, the agent runs in-container (see AgentSandboxConfig). Omitting it
+  // is only legal alongside the explicit waiver below.
   readonly sandbox?: AgentSandboxConfig;
+  // Required when `sandbox` is absent. Anything else (including undefined) makes
+  // the constructor throw AgentIsolationRequiredError.
+  readonly hostExecutionWaiver?: typeof HOST_EXECUTION_WAIVER;
 }
 
 // The adapter needs a scope + artifact store to persist the raw event stream.
@@ -67,6 +94,12 @@ export class ClaudeCodingProvider implements CodingAgentProvider {
     private readonly scope: TenantScope,
     private readonly artifacts: ArtifactStore,
   ) {
+    // E8/G3: isolation is the DEFAULT. An unsandboxed provider is only
+    // constructible when the caller states the waiver literally, so a forgotten
+    // config can never downgrade the agent to host execution.
+    if (!cfg.sandbox && cfg.hostExecutionWaiver !== HOST_EXECUTION_WAIVER) {
+      throw new AgentIsolationRequiredError();
+    }
     this.providerId = `claude:${cfg.model}@cli-${cfg.cliVersion}`;
   }
 

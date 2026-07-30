@@ -16,7 +16,9 @@ import { mkdtemp, rm, mkdir, writeFile, chmod } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ClaudeCodingProvider } from './index.js';
+import {
+  ClaudeCodingProvider, HOST_EXECUTION_WAIVER, AgentIsolationRequiredError,
+} from './index.js';
 import {
   PgliteClient, migrate, ContentAddressedArtifactStore, FilesystemObjectStore,
 } from '@asep/persistence';
@@ -127,12 +129,48 @@ async function setupRefs(store: ArtifactStore): Promise<void> {
   ctxRef = await store.put(scope, { kind: 'context-pack', content: cr, sha256: sha(cr), contentType: 'text/plain' });
 }
 
+// This suite deliberately exercises the REAL spawn/stdout boundary on the host
+// (that is the point: a fake CLI script, real process, real stream parsing), so
+// it must state the host-execution waiver LITERALLY. Isolation is the default —
+// see the fail-closed test below, and productionSeams, which never passes it.
 function makeProvider(cli: string, store: ArtifactStore): ClaudeCodingProvider {
   return new ClaudeCodingProvider(
-    { executable: cli, model: 'claude-test', cliVersion: '0.0.0-test', maxTurns: 5 },
+    {
+      executable: cli, model: 'claude-test', cliVersion: '0.0.0-test', maxTurns: 5,
+      hostExecutionWaiver: HOST_EXECUTION_WAIVER,
+    },
     scope, store,
   );
 }
+
+// E8/G3: omitting the sandbox WITHOUT the waiver must be unconstructible, so a
+// forgotten config can never silently downgrade the agent to host execution.
+test('E8/G3: an unsandboxed provider without the explicit waiver fails closed', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'claude-isolation-'));
+  try {
+    const store = await buildStore(dir);
+    assert.throws(
+      () => new ClaudeCodingProvider(
+        { executable: '/bin/true', model: 'm', cliVersion: 'v', maxTurns: 1 },
+        scope, store,
+      ),
+      /requires an OS-enforced sandbox/,
+    );
+    // A wrong-valued waiver is not a waiver either.
+    assert.throws(
+      () => new ClaudeCodingProvider(
+        {
+          executable: '/bin/true', model: 'm', cliVersion: 'v', maxTurns: 1,
+          hostExecutionWaiver: 'yes-please' as never,
+        },
+        scope, store,
+      ),
+      /requires an OS-enforced sandbox/,
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 test('G1/G2/G4: a well-formed stream yields an untrusted observation with pinned provenance', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'claude-ok-'));
@@ -338,6 +376,50 @@ test('G5: concurrent attempts through one adapter show no state crossover', asyn
     assert.equal(obsB.summary, `tag=${wsB}`);
     assert.equal(obsA.providerSessionId, wsA);
     assert.equal(obsB.providerSessionId, wsB);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// --------------------------------------------------------------------------
+// E8/G3 (disp. P2-FINAL-HIGH-002) — isolation is the DEFAULT, not an option a
+// caller can lose by forgetting config. A provider with neither a sandbox nor
+// the literal waiver must be UNCONSTRUCTIBLE, so a misconfigured production
+// root cannot silently obtain a host-execution agent.
+// --------------------------------------------------------------------------
+
+test('E8/G3: a provider with NEITHER sandbox NOR waiver is unconstructible (fail closed)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'claude-iso-'));
+  try {
+    const store = await buildStore(dir);
+    const cli = await writeFake(dir, 'ok');
+    // No sandbox, no waiver → throws rather than defaulting to host execution.
+    assert.throws(
+      () => new ClaudeCodingProvider(
+        { executable: cli, model: 'm', cliVersion: 'v', maxTurns: 1 },
+        scope, store,
+      ),
+      AgentIsolationRequiredError,
+    );
+    // A WRONG waiver string is not a waiver either (no near-miss acceptance).
+    assert.throws(
+      () => new ClaudeCodingProvider(
+        {
+          executable: cli, model: 'm', cliVersion: 'v', maxTurns: 1,
+          hostExecutionWaiver: 'yes-please' as never,
+        },
+        scope, store,
+      ),
+      AgentIsolationRequiredError,
+    );
+    // A sandbox alone (no waiver) is legal — isolation is the intended path.
+    assert.ok(new ClaudeCodingProvider(
+      {
+        executable: cli, model: 'm', cliVersion: 'v', maxTurns: 1,
+        sandbox: { image: 'alpine@sha256:' + 'a'.repeat(64), runFlags: ['run', '--rm'], workdir: '/w' },
+      },
+      scope, store,
+    ));
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
