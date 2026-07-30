@@ -20,6 +20,20 @@ import type { SqlExecutor, SqlRow } from './sql.js';
 import { OptimisticConcurrencyError, ScopeViolationError } from './sql.js';
 import { ulid } from './ulid.js';
 
+// A caller-supplied evidence ArtifactRef whose sha256 disagrees with the
+// authoritative artifacts row is rejected (disp. P2-FINAL-HIGH-005). The
+// composite FK already forces the artifact to exist in THIS scope, but it does
+// not force the ref's checksum to match the stored bytes — so a forged or stale
+// ref carrying the right id but a wrong sha256 would otherwise be persisted.
+export class EvidenceRefMismatchError extends Error {
+  constructor(field: 'sha256' | 'missing', expected: string, claimed: string) {
+    super(
+      `evidence ref ${field} mismatch: authoritative '${expected}', ref claimed '${claimed}' (fail closed)`,
+    );
+    this.name = 'EvidenceRefMismatchError';
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Row shapes (the load-bearing columns; JSONB refs decoded as ArtifactRef).
 // ---------------------------------------------------------------------------
@@ -433,6 +447,23 @@ export class AttemptRepository {
   async attachEvidence(
     scope: TenantScope, id: AttemptId, expectedVersion: number, ref: ArtifactRef,
   ): Promise<number> {
+    // Cross-check the caller-supplied ref against the AUTHORITATIVE artifacts
+    // row (HIGH-005): resolve the artifact within THIS scope and reject a ref
+    // whose sha256 disagrees with the stored bytes before persisting it. The
+    // composite FK below still enforces scope+existence at the DB, but the
+    // checksum equality is what stops a forged/stale ref from being adopted.
+    const auth = await this.db.query(
+      `select sha256 from artifacts
+       where id = $1 and organization_id = $2 and project_id = $3`,
+      [ref.artifactId, scope.organizationId, scope.projectId],
+    );
+    if (auth.rowCount === 0) {
+      throw new EvidenceRefMismatchError('missing', 'an artifact in this scope', ref.artifactId);
+    }
+    const authoritativeSha = auth.rows[0]!['sha256'] as string;
+    if (authoritativeSha !== ref.sha256) {
+      throw new EvidenceRefMismatchError('sha256', authoritativeSha, ref.sha256);
+    }
     const r = await this.db.query(
       `update attempts set evidence_artifact_id = $4, evidence_sha256 = $5, version = version + 1
        where id = $1 and organization_id = $2 and project_id = $3 and version = $6`,

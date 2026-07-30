@@ -295,13 +295,33 @@ test('HIGH-005: attaching an evidence artifact from another project is rejected 
   const attemptId = await seedAttempt(client, scope, binding.id);
   // An evidence artifact that lives in scope B.
   const foreignArtifact = await seedArtifact(client, other.scope, 'd'.repeat(64));
-  // Attaching it to scope A's attempt has no matching (id, orgA, projA) row in
-  // artifacts, so the composite FK rejects it.
+  // Attaching it to scope A's attempt fails closed: the authoritative-checksum
+  // cross-check resolves the artifact WITHIN scope A first, finds no such row,
+  // and rejects before the composite FK is even reached.
   await assert.rejects(
     () => attempts.attachEvidence(scope, attemptId, 0, {
       artifactId: foreignArtifact as never, sha256: 'd'.repeat(64), kind: 'evidence-bundle',
     }),
-    /foreign key|violates/i,
+    /mismatch|foreign key|violates/i,
+  );
+  await client.close();
+});
+
+test('HIGH-005: an evidence ref whose sha256 disagrees with the stored artifact is rejected', async () => {
+  const client = await freshDb();
+  const { scope, binding } = await seedScope(client);
+  const attempts = new AttemptRepository(client);
+  const attemptId = await seedAttempt(client, scope, binding.id);
+  // A real in-scope artifact whose authoritative sha256 is all-'d'.
+  const artifactId = await seedArtifact(client, scope, 'd'.repeat(64));
+  // A ref that names the RIGHT artifact but claims a DIFFERENT checksum (a
+  // forged/stale ref). The composite FK would accept it — the id + scope match —
+  // so only the checksum cross-check can catch it.
+  await assert.rejects(
+    () => attempts.attachEvidence(scope, attemptId, 0, {
+      artifactId: artifactId as never, sha256: 'e'.repeat(64), kind: 'evidence-bundle',
+    }),
+    /sha256 mismatch/,
   );
   await client.close();
 });
