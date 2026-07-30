@@ -87,13 +87,19 @@ export class SqlSideEffectLog implements SideEffectLog {
       // Attempt to claim the effect with a fresh PENDING row. The UNIQUE
       // (org, project, scope, semantic_key) constraint makes a second concurrent
       // begin() lose here → adopt path below.
+      // `repository_binding_id` carries the SAME binding as the legacy `scope`
+      // text column, but as a composite-FK-bound reference (migration 0012, disp.
+      // P2-REREVIEW HIGH-005): the DB now rejects a side-effect row naming a
+      // binding outside this row's (organization_id, project_id) instead of
+      // trusting an unconstrained string.
       await this.client.query(
         `insert into side_effect_records
-           (id, organization_id, project_id, scope, semantic_key, request_fingerprint,
-            state, owner_token, natural_key)
-         values ($1, $2, $3, $4, $5, $6, 'PENDING', $7, $8)`,
+           (id, organization_id, project_id, scope, repository_binding_id,
+            semantic_key, request_fingerprint, state, owner_token, natural_key)
+         values ($1, $2, $3, $4, $5, $6, $7, 'PENDING', $8, $9)`,
         [
-          id, scope.organizationId, scope.projectId, scopeCol, key,
+          id, scope.organizationId, scope.projectId, scopeCol,
+          input.repositoryBindingId, key,
           input.requestFingerprint, input.ownerToken, input.naturalKey ?? null,
         ],
       );

@@ -292,3 +292,61 @@ test('C7: different operations for the same attempt are INDEPENDENT effects', as
   assert.equal(pr.existed, false, 'the PR effect is independent of the push effect');
   await client.close();
 });
+
+// ---------------------------------------------------------------------------
+// HIGH-005 (migration 0012) — the effect's repository binding is DB-scoped.
+//
+// `scope` was a bare text column holding a binding id with no foreign key, so a
+// side-effect row could name a binding belonging to ANOTHER tenant (or one that
+// does not exist at all) and the database would accept it. The authoritative
+// crash-recovery record must not be able to point outside its own scope, so 0012
+// adds `repository_binding_id` with the composite FK
+// (repository_binding_id, organization_id, project_id) -> repository_bindings.
+// This proves the constraint is enforced by the DB, not by a row filter.
+// ---------------------------------------------------------------------------
+
+test('HIGH-005: a side effect naming a binding from another project is rejected by the DB', async () => {
+  const { client, scope, log } = await fresh();
+  // A second tenant with its OWN binding.
+  const orgs = new OrganizationRepository(client);
+  const projects = new ProjectRepository(client);
+  const bindings = new RepositoryBindingRepository(client);
+  const org2 = await orgs.create({ name: 'Other' });
+  const proj2 = await projects.create({
+    organizationId: org2.id, name: 'other', defaultBranch: 'main',
+  });
+  const scope2: TenantScope = { organizationId: org2.id, projectId: proj2.id };
+  const foreign = await bindings.create(scope2, {
+    githubHost: 'github.com', githubOwner: 'other', githubRepo: 'repo',
+    defaultBaseBranch: 'main',
+  });
+
+  // Claiming tenant A's scope while naming tenant B's binding must be refused by
+  // the composite FK — there is no (bindingB, orgA, projA) row in bindings.
+  await assert.rejects(
+    () => log.begin(scope, {
+      operation: 'push',
+      repositoryBindingId: foreign.id,
+      attemptId,
+      requestFingerprint: 'push:branch@sha',
+      ownerToken: 'lease-1',
+    }),
+    /foreign key|violates/i,
+  );
+  await client.close();
+});
+
+test('HIGH-005: a side effect naming a NON-EXISTENT binding is rejected by the DB', async () => {
+  const { client, scope, log } = await fresh();
+  await assert.rejects(
+    () => log.begin(scope, {
+      operation: 'commit',
+      repositoryBindingId: 'Z'.repeat(26) as RepositoryBindingId,
+      attemptId,
+      requestFingerprint: 'commit:attempt-1',
+      ownerToken: 'lease-1',
+    }),
+    /foreign key|violates/i,
+  );
+  await client.close();
+});

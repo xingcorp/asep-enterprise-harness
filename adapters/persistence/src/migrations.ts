@@ -390,6 +390,37 @@ alter table attempts
   references tasks (id, organization_id, project_id, repository_binding_id);
 `;
 
+// ---------------------------------------------------------------------------
+// 0012 — side-effect records reference their repository binding by a SCOPED FK
+// (disp. P2-REREVIEW HIGH-005, exit C2b).
+//
+// 0007 stored the effect's target as `scope text` — a bare string that happened
+// to hold a repository_binding_id with nothing enforcing that it names a real
+// binding, let alone one inside the row's own (organization_id, project_id). A
+// crash-recovery record that points at another tenant's binding, or at a binding
+// that no longer exists, is exactly the kind of dangling authority reference the
+// composite-FK discipline exists to prevent.
+//
+// We add a typed, FK-backed column alongside it and backfill from the existing
+// text, then constrain. `scope` itself is left in place because the UNIQUE key
+// (organization_id, project_id, scope, semantic_key) is load-bearing for the
+// two-phase protocol's collision semantics; the new column is what makes the
+// reference authoritative. Append-only: earlier migrations are untouched.
+// ---------------------------------------------------------------------------
+const M0012 = `
+alter table side_effect_records
+  add column repository_binding_id char(26);
+
+update side_effect_records
+  set repository_binding_id = scope
+  where repository_binding_id is null;
+
+alter table side_effect_records
+  add constraint side_effect_binding_scoped_fk
+  foreign key (repository_binding_id, organization_id, project_id)
+  references repository_bindings (id, organization_id, project_id);
+`;
+
 // Ordered, immutable migration set. Order is by id; the runner asserts it.
 export const MIGRATIONS: readonly Migration[] = Object.freeze([
   { id: '0001_init_tenancy', sql: M0001 },
@@ -403,4 +434,5 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   { id: '0009_scoped_evidence_refs', sql: M0009 },
   { id: '0010_human_authorizations', sql: M0010 },
   { id: '0011_hierarchy_binding_coherence', sql: M0011 },
+  { id: '0012_side_effect_binding_fk', sql: M0012 },
 ]);
