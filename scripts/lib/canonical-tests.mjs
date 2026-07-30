@@ -152,6 +152,12 @@ export const REQUIRED_SUITES = Object.freeze({
   // scoping hold through the seam, and that no merge capability exists.
   // Registered so a dropped/renamed conformance suite turns the gate RED.
   'asep-suite:forge-port-adapter': 'adapters/github-app/src/port-adapter.test.ts',
+  // HIGH-008 production composition root: proves the ONE wiring that binds the
+  // REAL ClaudeCodingProvider + GitHubAppForgePort to the seams the vertical
+  // slice consumes, and that an unconfigured deployment fails CLOSED instead of
+  // silently falling back to a test double. Registered so deleting the only
+  // production wiring turns the gate RED.
+  'asep-suite:production-root': 'apps/control-plane-api/src/production-root.test.ts',
 });
 
 /** The machine-readable marker a suite prints at module load: `SUITE-ID: <id>`. */
