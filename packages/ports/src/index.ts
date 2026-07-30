@@ -364,6 +364,106 @@ export interface EvidenceStore {
 export type SideEffectOperation = 'commit' | 'push' | 'pr-upsert';
 export type SideEffectState = 'PENDING' | 'COMPLETED' | 'FAILED';
 
+// The authoritative outcome recorded on a COMPLETED side effect (disp.
+// P2-REREVIEW HIGH-005, exit D6).
+//
+// THE HOLE. `resultRef` was typed `unknown` and persisted as free JSONB, and
+// every consumer recovered it with a blind cast (`begun.resultRef as
+// CommitResultRef`). On a resume the adopted commit SHA and evidence id — the
+// facts the whole crash-safety protocol hinges on — were therefore trusted
+// without ever being checked. A row with a missing, truncated, or wrong-shaped
+// payload (a partial write, a hand-edited row, a schema drift) would sail
+// through the cast and be adopted as authoritative.
+//
+// So the payload is now a CLOSED discriminated union with a runtime parser.
+// Writers construct one of these shapes; readers must call
+// `parseSideEffectResultRef` and fail closed on anything else, rather than
+// asserting a type the database never guaranteed.
+export interface CommitResultRef {
+  readonly kind: 'commit';
+  readonly commitSha: string;      // 40-hex harness commit
+  readonly evidenceId: string;     // the id embedded in its ASEP-Evidence trailer
+}
+
+export interface PullRequestResultRef {
+  readonly kind: 'pr-upsert';
+  readonly number: number;
+  readonly url: string;
+  readonly headBranch: string;
+  readonly baseBranch: string;
+}
+
+export type SideEffectResultRef = CommitResultRef | PullRequestResultRef;
+
+/** A persisted result_ref did not match any known shape — refuse to adopt it. */
+export class SideEffectResultRefError extends Error {
+  constructor(operation: string, reason: string) {
+    super(
+      `side-effect ${operation} result_ref is not a valid authoritative outcome: ${reason} ` +
+      `— refusing to adopt an unverified payload (fail closed)`,
+    );
+    this.name = 'SideEffectResultRefError';
+  }
+}
+
+const SHA40 = /^[0-9a-f]{40}$/;
+
+/**
+ * Validate a persisted `result_ref` against the closed union. Returns the typed
+ * ref, or throws SideEffectResultRefError. `expect` pins which shape the caller
+ * requires, so a commit record carrying a PR payload (or vice versa) fails
+ * closed instead of being coerced.
+ */
+export function parseSideEffectResultRef(
+  raw: unknown,
+  expect: SideEffectResultRef['kind'],
+): SideEffectResultRef {
+  if (raw === null || typeof raw !== 'object') {
+    throw new SideEffectResultRefError(expect, `expected an object, got ${typeof raw}`);
+  }
+  const rec = raw as Record<string, unknown>;
+  // Records written before this union existed carry no `kind`. Treat the
+  // EXPECTED kind as the discriminator in that case (the semantic key already
+  // pins the operation), then validate the fields strictly — so legacy rows are
+  // still checked, never waved through.
+  const kind = typeof rec['kind'] === 'string' ? rec['kind'] : expect;
+  if (kind !== expect) {
+    throw new SideEffectResultRefError(expect, `payload declares kind '${String(kind)}'`);
+  }
+  if (expect === 'commit') {
+    const commitSha = rec['commitSha'];
+    const evidenceId = rec['evidenceId'];
+    if (typeof commitSha !== 'string' || !SHA40.test(commitSha)) {
+      throw new SideEffectResultRefError(expect, 'commitSha is not a 40-hex commit id');
+    }
+    if (typeof evidenceId !== 'string' || evidenceId === '') {
+      throw new SideEffectResultRefError(expect, 'evidenceId is missing');
+    }
+    return { kind: 'commit', commitSha, evidenceId };
+  }
+  const number = rec['number'];
+  const url = rec['url'];
+  const headBranch = rec['headBranch'];
+  const baseBranch = rec['baseBranch'];
+  if (typeof number !== 'number' || !Number.isInteger(number) || number <= 0) {
+    throw new SideEffectResultRefError(expect, 'number is not a positive integer');
+  }
+  for (const [name, value] of [
+    ['url', url], ['headBranch', headBranch], ['baseBranch', baseBranch],
+  ] as const) {
+    if (typeof value !== 'string' || value === '') {
+      throw new SideEffectResultRefError(expect, `${name} is missing`);
+    }
+  }
+  return {
+    kind: 'pr-upsert',
+    number,
+    url: url as string,
+    headBranch: headBranch as string,
+    baseBranch: baseBranch as string,
+  };
+}
+
 export interface SideEffectRecord {
   readonly operation: SideEffectOperation;
   readonly state: SideEffectState;

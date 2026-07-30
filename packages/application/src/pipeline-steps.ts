@@ -29,6 +29,7 @@
 //   - the pipeline STOPS at WAITING_FOR_HUMAN_REVIEW — it never advances a Task
 //     to ACCEPTED/DONE (domain invariant I2).
 
+import { createHash } from 'node:crypto';
 import type {
   TenantScope,
   AttemptId,
@@ -55,6 +56,7 @@ import type {
   EvidenceStore,
   SideEffectLog,
 } from '@asep/ports';
+import { parseSideEffectResultRef } from '@asep/ports';
 import { requiredLevels, type AssuranceLevel } from '@asep/policy';
 import { transitionTask, type TaskAggregate } from '@asep/domain';
 import type { StepStatus } from './execute-task.js';
@@ -311,7 +313,14 @@ export async function commitStep(input: CommitStepInput): Promise<CommitStepResu
   // Already COMPLETED for this attempt → adopt the recorded commit SHA + the
   // evidence id embedded in that commit; do NOT mint a second commit.
   if (begun.existed && begun.state === 'COMPLETED' && begun.resultRef) {
-    const rec = begun.resultRef as CommitResultRef;
+    // VALIDATED read (disp. P2-REVIEW HIGH-005). This was a blind `as` cast, so a
+    // truncated/foreign JSONB row surfaced as undefined fields deep inside the
+    // pipeline — the adopted commit SHA could be `undefined` and get pushed as a
+    // ref. The parser pins the expected shape and throws instead.
+    const rec = parseSideEffectResultRef(begun.resultRef, 'commit');
+    if (rec.kind !== 'commit') {
+      throw new SideEffectResultRefError('commit', `parser returned '${rec.kind}'`);
+    }
     return {
       step: 'commit',
       status: 'OK',
@@ -402,9 +411,72 @@ export interface EvidenceStepResult {
   readonly status: StepStatus;
   readonly bundle: EvidenceBundle;
   readonly ref: ArtifactRef;
+  // True when a bundle already existed at the preallocated id and was adopted
+  // rather than re-derived (disp. P2-REREVIEW HIGH-006). Lets a caller assert
+  // crash-resume behaviour instead of inferring it.
+  readonly adopted: boolean;
+}
+
+// Does this error mean "no evidence bundle is stored at that id yet"?
+//
+// The application layer must not import a persistence class (exit B3), so the
+// absent case is recognised structurally: the store's not-found error carries
+// that name. Matched on `name` (and a conservative message fallback) so any
+// EvidenceStore implementation can signal absence without this module depending
+// on the adapter. Everything else — integrity failure, scope violation — is NOT
+// absence and is rethrown by the caller.
+function isEvidenceAbsent(err: unknown): boolean {
+  const name = (err as { name?: unknown })?.name;
+  if (name === 'EvidenceNotFoundError') return true;
+  const msg = err instanceof Error ? err.message : '';
+  return /evidence (bundle )?not found/i.test(msg);
+}
+
+function sha256Hex(bytes: Uint8Array): string {
+  return createHash('sha256').update(bytes).digest('hex');
 }
 
 export async function evidenceStep(input: EvidenceStepInput): Promise<EvidenceStepResult> {
+  // Crash-recovery reconciliation for the evidence write (disp. P2-REREVIEW
+  // HIGH-006, exit D8).
+  //
+  // THE DEFECT. Every other durable effect reconciles before it re-acts, but
+  // evidence did not — and it is the one step that CANNOT simply be re-run.
+  // `createdAt` is stamped from the clock on each invocation, so a resume that
+  // ADOPTED an existing commit (and therefore the evidence id embedded in that
+  // commit's ASEP-Evidence trailer) would serialize a bundle whose bytes differ
+  // only in the timestamp, then call putEvidence at that adopted id. The store
+  // correctly treats an evidence id as immutable and FAILS CLOSED on different
+  // bytes — so the attempt could never get past this step again. A crash between
+  // commit and evidence persistence permanently wedged the attempt.
+  //
+  // THE FIX. Ask the authoritative store first. If a bundle already exists at
+  // this preallocated id, ADOPT it: the evidence for this commit is already
+  // durable, and re-deriving it would only invent a new timestamp. Any error
+  // other than "not found" propagates — a corrupt or cross-scope read must fail
+  // closed, never be papered over by writing fresh bytes.
+  try {
+    const existing = await input.store.getEvidence(input.scope, input.evidenceId);
+    return {
+      step: 'evidence',
+      status: 'OK',
+      bundle: existing,
+      // The ref is reconstructed from the adopted bundle's own bytes, so the
+      // caller receives the same (id, sha256) pair the first write recorded.
+      ref: {
+        artifactId: input.evidenceId,
+        sha256: sha256Hex(new TextEncoder().encode(JSON.stringify(existing))),
+        kind: 'evidence-bundle',
+      },
+      adopted: true,
+    };
+  } catch (err) {
+    // Only an ABSENT bundle means "safe to write". The store signals that with a
+    // not-found error; anything else (integrity failure, scope violation) is a
+    // real fault and must not be swallowed.
+    if (!isEvidenceAbsent(err)) throw err;
+  }
+
   const createdAt = (input.now ?? (() => new Date().toISOString()))();
   const bundle: EvidenceBundle = {
     taskId: input.taskId,
@@ -428,7 +500,7 @@ export async function evidenceStep(input: EvidenceStepInput): Promise<EvidenceSt
     })),
   };
   const ref = await input.store.putEvidence(input.scope, input.evidenceId, bundle);
-  return { step: 'evidence', status: 'OK', bundle, ref };
+  return { step: 'evidence', status: 'OK', bundle, ref, adopted: false };
 }
 
 // ---------------------------------------------------------------------------
