@@ -44,7 +44,7 @@ import {
 } from '@asep/application';
 import type {
   ForgeProvider, PullRequestRef, CodingAgentProvider, SandboxProvider,
-  AgentExecuteRequest, AgentAttemptObservation, CommandSpec,
+  AgentExecuteRequest, AgentAttemptObservation, CommandSpec, ArtifactStore,
 } from '@asep/ports';
 import type {
   TenantScope, RepositoryBindingId, AttemptId, TaskId, RunId, ArtifactId,
@@ -157,6 +157,29 @@ export interface VerticalSliceInput {
   // Injected because the command must be runnable in whatever execution context
   // the sandbox provides (host git vs. a minimal container image).
   readonly checkCommand: (wtPath: string) => CommandSpec;
+
+  // --- PRODUCTION SEAMS (disp. P2-FINAL-HIGH-008) ---------------------------
+  // The review's finding: this driver hard-coded FileWritingAgent and
+  // LocalBareForgeProvider, so supplying real credentials could never produce a
+  // live task-to-PR run — the real Claude / GitHub App adapters were unreachable
+  // from the only driver that exists. These two seams close that: a production
+  // root injects the real adapters, and the governed sequence above is byte-for-
+  // byte the same one the two K1 proofs exercise.
+  //
+  // agentFor is a FACTORY over the registered TenantScope because the Claude
+  // adapter is scope-bound (it writes its raw event stream as a scoped
+  // artifact), and the scope does not exist until the workflow has registered
+  // the org + project. It also receives the artifact store the slice built, so
+  // the adapter persists into the SAME store the evidence chain resolves
+  // against.
+  readonly agentFor?: (ctx: {
+    scope: TenantScope;
+    artifacts: ArtifactStore;
+    worktreePathOf: (workspaceId: WorkspaceId) => string;
+  }) => CodingAgentProvider;
+  // A real ForgeProvider (e.g. GitHubAppForgePort). Omitted → the local bare-repo
+  // double, which performs a REAL git push to a local remote.
+  readonly forge?: ForgeProvider;
 }
 
 export interface VerticalSliceResult {
@@ -220,12 +243,28 @@ export async function runVerticalSlice(input: VerticalSliceInput): Promise<Verti
   const telemetry = new CapturingTelemetrySink();
   const tracer = new SpanTracer(telemetry);
 
-  const agent = new FileWritingAgent();
-  const forge = new LocalBareForgeProvider(remoteBare);
+  // The local doubles are the DEFAULT, not the only option (HIGH-008). When a
+  // production root injects `agentFor` / `forge`, the real adapters run through
+  // the identical governed sequence below.
+  const localAgent = new FileWritingAgent();
+  const localForge = new LocalBareForgeProvider(remoteBare);
+  const forge: ForgeProvider = input.forge ?? localForge;
+  const usingLocalAgent = input.agentFor === undefined;
+  const usingLocalForge = input.forge === undefined;
 
   const workspaceRoot = join(dir, 'wt');
   await mkdir(workspaceRoot, { recursive: true });
   const realWorkspaceRoot = await realpath(workspaceRoot);
+
+  // The workflow creates the workspace; capture its path here so a production
+  // agent factory (agentFor) can resolve it via worktreePathOf. The local
+  // doubles instead receive it through their setWorktree seam (a path the ports
+  // deliberately do not carry). Exactly one mechanism is active per run.
+  let createdWorktreePath: string | null = null;
+  const worktreePathOf = (_workspaceId: WorkspaceId): string => {
+    if (createdWorktreePath === null) throw new Error('worktree not created yet');
+    return createdWorktreePath;
+  };
 
   // The Git backend is per repository binding, and the binding id only exists
   // once the use case has registered it — so the root supplies a FACTORY. The
@@ -250,8 +289,13 @@ export async function runVerticalSlice(input: VerticalSliceInput): Promise<Verti
       }) => {
         const ws = await manager.create(s, i);
         const p = pathOf(ws.workspaceId);
-        agent.setWorktree(p);
-        forge.setWorktree(p);
+        // Publish the real path: production adapters resolve it via
+        // worktreePathOf; the local doubles need it pushed in (their ports do
+        // not carry a filesystem path). Guarded so a real ForgeProvider — which
+        // has no setWorktree — is never called with a method it does not declare.
+        createdWorktreePath = p;
+        if (usingLocalAgent) localAgent.setWorktree(p);
+        if (usingLocalForge) localForge.setWorktree(p);
         return ws;
       },
       cleanup: (s: TenantScope, id: WorkspaceId) => manager.cleanup(s, id),
@@ -291,7 +335,16 @@ export async function runVerticalSlice(input: VerticalSliceInput): Promise<Verti
     evidence: evidenceStore,
     sideEffects: new SqlSideEffectLog(client),
     leases: new SqlWorkspaceLeaseRepository(client),
-    provider: agent,
+    // Agent injection (HIGH-008): a production root passes `agentFor`, resolved
+    // here into the workflow's scope-bound `providerFor` factory so the real
+    // Claude adapter is constructed with the registered scope + artifact store +
+    // the created worktree path. Absent it, the local double drives the sequence.
+    ...(input.agentFor
+      ? {
+          providerFor: ({ scope }: { scope: TenantScope }): CodingAgentProvider =>
+            input.agentFor!({ scope, artifacts, worktreePathOf }),
+        }
+      : { provider: localAgent }),
     // Scope-aware adapter: built with the REAL tenant scope the use case
     // registered, never a placeholder.
     runnerFor: ({ scope }) => new TrustedCommandRunner(scope, artifacts),
@@ -334,7 +387,9 @@ export async function runVerticalSlice(input: VerticalSliceInput): Promise<Verti
     prNumber: outcome.prNumber,
     prHeadBranch: outcome.prHeadBranch,
     prBaseBranch: outcome.prBaseBranch,
-    pushes: forge.pushes,
+    // The local double counts pushes for the seam test's idempotency assertion;
+    // a real ForgeProvider does not expose a counter through the port.
+    pushes: usingLocalForge ? localForge.pushes : 0,
     stoppedAt: outcome.stoppedAt,
     taskStatus: outcome.taskStatus,
     sandboxIsolationEnforced: outcome.sandboxIsolationEnforced,

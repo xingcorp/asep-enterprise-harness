@@ -162,7 +162,22 @@ export interface VerticalSliceWorkflowInput {
   readonly evidence: EvidenceStore;
   readonly sideEffects: SideEffectLog;
   readonly leases: WorkspaceLeaseRepository;
-  readonly provider: CodingAgentProvider;
+  // The coding agent. Two injection shapes, exactly one of which must be given:
+  //
+  //   provider     — a prebuilt agent (test doubles, and any adapter that needs
+  //                  no tenant scope to construct).
+  //   providerFor  — a FACTORY taking the registered TenantScope (disp.
+  //                  P2-FINAL-HIGH-008). The REAL Claude adapter is
+  //                  scope-bound: it persists its raw event stream as a scoped
+  //                  artifact, and the scope does not exist until this workflow
+  //                  has registered the organization + project. Without this
+  //                  seam a production root could only ever hand in a
+  //                  placeholder-scoped provider, which is why the real adapter
+  //                  was previously unreachable from the driver.
+  //
+  // `providerFor` wins when both are present.
+  readonly provider?: CodingAgentProvider;
+  readonly providerFor?: (input: { scope: TenantScope }) => CodingAgentProvider;
   // A CommandRunner is scope-aware (it stores stdout/stderr as scoped
   // artifacts), and the tenant scope only exists once this workflow has
   // registered the organization + project — so the root injects a FACTORY
@@ -273,6 +288,21 @@ export async function runVerticalSliceWorkflow(
   // binding, and the binding id did not exist until the step above.
   const git = await input.workspaceBackend({ scope, repositoryBindingId: binding.id });
 
+  // Resolve the coding agent with the REAL registered scope (HIGH-008). The
+  // factory form is what makes the production Claude adapter reachable: it is
+  // constructed with the scope it will store its event-stream artifact under, so
+  // a root no longer has to hard-code a scope-free stand-in. Fail closed when a
+  // caller wires neither shape rather than proceeding agent-less.
+  const provider = input.providerFor
+    ? input.providerFor({ scope })
+    : input.provider;
+  if (!provider) {
+    throw new Error(
+      'vertical slice requires a coding agent: pass providerFor (scope-bound, e.g. the ' +
+      'real Claude adapter) or provider (a prebuilt instance)',
+    );
+  }
+
   // --- immutable agent inputs ----------------------------------------------
   const woBytes = jsonBytes(input.workOrder);
   const workOrderRef = await input.artifacts.put(scope, {
@@ -296,7 +326,7 @@ export async function runVerticalSliceWorkflow(
     leaseTtlMs: input.leaseTtlMs,
     leases: input.leases,
     workspaces: git.workspaces,
-    provider: input.provider,
+    provider,
     inspector: git.inspector,
     workOrderRef,
     contextPackRef,
