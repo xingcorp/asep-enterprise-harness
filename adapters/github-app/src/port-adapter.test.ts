@@ -328,7 +328,15 @@ test('H5: the port exposes no merge capability', () => {
     .filter((n) => n !== 'constructor')
     .filter((n) => typeof (port as unknown as Record<string, unknown>)[n] === 'function')
     .sort();
-  assert.deepEqual(methods, ['pushBranch', 'upsertPullRequest']);
+  // The list is pinned EXACTLY (not a substring check) so any new capability has
+  // to be added here deliberately and justified. The two reconcile methods are
+  // READ-ONLY lookups the crash-recovery protocol needs (disp. P2-FINAL-HIGH-006):
+  // `resolveRef` is an ls-remote and `findPullRequest` is a PR query — neither
+  // publishes anything, and neither can merge. The two write capabilities remain
+  // exactly push + PR upsert.
+  assert.deepEqual(methods, [
+    'findPullRequest', 'pushBranch', 'resolveRef', 'upsertPullRequest',
+  ]);
 });
 
 // ---------------------------------------------------------------------------

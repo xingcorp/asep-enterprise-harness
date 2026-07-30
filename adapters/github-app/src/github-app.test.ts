@@ -276,11 +276,38 @@ test('scrubToken redacts the token and any userinfo form', () => {
 // ---------------------------------------------------------------------------
 
 test('MED-002: isAuthExpiryError recognises expiry/revocation signals and ignores unrelated errors', () => {
+  // Credential wording => recoverable by a fresh mint.
   assert.equal(isAuthExpiryError(new Error('Bad credentials')), true);
   assert.equal(isAuthExpiryError(new Error('token expired')), true);
   assert.equal(isAuthExpiryError(new Error('requires authentication')), true);
+  assert.equal(isAuthExpiryError(new Error('token was revoked')), true);
+  assert.equal(isAuthExpiryError(new Error('installation has been suspended')), true);
+  // 401 is unconditionally "this credential is not usable".
   assert.equal(isAuthExpiryError({ status: 401, message: 'x' }), true);
-  assert.equal(isAuthExpiryError({ status: 403, message: 'x' }), true);
+  // A 403 WITH credential wording is expiry.
+  assert.equal(isAuthExpiryError({ status: 403, message: 'Bad credentials' }), true);
+
+  // A bare 403 is NOT expiry (disp. P2-REREVIEW MED-002). GitHub answers 403 for
+  // rate limiting and for permission scope too; re-minting cannot fix either, and
+  // treating them as expiry burns the re-mint budget and then reports the wrong
+  // failure class. Only credential wording promotes a 403 to expiry.
+  assert.equal(isAuthExpiryError({ status: 403, message: 'x' }), false);
+  assert.equal(
+    isAuthExpiryError({ status: 403, message: 'API rate limit exceeded' }), false,
+    'rate limiting is not credential expiry',
+  );
+  assert.equal(
+    isAuthExpiryError({ status: 403, message: 'You have exceeded a secondary rate limit' }), false,
+  );
+  assert.equal(
+    isAuthExpiryError({ status: 403, message: 'Resource not accessible by integration' }), false,
+    'a permission-scope failure is not credential expiry',
+  );
+  // Rate-limit wording wins even when a credential word appears alongside it, so
+  // a throttled response can never be mistaken for a token problem.
+  assert.equal(
+    isAuthExpiryError({ status: 403, message: 'rate limit exceeded; bad credentials' }), false,
+  );
   // Unrelated failures are NOT treated as recoverable auth expiry.
   assert.equal(isAuthExpiryError(new Error('connection reset')), false);
   assert.equal(isAuthExpiryError(new Error('merge conflict')), false);

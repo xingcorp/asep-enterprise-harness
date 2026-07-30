@@ -25,6 +25,7 @@ import {
 } from '@asep/git-worktree';
 import type { ForgeIdentity } from '@asep/git-worktree';
 import type { GitHubAppCredentialProvider } from './credential-provider.js';
+import { isExpired } from './credential-provider.js';
 
 // The git invocation seam. Defaults to the hardened runGit from @asep/git-worktree.
 // A test injects a fake to capture the EXACT argv handed to git (proving only the
@@ -60,20 +61,62 @@ export class ForgeAuthExpiredError extends Error {
 export const MAX_REMINT_ATTEMPTS = 2;
 
 // Recognise a transport error that means "this credential is no longer valid"
-// (expiry, revocation, rotation invalidating the old token): GitHub answers
-// 401/403 with "bad credentials" / "token expired" / "requires authentication".
-// Kept pure + conservative so a non-auth failure is NOT retried (it fails fast).
+// (expiry, revocation, rotation invalidating the old token).
+//
+// THE FIX (disp. P2-FINAL-MED-002). The previous version returned true for ANY
+// 401/403, but GitHub answers 403 for three unrelated situations:
+//
+//   - credential no longer valid      → re-minting a fresh token DOES help
+//   - secondary rate limit / abuse    → re-minting does NOT help (same limit)
+//   - permission not granted          → re-minting does NOT help (same perms)
+//
+// Treating the last two as expiry burned the whole re-mint budget on errors a
+// fresh token can never fix, and then reported ForgeAuthExpiredError — a
+// misleading diagnosis that hides a real rate-limit or a missing App permission.
+// So 401 (always an auth failure) stays unconditional, while 403 is classified by
+// its message: rate-limit / permission wording is explicitly NOT expiry.
 export function isAuthExpiryError(err: unknown): boolean {
-  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  // Extract the message from BOTH shapes we actually receive. Octokit rejects
+  // with plain objects carrying `status` + `message`, and `String(obj)` yields
+  // '[object Object]' — which would silently discard the wording the 403 rule
+  // depends on. Read `.message` off any object before falling back to String().
+  const rawMessage = err instanceof Error
+    ? err.message
+    : (typeof (err as { message?: unknown })?.message === 'string'
+      ? (err as { message: string }).message
+      : String(err));
+  const msg = rawMessage.toLowerCase();
   const status = (err as { status?: unknown })?.status;
-  if (status === 401 || status === 403) return true;
-  return (
+
+  // Rate limiting and authorization-scope failures are NOT credential expiry,
+  // whatever status they arrive with. Checked first so they can never be
+  // misread as recoverable-by-re-mint.
+  if (
+    /rate limit/.test(msg) ||
+    /secondary rate/.test(msg) ||
+    /abuse detection/.test(msg) ||
+    /retry-after/.test(msg) ||
+    /resource not accessible by integration/.test(msg) ||
+    /not (have|granted) (the )?permission/.test(msg) ||
+    /must have admin rights/.test(msg) ||
+    /forbidden: insufficient/.test(msg)
+  ) {
+    return false;
+  }
+
+  // 401 is always "this credential is not usable".
+  if (status === 401) return true;
+
+  // A 403 (or a message-only error) counts as expiry ONLY with credential wording.
+  const credentialWording =
     /bad credentials/.test(msg) ||
     /token (has )?expired/.test(msg) ||
     /credentials? (have )?expired/.test(msg) ||
     /requires authentication/.test(msg) ||
-    /401|403/.test(msg)
-  );
+    /token (was )?revoked/.test(msg) ||
+    /installation (has been )?(suspended|deleted)/.test(msg);
+  if (status === 403) return credentialWording;
+  return credentialWording;
 }
 
 // Minimal Octokit REST surface this adapter depends on, so it can be driven by
@@ -163,7 +206,27 @@ export class GitHubAppForgeProvider {
     // Git invocation seam. Defaults to the hardened runGit; a test injects a
     // fake to capture the exact argv or drive a real local bare push (H3/H6).
     private readonly runGit: GitRunner = defaultRunGit,
+    // Clock seam for expiry checks (MED-002). Injected so a fake-clock test can
+    // drive "minted but already expired" deterministically.
+    private readonly now: () => number = () => Date.now(),
+    // Safety skew: a token expiring within this window is treated as unusable,
+    // because it would very likely expire mid-operation.
+    private readonly expirySkewMs: number = 5_000,
   ) {}
+
+  // Mint a JIT token AND assert it is actually usable before handing it to an
+  // operation (MED-002). `isExpired()` existed but was never called, so a token
+  // that was already expired at mint time (clock skew, a stale cached auth
+  // strategy, a revoked installation replaying an old value) was used anyway and
+  // failed deep inside the transport. Checking here turns that into a bounded
+  // re-mint at the call site, or a clean ForgeAuthExpiredError.
+  private async mintUsable(repositoryId: number): Promise<string | null> {
+    const { token, expiresAt } = await this.credentials.mintForRepository(repositoryId);
+    if (typeof expiresAt === 'string' && expiresAt !== '') {
+      if (isExpired(expiresAt, this.now(), this.expirySkewMs)) return null;
+    }
+    return token;
+  }
 
   // Push the harness commit to the EXACT ASEP-namespaced ref. The refspec is
   // produced by safeRefspecFor so no other target is representable (H3). The
@@ -192,7 +255,10 @@ export class GitHubAppForgeProvider {
     // re-mint a fresh token and retry — bounded. Each attempt mints a NEW token
     // (never reuses a stale one), injected only into that one git child.
     for (let attempt = 0; attempt <= MAX_REMINT_ATTEMPTS; attempt++) {
-      const { token } = await this.credentials.mintForRepository(input.repository.repositoryId);
+      // An already-expired mint is never used: treat it exactly like an
+      // expiry observed at use time and re-mint within the bound (MED-002).
+      const token = await this.mintUsable(input.repository.repositoryId);
+      if (token === null) continue;
       const authedUrl = baseUrl.replace(
         /^https:\/\//,
         'https://x-access-token:' + token + '@',
@@ -225,7 +291,10 @@ export class GitHubAppForgeProvider {
     // re-mint. The upsert is idempotent (find-by-head-branch → update, else
     // create) so a retry after a partial auth failure cannot open a duplicate.
     for (let attempt = 0; attempt <= MAX_REMINT_ATTEMPTS; attempt++) {
-      const { token } = await this.credentials.mintForRepository(repositoryId);
+      // MED-002: reject an already-expired token BEFORE the call rather than
+      // discovering it inside the transport; a null means "re-mint" (bounded).
+      const token = await this.mintUsable(repositoryId);
+      if (token === null) continue;
       const octokit = this.octokitFor(token);
       try {
         // find-by-head-branch: GitHub's head filter is `owner:branch`.
@@ -292,7 +361,11 @@ export class GitHubAppForgeProvider {
   }): Promise<string | null> {
     const safe = safeRefspecFor(input.branch);
     const baseUrl = buildCloneUrl(input.repository.identity, this.allowedHosts);
-    const { token } = await this.credentials.mintForRepository(input.repository.repositoryId);
+    // MED-002: assert the minted credential is usable before spending it on the
+    // probe, so an already-expired token surfaces as ForgeAuthExpiredError rather
+    // than an opaque transport failure that a caller might read as "no ref".
+    const token = await this.mintUsable(input.repository.repositoryId);
+    if (token === null) throw new ForgeAuthExpiredError('resolve-ref', 1);
     const authedUrl = baseUrl.replace(/^https:\/\//, 'https://x-access-token:' + token + '@');
     try {
       const res = await this.runGit(
@@ -320,7 +393,9 @@ export class GitHubAppForgeProvider {
     const owner = identity.githubOwner;
     const repo = identity.githubRepo.replace(/\.git$/, '');
     for (let attempt = 0; attempt <= MAX_REMINT_ATTEMPTS; attempt++) {
-      const { token } = await this.credentials.mintForRepository(repositoryId);
+      // MED-002: skip an already-expired mint and re-mint within the bound.
+      const token = await this.mintUsable(repositoryId);
+      if (token === null) continue;
       const octokit = this.octokitFor(token);
       try {
         const existing = await octokit.pulls.list({
