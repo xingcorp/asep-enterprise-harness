@@ -44,16 +44,22 @@ repository:
   base_sha_note: >-
     base = `git merge-base main HEAD`. The vertical slice forks from the Phase 1
     acceptance point.
-  implementation_head_sha: 2fb8889ffe61585f3927d2fe460bc30c11f9c6e8
+  implementation_head_sha: bbabb5a496746c56e84d726575fa4eca496da159
   head_sha_note: >-
     MED-005 required a REAL SHA here instead of the previous placeholder string
     `bound-by-git-rev-parse-HEAD`. `implementation_head_sha` above is a real,
-    verifiable SHA: it is the last IMPLEMENTATION commit of the repair pass
-    (`fix(observability): emit real spans + PostgreSQL audit rows on the runnable
-    path (MED-003)`), i.e. the commit at which all 9 HIGH + 6 MEDIUM findings are
-    fixed and both `pnpm verify:all` and the real-backend integration gate are
-    green. Verify with:
-    `git rev-parse 2fb8889ffe61585f3927d2fe460bc30c11f9c6e8`.
+    verifiable SHA: it is the last IMPLEMENTATION commit at which every finding
+    from BOTH Codex passes is closed — the final audit
+    (phase-02-final-review-codex-v1.md: 9 HIGH + 6 MEDIUM) and the cycle-2
+    re-review (phase-02-final-rereview-codex-v2.md, which found 6 HIGH still
+    PARTIAL + 1 regression + 2 new MEDIUM). The cycle-2 repairs land in these
+    commits above it: HIGH-004 (auth on org create), MED-004 (orchestration moved
+    out of the composition root), HIGH-002 (`.git` OS-level immutable), HIGH-009
+    (COMPLETE gate resolves authority), HIGH-008 (production agent/forge seams),
+    HIGH-006 (PENDING-commit reconcile), HIGH-005 (evidence-checksum cross-check +
+    hierarchy binding coherence) and MED-NEW-002 (vertical-slice-real required).
+    Verify with:
+    `git rev-parse bbabb5a496746c56e84d726575fa4eca496da159`.
 
     A git object cannot embed its own hash, so the commit that carries THIS
     sentence necessarily has a different SHA than any value written inside it —

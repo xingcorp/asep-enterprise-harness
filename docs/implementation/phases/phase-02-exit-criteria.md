@@ -115,7 +115,7 @@
 
 ## L. Completion protocol (MUST)
 
-- [ ] L1. `phase-02-report.md` present; report head SHA == `git rev-parse HEAD`.
+- [ ] L1. `phase-02-report.md` present. Because a git object cannot embed its own hash, the authoritative HEAD binding is the completion sentinel, not a SHA literal inside the report: the sentinel (`.task-complete` for COMPLETE, `.phase-02-implementation-complete` for pilot-pending) is written LAST and carries the literal output of `git rev-parse HEAD` at that moment, which must equal the report's own commit. The report records an `implementation_head_sha` naming the last implementation commit (a real, verifiable SHA) for traceability. Audit: read the SHA from the sentinel and compare to `git rev-parse HEAD` — byte-identical. Any later commit invalidates the sentinel and requires re-running `pnpm verify:all` + `pnpm test:integration` and regenerating it.
 - [ ] L2. No unresolved CRITICAL/HIGH from Codex final review (or recorded disposition).
 - [ ] L3. `.task-complete` created last, only after report + evidence + green gate + clean tree + honest verdict.
 - [ ] L4. `IMPLEMENTATION_COMPLETE_PILOT_PENDING` may create `.phase-02-implementation-complete` but NOT the final phase sentinel.
