@@ -196,6 +196,21 @@ export interface GitCommitter {
     trailers: Record<string, string>;
     identity: { name: string; email: string };
   }): Promise<{ commitSha: string }>;
+  // Crash-recovery reconciliation for the commit side effect (disp.
+  // P2-FINAL-HIGH-006, exit C7). A commit is NOT idempotent: re-running commit()
+  // would mint a second, divergent object. So when a resume finds a PENDING
+  // commit record, the caller must first ask whether the harness ALREADY
+  // committed for this attempt. This inspects the workspace HEAD and returns the
+  // recorded commit SHA + the evidence id carried in its `ASEP-Evidence` trailer
+  // IFF HEAD is a harness commit whose `ASEP-Attempt` trailer matches; otherwise
+  // null (the commit never landed, so it is safe to perform). Reading trailers
+  // off the real object is the natural-key reconciliation the two-phase protocol
+  // requires for the one effect that cannot be replayed.
+  reconcile(scope: TenantScope, input: {
+    workspace: WorkspaceCapability;
+    attemptId: string;
+    baseSha: string;
+  }): Promise<{ commitSha: string; evidenceId: string } | null>;
 }
 
 // ---------------------------------------------------------------------------

@@ -259,6 +259,7 @@ export interface CommitStepInput {
   readonly workspace: WorkspaceCapability;
   readonly allowedPaths: readonly string[];
   readonly attemptId: AttemptId;
+  readonly baseSha: string;              // reconciliation: HEAD==base ⇒ no commit landed
   readonly evidenceId: ArtifactId;       // preallocated, embedded in trailer
   readonly identity: { readonly name: string; readonly email: string };
   readonly extraTrailers?: Record<string, string>;
@@ -318,6 +319,37 @@ export async function commitStep(input: CommitStepInput): Promise<CommitStepResu
       evidenceId: rec.evidenceId as ArtifactId,
       adopted: true,
     };
+  }
+  // Crash-after-commit-before-complete (HIGH-006): the record exists but is
+  // still PENDING, so the completion write never landed. Naively falling through
+  // would mint a SECOND, divergent commit. Instead reconcile against the
+  // worktree: if HEAD already carries this attempt's harness commit (ASEP-Attempt
+  // trailer matches and HEAD advanced past base), adopt that commit + the
+  // evidence id embedded in its ASEP-Evidence trailer and finish the record.
+  if (begun.existed && begun.state === 'PENDING') {
+    const found = await input.committer.reconcile(input.scope, {
+      workspace: input.workspace,
+      attemptId: input.attemptId,
+      baseSha: input.baseSha,
+    });
+    if (found) {
+      await input.log.complete(input.scope, {
+        operation: 'commit',
+        repositoryBindingId: input.repositoryBindingId,
+        attemptId: input.attemptId,
+        ownerToken: input.leaseId,
+        resultRef: { commitSha: found.commitSha, evidenceId: found.evidenceId },
+      });
+      return {
+        step: 'commit',
+        status: 'OK',
+        commitSha: found.commitSha,
+        evidenceId: found.evidenceId as ArtifactId,
+        adopted: true,
+      };
+    }
+    // No commit landed before the crash — safe to mint it now under the same
+    // PENDING record (complete() below transitions it to COMPLETED).
   }
   const trailers: Record<string, string> = {
     'ASEP-Attempt': input.attemptId,
@@ -646,6 +678,7 @@ export async function completeToReview(
     allowedPaths: input.allowedPaths,
     attemptId: input.attemptId,
     evidenceId,
+    baseSha: input.baseSha,
     identity: input.identity,
     log: input.log,
     repositoryBindingId: input.repositoryBindingId,

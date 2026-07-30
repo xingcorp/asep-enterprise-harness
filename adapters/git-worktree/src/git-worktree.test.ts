@@ -378,3 +378,64 @@ test('E7: cleanup is idempotent and quarantine never reuses a worktree', async (
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+// --------------------------------------------------------------------------
+// HIGH-006 — the commit is the one side effect that is NOT idempotent: running
+// commit() twice mints two divergent objects. reconcile() is what a resume calls
+// on a PENDING commit record to decide adopt-vs-perform. This exercises it on a
+// REAL git worktree: after a genuine harness commit, reconcile() must return the
+// exact recorded SHA + the ASEP-Evidence trailer (adopt, no second commit); when
+// HEAD is still at base it must return null (safe to perform); and a commit whose
+// ASEP-Attempt trailer belongs to a DIFFERENT attempt must not be adopted.
+// --------------------------------------------------------------------------
+
+test('HIGH-006: reconcile adopts THIS attempt\'s real commit and refuses base/foreign HEAD', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'asep-gw-'));
+  try {
+    const { mirror, baseSha } = await seedMirror(dir);
+    const store = await artifactStore(dir);
+    const root = join(dir, 'wt');
+    await mkdir(root, { recursive: true });
+    const mgr = new GitWorktreeManager(
+      { workspaceRoot: root, mirrorPath: mirror, repositoryBindingId: bindingId }, store,
+    );
+    const ws = await mgr.create(scope, { repositoryBindingId: bindingId, baseSha, leaseId: 'l' });
+    const wtPath = mgr['paths'].get(ws.workspaceId)!;
+
+    // Before any harness commit, HEAD is still at base → reconcile must say "not
+    // committed yet" so the resume performs the commit rather than adopting.
+    const atBase = await mgr.reconcile(scope, {
+      workspace: ws.capability, attemptId: 'P', baseSha,
+    });
+    assert.equal(atBase, null, 'HEAD at base → no commit to adopt');
+
+    // A genuine harness commit for attempt 'P' with a preallocated evidence id.
+    await writeFile(join(wtPath, 'feature.txt'), 'harness change\n');
+    const { commitSha } = await mgr.commit(scope, {
+      workspace: ws.capability,
+      allowedPaths: ['feature.txt'],
+      trailers: { 'ASEP-Attempt': 'P', 'ASEP-Evidence': 'ev-xyz' },
+      identity: { name: 'asep-harness', email: 'harness@asep.dev' },
+    });
+
+    // Crash-after-commit-before-complete: the resume reconciles and MUST adopt
+    // the exact recorded SHA + the evidence id embedded in the trailer — never
+    // mint a second commit.
+    const adopted = await mgr.reconcile(scope, {
+      workspace: ws.capability, attemptId: 'P', baseSha,
+    });
+    assert.ok(adopted, 'a landed commit for this attempt must be adopted');
+    assert.equal(adopted!.commitSha, commitSha, 'adopts the exact recorded SHA');
+    assert.equal(adopted!.evidenceId, 'ev-xyz', 'adopts the evidence id from the trailer');
+
+    // A DIFFERENT attempt must not adopt this commit (trailer mismatch → null).
+    const foreign = await mgr.reconcile(scope, {
+      workspace: ws.capability, attemptId: 'OTHER', baseSha,
+    });
+    assert.equal(foreign, null, 'a commit for another attempt is never adopted');
+
+    await mgr.cleanup(scope, ws.workspaceId);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

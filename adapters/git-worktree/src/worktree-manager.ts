@@ -257,6 +257,35 @@ export class GitWorktreeManager implements WorkspaceManager, GitChangeInspector,
     return { commitSha };
   }
 
+  // HIGH-006: reconcile a PENDING commit record on resume. A commit is the one
+  // side effect that is NOT idempotent — re-running commit() mints a second,
+  // divergent object — so before a resume performs it again we ask whether the
+  // harness already committed for THIS attempt. HEAD is a harness commit iff it
+  // has advanced past baseSha AND carries an `ASEP-Attempt` trailer matching the
+  // attempt; in that case we return its recorded SHA + the `ASEP-Evidence`
+  // trailer so the caller adopts both instead of minting a divergent commit.
+  async reconcile(scope: TenantScope, input: {
+    workspace: WorkspaceCapability;
+    attemptId: string;
+    baseSha: string;
+  }): Promise<{ commitSha: string; evidenceId: string } | null> {
+    const wtPath = this.pathOf(input.workspace);
+    const head = (await runGit(['-C', wtPath, 'rev-parse', 'HEAD'])).stdout.trim();
+    // HEAD still at base → the commit never landed; safe to perform it.
+    if (head === input.baseSha) return null;
+    // Read the trailers off the real HEAD object (natural-key reconciliation).
+    const body = (await runGit(['-C', wtPath, 'log', '-1', '--format=%B', head])).stdout;
+    const trailerOf = (key: string): string | null => {
+      const m = body.match(new RegExp(`^${key}:\\s*(.+)$`, 'm'));
+      return m && m[1] !== undefined ? m[1].trim() : null;
+    };
+    // Only adopt a commit that is genuinely THIS attempt's harness commit.
+    if (trailerOf('ASEP-Attempt') !== input.attemptId) return null;
+    const evidenceId = trailerOf('ASEP-Evidence');
+    if (evidenceId === null) return null;
+    return { commitSha: head, evidenceId };
+  }
+
   // E7: idempotent cleanup — removing an already-removed worktree is not an error.
   async cleanup(scope: TenantScope, workspaceId: WorkspaceId): Promise<void> {
     const p = this.paths.get(workspaceId);

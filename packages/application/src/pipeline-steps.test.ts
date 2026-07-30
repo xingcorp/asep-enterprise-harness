@@ -319,6 +319,7 @@ test('E8: completeToReview REFUSES an unsandboxed provider before ANY side effec
   let commits = 0;
   const committer: GitCommitter = {
     async commit() { commits += 1; return { commitSha: 'd'.repeat(40) }; },
+    async reconcile() { return null; },
   };
   const forge = fakeForge(prRef);
   await assert.rejects(
@@ -343,6 +344,7 @@ test('commitStep embeds the preallocated evidence id in the ASEP-Evidence traile
       captured = input.trailers;
       return { commitSha: 'd'.repeat(40) };
     },
+    async reconcile() { return null; },
   };
   const res = await commitStep({
     committer,
@@ -350,6 +352,7 @@ test('commitStep embeds the preallocated evidence id in the ASEP-Evidence traile
     workspace,
     allowedPaths: ['src/'],
     attemptId,
+    baseSha: '0'.repeat(40),
     evidenceId: 'ev-123' as ArtifactId,
     identity: { name: 'ASEP Bot', email: 'bot@asep.invalid' },
     log: new MemorySideEffectLog(),
@@ -375,9 +378,11 @@ test('commitStep ADOPTS the recorded commit SHA + evidence id on a resume (HIGH-
       commits += 1;
       return { commitSha: 'd'.repeat(40) };
     },
+    async reconcile() { return null; },
   };
   const first = await commitStep({
     committer, scope, workspace, allowedPaths: ['src/'], attemptId,
+    baseSha: '0'.repeat(40),
     evidenceId: 'ev-first' as ArtifactId,
     identity: { name: 'ASEP Bot', email: 'bot@asep.invalid' },
     log, repositoryBindingId: bindingId, leaseId: 'lease-1',
@@ -391,6 +396,7 @@ test('commitStep ADOPTS the recorded commit SHA + evidence id on a resume (HIGH-
     evidenceId: 'ev-second' as ArtifactId,
     identity: { name: 'ASEP Bot', email: 'bot@asep.invalid' },
     log, repositoryBindingId: bindingId, leaseId: 'lease-1',
+    baseSha: '0'.repeat(40),
   });
   assert.equal(resume.adopted, true);
   assert.equal(commits, 1, 'exactly one commit across both runs');
@@ -631,6 +637,7 @@ function driverInput(overrides: Partial<Parameters<typeof completeToReview>[0]> 
   };
   const committer: GitCommitter = {
     async commit() { return { commitSha: 'd'.repeat(40) }; },
+    async reconcile() { return null; },
   };
   return {
     change: cleanChange,
