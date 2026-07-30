@@ -36,6 +36,14 @@ async function ensureBucket(): Promise<void> {
   });
   try {
     await client.send(new CreateBucketCommand({ Bucket: bucket }));
+  } catch (err) {
+    // Every test calls ensureBucket(), so only the FIRST create can succeed —
+    // the rest legitimately find the bucket already there. MinIO answers those
+    // with BucketAlreadyOwnedByYou (S3 uses BucketAlreadyExists for another
+    // owner, which would be a real failure). Treating "we already own it" as
+    // success keeps the helper idempotent; anything else still fails closed.
+    const name = (err as { name?: string }).name ?? '';
+    if (name !== 'BucketAlreadyOwnedByYou') throw err;
   } finally {
     client.destroy();
   }
