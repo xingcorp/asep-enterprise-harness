@@ -238,6 +238,55 @@ test('HIGH-005: an attempt naming a binding from another project is rejected by 
   await client.close();
 });
 
+// HIGH-005 (migration 0011): even WITHIN one project, a task must name the SAME
+// binding as its parent run, and an attempt the same binding as its parent task.
+// The earlier tests used a binding from another PROJECT (caught by the scoped
+// binding FK). This one uses a second binding in the SAME scope, so only the
+// hierarchy-coherence FK can catch it — the row filter and the scoped binding FK
+// both pass.
+test('HIGH-005: a task naming a DIFFERENT in-project binding than its run is rejected', async () => {
+  const client = await freshDb();
+  const { scope, binding } = await seedScope(client);
+  // A second, legitimate binding in the SAME project.
+  const binding2 = await seedBinding(client, scope);
+  const runs = new RunRepository(client);
+  const tasks = new TaskRepository(client);
+  const run = await runs.create(scope, {
+    repositoryBindingId: binding.id, status: 'EXECUTING', risk: 'R0',
+  });
+  // Task points at run (binding1) but names binding2 — coherent-FK rejects it.
+  await assert.rejects(
+    () => tasks.create(scope, {
+      runId: run.id, repositoryBindingId: binding2, risk: 'R0',
+    }),
+    /foreign key|violates/i,
+  );
+  await client.close();
+});
+
+test('HIGH-005: an attempt naming a DIFFERENT in-project binding than its task is rejected', async () => {
+  const client = await freshDb();
+  const { scope, binding } = await seedScope(client);
+  const binding2 = await seedBinding(client, scope);
+  const runs = new RunRepository(client);
+  const tasks = new TaskRepository(client);
+  const attempts = new AttemptRepository(client);
+  const run = await runs.create(scope, {
+    repositoryBindingId: binding.id, status: 'EXECUTING', risk: 'R0',
+  });
+  const task = await tasks.create(scope, {
+    runId: run.id, repositoryBindingId: binding.id, risk: 'R0',
+  });
+  // Attempt points at task (binding1) but names binding2 — coherent-FK rejects.
+  await assert.rejects(
+    () => attempts.create(scope, {
+      taskId: task.id, repositoryBindingId: binding2,
+    }),
+    /foreign key|violates/i,
+  );
+  await client.close();
+});
+
 // HIGH-005: an attempt's evidence link is a SCOPED artifact reference. The
 // composite FK (evidence_artifact_id, org, project) → artifacts makes "the
 // evidence I attach lives in MY scope" a DB invariant; the pinned sha256 lets a

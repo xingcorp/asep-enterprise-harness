@@ -357,6 +357,39 @@ create table human_authorizations (
 );
 `;
 
+// ---------------------------------------------------------------------------
+// 0011 — hierarchy binding coherence (disp. P2-FINAL-HIGH-005).
+//
+// 0008 made a task/attempt's `repository_binding_id` point at a binding in the
+// SAME tenant scope, but NOT necessarily the same binding as its parent: within
+// one project a task could name binding X while its run named binding Y, and an
+// attempt could diverge from its task. The whole chain must resolve to exactly
+// ONE binding. We add a composite unique key carrying the binding on each parent
+// and a composite FK from the child that includes `repository_binding_id`, so
+// "my binding equals my parent's binding" is a DB invariant, not a row filter.
+// Append-only: earlier migrations' text is unchanged (their checksums stay
+// valid); this ALTERs the shipped tables.
+// ---------------------------------------------------------------------------
+const M0011 = `
+alter table runs
+  add constraint runs_id_scope_binding_uq
+  unique (id, organization_id, project_id, repository_binding_id);
+
+alter table tasks
+  add constraint tasks_run_binding_coherent_fk
+  foreign key (run_id, organization_id, project_id, repository_binding_id)
+  references runs (id, organization_id, project_id, repository_binding_id);
+
+alter table tasks
+  add constraint tasks_id_scope_binding_uq
+  unique (id, organization_id, project_id, repository_binding_id);
+
+alter table attempts
+  add constraint attempts_task_binding_coherent_fk
+  foreign key (task_id, organization_id, project_id, repository_binding_id)
+  references tasks (id, organization_id, project_id, repository_binding_id);
+`;
+
 // Ordered, immutable migration set. Order is by id; the runner asserts it.
 export const MIGRATIONS: readonly Migration[] = Object.freeze([
   { id: '0001_init_tenancy', sql: M0001 },
@@ -369,4 +402,5 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   { id: '0008_binding_scoped_fks', sql: M0008 },
   { id: '0009_scoped_evidence_refs', sql: M0009 },
   { id: '0010_human_authorizations', sql: M0010 },
+  { id: '0011_hierarchy_binding_coherence', sql: M0011 },
 ]);
