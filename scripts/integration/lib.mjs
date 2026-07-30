@@ -36,6 +36,11 @@ export const REQUIRED_ITEST_SUITES = Object.freeze({
   // deliberately omitted and asserts a non-zero exit (HIGH-001's "deliberately
   // unavailable backend turns the required job RED, never skips").
   'asep-suite:gate-fail-closed': 'scripts/integration/gate-fail-closed.itest.ts',
+  // K1 authoritative proof: the full governed slice on real digest-pinned
+  // PostgreSQL (pg.Pool) + a real Docker sandbox. Registered required so
+  // dropping or renaming the end-to-end suite turns the gate RED (disp.
+  // P2-REREVIEW-MED-NEW-002).
+  'asep-suite:vertical-slice-real': 'apps/control-plane-api/src/vertical-slice.itest.ts',
 });
 
 export const SUITE_ID_PREFIX = 'SUITE-ID:';
