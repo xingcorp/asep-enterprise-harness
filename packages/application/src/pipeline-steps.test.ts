@@ -78,6 +78,16 @@ function artifactRef(id: string, kind: string): ArtifactRef {
   return { artifactId: id as ArtifactId, sha256: 'a'.repeat(64), kind: kind as never };
 }
 
+// The ABSENCE signal the real ContentAddressedEvidenceStore raises when no bundle
+// exists at a preallocated id. evidenceStep treats ONLY this as "safe to write";
+// any other error propagates, so doubles must speak the same dialect as the real
+// store rather than throwing a generic Error (disp. P2-REREVIEW HIGH-006).
+function evidenceAbsent(): Error {
+  const err = new Error('evidence bundle not found');
+  err.name = 'EvidenceNotFoundError';
+  return err;
+}
+
 const cleanChange: GitChangeObservation = {
   headSha: 'c'.repeat(40),
   changedFiles: ['src/foo.ts'],
@@ -412,8 +422,12 @@ test('evidenceStep sets resultSha to the harness commit SHA and stores at the pr
       puts.push({ id, bundle });
       return artifactRef(id, 'evidence-bundle');
     },
+    // No bundle exists yet, so the step's reconcile probe must see ABSENCE and
+    // proceed to write. The real store signals that with EvidenceNotFoundError;
+    // a double that throws a generic Error would (correctly) propagate, because
+    // only a not-found result makes writing safe.
     async getEvidence() {
-      throw new Error('not used');
+      throw evidenceAbsent();
     },
   };
   const res = await evidenceStep({
@@ -728,7 +742,10 @@ function driverInput(overrides: Partial<Parameters<typeof completeToReview>[0]> 
   const store: EvidenceStore = {
     allocateEvidenceId: () => 'ev-alloc' as ArtifactId,
     async putEvidence(_s, id, bundle) { return artifactRef(id, 'evidence-bundle'); },
-    async getEvidence() { throw new Error('unused'); },
+    // No bundle exists yet in the driver's default fixture, so the evidence
+    // step's reconcile probe must observe ABSENCE (the real store's
+    // EvidenceNotFoundError) and go on to write.
+    async getEvidence() { throw evidenceAbsent(); },
   };
   const committer: GitCommitter = {
     async commit() { return { commitSha: 'd'.repeat(40) }; },
@@ -799,4 +816,78 @@ test('completeToReview is crash-safe: a full re-run adopts the push+PR (single r
   const forge = shared.forge as ForgeProvider & { pushes: number; upserts: number };
   assert.equal(forge.pushes, 1, 'exactly one push across both runs');
   assert.equal(forge.upserts, 1, 'exactly one PR upsert across both runs');
+});
+
+// HIGH-006 (cycle-4 residue): the evidence write is the ONE durable step that
+// cannot be replayed, because `createdAt` comes from the clock. A resume that
+// ADOPTED an existing commit reuses the evidence id embedded in that commit's
+// trailer — so re-deriving the bundle would produce byte-different content at an
+// immutable id and the store would (correctly) fail closed, wedging the attempt
+// forever. These two tests pin the reconcile: an existing bundle is ADOPTED with
+// no second write, and an absent one is written exactly once.
+test('HIGH-006: evidenceStep ADOPTS an existing bundle instead of re-deriving it with a new clock', async () => {
+  const durable: EvidenceBundle = {
+    taskId,
+    attemptId,
+    baseSha: '0'.repeat(40),
+    resultSha: 'd'.repeat(40),
+    createdAt: '2026-01-01T00:00:00.000Z',   // the FIRST run's timestamp
+    environment,
+    diff: { artifactId: cleanChange.diff.artifactId, sha256: cleanChange.diff.sha256 },
+    checks: [],
+  };
+  let writes = 0;
+  const store: EvidenceStore = {
+    allocateEvidenceId: () => 'ev-adopt' as ArtifactId,
+    async putEvidence(_s, id, bundle) {
+      writes += 1;
+      // The real store is immutable at a preallocated id: different bytes MUST
+      // fail closed. Model that, so a regression here fails loudly instead of
+      // silently overwriting evidence.
+      if (JSON.stringify(bundle) !== JSON.stringify(durable)) {
+        const e = new Error(`evidence id ${id} already holds different bytes`);
+        e.name = 'EvidenceImmutabilityError';
+        throw e;
+      }
+      return artifactRef(id, 'evidence-bundle');
+    },
+    async getEvidence() { return durable; },
+  };
+
+  // Resume with a DIFFERENT clock — the pre-fix code would have serialized a new
+  // timestamp and tripped the immutability guard.
+  const res = await evidenceStep({
+    store, scope, evidenceId: 'ev-adopt' as ArtifactId, taskId, attemptId,
+    baseSha: '0'.repeat(40), resultSha: 'd'.repeat(40), change: cleanChange,
+    environment, executions: [], now: () => '2026-06-30T12:00:00.000Z',
+  });
+
+  assert.equal(res.adopted, true, 'an existing bundle must be adopted');
+  assert.equal(writes, 0, 'adoption must not write evidence a second time');
+  assert.equal(res.bundle.createdAt, '2026-01-01T00:00:00.000Z',
+    'the ORIGINAL timestamp survives — the resume clock must not leak in');
+  assert.equal(res.ref.artifactId, 'ev-adopt');
+});
+
+test('HIGH-006: a genuine integrity error from getEvidence is NOT swallowed (fail closed)', async () => {
+  const store: EvidenceStore = {
+    allocateEvidenceId: () => 'ev-corrupt' as ArtifactId,
+    async putEvidence(_s, id) { return artifactRef(id, 'evidence-bundle'); },
+    async getEvidence() {
+      // A mutated byte on read: the store re-hashes and rejects. This is NOT
+      // "absent", so evidenceStep must propagate rather than write fresh bytes
+      // over a corrupt record.
+      const e = new Error('evidence id ev-corrupt already holds different bytes');
+      e.name = 'EvidenceImmutabilityError';
+      throw e;
+    },
+  };
+  await assert.rejects(
+    () => evidenceStep({
+      store, scope, evidenceId: 'ev-corrupt' as ArtifactId, taskId, attemptId,
+      baseSha: '0'.repeat(40), resultSha: 'd'.repeat(40), change: cleanChange,
+      environment, executions: [], now: () => '2026-01-01T00:00:00.000Z',
+    }),
+    /already holds different bytes/,
+  );
 });

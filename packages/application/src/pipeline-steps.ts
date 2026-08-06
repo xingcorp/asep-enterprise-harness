@@ -317,10 +317,9 @@ export async function commitStep(input: CommitStepInput): Promise<CommitStepResu
     // truncated/foreign JSONB row surfaced as undefined fields deep inside the
     // pipeline — the adopted commit SHA could be `undefined` and get pushed as a
     // ref. The parser pins the expected shape and throws instead.
+    // parseSideEffectResultRef(_, 'commit') returns a commit ref or throws, so
+    // there is no other shape to re-check for here.
     const rec = parseSideEffectResultRef(begun.resultRef, 'commit');
-    if (rec.kind !== 'commit') {
-      throw new SideEffectResultRefError('commit', `parser returned '${rec.kind}'`);
-    }
     return {
       step: 'commit',
       status: 'OK',

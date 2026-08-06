@@ -416,6 +416,14 @@ const SHA40 = /^[0-9a-f]{40}$/;
  */
 export function parseSideEffectResultRef(
   raw: unknown,
+  expect: 'commit',
+): CommitResultRef;
+export function parseSideEffectResultRef(
+  raw: unknown,
+  expect: 'pr-upsert',
+): PullRequestResultRef;
+export function parseSideEffectResultRef(
+  raw: unknown,
   expect: SideEffectResultRef['kind'],
 ): SideEffectResultRef {
   if (raw === null || typeof raw !== 'object') {
