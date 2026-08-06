@@ -49,6 +49,38 @@ export interface PilotEnv {
   readonly githubAppId: number;
   readonly githubPrivateKeyPath: string;
   readonly githubInstallationId: number;
+
+  // --- the REAL repository this attempt targets (HIGH-008/K2) ---------------
+  // Without these the driver fell back to a synthetic seeded mirror registered
+  // as the literal `acme/web`, so a run with real credentials would have pushed
+  // a seed commit to a repository that does not exist — and the forge resolver
+  // would have refused the binding first, because `github_repository_id` was
+  // never persisted. Every value is REQUIRED: a pilot that half-configures its
+  // target must fail at startup, not halfway through a governed attempt.
+  readonly organizationName: string;
+  readonly projectName: string;
+  readonly githubHost: string;
+  readonly githubOwner: string;
+  readonly githubRepo: string;
+  readonly githubRepositoryId: number;
+  readonly baseBranch: string;
+  // A bare mirror of that remote, and a base commit that exists inside it.
+  readonly mirrorPath: string;
+  readonly baseSha: string;
+
+  // --- the task to perform --------------------------------------------------
+  // `expectChangedFile` is load-bearing: the workflow fails closed when trusted
+  // inspection does not observe it, so a live agent doing real work against a
+  // hard-coded 'feature.txt' expectation could only ever be a failed attempt.
+  readonly objective: string;
+  readonly expectChangedFile: string;
+  readonly allowedPaths: readonly string[];
+
+  // Provenance stamped into the evidence bundle. The image digest is the AGENT
+  // image (what actually produced the change); the lockfile hash pins the
+  // dependency set. Placeholders here would make real evidence attest to an
+  // environment that never ran.
+  readonly lockfileHash: string;
 }
 
 function requireEnv(name: string): string {
@@ -66,7 +98,24 @@ function requireIntEnv(name: string): number {
   return n;
 }
 
+// A 40-hex commit SHA. The base SHA is not merely config: the workflow diffs
+// against it, so a short/abbreviated value would produce a wrong diff rather
+// than an error.
+const SHA40 = /^[0-9a-f]{40}$/;
+
+// Comma-separated allowlist. Empty entries are dropped so a trailing comma is
+// not read as a path the agent may touch.
+function requireListEnv(name: string): readonly string[] {
+  const parts = requireEnv(name).split(',').map((s) => s.trim()).filter((s) => s !== '');
+  if (parts.length === 0) throw new ProductionConfigError(`${name} (must list at least one path)`);
+  return parts;
+}
+
 export function readEnv(): PilotEnv {
+  const baseSha = requireEnv('ASEP_BASE_SHA');
+  if (!SHA40.test(baseSha)) {
+    throw new ProductionConfigError('ASEP_BASE_SHA (must be a full 40-hex commit SHA)');
+  }
   return {
     pgUrl: requireEnv('ASEP_PG_URL'),
     claudeExecutable: requireEnv('ASEP_CLAUDE_EXECUTABLE'),
@@ -78,6 +127,22 @@ export function readEnv(): PilotEnv {
     githubAppId: requireIntEnv('ASEP_GITHUB_APP_ID'),
     githubPrivateKeyPath: requireEnv('ASEP_GITHUB_PRIVATE_KEY_PATH'),
     githubInstallationId: requireIntEnv('ASEP_GITHUB_INSTALLATION_ID'),
+
+    organizationName: requireEnv('ASEP_ORGANIZATION_NAME'),
+    projectName: requireEnv('ASEP_PROJECT_NAME'),
+    githubHost: requireEnv('ASEP_GITHUB_HOST'),
+    githubOwner: requireEnv('ASEP_GITHUB_OWNER'),
+    githubRepo: requireEnv('ASEP_GITHUB_REPO'),
+    githubRepositoryId: requireIntEnv('ASEP_GITHUB_REPOSITORY_ID'),
+    baseBranch: requireEnv('ASEP_BASE_BRANCH'),
+    mirrorPath: requireEnv('ASEP_MIRROR_PATH'),
+    baseSha,
+
+    objective: requireEnv('ASEP_OBJECTIVE'),
+    expectChangedFile: requireEnv('ASEP_EXPECT_CHANGED_FILE'),
+    allowedPaths: requireListEnv('ASEP_ALLOWED_PATHS'),
+
+    lockfileHash: requireEnv('ASEP_LOCKFILE_HASH'),
   };
 }
 
@@ -107,7 +172,14 @@ export function checkCommandFor(wtPath: string): CommandSpec {
     executable: 'git',
     args: ['-C', wtPath, 'status', '--porcelain'],
     cwd: wtPath,
-    environmentProfile: 'verification',
+    // MUST be a profile the runner's registry actually knows. 'verification' was
+    // not one: ENVIRONMENT_PROFILES holds 'verification-no-network' and
+    // 'agent-restricted-egress' only, and resolveEnvironment() throws
+    // UnknownEnvironmentProfileError on anything else. So every live pilot run
+    // would have died at the verify step — after the agent had already run and
+    // mutated the worktree. Fail-closed behaviour, but on a typo rather than a
+    // policy decision, and unreachable until an entrypoint test drove it.
+    environmentProfile: 'verification-no-network',
     timeoutMs: 120_000,
     outputPolicy: { maxEvidenceBytes: 1_048_576, displayHeadBytes: 4096, displayTailBytes: 4096 },
   };
@@ -125,6 +197,23 @@ async function main(): Promise<void> {
   await migrate(client);
 
   const dir = await mkdtemp(join(tmpdir(), 'asep-pilot-'));
+
+  // The leased worktree the driver creates. It does not exist yet — the workflow
+  // creates it after registering the tenancy — so the forge adapter resolves it
+  // through this holder, populated by the driver's onWorkspaceCreated seam.
+  //
+  // THE BUG THIS FIXES: this entrypoint previously passed `localRepoPathFor:
+  // () => dir`, the bare temp ROOT. The GitHub App adapter runs `git push` with
+  // that as cwd, and the root holds no repository at all — so a live push could
+  // only ever fail. Reading it before creation is a defect, not a fallback, so
+  // it throws rather than silently handing back a pathless directory.
+  let worktreePath: string | null = null;
+  const requireWorktree = (): string => {
+    if (worktreePath === null) {
+      throw new Error('forge asked for the worktree before the workspace was created');
+    }
+    return worktreePath;
+  };
 
   // REAL Claude + GitHub App adapters. Throws ProductionConfigError when any pin
   // or credential is absent, so an unconfigured deployment cannot fall through
@@ -147,9 +236,9 @@ async function main(): Promise<void> {
       privateKey,
       installationId: env.githubInstallationId,
     },
-    // The harness commit lives in the leased worktree the driver creates under
-    // `dir`; the forge resolver asks for it by binding.
-    localRepoPathFor: () => dir,
+    // The harness commit lives in the LEASED WORKTREE, not the temp root. The
+    // driver publishes that path the moment it creates the workspace.
+    localRepoPathFor: () => requireWorktree(),
   });
 
   // A REAL digest-pinned Docker sandbox for verification. Constructing it throws
@@ -169,6 +258,46 @@ async function main(): Promise<void> {
       forge: seams.forge,
       // NOTE: no sandboxRequirement override — absent means 'required', so the
       // slice refuses to proceed if OS isolation is not actually enforced.
+
+      // The REAL target. Without this the driver seeds a synthetic mirror and
+      // registers the literal `acme/web`, so real credentials would push a seed
+      // commit to a repository that does not exist — and the forge resolver
+      // would refuse the binding first for a missing github_repository_id.
+      repository: {
+        organizationName: env.organizationName,
+        projectName: env.projectName,
+        defaultBranch: env.baseBranch,
+        binding: {
+          githubHost: env.githubHost,
+          githubOwner: env.githubOwner,
+          githubRepo: env.githubRepo,
+          defaultBaseBranch: env.baseBranch,
+          githubRepositoryId: env.githubRepositoryId,
+        },
+        mirrorPath: env.mirrorPath,
+        baseSha: env.baseSha,
+      },
+      // Publishes the leased worktree so the forge adapter's localRepoPathFor
+      // resolves to the directory that actually holds the harness commit.
+      onWorkspaceCreated: (p) => { worktreePath = p; },
+      // The real task. `expectChangedFile` is load-bearing: the workflow fails
+      // closed when trusted inspection does not observe it, so leaving the
+      // synthetic 'feature.txt' default would report every live attempt failed.
+      work: {
+        objective: env.objective,
+        contextPack: { relevantFiles: env.allowedPaths },
+        allowedPaths: env.allowedPaths,
+        expectChangedFile: env.expectChangedFile,
+        prTitle: `ASEP: ${env.objective}`,
+        prBody: 'Automated ASEP attempt reaching human review.',
+      },
+      // Real provenance in the evidence bundle: the AGENT image that produced
+      // the change, not the driver's placeholder digest.
+      environment: {
+        imageDigest: env.agentImageDigest,
+        lockfileHash: env.lockfileHash,
+        nodeVersion: process.version,
+      },
     });
 
     // eslint-disable-next-line no-console

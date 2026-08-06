@@ -25,6 +25,14 @@ import { ProductionConfigError } from './production-root.js';
 console.log('SUITE-ID: asep-suite:pilot-main');
 
 // Every variable readEnv() requires, with values shaped like the real thing.
+//
+// The second block is the LIVE TARGET (HIGH-008/K2). Before it existed the
+// driver seeded a synthetic mirror and registered the literal `acme/web`, so a
+// pilot holding real credentials would have pushed a seed commit to a repository
+// that does not exist — and `SqlForgeBindingResolver` would have refused the
+// binding first, because `github_repository_id` was never persisted. Each value
+// below is therefore REQUIRED, and the fail-closed loop covers all of them
+// automatically: it iterates the keys of this object.
 const COMPLETE_ENV: Record<string, string> = {
   ASEP_PG_URL: 'postgres://u:p@127.0.0.1:5432/asep',
   ASEP_CLAUDE_EXECUTABLE: '/usr/local/bin/claude',
@@ -36,6 +44,24 @@ const COMPLETE_ENV: Record<string, string> = {
   ASEP_GITHUB_APP_ID: '12345',
   ASEP_GITHUB_PRIVATE_KEY_PATH: '/run/secrets/github-app.pem',
   ASEP_GITHUB_INSTALLATION_ID: '67890',
+
+  // --- the real repository this attempt targets -----------------------------
+  ASEP_ORGANIZATION_NAME: 'Acme Inc',
+  ASEP_PROJECT_NAME: 'web-platform',
+  ASEP_GITHUB_HOST: 'github.com',
+  ASEP_GITHUB_OWNER: 'acme-inc',
+  ASEP_GITHUB_REPO: 'web-platform',
+  ASEP_GITHUB_REPOSITORY_ID: '987654321',
+  ASEP_BASE_BRANCH: 'main',
+  ASEP_MIRROR_PATH: '/var/lib/asep/mirrors/acme-inc-web-platform.git',
+  ASEP_BASE_SHA: 'c'.repeat(40),
+
+  // --- the task to perform --------------------------------------------------
+  ASEP_OBJECTIVE: 'add a health endpoint',
+  ASEP_EXPECT_CHANGED_FILE: 'src/health.ts',
+  ASEP_ALLOWED_PATHS: 'src/health.ts,src/routes.ts',
+
+  ASEP_LOCKFILE_HASH: 'd'.repeat(64),
 };
 
 // Run `fn` with exactly `vars` present, restoring the ambient env afterwards so
@@ -66,6 +92,37 @@ test('HIGH-008: a fully-configured environment yields the pilot configuration', 
   assert.equal(env.githubInstallationId, 67890);
   assert.match(env.agentImageDigest, /@sha256:[0-9a-f]{64}$/);
   assert.match(env.verifyImageDigest, /@sha256:[0-9a-f]{64}$/);
+
+  // The live target: a real owner/repo, the NUMERIC id the forge resolver needs,
+  // and a real mirror + base SHA. None of this was configurable before, which is
+  // exactly why "supply credentials and it runs live" was not yet true.
+  assert.equal(env.githubOwner, 'acme-inc');
+  assert.equal(env.githubRepo, 'web-platform');
+  assert.equal(env.githubRepositoryId, 987654321,
+    'the numeric repository id must be a number — the resolver fails closed without it');
+  assert.equal(env.mirrorPath, '/var/lib/asep/mirrors/acme-inc-web-platform.git');
+  assert.equal(env.baseSha, 'c'.repeat(40));
+
+  // The work order. expectChangedFile is load-bearing: the workflow fails closed
+  // when trusted inspection does not observe it.
+  assert.equal(env.objective, 'add a health endpoint');
+  assert.equal(env.expectChangedFile, 'src/health.ts');
+  assert.deepEqual(env.allowedPaths, ['src/health.ts', 'src/routes.ts'],
+    'a comma-separated list must parse into discrete paths');
+});
+
+test('HIGH-008: a base SHA that is not a full 40-hex commit fails closed', () => {
+  // An abbreviated SHA is the realistic mistake (people paste `git log --oneline`
+  // output). The mirror would resolve it, but the evidence bundle and the
+  // remote-reconciliation comparison both key on full SHAs, so accepting a short
+  // one would silently produce evidence that cannot be matched against the remote.
+  for (const bad of ['c'.repeat(7), 'c'.repeat(39), 'C'.repeat(40), 'z'.repeat(40)]) {
+    assert.throws(
+      () => withEnv({ ...COMPLETE_ENV, ASEP_BASE_SHA: bad }, () => readEnv()),
+      ProductionConfigError,
+      `base SHA '${bad}' must be rejected`,
+    );
+  }
 });
 
 test('HIGH-008: EVERY missing variable fails closed (no silent downgrade to a double)', () => {

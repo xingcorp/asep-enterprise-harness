@@ -158,6 +158,19 @@ export const REQUIRED_SUITES = Object.freeze({
   // silently falling back to a test double. Registered so deleting the only
   // production wiring turns the gate RED.
   'asep-suite:production-root': 'apps/control-plane-api/src/production-root.test.ts',
+  // HIGH-008 pilot ENTRYPOINT: the caller that turns the production seams into a
+  // live run. Pins fail-closed config reading (every knob required, blank ==
+  // absent, base SHA must be a real 40-hex commit) and the hardened agent
+  // container flags. Registered because "supply credentials and it runs live" is
+  // only falsifiable if the entrypoint's contract is itself gated.
+  'asep-suite:pilot-main': 'apps/control-plane-api/src/pilot-main.test.ts',
+  // HIGH-008/K2 pilot TARGET seams: proves the driver attempts against the
+  // caller's real mirror + registers the real owner/repo INCLUDING the numeric
+  // github_repository_id the forge resolver fails closed without, publishes the
+  // leased worktree path, and honours the real work order + provenance. Also
+  // pins that omitting them keeps the synthetic default, so both K1 proofs stay
+  // byte-for-byte unchanged.
+  'asep-suite:pilot-target': 'apps/control-plane-api/src/pilot-target.test.ts',
 });
 
 /** The machine-readable marker a suite prints at module load: `SUITE-ID: <id>`. */

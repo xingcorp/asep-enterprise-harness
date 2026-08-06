@@ -146,6 +146,14 @@ export interface VerticalSliceWorkflowInput {
     readonly githubOwner: string;
     readonly githubRepo: string;
     readonly defaultBaseBranch: string;
+    // The forge's OWN numeric repository id. Optional here because the local
+    // bare-repo double does not have one, but a real GitHub App run cannot
+    // proceed without it: SqlForgeBindingResolver refuses a binding whose
+    // github_repository_id is null (ForgeBindingIncompleteError). Before this
+    // field existed the workflow could only ever write null, so every live
+    // push/PR failed at resolve time — the reason "supply credentials and it
+    // runs" was still unfalsifiable even once the adapters were wired.
+    readonly githubRepositoryId?: number;
   };
 
   // Execution identity + governance inputs.

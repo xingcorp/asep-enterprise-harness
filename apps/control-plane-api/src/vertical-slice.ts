@@ -204,6 +204,69 @@ export interface VerticalSliceInput {
   // A real ForgeProvider (e.g. GitHubAppForgePort). Omitted → the local bare-repo
   // double, which performs a REAL git push to a local remote.
   readonly forge?: ForgeProvider;
+
+  // --- REAL REPOSITORY TARGET (disp. P2-FINAL-HIGH-008, exit K2) -------------
+  // The residual finding after the entrypoint landed: injecting the real Claude
+  // and GitHub App adapters was still not enough to produce a LIVE task→PR run,
+  // because this driver always called `seedMirror(dir)` and always registered the
+  // binding as the literal `acme/web` on `github.com`. So a pilot with real
+  // credentials would push a synthetic seed commit to a repository that does not
+  // exist, and `SqlForgeBindingResolver` would in any case refuse the binding:
+  // the workflow never persisted `github_repository_id`, so every resolve threw
+  // ForgeBindingIncompleteError before the first API call.
+  //
+  // ABSENT keeps the synthetic behaviour byte-for-byte, so both K1 proofs are
+  // unchanged. PRESENT means: register THIS tenancy + THIS GitHub repository
+  // (including the numeric id the forge adapter requires) and attempt against a
+  // mirror the caller already cloned, at a base SHA that really exists there.
+  readonly repository?: {
+    readonly organizationName: string;
+    readonly projectName: string;
+    readonly defaultBranch: string;
+    readonly binding: {
+      readonly githubHost: string;
+      readonly githubOwner: string;
+      readonly githubRepo: string;
+      readonly defaultBaseBranch: string;
+      // REQUIRED here (optional on the repository row) precisely because the
+      // forge resolver fails closed without it.
+      readonly githubRepositoryId: number;
+    };
+    // A bare mirror of the real remote, and a base commit that exists in it.
+    readonly mirrorPath: string;
+    readonly baseSha: string;
+  };
+
+  // Published the moment the workflow creates the leased worktree. The forge
+  // adapter locates the harness commit through `localRepoPathFor`, which a
+  // production root must wire to the REAL worktree — a path that does not exist
+  // until this driver has run. Without this seam the pilot could only pass the
+  // temp root, and `git push` would run in a directory holding no commit.
+  readonly onWorkspaceCreated?: (workspacePath: string) => void;
+
+  // The task to actually perform. ABSENT keeps the synthetic 'add feature.txt'
+  // work order (both K1 proofs). PRESENT matters for a live run because the
+  // workflow FAILS CLOSED when trusted inspection does not observe
+  // `expectChangedFile` — so a real agent doing real work against a hard-coded
+  // 'feature.txt' expectation could only ever be reported as a failed attempt.
+  readonly work?: {
+    readonly objective: string;
+    readonly contextPack: Readonly<Record<string, unknown>>;
+    readonly allowedPaths: readonly string[];
+    readonly expectChangedFile: string;
+    readonly prTitle: string;
+    readonly prBody: string;
+  };
+
+  // Provenance recorded in the evidence bundle. ABSENT uses the synthetic
+  // placeholder digests the proofs assert on. A live run MUST pass its real
+  // digests: the bundle is the audit record, and baking 'sha256:eee…' into it
+  // would make evidence from a real attempt claim an image that never ran.
+  readonly environment?: {
+    readonly imageDigest: string;
+    readonly lockfileHash: string;
+    readonly nodeVersion: string;
+  };
 }
 
 export interface VerticalSliceResult {
@@ -250,8 +313,17 @@ export interface VerticalSliceResult {
 export async function runVerticalSlice(input: VerticalSliceInput): Promise<VerticalSliceResult> {
   const { client, dir } = input;
 
-  // --- real Git: bare mirror + a base commit --------------------------------
-  const { mirror, baseSha } = await seedMirror(dir);
+  // --- Git target: the caller's REAL mirror, or a synthetic seed -------------
+  // With `repository` absent this is byte-for-byte the previous behaviour (both
+  // K1 proofs), so the seeded mirror stays the default. With it present the
+  // attempt runs against a mirror of the real remote at a base SHA that exists
+  // there — the difference between a rehearsal and a live run (HIGH-008/K2).
+  const target = input.repository
+    ? { mirror: input.repository.mirrorPath, baseSha: input.repository.baseSha }
+    : await seedMirror(dir);
+  const { mirror, baseSha } = target;
+  // Only meaningful for the local double. A real forge pushes to the actual
+  // remote, so this bare repo is created but never used on that path.
   const remoteBare = join(dir, 'remote.git');
   await runGit(['init', '--bare', '-q', remoteBare]);
 
@@ -320,6 +392,10 @@ export async function runVerticalSlice(input: VerticalSliceInput): Promise<Verti
         createdWorktreePath = p;
         if (usingLocalAgent) localAgent.setWorktree(p);
         if (usingLocalForge) localForge.setWorktree(p);
+        // A real forge adapter has no setWorktree: it locates the harness commit
+        // through its own localRepoPathFor. That resolver needs the leased
+        // worktree path, which does not exist until this moment — so publish it.
+        input.onWorkspaceCreated?.(p);
         return ws;
       },
       cleanup: (s: TenantScope, id: WorkspaceId) => manager.cleanup(s, id),
@@ -331,10 +407,14 @@ export async function runVerticalSlice(input: VerticalSliceInput): Promise<Verti
 
   // --- one call to the APPLICATION use case ---------------------------------
   const outcome = await runVerticalSliceWorkflow({
-    organizationName: 'Acme',
-    projectName: 'web',
-    defaultBranch: 'main',
-    binding: {
+    // Tenancy + the repository this attempt targets. The literals are the
+    // SYNTHETIC default (both K1 proofs); a pilot passes `repository` and the
+    // attempt registers the real owner/repo plus the numeric id the forge
+    // resolver requires (HIGH-008/K2).
+    organizationName: input.repository?.organizationName ?? 'Acme',
+    projectName: input.repository?.projectName ?? 'web',
+    defaultBranch: input.repository?.defaultBranch ?? 'main',
+    binding: input.repository?.binding ?? {
       githubHost: 'github.com', githubOwner: 'acme', githubRepo: 'web',
       defaultBaseBranch: 'main',
     },
@@ -381,18 +461,24 @@ export async function runVerticalSlice(input: VerticalSliceInput): Promise<Verti
     branchFor: attemptBranch,
     workspaceBackend,
     checkCommand: input.checkCommand,
-    workOrder: { objective: 'add feature.txt' },
-    contextPack: { relevantFiles: ['feature.txt'] },
-    allowedPaths: ['feature.txt'],
+    // The work order. Synthetic by default (both K1 proofs assert on
+    // 'feature.txt'); a pilot passes `work` so the attempt describes the real
+    // objective AND the post-hoc trusted-inspection check expects the file the
+    // real agent was actually asked to touch.
+    workOrder: { objective: input.work?.objective ?? 'add feature.txt' },
+    contextPack: input.work?.contextPack ?? { relevantFiles: ['feature.txt'] },
+    allowedPaths: input.work?.allowedPaths ?? ['feature.txt'],
     identity: { name: 'ASEP Bot', email: 'bot@asep.invalid' },
-    environment: {
+    // Placeholder digests are fine for a proof asserting on fixed bytes, but a
+    // live attempt must record what really ran — the bundle is the audit record.
+    environment: input.environment ?? {
       imageDigest: 'sha256:' + 'e'.repeat(64),
       lockfileHash: 'f'.repeat(64),
       nodeVersion: process.version,
     },
-    prTitle: 'ASEP: add feature.txt',
-    prBody: 'Automated attempt reaching human review.',
-    expectChangedFile: 'feature.txt',
+    prTitle: input.work?.prTitle ?? 'ASEP: add feature.txt',
+    prBody: input.work?.prBody ?? 'Automated attempt reaching human review.',
+    expectChangedFile: input.work?.expectChangedFile ?? 'feature.txt',
   });
 
   return {
