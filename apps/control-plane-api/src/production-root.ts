@@ -26,6 +26,7 @@ import {
   RepositoryBindingRepository, type SqlClient,
 } from '@asep/persistence';
 import { ClaudeCodingProvider, type AgentSandboxConfig } from '@asep/agent-claude';
+import { isDigestPinned } from '@asep/command-runner';
 import {
   GitHubAppCredentialProvider, GitHubAppForgeProvider, GitHubAppForgePort,
   SqlForgeBindingResolver, type LocalRepoLocator,
@@ -109,6 +110,23 @@ export function productionSeams(
   const sandbox = cfg.claude?.sandbox;
   if (!sandbox || requireString(sandbox.image, 'claude.sandbox.image') === '') {
     throw new ProductionConfigError('claude.sandbox');
+  }
+  // The agent image must be pinned BY DIGEST, not merely non-empty (exit F5).
+  //
+  // THE FINDING (cycle 5, HIGH-002): this check accepted any non-empty string,
+  // so `claude-agent:latest` passed. A mutable tag means the thing that actually
+  // produced a change is not identified by the evidence bundle that attests to
+  // it — the image behind the tag can differ between the attempt and any later
+  // audit. DockerSandboxProvider already refuses an unpinned image for the
+  // VERIFICATION container; the agent container had no equivalent guard, so the
+  // stricter of the two paths was the one that mattered least.
+  //
+  // Same predicate as the sandbox provider, imported rather than re-implemented,
+  // so the two paths cannot drift.
+  if (!isDigestPinned(sandbox.image)) {
+    throw new ProductionConfigError(
+      `claude.sandbox.image must be digest-pinned (…@sha256:<64hex>), got '${sandbox.image}'`,
+    );
   }
   const appId = requireNumber(cfg.github?.appId, 'github.appId');
   const privateKey = requireString(cfg.github?.privateKey, 'github.privateKey');

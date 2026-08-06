@@ -169,6 +169,42 @@ test('E8/F4/F5: the agent container flags are hardened and expose no docker sock
   assert.doesNotMatch(flags, /--privileged/, 'the container must never be privileged');
 });
 
+// E8/F5 (cycle-5 HIGH-002): the agent's writable mount is the LEASED WORKTREE
+// and nothing above it.
+//
+// THE FINDING. agentRunFlags used to receive the pilot's temp ROOT and mount it
+// `:rw`. That root is where the driver keeps `objects/` — the filesystem bytes
+// backing the artifact AND evidence stores — plus `mirror.git` and `remote.git`.
+// So the agent, the single component this design treats as untrusted, could
+// rewrite the evidence bundle that attests to its own attempt, and could rewrite
+// the Git mirror the harness commits from. Every other hardening flag is beside
+// the point if the audit record is writable.
+test('E8/F5: the agent mounts ONLY the leased worktree — never the pilot state root', () => {
+  const wt = '/tmp/asep-pilot-x/wt/binding-1/ws-1';
+  const flags = agentRunFlags(wt);
+  const joined = flags.join(' ');
+
+  // Exactly one writable bind, and it is the worktree.
+  const writable = flags.filter((f) => f.endsWith(':rw'));
+  assert.deepEqual(writable, [`${wt}:${wt}:rw`],
+    'the ONLY writable mount must be the leased worktree');
+
+  // The nested `.git` indirection is pinned read-only OVER that writable parent,
+  // so an agent cannot repoint the gitdir from inside the container.
+  assert.ok(flags.includes(`${wt}/.git:${wt}/.git:ro`),
+    'the worktree .git must be re-bound read-only over the writable parent');
+
+  // The state root holds objects/ (evidence + artifact bytes), mirror.git and
+  // remote.git. None of them may be reachable as a writable mount.
+  const stateRoot = '/tmp/asep-pilot-x';
+  assert.doesNotMatch(joined, new RegExp(`${stateRoot}:${stateRoot}:rw`),
+    'mounting the pilot state root rw would expose objects/ + mirror.git to the agent');
+  for (const forbidden of ['objects', 'mirror.git', 'remote.git', 'upstream']) {
+    assert.doesNotMatch(joined, new RegExp(`${stateRoot}/${forbidden}`),
+      `${forbidden} must never be mounted into the agent container`);
+  }
+});
+
 test('F1: the verification command is executable + argv, never a shell string', () => {
   const spec = checkCommandFor('/tmp/wt');
   assert.equal(spec.executable, 'git');

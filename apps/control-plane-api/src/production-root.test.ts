@@ -147,6 +147,51 @@ test('E8/G3: OMITTING the agent sandbox fails closed (no host-execution agent)',
   );
 });
 
+// E8/F5: the agent image must be pinned BY DIGEST, not merely non-empty.
+//
+// THE FINDING (cycle 5, HIGH-002): the guard was
+// `requireString(sandbox.image, …) === ''`, so `claude-agent:latest` sailed
+// through. A mutable tag means the evidence bundle attests to an image that can
+// differ between the attempt and any later audit — the bundle stops identifying
+// what actually ran. DockerSandboxProvider already refuses an unpinned image for
+// the VERIFICATION container, so the weaker check was on the path that matters
+// more: the agent is the untrusted component.
+test('E8/F5: a MUTABLE agent image tag fails closed (digest pinning is mandatory)', () => {
+  const cfg = config();
+  for (const unpinned of [
+    'claude-agent:latest',
+    'claude-agent',
+    'ghcr.io/asep/agent:v1.2.3',
+    // Shaped like a digest but too short to be one — a near-miss must not pass.
+    'alpine@sha256:' + 'a'.repeat(63),
+    // A digest that is not at the END is not a pin either.
+    'alpine@sha256:' + 'a'.repeat(64) + '-suffix',
+  ]) {
+    assert.throws(
+      () => productionSeams(client, {
+        ...cfg,
+        claude: { ...cfg.claude, sandbox: { ...cfg.claude.sandbox, image: unpinned } },
+      } as ProductionSeamConfig),
+      ProductionConfigError,
+      `image '${unpinned}' is not digest-pinned and must be refused`,
+    );
+  }
+});
+
+test('E8/F5: a genuinely digest-pinned agent image is accepted', () => {
+  const cfg = config();
+  // The positive control: without it, the test above would still pass if the
+  // guard rejected everything.
+  const seams = productionSeams(client, {
+    ...cfg,
+    claude: {
+      ...cfg.claude,
+      sandbox: { ...cfg.claude.sandbox, image: 'ghcr.io/asep/agent@sha256:' + 'c'.repeat(64) },
+    },
+  } as ProductionSeamConfig);
+  assert.equal(typeof seams.agentFor, 'function');
+});
+
 test('HIGH-008: missing GitHub App credentials fail closed', () => {
   const cfg = config();
   assert.throws(

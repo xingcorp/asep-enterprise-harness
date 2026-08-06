@@ -37,10 +37,32 @@ function sha256Hex(bytes: Uint8Array): string {
 // CLEAN host env, so NO host credential (GITHUB_TOKEN, *_TOKEN, AWS_*) can leak
 // into the container even if it is present in the harness process (G3/G5). When
 // absent, the CLI is spawned directly on the host (pilot-only / unit-test path).
+// `runFlags` / `workdir` may be a THUNK, resolved at execute() time rather than
+// at construction (disp. P2-FINAL-HIGH-002, exit E8/F5).
+//
+// WHY. The mount the agent needs is the leased worktree, and that path does not
+// exist when the provider is built: a composition root calls `productionSeams()`
+// (and therefore `new ClaudeCodingProvider`) before the workflow has registered
+// the tenancy, acquired the lease and created the workspace. With only eager
+// strings available, the pilot's sole option was to mount the temp ROOT of its
+// state directory — which also holds `objects/` (the artifact + evidence bytes),
+// `mirror.git` and `remote.git`. That handed the one untrusted component write
+// access to the audit record attesting to its own work.
+//
+// A thunk closes that without weakening anything: `execute()` already reads this
+// config at run time, by which point the workspace exists. Plain values stay
+// valid, so every existing caller is unaffected.
+export type LazySandboxValue<T> = T | (() => T);
+
 export interface AgentSandboxConfig {
-  readonly image: string;                 // digest-pinned image ref
-  readonly runFlags: readonly string[];   // hardened `docker run` flags (no image)
-  readonly workdir: string;               // -w working dir inside the container
+  readonly image: string;                             // digest-pinned image ref
+  readonly runFlags: LazySandboxValue<readonly string[]>;  // hardened flags (no image)
+  readonly workdir: LazySandboxValue<string>;         // -w working dir in-container
+}
+
+/** Resolve a possibly-lazy sandbox value. A thunk is called; a value passes through. */
+function resolveLazy<T>(v: LazySandboxValue<T>): T {
+  return typeof v === 'function' ? (v as () => T)() : v;
 }
 
 // Explicit acknowledgement that this provider will run the agent DIRECTLY on the
@@ -152,11 +174,16 @@ export class ClaudeCodingProvider implements CodingAgentProvider {
     let spawnEnv: Record<string, string>;
     if (this.cfg.sandbox) {
       const sb = this.cfg.sandbox;
+      // Resolved HERE, not at construction: a composition root builds this
+      // provider before the leased worktree exists, so the mount it needs can
+      // only be known now. See LazySandboxValue.
+      const sbRunFlags = resolveLazy(sb.runFlags);
+      const sbWorkdir = resolveLazy(sb.workdir);
       const envFlags = Object.entries(agentEnv).flatMap(([k, v]) => ['-e', `${k}=${v}`]);
       exe = 'docker';
       args = [
-        ...sb.runFlags,
-        '-w', sb.workdir,
+        ...sbRunFlags,
+        '-w', sbWorkdir,
         ...envFlags,
         sb.image,
         this.cfg.executable,

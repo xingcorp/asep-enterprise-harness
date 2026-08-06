@@ -150,7 +150,7 @@ export function readEnv(): PilotEnv {
 // profile: no network, read-only root, dropped caps, no new privileges, and no
 // docker socket. The working tree is bind-mounted rw by the driver's mount spec;
 // the `.git` indirection nested inside it is pinned read-only there.
-export function agentRunFlags(workdir: string): readonly string[] {
+export function agentRunFlags(worktreePath: string): readonly string[] {
   return [
     'run', '--rm',
     '--network', 'none',
@@ -160,7 +160,24 @@ export function agentRunFlags(workdir: string): readonly string[] {
     '--pids-limit', '256',
     '--memory', '2g',
     '--tmpfs', '/tmp:rw,noexec,nosuid,size=64m',
-    '-v', `${workdir}:${workdir}:rw`,
+    // ONLY the leased worktree is writable.
+    //
+    // THE FINDING (cycle 5, HIGH-002/E8/F5): this used to mount the pilot's temp
+    // ROOT rw. That root is where the driver keeps `objects/` — the filesystem
+    // bytes of the artifact + evidence stores — plus `mirror.git` and
+    // `remote.git`. So the agent, the one component the whole trust model treats
+    // as untrusted, had write access to the audit record that is supposed to
+    // attest to what it did, and to the Git mirror the harness commits from.
+    // Narrowing the bind is the fix: the agent gets the working tree and nothing
+    // else in the pilot's state directory is reachable from inside the container.
+    '-v', `${worktreePath}:${worktreePath}:rw`,
+    // The `.git` indirection of a linked worktree lives INSIDE the tree, so the
+    // rw bind above would make it writable and let the agent repoint the gitdir
+    // from within the sandbox. A nested `:ro` bind is applied over the writable
+    // parent (docker orders binds by destination depth) and the kernel refuses
+    // the write with EROFS — OS-enforced, matching what the verification
+    // container already does via readOnlyOverlayPaths.
+    '-v', `${worktreePath}/.git:${worktreePath}/.git:ro`,
   ];
 }
 
@@ -225,10 +242,17 @@ async function main(): Promise<void> {
       cliVersion: env.claudeCliVersion,
       maxTurns: env.claudeMaxTurns,
       // Isolation is REQUIRED on this path: no waiver is passed anywhere here.
+      //
+      // The mount is the LEASED WORKTREE, resolved lazily. It does not exist at
+      // this point — the workflow creates it after registering the tenancy and
+      // acquiring the lease — so these are thunks the adapter calls at
+      // execute() time. Passing `dir` eagerly (what this did before) mounted the
+      // pilot's whole state directory rw, including `objects/`: the artifact and
+      // evidence bytes the agent must never be able to rewrite.
       sandbox: {
         image: env.agentImageDigest,
-        runFlags: agentRunFlags(dir),
-        workdir: dir,
+        runFlags: () => agentRunFlags(requireWorktree()),
+        workdir: () => requireWorktree(),
       },
     },
     github: {
