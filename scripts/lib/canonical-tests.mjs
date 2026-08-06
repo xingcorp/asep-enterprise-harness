@@ -171,6 +171,13 @@ export const REQUIRED_SUITES = Object.freeze({
   // pins that omitting them keeps the synthetic default, so both K1 proofs stay
   // byte-for-byte unchanged.
   'asep-suite:pilot-target': 'apps/control-plane-api/src/pilot-target.test.ts',
+  // HIGH-009: the pilot authority resolver's SQL executed against the REAL
+  // migrated schema. The existing resolver suite uses a fake db that returns
+  // canned rows and never parses SQL, which is how `select attempts.run_id` — a
+  // column that does not exist — shipped green: every authoritative attempt
+  // lookup threw at runtime, so the COMPLETE gate could not verify a manifest at
+  // all. Registered so a schema/query divergence turns the gate RED.
+  'asep-suite:authority-resolver-sql': 'adapters/persistence/src/authority-resolver-sql.test.ts',
 });
 
 /** The machine-readable marker a suite prints at module load: `SUITE-ID: <id>`. */

@@ -66,11 +66,32 @@ export function createSqlAuthorityResolver(db, opts) {
 
   return {
     async resolveAttempt(trace) {
+      // `run_id` lives on TASKS, not on attempts (see the attempts DDL: it
+      // carries task_id + repository_binding_id and reaches its run THROUGH the
+      // task). This query used to select `attempts.run_id`, which does not
+      // exist, so every call threw `column "run_id" does not exist` — verified
+      // empirically against a migrated database.
+      //
+      // That made the whole authority check unreachable: verify-pilot-manifest
+      // compares `attempt.runId` against `trace.runId` to catch a manifest
+      // claiming a trace hierarchy the database does not agree with. A throw
+      // before the first comparison means the strongest anti-forgery check in
+      // the COMPLETE gate never ran. The resolver suite missed it because it
+      // drives a `fakeDb` stub that returns canned rows without ever parsing
+      // the SQL against real DDL.
+      //
+      // The join is INNER and scoped on the composite key, so an attempt whose
+      // task lies outside the trace's tenant resolves to zero rows and fails
+      // closed exactly as a missing attempt does.
       const r = await db.query(
-        `select id, task_id, run_id, repository_binding_id, result_sha,
-                agent_provider_id, evidence_artifact_id, evidence_sha256
-         from attempts
-         where id = $1 and organization_id = $2 and project_id = $3`,
+        `select a.id, a.task_id, t.run_id, a.repository_binding_id, a.result_sha,
+                a.agent_provider_id, a.evidence_artifact_id, a.evidence_sha256
+         from attempts a
+         join tasks t
+           on t.id = a.task_id
+          and t.organization_id = a.organization_id
+          and t.project_id = a.project_id
+         where a.id = $1 and a.organization_id = $2 and a.project_id = $3`,
         [trace?.attemptId ?? '', ...scopeOf(trace)],
       );
       if (r.rowCount === 0) return null;
