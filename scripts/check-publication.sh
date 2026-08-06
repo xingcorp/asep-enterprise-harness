@@ -39,7 +39,11 @@ scan_leaks() {
   for file in "$@"; do
     [ -f "$file" ] || continue
     for pat in "${LEAK_PATTERNS[@]}"; do
-      if grep -nE "$pat" "$file" >/tmp/asep-leak-hit.$$ 2>/dev/null; then
+      # -e for the same reason as scripts/secret-scan.sh: a pattern starting
+      # with '-' would otherwise be parsed as options and the scan would exit 2,
+      # which this `if` reads as "clean". No LEAK_PATTERNS entry begins with a
+      # dash today; this keeps adding one from silently disabling the scanner.
+      if grep -nE -e "$pat" "$file" >/tmp/asep-leak-hit.$$ 2>/dev/null; then
         while IFS= read -r line; do
           echo "  ${file}:${line}"
         done < /tmp/asep-leak-hit.$$

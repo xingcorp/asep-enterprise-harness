@@ -32,7 +32,11 @@ scan_paths() {
   for file in "$@"; do
     [ -f "$file" ] || continue
     for pat in "${PATTERNS[@]}"; do
-      if grep -nE "$pat" "$file" >/tmp/asep-secret-hit.$$ 2>/dev/null; then
+      # -e is REQUIRED, not stylistic: the PEM pattern begins with '-', so
+      # without it grep parses the pattern as a bundle of short options, exits 2,
+      # and the `if` reads that as "no match". Every PEM private key in the tree
+      # was invisible to this scanner while it still printed PASS.
+      if grep -nE -e "$pat" "$file" >/tmp/asep-secret-hit.$$ 2>/dev/null; then
         while IFS= read -r line; do
           echo "  ${file}:${line}"
         done < /tmp/asep-secret-hit.$$
@@ -47,16 +51,32 @@ scan_paths() {
 self_test() {
   local tmp rc
   tmp="$(mktemp -d)"
+  rc=0
   # Seed a canary that matches the AWS access-key-id pattern (AKIA + 16 chars).
   # Uses AWS's own documented non-functional example key id.
   printf 'aws_key = AKIA%s\n' 'IOSFODNN7EXAMPLE' > "$tmp/canary.txt"
   if scan_paths "$tmp/canary.txt" >/dev/null 2>&1; then
     echo "self-test: PASS (canary secret caught)"
-    rc=0
   else
     echo "self-test: FAIL (scanner did not catch seeded canary)" >&2
     rc=1
   fi
+
+  # A SECOND canary whose pattern begins with '-'. The AKIA canary above can
+  # never exercise the dash case, which is exactly why this scanner shipped
+  # reporting PASS while silently skipping every PEM private key: grep read the
+  # leading '-----' as options and exited 2. Any regression that drops `-e`
+  # fails here instead of going unnoticed. No key material: the body is base64
+  # 'ABC'.
+  printf -- '-----BEGIN RSA PRIVATE KEY-----\nQUJD\n-----END RSA PRIVATE KEY-----\n' \
+    > "$tmp/pem-canary.txt"
+  if scan_paths "$tmp/pem-canary.txt" >/dev/null 2>&1; then
+    echo "self-test: PASS (dash-leading PEM canary caught)"
+  else
+    echo "self-test: FAIL (scanner did not catch seeded PEM canary)" >&2
+    rc=1
+  fi
+
   rm -rf "$tmp"
   return $rc
 }

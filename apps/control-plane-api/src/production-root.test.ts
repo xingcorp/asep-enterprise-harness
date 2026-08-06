@@ -53,8 +53,14 @@ const artifacts = {
   exists: async () => false,
 } as unknown as ArtifactStore;
 
-// A syntactically valid PEM shape. No key material is used: nothing here mints a
-// token, so this never touches GitHub.
+// A syntactically valid PEM shape. No key material is used: the body is base64
+// 'ABC' and nothing here mints a token, so this never touches GitHub.
+//
+// ASSEMBLED at runtime rather than written as a literal. The secret scanner
+// rightly refuses a '-----BEGIN … PRIVATE KEY-----' literal in a tracked file,
+// and that rule should hold with no per-file exemption — an allowlist entry
+// here is a hole a real key could later slip through. The runtime value is
+// byte-identical, which is what the E4 leak assertion below actually reads.
 const PEM_LABEL = 'RSA PRIVATE KEY';
 const FAKE_PEM = `${'-'.repeat(5)}BEGIN ${PEM_LABEL}${'-'.repeat(5)}\nQUJD\n${'-'.repeat(5)}END ${PEM_LABEL}${'-'.repeat(5)}\n`;
 

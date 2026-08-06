@@ -9,8 +9,13 @@
 #
 # Usage:
 #   source "$(dirname "$0")/lib/secret-patterns.sh"
-#   for pat in "${SECRET_PATTERNS[@]}"; do ... ; done
-#   grep -nE "$SECRET_PATTERNS_ALT" file        # single alternation string
+#   for pat in "${SECRET_PATTERNS[@]}"; do grep -nE -e "$pat" file; done
+#   grep -nE -e "$SECRET_PATTERNS_ALT" file     # single alternation string
+#
+# ALWAYS pass the pattern with `-e`. The PEM entry below begins with '-', so a
+# bare `grep -nE "$pat"` parses it as a bundle of short options and exits 2 —
+# which a plain `if grep ...` reads as "no match". Iterating this array without
+# -e silently skips every PEM private key while still reporting a clean scan.
 
 # shellcheck disable=SC2034
 SECRET_PATTERNS=(
