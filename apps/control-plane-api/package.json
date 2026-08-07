@@ -21,6 +21,7 @@
     "@asep/domain": "workspace:*",
     "@asep/git-worktree": "workspace:*",
     "@asep/github-app": "workspace:*",
+    "@asep/local-doubles": "workspace:*",
     "@asep/observability": "workspace:*",
     "@asep/persistence": "workspace:*",
     "@asep/ports": "workspace:*",

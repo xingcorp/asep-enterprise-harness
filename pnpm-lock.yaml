@@ -98,6 +98,18 @@ importers:
         specifier: workspace:*
         version: link:../persistence
 
+  adapters/local-doubles:
+    dependencies:
+      '@asep/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+      '@asep/git-worktree':
+        specifier: workspace:*
+        version: link:../git-worktree
+      '@asep/ports':
+        specifier: workspace:*
+        version: link:../../packages/ports
+
   adapters/memory-inmemory:
     dependencies:
       '@asep/ports':
@@ -158,6 +170,9 @@ importers:
       '@asep/github-app':
         specifier: workspace:*
         version: link:../../adapters/github-app
+      '@asep/local-doubles':
+        specifier: workspace:*
+        version: link:../../adapters/local-doubles
       '@asep/observability':
         specifier: workspace:*
         version: link:../../packages/observability

@@ -34,9 +34,14 @@ import {
 import {
   SpanTracer, CapturingTelemetrySink, type CapturedEvent,
 } from '@asep/observability';
+import { GitWorktreeManager, attemptBranch } from '@asep/git-worktree';
+// The local doubles (fake Claude / fake GitHub / synthetic mirror) live in an
+// ADAPTER package, not here: they are port implementations that spawn git, and a
+// composition root that does that is doing adapter work (B2/B5, disp.
+// P2-FINAL-MED-004). This root only wires them.
 import {
-  GitWorktreeManager, runGit, attemptBranch, safeRefspecFor,
-} from '@asep/git-worktree';
+  seedMirror, createBareRemote, FileWritingAgent, LocalBareForgeProvider,
+} from '@asep/local-doubles';
 import { TrustedCommandRunner } from '@asep/command-runner';
 import {
   runVerticalSliceWorkflow,
@@ -51,117 +56,12 @@ import type {
   WorkspaceId,
 } from '@asep/contracts';
 
-/** Seed a REAL bare mirror with a base commit; return { mirror, baseSha }. */
-export async function seedMirror(dir: string): Promise<{ mirror: string; baseSha: string }> {
-  const upstream = join(dir, 'upstream');
-  await mkdir(upstream, { recursive: true });
-  await runGit(['-C', upstream, 'init', '-q', '-b', 'main']);
-  await writeFile(join(upstream, 'README.md'), '# seed\n');
-  await runGit(['-C', upstream, 'add', '-A']);
-  await runGit(['-C', upstream, '-c', 'user.name=seed', '-c', 'user.email=seed@example.com',
-    'commit', '-m', 'seed']);
-  const baseSha = (await runGit(['-C', upstream, 'rev-parse', 'HEAD'])).stdout.trim();
-  const mirror = join(dir, 'mirror.git');
-  await runGit(['clone', '--bare', '-q', upstream, mirror]);
-  return { mirror, baseSha };
-}
+// The local doubles (seedMirror / FileWritingAgent / LocalBareForgeProvider) now
+// live in @asep/local-doubles. They are PORT IMPLEMENTATIONS and they drive git,
+// neither of which belongs in a composition root (B2/B5, disp. P2-FINAL-MED-004).
+// `seedMirror` is re-exported because both K1 proofs import it from this module.
+export { seedMirror, FileWritingAgent, LocalBareForgeProvider } from '@asep/local-doubles';
 
-/**
- * Fake Claude: genuinely MUTATES the worktree (writes a file), then returns an
- * UNTRUSTED self-report only. The harness derives every real fact afterwards via
- * trusted inspection. The worktree path is discovered lazily so the agent can be
- * constructed before the workspace exists (the workflow creates the workspace).
- */
-export class FileWritingAgent implements CodingAgentProvider {
-  readonly providerId = 'fake-claude';
-  private worktreePath: string | null = null;
-  setWorktree(path: string): void { this.worktreePath = path; }
-  async execute(req: AgentExecuteRequest): Promise<AgentAttemptObservation> {
-    if (this.worktreePath === null) throw new Error('worktree path not wired');
-    await writeFile(join(this.worktreePath, 'feature.txt'), 'implemented by the agent\n');
-    return {
-      status: 'AGENT_DONE',
-      summary: `wrote feature.txt for ${req.workOrderRef.artifactId}`,
-      knownLimitations: [],
-      providerSessionId: `fake-session-${req.attemptId}`,
-      usage: { inputTokens: 1, outputTokens: 1, modelCostUsd: 0, toolCalls: 1, wallClockMs: 1 },
-      eventArtifactRefs: [],
-    };
-  }
-}
-
-/**
- * Fake GitHub: a REAL `git push` to a local bare remote (pushing the exact
- * commit SHA to the safe ASEP-namespaced ref — a detached worktree has no local
- * branch to push) + an in-memory idempotent PR upsert. NO merge capability
- * exists on the port, so a merge is unrepresentable.
- */
-export class LocalBareForgeProvider implements ForgeProvider {
-  pushes = 0;
-  private readonly prs = new Map<string, PullRequestRef>();
-  private prCounter = 0;
-  private worktreePath: string | null = null;
-  constructor(private readonly remoteBarePath: string) {}
-  setWorktree(path: string): void { this.worktreePath = path; }
-
-  async pushBranch(_scope: TenantScope, input: {
-    repositoryBindingId: RepositoryBindingId;
-    branch: string;
-    commitSha: string;
-    expectedRemoteSha?: string;
-  }): Promise<void> {
-    if (this.worktreePath === null) throw new Error('worktree path not wired');
-    // Validate through the same non-bypassable ref-safety policy the real
-    // adapter uses — a protected/malformed target is unrepresentable.
-    const safe = safeRefspecFor(input.branch, input.expectedRemoteSha);
-    await runGit(['-C', this.worktreePath, 'push', this.remoteBarePath,
-      `${input.commitSha}:refs/heads/${safe.branch}`]);
-    this.pushes++;
-  }
-
-  async upsertPullRequest(_scope: TenantScope, input: {
-    repositoryBindingId: RepositoryBindingId;
-    headBranch: string;
-    base: string;
-    title: string;
-    body: string;
-  }): Promise<PullRequestRef> {
-    const existing = this.prs.get(input.headBranch);
-    if (existing) return existing; // idempotent: no duplicate PR
-    const pr: PullRequestRef = {
-      number: ++this.prCounter,
-      url: `https://local.forge/pr/${this.prCounter}`,
-      headBranch: input.headBranch,
-      baseBranch: input.base,
-    };
-    this.prs.set(input.headBranch, pr);
-    return pr;
-  }
-
-  // --- crash-recovery reconciliation (HIGH-006) ------------------------------
-  // A REAL `ls-remote` against the bare remote: the resume asks what the remote
-  // actually holds instead of blindly re-pushing.
-  async resolveRef(_scope: TenantScope, input: {
-    repositoryBindingId: RepositoryBindingId;
-    branch: string;
-  }): Promise<string | null> {
-    const r = await runGit(
-      ['ls-remote', this.remoteBarePath, `refs/heads/${input.branch}`],
-      { allowNonZero: true },
-    );
-    const line = r.stdout.split('\n').find((l) => l.trim() !== '');
-    if (!line) return null;
-    const sha = line.split(/\s+/)[0];
-    return sha && /^[0-9a-f]{40}$/.test(sha) ? sha : null;
-  }
-
-  async findPullRequest(_scope: TenantScope, input: {
-    repositoryBindingId: RepositoryBindingId;
-    headBranch: string;
-  }): Promise<PullRequestRef | null> {
-    return this.prs.get(input.headBranch) ?? null;
-  }
-}
 
 export interface VerticalSliceInput {
   readonly client: SqlClient;
@@ -324,8 +224,7 @@ export async function runVerticalSlice(input: VerticalSliceInput): Promise<Verti
   const { mirror, baseSha } = target;
   // Only meaningful for the local double. A real forge pushes to the actual
   // remote, so this bare repo is created but never used on that path.
-  const remoteBare = join(dir, 'remote.git');
-  await runGit(['init', '--bare', '-q', remoteBare]);
+  const remoteBare = await createBareRemote(join(dir, 'remote.git'));
 
   // --- concrete adapters (construction only) --------------------------------
   const runsRepo = new RunRepository(client);

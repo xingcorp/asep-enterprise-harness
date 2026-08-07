@@ -262,6 +262,34 @@ const ROOT_FORBIDDEN: ReadonlyArray<{ label: string; test: (src: string) => bool
   { label: 'raw SQL query', test: (s) => /\b(SELECT|INSERT|UPDATE|DELETE)\s+[\s\S]*?\bFROM\b|\.query\s*\(/i.test(s) },
   { label: 'git / child_process spawn', test: (s) => /\b(spawn|spawnSync|execFile|execFileSync|exec)\s*\(\s*['"`]?git\b/.test(s) || /child_process/.test(s) },
   { label: 'provider SDK instantiation', test: (s) => /new\s+(Anthropic|OpenAI)\s*\(/.test(s) || /@anthropic-ai\/|(^|[^a-z])openai($|\/)/.test(s) },
+  // Git INVOCATION through the hardened wrapper (disp. P2-REREVIEW MED-004).
+  //
+  // THE FINDING. The rule above catches a raw `spawn('git', …)` and any
+  // `child_process` import, but the repo does not spawn git that way — it goes
+  // through `runGit()` from @asep/git-worktree. So the detector was blind to the
+  // exact shape the code actually uses: `apps/control-plane-api/src/
+  // vertical-slice.ts` held eight `runGit([...])` calls (init, add, commit,
+  // rev-parse, clone, push, ls-remote) plus two full port implementations, and
+  // the gate stayed green. Driving git is a workspace/forge adapter concern; a
+  // composition root may CONSTRUCT those adapters and inject them, never run git
+  // itself.
+  //
+  // Importing the symbol is not the violation — invoking it is. `runGit(` is
+  // matched as a call so a re-export or a type-only reference stays accepted.
+  { label: 'direct git invocation', test: (s) => /\brunGit\s*\(/.test(s) },
+  // Forge INVOCATION (disp. P2-REREVIEW MED-004). Same reasoning one layer out:
+  // pushing a branch or opening a PR is a side effect the application layer
+  // sequences through the two-phase side-effect log. A root that calls the forge
+  // directly bypasses that protocol entirely, so no side-effect record exists and
+  // a crash cannot be reconciled. Construction + injection stays legal; `new X(`
+  // is neutralised first exactly as in the persistence rule.
+  {
+    label: 'direct forge invocation',
+    test: (s) => {
+      const code = s.replace(/\bnew\s+[\w$.]+\s*\(/g, 'new (');
+      return /\b[\w$]*(?:forge|Forge)[\w$]*\s*\.\s*(?:pushBranch|upsertPullRequest|resolveRef|findPullRequest)\s*\(/.test(code);
+    },
+  },
   { label: 'direct policy decision', test: (s) => /\b(admitRisk|gatePolicy|classifyRisk|approvalFor|requiredLevels|classifyFailure)\s*\(/.test(s) },
   // Direct persistence-repository call (disp. P2-FINAL-MED-004). B2/B5 require a
   // handler to forward to an application use case, never to invoke a repository
@@ -411,6 +439,81 @@ test('arch mutation self-test: a seeded SQL/Git/provider/policy call in a handle
   const seededReposLong = `app.get('/t/:id', async () => repositories.tasks.getScoped(scope, id));`;
   assert.ok(rootViolations(seededRepoCall).includes('direct repository call'), 'seeded repos.x.y() call not detected');
   assert.ok(rootViolations(seededReposLong).includes('direct repository call'), 'seeded repositories.x.y() call not detected');
+});
+
+// Direct git + forge invocation in a root (disp. P2-REREVIEW MED-004).
+//
+// THE FINDING. The review's exact words were that the detector "does not catch
+// `runGit()` or `forge.pushBranch()`". It did not: the git rule only matched
+// `spawn('git', …)` / a `child_process` import, and the hardened wrapper this
+// repo actually uses is `runGit([...])` from @asep/git-worktree — a plain
+// function call matching neither pattern. So the composition root held eight
+// live `runGit` calls (seeding a mirror, initialising a bare remote, pushing,
+// ls-remote) plus two full ForgeProvider/CodingAgentProvider implementations,
+// and the gate stayed green the whole time.
+//
+// Both rules match INVOCATION only. Importing the name, declaring a `forge`
+// parameter and injecting `forge` into a use case are all legitimate wiring and
+// must stay accepted, otherwise a composition root could not compose.
+test('arch mutation self-test: direct git + forge invocation in a root is REJECTED', () => {
+  const gitLabel = 'direct git invocation';
+  const forgeLabel = 'direct forge invocation';
+
+  // The exact shapes that were live in apps/control-plane-api/src/vertical-slice.ts.
+  const seededSeed = `await runGit(['-C', upstream, 'init', '-q', '-b', 'main']);`;
+  const seededBare = `await runGit(['init', '--bare', '-q', remoteBare]);`;
+  const seededPush = `await runGit(['-C', wt, 'push', remote, refspec]);`;
+  const seededLsRemote = `const r = await runGit(['ls-remote', remote, ref], { allowNonZero: true });`;
+  for (const [label, src] of [
+    ['mirror seed', seededSeed], ['bare remote init', seededBare],
+    ['push', seededPush], ['ls-remote', seededLsRemote],
+  ] as const) {
+    assert.ok(
+      rootViolations(src).includes(gitLabel),
+      `seeded runGit (${label}) not detected — this is the shape MED-004 flagged`,
+    );
+  }
+
+  // Forge side effects driven from the root rather than the application layer.
+  const seededForgePush = `await forge.pushBranch(scope, { branch, commitSha });`;
+  const seededForgePr = `const pr = await forge.upsertPullRequest(scope, { headBranch, base });`;
+  const seededLocalForge = `const sha = await localForge.resolveRef(scope, { branch });`;
+  for (const [label, src] of [
+    ['pushBranch', seededForgePush], ['upsertPullRequest', seededForgePr],
+    ['resolveRef on a local double', seededLocalForge],
+  ] as const) {
+    assert.ok(
+      rootViolations(src).includes(forgeLabel),
+      `seeded forge invocation (${label}) not detected`,
+    );
+  }
+});
+
+test('arch self-test: importing runGit and INJECTING a forge stay accepted', () => {
+  const gitLabel = 'direct git invocation';
+  const forgeLabel = 'direct forge invocation';
+
+  // Handing a ForgeProvider to the use case is the whole job of a root.
+  const injecting = `return runVerticalSliceWorkflow({ forge, tracer, artifacts });`;
+  assert.equal(
+    rootViolations(injecting).includes(forgeLabel), false,
+    'injecting a forge into the use case must stay accepted',
+  );
+
+  // A type-only mention, and a parameter declaration.
+  const asType = `const forge: ForgeProvider = input.forge ?? localForge;`;
+  assert.equal(
+    rootViolations(asType).includes(forgeLabel), false,
+    'declaring/assigning a forge is not an invocation',
+  );
+
+  // Importing the symbol without calling it (the driver still needs the type
+  // surface of @asep/git-worktree for GitWorktreeManager + attemptBranch).
+  const importOnly = `import { GitWorktreeManager, attemptBranch } from '@asep/git-worktree';`;
+  assert.equal(
+    rootViolations(importOnly).includes(gitLabel), false,
+    'importing from git-worktree without calling runGit must stay accepted',
+  );
 });
 
 // The MED-004 regression shape specifically: a root that constructs its OWN
