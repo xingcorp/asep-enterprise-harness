@@ -163,3 +163,89 @@ test('D8: getEvidence re-hashes on read — a mutated object byte fails closed',
   rmSync(dir, { recursive: true, force: true });
   await client.close();
 });
+
+// ---------------------------------------------------------------------------
+// HIGH-006 (cycle-5 residue) — the ORPHAN-OBJECT crash window.
+//
+// THE DEFECT. putEvidence writes the object first, then inserts the metadata
+// row. A crash BETWEEN those two leaves the object on disk at a key derived from
+// the preallocated id, with no `artifacts` row. On resume the metadata probe
+// finds nothing, getEvidence() reports ABSENT, and evidenceStep concludes "safe
+// to write" — then re-derives the bundle with a NEW `createdAt` from the clock.
+// Different bytes at the same key hit the create-only guard, which used to fail
+// closed unconditionally. Every retry stamps a new timestamp, so the collision
+// never clears: the attempt is wedged FOREVER, with no operator path forward.
+//
+// These tests drive that exact window by writing the object out-of-band (the
+// same thing the interrupted call did) and leaving the row absent.
+// ---------------------------------------------------------------------------
+
+// The object key layout putEvidence uses. Duplicated here deliberately: the test
+// must be able to plant an orphan without going through the store.
+function evKey(scope: TenantScope, id: ArtifactId): string {
+  return `${scope.organizationId}/${scope.projectId}/evidence/${id}`;
+}
+
+test('HIGH-006: an ORPHANED object (crash before the metadata insert) is ADOPTED, not wedged', async () => {
+  const { client, scope, objects, store, dir, taskId, attemptId } = await fresh();
+  const id = store.allocateEvidenceId();
+
+  // The interrupted write: object landed, process died before the row.
+  const durable = bundle(taskId, attemptId, { createdAt: '2026-01-01T00:00:00.000Z' });
+  await objects.putIfAbsent(evKey(scope, id), new TextEncoder().encode(JSON.stringify(durable)));
+
+  // The resume genuinely observes ABSENT — that is what makes it re-derive.
+  await assert.rejects(() => store.getEvidence(scope, id), EvidenceNotFoundError);
+
+  // Same attempt, same commit, LATER clock: byte-different, identity-identical.
+  const resumed = bundle(taskId, attemptId, { createdAt: '2026-06-30T12:00:00.000Z' });
+  const ref = await store.putEvidence(scope, id, resumed);
+
+  assert.equal(ref.artifactId, id, 'adoption keeps the preallocated id');
+  // The DURABLE bytes win: adoption completes the interrupted write rather than
+  // replacing it, so the first run's timestamp survives.
+  const got = await store.getEvidence(scope, id);
+  assert.equal(got.createdAt, '2026-01-01T00:00:00.000Z',
+    'the ORIGINAL bytes are adopted — the resume clock must not overwrite evidence');
+  rmSync(dir, { recursive: true, force: true });
+  await client.close();
+});
+
+test('HIGH-006: adoption is IDENTITY-GATED — an orphan for another commit still fails closed', async () => {
+  // Adoption must not become a general "overwrite whatever is there". The four
+  // harness-owned facts (task, attempt, baseSha, resultSha) come from trusted
+  // inspection, never from the agent, so disagreement on any of them means the id
+  // is genuinely bound to other content.
+  const cases: readonly (readonly [string, Partial<EvidenceBundle>])[] = [
+    ['resultSha', { resultSha: '9'.repeat(40) }],
+    ['baseSha', { baseSha: '8'.repeat(40) }],
+  ];
+  for (const [label, override] of cases) {
+    const { client, scope, objects, store, dir, taskId, attemptId } = await fresh();
+    const id = store.allocateEvidenceId();
+    // Plant an orphan describing a DIFFERENT commit.
+    const foreign = bundle(taskId, attemptId, override);
+    await objects.putIfAbsent(evKey(scope, id), new TextEncoder().encode(JSON.stringify(foreign)));
+    await assert.rejects(
+      () => store.putEvidence(scope, id, bundle(taskId, attemptId)),
+      EvidenceImmutabilityError,
+      `an orphan disagreeing on ${label} must NOT be adopted`,
+    );
+    rmSync(dir, { recursive: true, force: true });
+    await client.close();
+  }
+});
+
+test('HIGH-006: a NON-BUNDLE orphan at the evidence key fails closed', async () => {
+  const { client, scope, objects, store, dir, taskId, attemptId } = await fresh();
+  const id = store.allocateEvidenceId();
+  // Whatever this is, it is not our interrupted evidence write.
+  await objects.putIfAbsent(evKey(scope, id), new TextEncoder().encode('not json at all'));
+  await assert.rejects(
+    () => store.putEvidence(scope, id, bundle(taskId, attemptId)),
+    EvidenceImmutabilityError,
+    'unparseable content must never be adopted as evidence',
+  );
+  rmSync(dir, { recursive: true, force: true });
+  await client.close();
+});
