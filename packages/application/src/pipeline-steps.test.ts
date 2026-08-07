@@ -1069,3 +1069,77 @@ test('HIGH-005: a legacy record with NO kind discriminator is still validated, t
     (err: unknown) => (err as { name?: string })?.name === 'SideEffectResultRefError',
   );
 });
+
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// MED-003 — the spans this driver owns actually FIRE (exit J1/J4).
+//
+// THE FINDING. Ten span names are declared in SPAN_NAMES but only three were
+// ever emitted at runtime (workspace.lease, workspace.create, agent.invoke — all
+// in governedExecution). completeToReview owns four more privileged effects and
+// had no tracer/audit parameter at all, so J1/J4 rested on instrumentation code
+// EXISTING rather than on an operator being able to audit the effects that touch
+// the outside world.
+//
+// This pins emission through the injected `observe` seam: the four boundaries
+// fire, in order, each paired with its declared PrivilegedAction. The remaining
+// six spans belong to the workflow/governed layers and are asserted on the real
+// run in vertical-slice.itest.ts, where a live tracer and a live audit table are
+// available.
+// ---------------------------------------------------------------------------
+
+test('MED-003: completeToReview EMITS its four privileged boundaries through observe', async () => {
+  const seen: { span: string; action: string }[] = [];
+  const res = await completeToReview(driverInput({
+    observe: async (b, fn) => {
+      seen.push({ span: b.span, action: b.action });
+      return fn();
+    },
+  }));
+  assert.equal(res.stoppedAt, 'complete', 'the driver still completes with an observer wired');
+
+  // The four effects this driver owns, in the order the governed sequence runs
+  // them. `command.execute` fires once per verification check inside verifyStep,
+  // so it is asserted separately below.
+  const boundaries = seen.filter((s) => s.span !== 'command.execute');
+  assert.deepEqual(boundaries, [
+    { span: 'git.commit', action: 'git.commit' },
+    { span: 'artifact.put', action: 'evidence.put' },
+    { span: 'forge.push', action: 'forge.push' },
+    { span: 'forge.pull_request', action: 'forge.pull_request.upsert' },
+  ], 'each privileged effect emits its declared span paired with its audit action');
+
+  // Every verification command is its own boundary, so an operator can see which
+  // check ran rather than only that verification happened.
+  const commandSpans = seen.filter((s) => s.span === 'command.execute');
+  assert.ok(commandSpans.length > 0, 'each verification command emits command.execute');
+  for (const c of commandSpans) {
+    assert.equal(c.action, 'command.execute',
+      'a command boundary is audited as a command execution, not mislabelled as '
+      + 'an artifact write');
+  }
+});
+
+test('MED-003: an ABSENT observer leaves the driver byte-for-byte unchanged', async () => {
+  // The seam must be optional: both K1 proofs and every existing caller pass no
+  // observer, so a missing one is a transparent pass-through, never a stop.
+  const withOut = await completeToReview(driverInput());
+  assert.equal(withOut.stoppedAt, 'complete');
+  assert.equal(withOut.commitSha, 'd'.repeat(40));
+  assert.equal(withOut.pr?.number, 7);
+});
+
+test('MED-003: an UNDECLARED span/action name fails closed (no unnamed span)', async () => {
+  // The workflow's real wrapper validates against the closed sets. A typo must
+  // throw rather than emit an unnamed span, so this pins that the seam propagates
+  // the error instead of swallowing it.
+  await assert.rejects(
+    () => completeToReview(driverInput({
+      observe: async (b) => {
+        throw new Error(`unknown span/action pair '${b.span}'/'${b.action}'`);
+      },
+    })),
+    /unknown span\/action pair/,
+  );
+});

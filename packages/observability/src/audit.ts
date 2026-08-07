@@ -28,6 +28,16 @@ export const PRIVILEGED_ACTIONS = [
   'artifact.put',
   'evidence.put',
   'task.status.transition',
+  // Running a verification command inside the sandbox (disp. P2-FINAL-MED-003).
+  //
+  // WHY IT IS ADDED. The `command.execute` span was declared but never emitted;
+  // wiring it revealed that the closed action set had no honest counterpart, so
+  // the first attempt paired the span with `artifact.put`. That is a mislabelled
+  // audit row: an operator reading it would see an artifact write where a command
+  // actually ran in the sandbox. Executing a command against the working tree IS
+  // a privileged boundary in its own right, so it gets its own name rather than
+  // borrowing one that means something else.
+  'command.execute',
 ] as const;
 
 export type PrivilegedAction = (typeof PRIVILEGED_ACTIONS)[number];

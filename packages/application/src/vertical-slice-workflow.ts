@@ -48,6 +48,7 @@ import type {
   CommandRunner, CommandSpec, SandboxProvider, ForgeProvider, ToolPolicyProfile,
 } from '@asep/ports';
 import type { SpanTracer, AuditSink } from '@asep/observability';
+import { isSpanName, isPrivilegedAction, auditEvent } from '@asep/observability';
 import { governedExecution } from './governed-execution.js';
 import {
   completeToReview, SandboxIsolationRequiredError,
@@ -292,6 +293,64 @@ export async function runVerticalSliceWorkflow(
   });
   const branch = input.branchFor({ runId: run.id, taskId: task.id, attemptId: attempt.id });
 
+  // --- observability for the completion boundaries (disp. P2-FINAL-MED-003) --
+  //
+  // governedExecution instruments the three boundaries it owns (lease, workspace,
+  // agent). The four remaining privileged effects — the harness commit, the
+  // evidence write, the push and the PR upsert — live inside completeToReview,
+  // which is a PURE module and must not import SpanTracer/AuditSink or read a
+  // clock. So the wrapper is built here, where the tracer, the audit sink and the
+  // full correlation identity are all already in hand, and injected as `observe`.
+  //
+  // Without this, ten span names were declared but only three ever emitted: J1/J4
+  // were satisfied by instrumentation code existing rather than by an operator
+  // being able to audit the effects that actually touch the outside world.
+  const completionCorrelation = {
+    traceId: `trace-${attempt.id}`,
+    tenantId: scope.organizationId,
+    organizationId: scope.organizationId,
+    projectId: scope.projectId,
+    repositoryBindingId: binding.id,
+    runId: run.id,
+    taskId: task.id,
+    attemptId: attempt.id,
+  };
+  const completionActor = input.actor ?? 'harness';
+  const completionNow = (): string => new Date().toISOString();
+  const observeCompletion = async <T>(
+    boundary: {
+      readonly span: string;
+      readonly action: string;
+      readonly detail: Readonly<Record<string, unknown>>;
+    },
+    fn: () => Promise<T>,
+  ): Promise<T> => {
+    // The closed sets live in @asep/observability; validate rather than cast so a
+    // typo in a boundary name fails loudly instead of emitting an unnamed span.
+    const span = boundary.span;
+    const action = boundary.action;
+    if (!isSpanName(span) || !isPrivilegedAction(action)) {
+      throw new Error(
+        `unknown span/action pair '${span}'/'${action}' — ` +
+        'a completion boundary must use a declared name',
+      );
+    }
+    if (input.audit) {
+      await input.audit.record(auditEvent({
+        actor: completionActor,
+        action,
+        context: completionCorrelation,
+        occurredAt: completionNow(),
+        detail: boundary.detail,
+      }));
+    }
+    if (input.tracer) {
+      return input.tracer.withSpan(span, completionCorrelation, fn);
+    }
+    return fn();
+  };
+
+
   // The Git backend is resolved only NOW: it is configured per repository
   // binding, and the binding id did not exist until the step above.
   const git = await input.workspaceBackend({ scope, repositoryBindingId: binding.id });
@@ -312,16 +371,28 @@ export async function runVerticalSliceWorkflow(
   }
 
   // --- immutable agent inputs ----------------------------------------------
+  //
+  // Both writes are privileged boundaries (J1/J4): they mint the immutable
+  // artifacts the agent is allowed to read, so an auditor must be able to see
+  // WHICH work order and context pack a run actually handed over. The work-order
+  // write carries the artifact.put span; assembling the context pack is the
+  // context.build boundary.
   const woBytes = jsonBytes(input.workOrder);
-  const workOrderRef = await input.artifacts.put(scope, {
-    kind: 'work-order', content: woBytes, sha256: sha256Hex(woBytes),
-    contentType: 'application/json',
-  });
+  const workOrderRef = await observeCompletion(
+    { span: 'artifact.put', action: 'artifact.put', detail: { kind: 'work-order' } },
+    () => input.artifacts.put(scope, {
+      kind: 'work-order', content: woBytes, sha256: sha256Hex(woBytes),
+      contentType: 'application/json',
+    }),
+  );
   const cpBytes = jsonBytes(input.contextPack);
-  const contextPackRef = await input.artifacts.put(scope, {
-    kind: 'context-pack', content: cpBytes, sha256: sha256Hex(cpBytes),
-    contentType: 'application/json',
-  });
+  const contextPackRef = await observeCompletion(
+    { span: 'context.build', action: 'artifact.put', detail: { kind: 'context-pack' } },
+    () => input.artifacts.put(scope, {
+      kind: 'context-pack', content: cpBytes, sha256: sha256Hex(cpBytes),
+      contentType: 'application/json',
+    }),
+  );
 
   // --- admission FIRST → lease → workspace → agent → trusted inspection -----
   const governed = await governedExecution({
@@ -408,6 +479,7 @@ export async function runVerticalSliceWorkflow(
     runner: input.runnerFor({ scope }),
     sandbox: input.sandbox,
     mount,
+    observe: observeCompletion,
     planId: `plan-${input.risk}`,
     risk: input.risk,
     checks,
@@ -443,25 +515,41 @@ export async function runVerticalSliceWorkflow(
   }
 
   // --- persist the AUTHORITATIVE transitions -------------------------------
+  //
+  // `task.execute` (disp. P2-FINAL-MED-003, exit J1/J4) covers the moment the
+  // harness commits the attempt's outcome to canonical state: the result SHA, the
+  // scoped evidence attachment, the task's advance to WAITING_FOR_HUMAN_REVIEW
+  // and the PR row. It is the last of the ten declared spans and pairs with the
+  // task.status.transition audit action, so an operator can see the transition
+  // that made the attempt reviewable — not merely the effects leading up to it.
   let attemptVersion = attempt.version;
-  attemptVersion = await repos.attempts.setResultSha(
-    scope, attempt.id, attemptVersion, commitSha,
+  await observeCompletion(
+    {
+      span: 'task.execute',
+      action: 'task.status.transition',
+      detail: { to: 'WAITING_FOR_HUMAN_REVIEW', commitSha, prNumber: pr.number },
+    },
+    async () => {
+      attemptVersion = await repos.attempts.setResultSha(
+        scope, attempt.id, attemptVersion, commitSha,
+      );
+      attemptVersion = await repos.attempts.attachEvidence(
+        scope, attempt.id, attemptVersion, evidence.ref,
+      );
+      await repos.tasks.updateStatus(scope, task.id, task.version, 'WAITING_FOR_HUMAN_REVIEW');
+      await repos.pullRequests.upsert(scope, {
+        repositoryBindingId: binding.id,
+        attemptId: attempt.id,
+        forge: 'github',
+        number: pr.number,
+        headBranch: pr.headBranch,
+        baseBranch: pr.baseBranch,
+        url: pr.url,
+        state: 'OPEN',
+        evidenceRef: evidence.ref,
+      });
+    },
   );
-  attemptVersion = await repos.attempts.attachEvidence(
-    scope, attempt.id, attemptVersion, evidence.ref,
-  );
-  await repos.tasks.updateStatus(scope, task.id, task.version, 'WAITING_FOR_HUMAN_REVIEW');
-  await repos.pullRequests.upsert(scope, {
-    repositoryBindingId: binding.id,
-    attemptId: attempt.id,
-    forge: 'github',
-    number: pr.number,
-    headBranch: pr.headBranch,
-    baseBranch: pr.baseBranch,
-    url: pr.url,
-    state: 'OPEN',
-    evidenceRef: evidence.ref,
-  });
 
   return {
     scope,

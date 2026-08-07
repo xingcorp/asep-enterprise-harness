@@ -119,6 +119,13 @@ export interface VerifyStepInput {
   // default means a caller must explicitly opt into the pilot waiver, and any
   // new call site is protected without being edited.
   readonly sandboxRequirement?: SandboxRequirement;
+  // Per-command observability (disp. P2-FINAL-MED-003, exit J1). Each
+  // verification command is a privileged boundary: it executes an argv inside the
+  // sandbox and its raw output becomes evidence. `command.execute` was one of the
+  // seven declared spans that never fired, so a run left no per-command trace at
+  // all. Injected (not built here) because this module is pure — see
+  // ObserveBoundary. Absent → the loop runs exactly as before.
+  readonly observe?: ObserveBoundary;
 }
 
 // The two deployment postures for sandbox isolation. Declared HERE (application
@@ -194,9 +201,22 @@ export async function verifyStep(input: VerifyStepInput): Promise<VerifyStepResu
     throw new SandboxIsolationRequiredError(handle.sandboxId, handle.profile);
   }
   const executions: VerificationCheckExecution[] = [];
+  // Absent observer → run directly, so every existing caller is unchanged.
+  const observe: ObserveBoundary = input.observe ?? ((_b, fn) => fn());
   try {
     for (const check of input.checks) {
-      const r = await input.runner.run(check.command, handle);
+      // Each verification command is a privileged boundary (J1 `command.execute`).
+      // It was declared but never emitted: an operator could see that a check ran
+      // only by reading the evidence bundle afterwards, with no span for the
+      // execution itself.
+      const r = await observe(
+        {
+          span: 'command.execute',
+          action: 'command.execute',
+          detail: { checkId: check.id, level: check.level, command: commandText(check.command) },
+        },
+        () => input.runner.run(check.command, handle),
+      );
       // Map the raw command outcome to a verdict, failing closed on any
       // non-zero exit, timeout, or evidence-truncation.
       let verdict: VerificationCheckExecution['verdict'];
@@ -824,7 +844,37 @@ export interface CompleteToReviewInput {
   readonly expectedRemoteSha?: string;
   // Task to advance on success.
   readonly task: TaskAggregate;
+
+  // --- OBSERVABILITY (disp. P2-FINAL-MED-003, exit J1/J4) --------------------
+  //
+  // THE FINDING. Ten span names are declared in SPAN_NAMES, but only three were
+  // ever emitted at runtime — workspace.lease, workspace.create and agent.invoke,
+  // all of them in governedExecution. This driver, which owns every remaining
+  // privileged boundary (the harness commit, the evidence write, the push, the
+  // PR upsert and each verification command), had no tracer or audit parameter at
+  // all. So J1/J4 were satisfied by the EXISTENCE of instrumentation code rather
+  // than by real emission, and an operator auditing a run would find no record of
+  // the four effects that actually touch the outside world.
+  //
+  // `observe` is injected rather than built here because this module is pure: it
+  // must not know about SpanTracer, AuditSink or a clock. The workflow supplies a
+  // wrapper that emits the paired span + audit row and then runs the effect;
+  // omitting it leaves every step byte-for-byte unchanged, so all existing
+  // callers and both K1 proofs are unaffected.
+  readonly observe?: ObserveBoundary;
 }
+
+// One privileged boundary: emit its span + audit row, then run it. The span and
+// action names are supplied by the caller because the closed sets live in
+// @asep/observability, which this pure module deliberately does not import.
+export type ObserveBoundary = <T>(
+  boundary: {
+    readonly span: string;
+    readonly action: string;
+    readonly detail: Readonly<Record<string, unknown>>;
+  },
+  fn: () => Promise<T>,
+) => Promise<T>;
 
 export interface CompleteToReviewResult {
   readonly stoppedAt: CompletionStop;
@@ -839,6 +889,11 @@ export interface CompleteToReviewResult {
 export async function completeToReview(
   input: CompleteToReviewInput,
 ): Promise<CompleteToReviewResult> {
+  // Absent `observe` → a transparent pass-through, so every existing caller and
+  // both K1 proofs behave exactly as before. Present → the workflow's wrapper
+  // emits the paired span + audit row around the effect.
+  const observe: ObserveBoundary = input.observe ?? ((_b, fn) => fn());
+
   // Step 4 — verification. A non-PASS verdict STOPS before any side effect.
   const verify = await verifyStep({
     runner: input.runner,
@@ -848,6 +903,9 @@ export async function completeToReview(
     risk: input.risk,
     checks: input.checks,
     ...(input.sandboxRequirement ? { sandboxRequirement: input.sandboxRequirement } : {}),
+    // Forwarded so each verification command emits its own command.execute span
+    // (MED-003). Absent → verifyStep runs commands directly, unchanged.
+    ...(input.observe ? { observe: input.observe } : {}),
   });
   if (verify.status === 'STOP') {
     return { stoppedAt: 'verify', verify };
@@ -861,7 +919,9 @@ export async function completeToReview(
   // resume the commit is ADOPTED: the recorded SHA AND the evidence id embedded
   // in that already-minted commit come back, so we never mint a second commit
   // or a divergent evidence id.
-  const commit = await commitStep({
+  const commit = await observe(
+    { span: 'git.commit', action: 'git.commit', detail: { baseSha: input.baseSha } },
+    () => commitStep({
     committer: input.committer,
     scope: input.scope,
     workspace: input.workspace,
@@ -874,7 +934,8 @@ export async function completeToReview(
     repositoryBindingId: input.repositoryBindingId,
     leaseId: input.leaseId,
     ...(input.extraTrailers ? { extraTrailers: input.extraTrailers } : {}),
-  });
+    }),
+  );
   if (commit.status === 'STOP') {
     return { stoppedAt: 'commit', verify, commitSha: commit.commitSha };
   }
@@ -884,7 +945,9 @@ export async function completeToReview(
 
   // Step 6 — build + persist evidence at the committed id. resultSha is the
   // trusted harness commit SHA (never provider-reported).
-  const evidence = await evidenceStep({
+  const evidence = await observe(
+    { span: 'artifact.put', action: 'evidence.put', detail: { evidenceId: committedEvidenceId } },
+    () => evidenceStep({
     store: input.store,
     scope: input.scope,
     evidenceId: committedEvidenceId,
@@ -896,10 +959,13 @@ export async function completeToReview(
     environment: input.environment,
     executions: verify.executions,
     ...(input.now ? { now: input.now } : {}),
-  });
+    }),
+  );
 
   // Step 7 — push the exact namespaced ref (two-phase side-effect protocol).
-  const push = await pushStep({
+  const push = await observe(
+    { span: 'forge.push', action: 'forge.push', detail: { branch: input.branch, commitSha: commit.commitSha } },
+    () => pushStep({
     forge: input.forge,
     log: input.log,
     scope: input.scope,
@@ -909,13 +975,19 @@ export async function completeToReview(
     commitSha: commit.commitSha,
     leaseId: input.leaseId,
     ...(input.expectedRemoteSha ? { expectedRemoteSha: input.expectedRemoteSha } : {}),
-  });
+    }),
+  );
   if (push.status === 'STOP') {
     return { stoppedAt: 'push', verify, commitSha: commit.commitSha, evidence, push };
   }
 
   // Step 8 — idempotent PR upsert (never merge).
-  const upsert = await upsertPrStep({
+  const upsert = await observe(
+    {
+      span: 'forge.pull_request', action: 'forge.pull_request.upsert',
+      detail: { headBranch: input.branch, base: input.base },
+    },
+    () => upsertPrStep({
     forge: input.forge,
     log: input.log,
     scope: input.scope,
@@ -926,7 +998,8 @@ export async function completeToReview(
     title: input.title,
     body: input.body,
     leaseId: input.leaseId,
-  });
+    }),
+  );
   if (upsert.status === 'STOP') {
     return {
       stoppedAt: 'upsert-pr',

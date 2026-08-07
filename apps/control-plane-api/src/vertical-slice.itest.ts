@@ -155,17 +155,31 @@ test('K1 (REAL backends): full governed slice on pg.Pool PostgreSQL + a real Doc
     assert.equal(evidenceBack.resultSha, r.commitSha,
       'D8: evidence resultSha is the harness commit SHA');
 
-    // --- MED-003: observability EMITTED for real (J1/J2/J4) ------------------
+    // --- MED-003: ALL TEN DECLARED SPANS emitted on the real run (J1/J2/J4) ---
+    //
     // The finding was that instrumentation existed but nothing on the runnable
-    // path emitted it, so the J1/J2/J4 claims rested on unit fakes. These
-    // assertions are on what this REAL run actually produced: spans that came
-    // out of the tracer, and audit rows read back out of PostgreSQL.
+    // path emitted it. Before the fix only workspace.lease, workspace.create and
+    // agent.invoke ever fired; the remaining seven (context.build, artifact.put,
+    // command.execute, git.commit, forge.push, forge.pull_request, task.execute)
+    // existed in SPAN_NAMES but produced no output because completeToReview, the
+    // step that owns the four durable side effects, had no tracer parameter. This
+    // assertion is on what this REAL run actually produced: spans that came out
+    // of the tracer wired to a live PostgreSQL database, not an in-memory fake.
     const spanNames = r.emittedSpans.map((e) => e.name);
     for (const expected of [
-      'asep.span.workspace.lease', 'asep.span.workspace.create', 'asep.span.agent.invoke',
+      'asep.span.task.execute',
+      'asep.span.context.build',
+      'asep.span.workspace.lease',
+      'asep.span.workspace.create',
+      'asep.span.agent.invoke',
+      'asep.span.command.execute',
+      'asep.span.artifact.put',
+      'asep.span.git.commit',
+      'asep.span.forge.push',
+      'asep.span.forge.pull_request',
     ]) {
       assert.ok(spanNames.includes(expected),
-        `J1: expected span ${expected}; emitted: ${spanNames.join(', ') || '(none)'}`);
+        `J1/MED-003: expected span ${expected}; emitted: ${spanNames.join(', ') || '(none)'}`);
     }
     // J2: every emitted span resolves to ONE point in the hierarchy.
     for (const ev of r.emittedSpans) {
