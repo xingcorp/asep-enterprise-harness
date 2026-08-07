@@ -1143,3 +1143,73 @@ test('MED-003: an UNDECLARED span/action name fails closed (no unnamed span)', a
     /unknown span\/action pair/,
   );
 });
+
+// ---------------------------------------------------------------------------
+// M3 — pilot-rehearsal faults injected into the REAL PIPELINE (disp.
+// P2-REREVIEW MED-006).
+//
+// THE FINDING. The rehearsal suite (adapters/persistence/pilot-rehearsal.test.ts)
+// injects its faults at the ADAPTER boundary: it proves the object store refuses
+// an absent key and that the side-effect log adopts a COMPLETED row. Both are
+// true and neither answers the question the runbook actually asks — "does the
+// PIPELINE stop, and does it stop BEFORE the next side effect?" A store that
+// fails closed is worthless if the driver ignores the throw and pushes anyway.
+//
+// These two tests inject the same faults through completeToReview, so the
+// assertion is on pipeline behaviour: the failure propagates, and the effects
+// downstream of it never happen.
+// ---------------------------------------------------------------------------
+
+test('M3/Fault3 (pipeline): an object-store outage at the evidence step STOPS before push/PR', async () => {
+  const forge = fakeForge(prRef);
+  // The outage: the evidence write throws the way a real store does when the
+  // object backend is unreachable. Note this is NOT a not-found — evidenceStep
+  // must not mistake an outage for "safe to write".
+  const store: EvidenceStore = {
+    allocateEvidenceId: () => 'ev-outage' as ArtifactId,
+    async putEvidence() {
+      const e = new Error('object store unreachable: connect ECONNREFUSED');
+      e.name = 'ObjectStoreUnavailableError';
+      throw e;
+    },
+    async getEvidence() { throw evidenceAbsent(); },
+  };
+
+  await assert.rejects(
+    () => completeToReview(driverInput({ store, forge })),
+    /object store unreachable/,
+    'an evidence-persist outage must PROPAGATE, not be swallowed into a pass',
+  );
+
+  // The decision the runbook documents: the task does not advance to review with
+  // partial evidence. Concretely — no push, no PR.
+  assert.equal(forge.pushes, 0, 'F3: no push may follow a failed evidence write');
+  assert.equal(forge.upserts, 0, 'F3: no PR may follow a failed evidence write');
+});
+
+test('M3/Fault5 (pipeline): a forge rate-limit STOPS the pipeline and opens NO pull request', async () => {
+  // The injected fault: GitHub answers 403 rate-limit on the push. MED-002 pins
+  // that this is NOT treated as credential expiry; here we pin the pipeline
+  // consequence — it stops, and the PR step never runs.
+  let upserts = 0;
+  const rateLimited: ForgeProvider = {
+    async pushBranch() {
+      const e = new Error('API rate limit exceeded');
+      (e as unknown as { status: number }).status = 403;
+      throw e;
+    },
+    async upsertPullRequest() {
+      upserts += 1;
+      return prRef;
+    },
+    async resolveRef() { return null; },
+    async findPullRequest() { return null; },
+  };
+
+  await assert.rejects(
+    () => completeToReview(driverInput({ forge: rateLimited })),
+    /rate limit exceeded/,
+    'a rate-limited push must propagate so dispatch can back off',
+  );
+  assert.equal(upserts, 0, 'F5: a failed push must not be followed by a PR upsert');
+});

@@ -31,8 +31,8 @@ import type { TenantScope, AttemptId, RepositoryBindingId } from '@asep/contract
 
 console.log('SUITE-ID: asep-suite:pilot-rehearsal');
 
-async function seed() {
-  const client = await PgliteClient.create();
+async function seed(dataDir?: string) {
+  const client = await PgliteClient.create(dataDir);
   await migrate(client);
   const orgs = new OrganizationRepository(client);
   const projects = new ProjectRepository(client);
@@ -49,13 +49,20 @@ async function seed() {
 const attemptId = 'attempt-1' as AttemptId;
 
 // --- Fault 2 — DB restart mid-attempt: a PENDING side-effect row is reconciled
-// (adopted) on recovery, NOT replayed. Injected by dropping the executor after
-// begin() and resuming with a fresh begin() against the same persisted row.
-test('M3/Fault2: a PENDING side effect survives a DB restart and is ADOPTED, not replayed', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'asep-rehearsal-'));
+// (adopted) on recovery, NOT replayed. Injected with a REAL process-level DB
+// restart: the first PGlite client opens, writes the PENDING row, and is
+// CLOSED (simulating the process death); a SECOND client opens the same
+// on-disk dataDir — simulating the restart — and must see the row survive.
+//
+// Before this fix the test used the same live client for "restart", which
+// proved nothing about durability: it only tested that a row is visible to the
+// connection that wrote it. Close + reopen is the minimum that actually validates
+// the C1 guarantee ("state survives process restart").
+test('M3/Fault2: a PENDING side effect survives a REAL DB restart and is ADOPTED, not replayed', async () => {
+  const dbDir = mkdtempSync(join(tmpdir(), 'asep-rehearsal-db-'));
   try {
-    const { client, scope, binding } = await seed();
-    const log = new SqlSideEffectLog(client);
+    // First process: seed + begin(), then "crash" (close the client).
+    const { client: first, scope, binding } = await seed(dbDir);
     const beginInput = {
       operation: 'push' as const,
       repositoryBindingId: binding.id,
@@ -64,21 +71,24 @@ test('M3/Fault2: a PENDING side effect survives a DB restart and is ADOPTED, not
       ownerToken: 'lease-1',
       naturalKey: 'refs/heads/asep/x',
     };
-    // The external push happened; the executor "crashed" before complete().
-    await log.begin(scope, beginInput);
-    // === simulate DB restart: reconnect semantics are proven by C1; here we
-    // resume against the same live client (the row is durable) ===
-    const resume = await log.begin(scope, beginInput);
-    assert.equal(resume.existed, true, 'the PENDING row is adopted on recovery');
-    assert.equal(resume.state, 'PENDING');
-    // A DIFFERENT fingerprint on the same key fails closed (no silent rebind).
+    await new SqlSideEffectLog(first).begin(scope, beginInput);
+    await first.close(); // === process crash / DB shutdown ===
+
+    // Second process: open the SAME persistent dataDir (the restart).
+    const resumed = await PgliteClient.create(dbDir);
+    const resumeLog = new SqlSideEffectLog(resumed);
+    const row = await resumeLog.begin(scope, beginInput);
+    assert.equal(row.existed, true, 'the PENDING row survived the restart');
+    assert.equal(row.state, 'PENDING', 'state is still PENDING — not lost or reset');
+
+    // A different fingerprint on the same key still fails closed.
     await assert.rejects(
-      () => log.begin(scope, { ...beginInput, requestFingerprint: 'push:asep/x@DIFFERENT' }),
+      () => resumeLog.begin(scope, { ...beginInput, requestFingerprint: 'push:asep/x@DIFFERENT' }),
       /fingerprint/i,
     );
-    await client.close();
+    await resumed.close();
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dbDir, { recursive: true, force: true });
   }
 });
 
