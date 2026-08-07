@@ -679,10 +679,34 @@ export async function upsertPrStep(input: UpsertPrStepInput): Promise<UpsertPrSt
     naturalKey: input.headBranch,
   });
   if (begun.existed && begun.state === 'COMPLETED' && begun.resultRef) {
+    // PARSE, never cast (disp. P2-REREVIEW HIGH-005, exit D6).
+    //
+    // THE DEFECT. This was `begun.resultRef as PullRequestRef` — a compile-time
+    // assertion over a JSONB column, which checks nothing at runtime. Verified
+    // empirically, the cast adopted every one of these: a payload with `number`
+    // missing entirely, `number` as the STRING "42", a truncated row with no
+    // `url`, and — worst — a COMMIT result ref (`{kind:'commit',commitSha,…}`)
+    // adopted as though it were a pull request.
+    //
+    // That is not cosmetic. The adopted `pr` flows straight into
+    // `pullRequests.upsert({ number: pr.number, … })` and into the slice's
+    // `prNumber` result, so a foreign or truncated row becomes a persisted PR
+    // row claiming `number: undefined` while every step still reports OK.
+    //
+    // The parser already exists and already handles 'pr-upsert'; the commit path
+    // adopted it and this one did not. It pins the discriminator and validates
+    // every field (positive integer number, non-empty url/branches), so a
+    // mismatched payload throws instead of being coerced.
+    const rec = parseSideEffectResultRef(begun.resultRef, 'pr-upsert');
     return {
       step: 'upsert-pr',
       status: 'OK',
-      pr: begun.resultRef as PullRequestRef,
+      pr: {
+        number: rec.number,
+        url: rec.url,
+        headBranch: rec.headBranch,
+        baseBranch: rec.baseBranch,
+      },
       adopted: true,
     };
   }

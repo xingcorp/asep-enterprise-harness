@@ -973,3 +973,99 @@ test('HIGH-006: a matching bundle whose clock differs IS still adopted (gate is 
   assert.equal(res.bundle.createdAt, '2026-01-01T00:00:00.000Z',
     'the ORIGINAL timestamp survives — the resume clock must not leak in');
 });
+
+// ---------------------------------------------------------------------------
+// HIGH-005 (cycle-5 residue): a COMPLETED pr-upsert record is adopted through
+// the SAME strict parser the commit path uses, not a blind cast.
+//
+// THE DEFECT. `pr: begun.resultRef as PullRequestRef` asserted a shape at the
+// type level and checked nothing at runtime. `resultRef` is a JSONB column
+// typed `unknown`, so a truncated, foreign or hand-edited row was adopted
+// verbatim — and the adopted `pr.number` flows straight into the
+// `pull_requests` row and the run outcome. Verified empirically before the fix:
+// a record missing `number`, one carrying `number` as a STRING, one with a
+// dropped `url`, and even a COMMIT ref were all adopted with no error.
+// ---------------------------------------------------------------------------
+
+// A log whose COMPLETED pr-upsert record returns exactly `ref`, so a test can
+// hand the adoption path an arbitrary persisted payload.
+function completedPrLog(ref: unknown): SideEffectLog {
+  return {
+    async begin() {
+      return {
+        recordId: 'rec-pr', existed: true, state: 'COMPLETED',
+        resultRef: ref,
+      } as unknown as SideEffectRecord;
+    },
+    async complete() { throw new Error('must not re-complete an adopted PR'); },
+    async fail() { throw new Error('unused'); },
+  } as unknown as SideEffectLog;
+}
+
+function prStepWith(log: SideEffectLog) {
+  return upsertPrStep({
+    forge: {
+      async pushBranch() { throw new Error('unused'); },
+      async upsertPullRequest() { throw new Error('a COMPLETED record must not re-upsert'); },
+      async resolveRef() { return null; },
+      async findPullRequest() { return null; },
+    } as unknown as ForgeProvider,
+    log,
+    scope,
+    repositoryBindingId: bindingId,
+    attemptId,
+    headBranch: 'asep/attempt/a1',
+    base: 'main',
+    title: 't',
+    body: 'b',
+    leaseId: 'lease-1',
+  });
+}
+
+test('HIGH-005: a MALFORMED persisted pr-upsert result_ref fails closed (no blind cast)', async () => {
+  // Each of these was silently adopted before the fix.
+  const malformed: readonly (readonly [string, unknown])[] = [
+    ['number missing', { url: 'u', headBranch: 'h', baseBranch: 'b' }],
+    ['number as string', { number: '42', url: 'u', headBranch: 'h', baseBranch: 'b' }],
+    ['number zero', { number: 0, url: 'u', headBranch: 'h', baseBranch: 'b' }],
+    ['url dropped by a truncated row', { number: 7, headBranch: 'h', baseBranch: 'b' }],
+    ['empty headBranch', { number: 7, url: 'u', headBranch: '', baseBranch: 'b' }],
+    // The most serious one: a commit ref adopted AS a pull request.
+    ['a commit ref, not a PR', { kind: 'commit', commitSha: 'a'.repeat(40), evidenceId: 'ev' }],
+    ['not an object at all', 'pr-42'],
+  ];
+  for (const [label, ref] of malformed) {
+    await assert.rejects(
+      () => prStepWith(completedPrLog(ref)),
+      (err: unknown) => (err as { name?: string })?.name === 'SideEffectResultRefError',
+      `${label}: a malformed persisted PR ref must NOT be adopted`,
+    );
+  }
+});
+
+test('HIGH-005: a WELL-FORMED persisted pr-upsert record is still adopted (not blanket-deny)', async () => {
+  const res = await prStepWith(completedPrLog({
+    kind: 'pr-upsert', number: 42, url: 'https://forge/pr/42',
+    headBranch: 'asep/attempt/a1', baseBranch: 'main',
+  }));
+  assert.equal(res.adopted, true, 'a valid COMPLETED record is adopted, never re-upserted');
+  assert.equal(res.pr.number, 42);
+  assert.equal(res.pr.url, 'https://forge/pr/42');
+  assert.equal(res.pr.baseBranch, 'main');
+});
+
+test('HIGH-005: a legacy record with NO kind discriminator is still validated, then adopted', async () => {
+  // Rows written before the union existed carry no `kind`. The parser treats the
+  // expected kind as the discriminator but STILL checks every field — so legacy
+  // rows are accepted only when genuinely well-formed.
+  const res = await prStepWith(completedPrLog({
+    number: 9, url: 'https://forge/pr/9', headBranch: 'asep/attempt/a1', baseBranch: 'main',
+  }));
+  assert.equal(res.adopted, true);
+  assert.equal(res.pr.number, 9);
+  // And a legacy row that is malformed is still refused.
+  await assert.rejects(
+    () => prStepWith(completedPrLog({ number: 9, url: '', headBranch: 'h', baseBranch: 'b' })),
+    (err: unknown) => (err as { name?: string })?.name === 'SideEffectResultRefError',
+  );
+});
