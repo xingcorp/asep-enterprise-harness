@@ -78,6 +78,9 @@ export {
   setReviewStep,
   completeToReview,
   SandboxIsolationRequiredError,
+  // Adoption of a resumed evidence bundle is identity-gated; a bundle describing
+  // a different commit is a hard fault, never silently accepted (HIGH-006).
+  EvidenceIdentityMismatchError,
   type SandboxRequirement,
   type VerificationCheckSpec,
   type VerificationCheckExecution,

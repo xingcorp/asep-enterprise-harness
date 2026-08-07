@@ -141,6 +141,23 @@ export class SandboxIsolationRequiredError extends Error {
   }
 }
 
+// A durable evidence bundle was found at the committed evidence id, but its
+// HARNESS-OWNED identity disagrees with the attempt now resuming (disp.
+// P2-REREVIEW HIGH-006, exit D8).
+//
+// Thrown rather than returned: an adopted bundle flows straight on to push, PR
+// and WAITING_FOR_HUMAN_REVIEW, so a mismatched one would put a human in front
+// of evidence describing a DIFFERENT commit. There is no safe way to continue.
+export class EvidenceIdentityMismatchError extends Error {
+  constructor(evidenceId: string, field: string, persisted: string, expected: string) {
+    super(
+      `evidence ${evidenceId} cannot be adopted: persisted ${field} '${persisted}' ` +
+        `!= this attempt's '${expected}' — refusing to attach evidence for another commit`,
+    );
+    this.name = 'EvidenceIdentityMismatchError';
+  }
+}
+
 export interface VerifyStepResult {
   readonly step: 'verify';
   readonly status: StepStatus;
@@ -456,6 +473,36 @@ export async function evidenceStep(input: EvidenceStepInput): Promise<EvidenceSt
   // closed, never be papered over by writing fresh bytes.
   try {
     const existing = await input.store.getEvidence(input.scope, input.evidenceId);
+
+    // VERIFY BEFORE ADOPTING (disp. P2-REREVIEW HIGH-006).
+    //
+    // Finding the id resolvable is not the same as it describing THIS attempt.
+    // The id comes from the resumed commit's ASEP-Evidence trailer, and the
+    // adopted bundle is returned as this attempt's evidence — it then flows into
+    // push, the PR body and WAITING_FOR_HUMAN_REVIEW. So an unchecked adoption
+    // puts a reviewer in front of evidence for a different commit while every
+    // downstream step reports success.
+    //
+    // All four fields compared here are HARNESS-OWNED: taskId/attemptId are
+    // pre-created by the harness, baseSha is the pinned checkout, and resultSha
+    // is the commit SHA read back by trusted inspection. None is
+    // provider-reported, so this cannot be satisfied by anything the agent says.
+    // `createdAt` and `environment` are deliberately NOT compared: the clock
+    // difference is the benign case adoption exists to absorb.
+    const fields: readonly (readonly [string, string, string])[] = [
+      ['taskId', String(existing.taskId), String(input.taskId)],
+      ['attemptId', String(existing.attemptId), String(input.attemptId)],
+      ['baseSha', String(existing.baseSha), String(input.baseSha)],
+      ['resultSha', String(existing.resultSha), String(input.resultSha)],
+    ];
+    const mismatch = fields.filter(([, persisted, expected]) => persisted !== expected);
+    const first = mismatch[0];
+    if (first !== undefined) {
+      throw new EvidenceIdentityMismatchError(
+        String(input.evidenceId), first[0], first[1], first[2],
+      );
+    }
+
     return {
       step: 'evidence',
       status: 'OK',
@@ -470,6 +517,9 @@ export async function evidenceStep(input: EvidenceStepInput): Promise<EvidenceSt
       adopted: true,
     };
   } catch (err) {
+    // An identity mismatch is a REAL fault, not an absence. Re-throw before the
+    // absence check below so it can never be mistaken for "safe to write".
+    if (err instanceof EvidenceIdentityMismatchError) throw err;
     // Only an ABSENT bundle means "safe to write". The store signals that with a
     // not-found error; anything else (integrity failure, scope violation) is a
     // real fault and must not be swallowed.

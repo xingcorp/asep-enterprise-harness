@@ -52,6 +52,7 @@ import {
   upsertPrStep,
   setReviewStep,
   completeToReview,
+  EvidenceIdentityMismatchError,
   type VerificationCheckSpec,
 } from './pipeline-steps.js';
 
@@ -890,4 +891,85 @@ test('HIGH-006: a genuine integrity error from getEvidence is NOT swallowed (fai
     }),
     /already holds different bytes/,
   );
+});
+
+// HIGH-006 (cycle-5 residue): adoption must VERIFY the bundle it adopts.
+//
+// THE DEFECT. evidenceStep returned the persisted bundle unchecked. The id it
+// reads comes from the resumed commit's ASEP-Evidence trailer, and the adopted
+// bundle becomes this attempt's evidence — flowing into push, the PR body and
+// WAITING_FOR_HUMAN_REVIEW. So a trailer pointing at another commit's evidence
+// (a stale/reused id, a mis-parsed trailer) put a human reviewer in front of
+// evidence for a DIFFERENT commit while every downstream step reported success.
+//
+// The four compared fields are all harness-owned — taskId/attemptId are
+// pre-created, baseSha is the pinned checkout, resultSha is read back by trusted
+// inspection — so the check cannot be satisfied by anything the agent reports.
+function adoptingStore(persisted: EvidenceBundle): EvidenceStore {
+  return {
+    allocateEvidenceId: () => 'ev-x' as ArtifactId,
+    async putEvidence(_s, id) {
+      throw new Error(`putEvidence must not run when a bundle exists at ${id}`);
+    },
+    async getEvidence() { return persisted; },
+  };
+}
+
+const adoptBase = {
+  scope,
+  evidenceId: 'ev-x' as ArtifactId,
+  taskId,
+  attemptId,
+  baseSha: '0'.repeat(40),
+  resultSha: 'd'.repeat(40),
+  change: cleanChange,
+  environment,
+  executions: [],
+  now: () => '2026-06-30T12:00:00.000Z',
+} as const;
+
+// The bundle the harness would legitimately find on a resume: same identity,
+// earlier clock.
+function persistedFor(over: Partial<EvidenceBundle> = {}): EvidenceBundle {
+  return {
+    taskId,
+    attemptId,
+    baseSha: '0'.repeat(40),
+    resultSha: 'd'.repeat(40),
+    createdAt: '2026-01-01T00:00:00.000Z',
+    environment,
+    diff: { artifactId: cleanChange.diff.artifactId, sha256: cleanChange.diff.sha256 },
+    checks: [],
+    ...over,
+  };
+}
+
+test('HIGH-006: adoption is IDENTITY-GATED — a bundle for another commit fails closed', async () => {
+  // Each case mutates exactly ONE harness-owned fact, so a regression that drops
+  // any single comparison is caught rather than masked by the others.
+  const cases: readonly (readonly [string, Partial<EvidenceBundle>])[] = [
+    ['resultSha', { resultSha: '9'.repeat(40) }],
+    ['baseSha', { baseSha: '1'.repeat(40) }],
+    ['taskId', { taskId: 'task-OTHER' as TaskId }],
+    ['attemptId', { attemptId: 'att-OTHER' as AttemptId }],
+  ];
+  for (const [field, over] of cases) {
+    await assert.rejects(
+      () => evidenceStep({ ...adoptBase, store: adoptingStore(persistedFor(over)) }),
+      EvidenceIdentityMismatchError,
+      `a persisted bundle disagreeing on ${field} must NOT be adopted`,
+    );
+  }
+});
+
+test('HIGH-006: a matching bundle whose clock differs IS still adopted (gate is not blanket-deny)', async () => {
+  // The benign case adoption exists for: identical identity, earlier timestamp.
+  // If this failed, the wedge the reconcile was built to prevent would return.
+  const res = await evidenceStep({
+    ...adoptBase,
+    store: adoptingStore(persistedFor()),
+  });
+  assert.equal(res.adopted, true, 'identity matches, so the bundle is adopted');
+  assert.equal(res.bundle.createdAt, '2026-01-01T00:00:00.000Z',
+    'the ORIGINAL timestamp survives — the resume clock must not leak in');
 });
