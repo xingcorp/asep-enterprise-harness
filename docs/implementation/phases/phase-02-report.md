@@ -248,11 +248,11 @@ verification:
 security:
   license: Apache-2.0 present
   secret_scan: pass (self-test green)
-  git_history_secret_scan: "FAIL — 7 commits on this branch contain a credential-shaped PEM literal (<PEM RSA-private-key BEGIN header>\\nQUJD\\n<PEM RSA-private-key END footer>\\n in apps/control-plane-api/src/production-root.test.ts). QUJD is base64(\\\"ABC\\\") — zero cryptographic risk — but the scanner is behaving correctly and must not be weakened or allowlisted. Requires a history rewrite (interactive rebase or filter-repo) before this branch can be published. This is a Phase 2 closure prerequisite, not an implementation defect in the feature code."
+  git_history_secret_scan: "pass — clean across all 131 commits. It was NOT clean before: seven commits on this branch carried a credential-shaped PEM header/footer pair as a literal in the production-root test fixture, and one commit (the earlier revision of THIS report) reproduced that same pair while describing it. The material was base64(\"ABC\"), so there was no cryptographic exposure, but the scanner was correct and was never weakened or allowlisted to obtain green. The history was rewritten with git-filter-repo so every affected revision carries the assembled-at-runtime form already used at HEAD; the runtime value is byte-identical, so the E4 leak assertion still tests what it did before. Verified: `main` and `phase/01` SHAs are unchanged, commit count and subject sequence are identical across the rewrite, and the only tree difference at HEAD is the one report line describing the finding."
   large_file_scan: pass
   pii_scan: pass (self-test green)
   dependency_license: all permissive (Apache-2.0, BSD-3-Clause, ISC, MIT); self-test green
-  publication_checklist: "FAIL — git_history scan found credential-shaped literal in 7 commits (see git_history_secret_scan above). All other sub-checks pass: license-inventory, secret-scan, large-file-scan, pii-scan all green."
+  publication_checklist: "all-green, executable gate — license, abs-path leak scan, git-history secret scan, dependency-license inventory, secret scan, large-file scan and PII scan all pass, with the abs-path scanner self-test green. This gate was RED until the history rewrite described in git_history_secret_scan above."
 
 known_limitations:
   - "The live pilot (K2/K6) has not been run: no Anthropic credential and no GitHub App private key exist in this environment. This is ONE of TWO outstanding exit items."
