@@ -227,7 +227,7 @@ commits:
 verification:
   canonical_command: pnpm verify:all (format + typecheck + test + secret + large-file + publication + clean-tree)
   quick_command: pnpm verify (format:check + typecheck + test only — subset, NOT the full gate)
-  result: FAIL — check-publication (git-history) and check-acceptance both exit non-zero; see known_limitations and security block below. The test, typecheck, compat, forbidden-imports, secret, large-file, pii, and license sub-steps are all green.
+  result: "PASS — all 12 steps green, exit 0: format:check, typecheck, test, contracts test, policy test, contracts compat (13 schemas), forbidden-imports, scan:secret, scan:large-file, scan:pii, check:publication, clean-tree. An earlier revision of this field claimed FAIL for two reasons, both now corrected: (a) check-publication was genuinely RED on the git-history scan until the history rewrite recorded in the security block below — that is now clean across all 131 commits; (b) check-acceptance was named as a failing step, which was wrong on its face — scripts/verify-all.sh deliberately EXCLUDES the acceptance-marker gate, because a valid marker binds a reviewed HEAD and therefore cannot exist until AFTER verify:all is green and the independent review has run. The FAIL lines observed for check-acceptance came from scripts/check-acceptance.test.ts exercising that script's own fail-closed paths inside the test step, which passed."
   test_count: 543 tests across 49 test files via the shell-free scripts/run-canonical-tests.mjs (27 REQUIRED suite markers verified; fails closed if any critical suite is dropped)
   clean_checkout: pnpm install --frozen-lockfile succeeds; clean tree after the full gate
   integration_gate:
