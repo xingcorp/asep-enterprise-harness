@@ -55,7 +55,7 @@ repository:
   base_sha_note: >-
     base = `git merge-base main HEAD`. The vertical slice forks from the Phase 1
     acceptance point.
-  implementation_head_sha: 526507f3351390222cc8913bc94efa14eb55a3b7
+  implementation_head_sha: 5cdd03a70571e4e8ea9feac266e57a572444a0fa
   head_sha_note: >-
     MED-005 required a REAL SHA here instead of the previous placeholder string
     `bound-by-git-rev-parse-HEAD`. `implementation_head_sha` above is a real,
@@ -63,14 +63,19 @@ repository:
     from BOTH Codex passes is closed — the final audit
     (phase-02-final-review-codex-v1.md: 9 HIGH + 6 MEDIUM) and the cycle-2
     re-review (phase-02-final-rereview-codex-v2.md, which found 6 HIGH still
-    PARTIAL + 1 regression + 2 new MEDIUM). The cycle-2 repairs land in these
-    commits above it: HIGH-004 (auth on org create), MED-004 (orchestration moved
-    out of the composition root), HIGH-002 (`.git` OS-level immutable), HIGH-009
-    (COMPLETE gate resolves authority), HIGH-008 (production agent/forge seams),
-    HIGH-006 (PENDING-commit reconcile), HIGH-005 (evidence-checksum cross-check +
-    hierarchy binding coherence) and MED-NEW-002 (vertical-slice-real required).
-    Verify with:
-    `git rev-parse 526507f3351390222cc8913bc94efa14eb55a3b7`.
+    PARTIAL + 1 regression + 2 new MEDIUM), plus the self-found cold-build
+    failure P2-CYCLE6-HIGH-001. The older repairs cover HIGH-004 (auth on org
+    create), MED-004 (orchestration moved out of the composition root), HIGH-002
+    (`.git` OS-level immutable), HIGH-009 (COMPLETE gate resolves authority),
+    HIGH-008 (production agent/forge seams), HIGH-006 (PENDING-commit reconcile),
+    HIGH-005 (evidence-checksum cross-check + hierarchy binding coherence) and
+    MED-NEW-002 (vertical-slice-real required). The implementation head above adds
+    the four missing TypeScript project references that made a clean-checkout
+    `tsc -b` fail while a warm-cache rerun passed, adds a required build-graph
+    fitness suite with mutation self-tests, and makes verify:all reset build
+    artifacts before typecheck so the canonical gate always exercises the cold
+    condition CI has. Verify with:
+    `git rev-parse 5cdd03a70571e4e8ea9feac266e57a572444a0fa`.
 
     A git object cannot embed its own hash, so the commit that carries THIS
     sentence necessarily has a different SHA than any value written inside it —
@@ -227,8 +232,8 @@ commits:
 verification:
   canonical_command: pnpm verify:all (format + typecheck + test + secret + large-file + publication + clean-tree)
   quick_command: pnpm verify (format:check + typecheck + test only — subset, NOT the full gate)
-  result: "PASS — all 12 steps green, exit 0: format:check, typecheck, test, contracts test, policy test, contracts compat (13 schemas), forbidden-imports, scan:secret, scan:large-file, scan:pii, check:publication, clean-tree. An earlier revision of this field claimed FAIL for two reasons, both now corrected: (a) check-publication was genuinely RED on the git-history scan until the history rewrite recorded in the security block below — that is now clean across all 131 commits; (b) check-acceptance was named as a failing step, which was wrong on its face — scripts/verify-all.sh deliberately EXCLUDES the acceptance-marker gate, because a valid marker binds a reviewed HEAD and therefore cannot exist until AFTER verify:all is green and the independent review has run. The FAIL lines observed for check-acceptance came from scripts/check-acceptance.test.ts exercising that script's own fail-closed paths inside the test step, which passed."
-  test_count: 543 tests across 49 test files via the shell-free scripts/run-canonical-tests.mjs (27 REQUIRED suite markers verified; fails closed if any critical suite is dropped)
+  result: "PASS — all 14 steps green, exit 0: format:check, cold-cache reset, typecheck, test, contracts test, policy test, contracts compat (13 schemas), forbidden-imports, project-references, scan:secret, scan:large-file, scan:pii, check:publication, clean-tree. The cold-cache reset now removes dist/ and *.tsbuildinfo before typecheck, so the gate exercises the clean-checkout build order rather than accepting stale artifacts. An earlier revision of this field claimed FAIL for two reasons, both now corrected: (a) check-publication was genuinely RED on the git-history scan until the history rewrite recorded in the security block below — that is now clean across all commits reachable from the advertised refs at gate time; (b) check-acceptance was named as a failing step, which was wrong on its face — scripts/verify-all.sh deliberately EXCLUDES the acceptance-marker gate, because a valid marker binds a reviewed HEAD and therefore cannot exist until AFTER verify:all is green and the independent review has run. The FAIL lines observed for check-acceptance came from scripts/check-acceptance.test.ts exercising that script's own fail-closed paths inside the test step, which passed."
+  test_count: 548 tests across 50 test files via the shell-free scripts/run-canonical-tests.mjs (28 REQUIRED suite markers verified; fails closed if any critical suite is dropped)
   clean_checkout: pnpm install --frozen-lockfile succeeds; clean tree after the full gate
   integration_gate:
     command: pnpm test:integration (scripts/integration/run-integration.mjs)
@@ -248,7 +253,7 @@ verification:
 security:
   license: Apache-2.0 present
   secret_scan: pass (self-test green)
-  git_history_secret_scan: "pass — clean across all 131 commits. It was NOT clean before: seven commits on this branch carried a credential-shaped PEM header/footer pair as a literal in the production-root test fixture, and one commit (the earlier revision of THIS report) reproduced that same pair while describing it. The material was base64(\"ABC\"), so there was no cryptographic exposure, but the scanner was correct and was never weakened or allowlisted to obtain green. The history was rewritten with git-filter-repo so every affected revision carries the assembled-at-runtime form already used at HEAD; the runtime value is byte-identical, so the E4 leak assertion still tests what it did before. Verified: `main` and `phase/01` SHAs are unchanged, commit count and subject sequence are identical across the rewrite, and the only tree difference at HEAD is the one report line describing the finding."
+  git_history_secret_scan: "pass — clean across all commits reachable from the advertised refs at gate time. It was NOT clean before: seven commits on this branch carried a credential-shaped PEM header/footer pair as a literal in the production-root test fixture, and one commit (an earlier revision of THIS report) reproduced that same pair while describing it. The material was base64(\"ABC\"), so there was no cryptographic exposure, but the scanner was correct and was never weakened or allowlisted to obtain green. The history was rewritten with git-filter-repo so every affected revision carries the assembled-at-runtime form already used at HEAD; the runtime value is byte-identical, so the E4 leak assertion still tests what it did before. Verified: `main` and `phase/01` SHAs were unchanged, commit count and subject sequence were identical across the rewrite, and the only tree difference at the rewritten HEAD was the one report line describing the finding. This field deliberately avoids hard-coding a commit count, which would become stale in the very next report-only commit."
   large_file_scan: pass
   pii_scan: pass (self-test green)
   dependency_license: all permissive (Apache-2.0, BSD-3-Clause, ISC, MIT); self-test green
@@ -344,20 +349,26 @@ a COMPLETE verdict. The M operational-readiness runbook and preserved fault
 rehearsal are grounded in the shipped recovery mechanisms (two-phase side-effect
 log, stale-lease sweep, conditional create-only artifact writes, JIT token
 re-mint), and MED-006 replaced the tabletop walkthrough with an executable
-injected-fault rehearsal. The canonical test gate is green (543 tests across 49
+injected-fault rehearsal. The canonical test gate is green (548 tests across 50
 files via the shell-free `scripts/run-canonical-tests.mjs`, which fails closed if
-any of the 27 REQUIRED critical suites is dropped) with a clean working tree, and
+any of the 28 REQUIRED critical suites is dropped) with a clean working tree, and
 the mandatory `pnpm test:integration` gate is green (23 tests across 6
 `*.itest.ts` files, 6 required suites verified) against real digest-pinned
 PostgreSQL + MinIO + a real Docker sandbox.
 
-The aggregate `pnpm verify:all` gate is NOT green. Two of its checks fail, both
-independent of the implementation above: `check-publication` rejects a
-credential-shaped literal committed in this branch's own history (a
-`QUJD`/base64("ABC") test fixture — cryptographically harmless, but the scanner
-is behaving correctly and must not be weakened), and `check-acceptance` fails
-because `artifacts/phase-01/index.tsv` is absent and no reviewer signature
-verifies. Both are prerequisites for phase closure, not implementation defects.
+P2-CYCLE6-HIGH-001 exposed that the previous `pnpm verify:all` result was a
+warm-cache false signal: `tsc -b` passed only because `dist/` from an earlier run
+masked four missing project references; the first build in a fresh clone failed
+with 14 TypeScript errors. The implementation head above adds every missing
+reference and a required build-graph fitness suite (with a mutation self-test),
+and the gate now resets build artifacts BEFORE typecheck. The first cold run is
+green: all 14 aggregate steps pass, including publication/history and clean-tree.
+
+`check-acceptance` remains a separate post-review gate by design: it is NOT part
+of verify:all because a valid marker binds an independently reviewed HEAD and
+cannot exist before the review runs. Independent cycle-6 review and the ten live
+pilot tasks therefore remain the two honest closure items reflected by the
+`_UNREVIEWED` verdict; neither is misreported as an implementation-gate failure.
 
 See `phase-02-exit-criteria.md` for the machine-checkable MUST list,
 `phase-02-pilot-runbook.md` for operational procedures, and
