@@ -51,12 +51,38 @@ step() {
 }
 
 step "format:check"        pnpm format:check
+
+# Cold-cache reset, and it must run BEFORE typecheck.
+#
+# `pnpm typecheck` is `tsc -b`, which walks the project-reference graph AND emits
+# (the base config is composite, so a typecheck populates dist/). pnpm also
+# symlinks every workspace package into node_modules, so once dist/ exists TS can
+# resolve a cross-package import through that symlink even when the importing
+# project declares no reference for it. The two resolution paths mask each other:
+#
+#   warm tree (dist/ present) -> resolves via node_modules      -> PASS
+#   clean checkout (no dist/) -> tsc -b mis-orders the build     -> TS2307
+#
+# CI checks out fresh, so a gate that only ever ran warm was certifying a
+# condition CI does not have. Wiping dist/ and *.tsbuildinfo here makes the very
+# next step the cold build — the condition CI actually runs under. The output that
+# cold compile emits is reused by the later test steps, so this costs one cold
+# compile rather than an extra pass. `scripts/project-references.test.ts` is the
+# companion guard that names the offending project instead of only failing.
+step "cold-cache reset"
+find . -path ./node_modules -prune -o -name dist -type d -print 2>/dev/null \
+  | grep -v node_modules | xargs rm -rf 2>/dev/null || true
+find . -path ./node_modules -prune -o -name '*.tsbuildinfo' -print 2>/dev/null \
+  | grep -v node_modules | xargs rm -f 2>/dev/null || true
+echo "cold-cache reset: PASS (dist/ + *.tsbuildinfo removed; next step is a cold tsc -b)"
+
 step "typecheck"           pnpm typecheck
 step "test"                pnpm test
 step "contracts test"      pnpm --filter @asep/contracts test
 step "policy test"         pnpm --filter @asep/policy test
 step "contracts compat"    pnpm --filter @asep/contracts compat:gate
 step "forbidden-imports"   pnpm exec tsx --test scripts/forbidden-imports.test.ts
+step "project-references"  pnpm exec tsx --test scripts/project-references.test.ts
 step "scan:secret"         pnpm scan:secret
 step "scan:large-file"     pnpm scan:large-file
 step "scan:pii"            pnpm scan:pii

@@ -92,6 +92,10 @@ export const REQUIRED_SUITES = Object.freeze({
   'asep-suite:acceptance-crypto': 'scripts/lib/acceptance-crypto.test.ts',
   'asep-suite:acceptance-marker': 'scripts/check-acceptance.test.ts',
   'asep-suite:forbidden-imports': 'scripts/forbidden-imports.test.ts',
+  // Build-graph fitness: a project that imports a workspace package without
+  // declaring the matching `references` entry passes on a warm tree and fails on
+  // a clean checkout. Registered so the guard cannot be dropped silently.
+  'asep-suite:project-references': 'scripts/project-references.test.ts',
   'asep-suite:eval-network-guard': 'evals/runner/env.test.ts',
   'asep-suite:trusted-bootstrap': 'evals/runner/launcher.test.ts',
   'asep-suite:compat-gate': 'packages/contracts/src/compat-gate.test.ts',

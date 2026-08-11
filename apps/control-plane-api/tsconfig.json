@@ -37,6 +37,12 @@
     },
     {
       "path": "../../adapters/local-doubles"
+    },
+    {
+      "path": "../../adapters/agent-claude"
+    },
+    {
+      "path": "../../adapters/github-app"
     }
   ]
 }
