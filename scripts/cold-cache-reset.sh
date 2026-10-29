@@ -12,7 +12,9 @@
 # FAIL-CLOSED. A reset that cannot remove an artifact must not report success:
 # a surviving `dist/` is exactly the stale output the step exists to destroy.
 # So every removal's exit status is checked, and afterwards the tree is scanned
-# again; any survivor fails the step and is named. Nothing here swallows errors.
+# again; any survivor fails the step and is named. A discovery that fails is a
+# failure too: a `find` that lists nothing because it could not read the tree
+# would otherwise look like a clean one. Nothing here swallows errors.
 #
 # Usage:
 #   scripts/cold-cache-reset.sh [root]   # default root: the repository root
@@ -21,27 +23,37 @@ set -euo pipefail
 ROOT="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 cd "$ROOT"
 
-# Every build artifact outside node_modules, NUL-separated: anything NAMED
-# `dist` (directory, file or symlink — a symlinked dist feeds stale output just
-# the same) and any `*.tsbuildinfo`. node_modules is pruned at every depth, and
-# a matched dist is pruned so its own contents are not listed twice.
+LISTING="$(mktemp "${TMPDIR:-/tmp}/asep-cold-reset.XXXXXX")"
+trap 'rm -f -- "$LISTING"' EXIT
+
+# Every build artifact outside node_modules, NUL-separated, into $LISTING:
+# anything NAMED `dist` (directory, file or symlink — a symlinked dist feeds
+# stale output just the same) and any `*.tsbuildinfo`. node_modules is pruned at
+# every depth, and a matched dist is pruned so its own contents are not listed
+# twice. The listing goes through a file, not a pipe or process substitution, so
+# find's exit status is seen; a non-zero status fails the step.
 list_artifacts() {
-  find . -name node_modules -prune -o \
-    \( -name dist -o -name '*.tsbuildinfo' \) -print0 -prune
+  if ! find . -name node_modules -prune -o \
+      \( -name dist -o -name '*.tsbuildinfo' \) -print0 -prune >"$LISTING"; then
+    echo "cold-cache reset: FAIL — could not list the build artifacts ($1)" >&2
+    exit 1
+  fi
 }
 
+list_artifacts "removal pass"
 failed=0
 while IFS= read -r -d '' artifact; do
   if ! rm -rf -- "$artifact"; then
     echo "cold-cache reset: could not remove ${artifact#./}" >&2
     failed=1
   fi
-done < <(list_artifacts)
+done <"$LISTING"
 
+list_artifacts "leftover scan"
 survivors=()
 while IFS= read -r -d '' artifact; do
   survivors+=("${artifact#./}")
-done < <(list_artifacts)
+done <"$LISTING"
 
 if [ "${#survivors[@]}" -gt 0 ]; then
   echo "cold-cache reset: FAIL — build artifacts survived the reset:" >&2

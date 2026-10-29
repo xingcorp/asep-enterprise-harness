@@ -48,8 +48,10 @@ function rmShim(body: string): string {
   return dir;
 }
 
+// The script's scratch listing goes under the fixture, so a shimmed `rm` cannot
+// leave it behind in the real temp directory.
 function run(root: string, env: NodeJS.ProcessEnv = process.env) {
-  const r = spawnSync('bash', [SCRIPT, root], { encoding: 'utf8', env });
+  const r = spawnSync('bash', [SCRIPT, root], { encoding: 'utf8', env: { ...env, TMPDIR: root } });
   return { code: r.status, out: `${r.stdout ?? ''}${r.stderr ?? ''}` };
 }
 
@@ -95,6 +97,80 @@ test('a removal that silently does nothing is caught by the leftover check', () 
     assert.match(r.out, /tsbuildinfo/);
   } finally {
     rmSync(shim, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// A PATH directory whose `find` runs `body`; `$@` is the real find's argv and
+// REAL_FIND points at the real binary, so a shim can fail only some calls.
+function findShim(body: string): string {
+  const dir = mkdtempSync(join(tmpdir(), 'asep-find-shim-'));
+  const shim = join(dir, 'find');
+  writeFileSync(shim, `#!/bin/sh\n${body}\n`);
+  chmodSync(shim, 0o755);
+  return dir;
+}
+
+function realFind(): string {
+  const r = spawnSync('sh', ['-c', 'command -v find'], { encoding: 'utf8' });
+  return r.stdout.trim();
+}
+
+test('a discovery that fails outright makes the step fail and never prints PASS', () => {
+  const root = fixtureTree();
+  const shim = findShim('echo "find: simulated failure" >&2; exit 1');
+  try {
+    const r = run(root, { ...process.env, PATH: `${shim}:${process.env['PATH'] ?? ''}` });
+    assert.notEqual(r.code, 0, `a failed discovery listed nothing, so nothing survived, but it is not a clean tree:\n${r.out}`);
+    assert.doesNotMatch(r.out, /cold-cache reset: PASS/);
+    assert.match(r.out, /could not list/);
+  } finally {
+    rmSync(shim, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a discovery that lists some artifacts and then fails is still a failure', () => {
+  const root = fixtureTree();
+  // Real output, then a non-zero exit — what an unreadable subdirectory gives.
+  const shim = findShim(`"$REAL_FIND" "$@"; echo "find: ./x: Permission denied" >&2; exit 1`);
+  try {
+    const r = run(root, { ...process.env, REAL_FIND: realFind(), PATH: `${shim}:${process.env['PATH'] ?? ''}` });
+    assert.notEqual(r.code, 0, r.out);
+    assert.doesNotMatch(r.out, /cold-cache reset: PASS/);
+  } finally {
+    rmSync(shim, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a leftover scan that fails is a failure even when the removal pass succeeded', () => {
+  const root = fixtureTree();
+  const marker = join(root, '.find-calls');
+  // The first call (removal pass) is real; every later call (leftover scan) fails.
+  const shim = findShim(
+    `if [ -e "${marker}" ]; then exit 1; fi; : > "${marker}"; exec "$REAL_FIND" "$@"`,
+  );
+  try {
+    const r = run(root, { ...process.env, REAL_FIND: realFind(), PATH: `${shim}:${process.env['PATH'] ?? ''}` });
+    assert.notEqual(r.code, 0, `the leftover scan could not run, yet the step passed:\n${r.out}`);
+    assert.doesNotMatch(r.out, /cold-cache reset: PASS/);
+  } finally {
+    rmSync(shim, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('an exported shell function shadowing find cannot make the reset pass', () => {
+  const root = fixtureTree();
+  try {
+    const r = spawnSync('bash', ['-c', `find() { return 1; }; export -f find; bash "${SCRIPT}" "${root}"`], {
+      encoding: 'utf8',
+    });
+    const out = `${r.stdout ?? ''}${r.stderr ?? ''}`;
+    assert.notEqual(r.status, 0, out);
+    assert.doesNotMatch(out, /cold-cache reset: PASS/);
+  } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
