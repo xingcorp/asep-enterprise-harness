@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { AdjudicationInputError, adjudicate, type AdjudicationInput, type ReviewInput } from './adjudication.js';
+import { AdjudicationInputError, adjudicate, type Adjudication, type AdjudicationInput, type ReviewInput } from './adjudication.js';
 import { sha256Hex } from './canonical-json.js';
 import { parseUnifiedDiff } from './diff.js';
 import type { ScannerRun } from './checks.js';
@@ -635,6 +635,133 @@ test('a SARIF finding blocks until a scanner recheck proves it gone or a human c
   for (const state of ['VERIFIED', 'CLOSED', 'REFUTED'] as const) {
     assert.deepEqual(decided(round([], { state })), [state, 'unchanged', 'PROCEED'], state);
   }
+});
+
+test('a re-raised finding is reconciled with its prior before it blocks', () => {
+  const LIVE = '2026-12-01T00:00:00.000Z';
+  const LAPSED = '2026-10-01T00:00:00.000Z';
+  // The primary reviewer raises again what it raised in an earlier round: the same raiser,
+  // fingerprint and requirement id. The finding key is local to one output, so it differs.
+  const reRaise = (
+    record: Partial<ReviewFindingRecord>,
+    waiverExpiresAt: string | null = null,
+    findings = [modelFinding({ key: 'again' })],
+    by = PRIMARY,
+  ): Adjudication => {
+    const base = reReview({});
+    const output = reviewOutput({ verdict: 'REQUEST_CHANGES', findings });
+    return adjudicate({
+      ...base,
+      reviews: base.reviews.map((r) => (r.reviewerConfigId === by ? completedReview(by, output) : r)),
+      priorFindings: [{ record: priorFinding(record), waiverExpiresAt }],
+    });
+  };
+  const summary = (a: Adjudication) => {
+    const current = a.findings.filter((f) => !f.ref.startsWith('prior:'));
+    const name = (ref: string) => (current.some((f) => f.ref === ref) ? 'current' : ref);
+    return {
+      outcome: a.record.outcome,
+      blocking: a.record.blocking.map((b) => name(b.findingRef)),
+      current: current.map((f) => [f.priorFindingId ?? null, f.lifecycleState, f.blocking]),
+      closure: a.record.closureDecisions.map((d) => [d.effectiveState, d.rule]),
+    };
+  };
+
+  const cases: readonly (readonly [string, Adjudication, ReturnType<typeof summary>])[] = [
+    // The review's probe: an unexpired waiver holds against the re-raise.
+    [
+      'live waiver',
+      reRaise({ lifecycleState: 'WAIVED' }, LIVE),
+      { outcome: 'PROCEED', blocking: [], current: [['prior-1', 'WAIVED', false]], closure: [['WAIVED', 'unchanged']] },
+    ],
+    [
+      'expired waiver',
+      reRaise({ lifecycleState: 'WAIVED' }, LAPSED),
+      { outcome: 'REPAIR', blocking: ['current'], current: [['prior-1', 'OPEN', true]], closure: [['OPEN', 'unchanged']] },
+    ],
+    [
+      'human refutation',
+      reRaise({ lifecycleState: 'REFUTED' }),
+      { outcome: 'PROCEED', blocking: [], current: [['prior-1', 'REFUTED', false]], closure: [['REFUTED', 'unchanged']] },
+    ],
+    [
+      'adjudicated refutation',
+      reRaise({ lifecycleState: 'ADJUDICATED' }),
+      { outcome: 'PROCEED', blocking: [], current: [['prior-1', 'ADJUDICATED', false]], closure: [['ADJUDICATED', 'unchanged']] },
+    ],
+    // An ungrounded first citation the harness refuted cannot shield a grounded re-raise.
+    [
+      'harness refutation',
+      reRaise({ lifecycleState: 'REFUTED', grounded: false, groundingReason: 'path-not-in-packet' }),
+      { outcome: 'REPAIR', blocking: ['current'], current: [['prior-1', 'OPEN', true]], closure: [['REFUTED', 'unchanged']] },
+    ],
+    [
+      'verified prior',
+      reRaise({ lifecycleState: 'VERIFIED' }),
+      { outcome: 'REPAIR', blocking: ['current'], current: [['prior-1', 'OPEN', true]], closure: [['VERIFIED', 'regression']] },
+    ],
+    [
+      'closed prior',
+      reRaise({ lifecycleState: 'CLOSED' }),
+      { outcome: 'REPAIR', blocking: ['current'], current: [['prior-1', 'OPEN', true]], closure: [['CLOSED', 'regression']] },
+    ],
+    // A prior that still blocks is carried by the re-raise and not counted twice.
+    [
+      'open prior',
+      reRaise({}),
+      { outcome: 'REPAIR', blocking: ['current'], current: [['prior-1', 'OPEN', true]], closure: [['OPEN', 'unchanged']] },
+    ],
+    // Another identity is not the prior's finding.
+    [
+      'another requirement id',
+      reRaise({ lifecycleState: 'WAIVED', requirementId: 'REQ-1' }, LIVE),
+      { outcome: 'REPAIR', blocking: ['current'], current: [[null, 'OPEN', true]], closure: [['WAIVED', 'unchanged']] },
+    ],
+    [
+      'another raiser',
+      reRaise({ lifecycleState: 'WAIVED' }, LIVE, [modelFinding({ key: 'again' })], COMPARATOR),
+      { outcome: 'REPAIR', blocking: ['current'], current: [[null, 'OPEN', true]], closure: [['WAIVED', 'unchanged']] },
+    ],
+    // An ungrounded re-raise links nothing, so the open prior still blocks on its own.
+    [
+      'ungrounded re-raise',
+      reRaise({}, null, [modelFinding({ key: 'again', evidence: 'too short' })]),
+      { outcome: 'REPAIR', blocking: ['prior:prior-1'], current: [[null, 'REFUTED', false]], closure: [['OPEN', 'unchanged']] },
+    ],
+  ];
+  for (const [label, adjudication, expected] of cases) assert.deepEqual(summary(adjudication), expected, label);
+
+  // The same holds for a deterministic rule that fires again.
+  const zeroWorld = adjudicationBase({ world: fixtureWorld({ round: 2, unitStdout: 'ℹ tests 0\nℹ pass 0\nℹ fail 0\n' }) });
+  const firing = zeroWorld.checks.findings.find((f) => f.ruleId === 'zero-tests-executed')!;
+  const detPrior = (lifecycleState: ReviewFindingRecord['lifecycleState'], waiverExpiresAt: string | null = null) =>
+    adjudicate({
+      ...reReview({}),
+      checks: zeroWorld.checks,
+      packet: zeroWorld.packet,
+      packetSha256: zeroWorld.packetSha256,
+      priorFindings: [
+        {
+          record: priorFinding({
+            id: 'prior-det',
+            source: 'deterministic',
+            raisedBy: firing.raisedBy,
+            fingerprint: firing.fingerprint,
+            category: firing.category,
+            ruleId: 'zero-tests-executed',
+            lifecycleState,
+          }),
+          waiverExpiresAt,
+        },
+      ],
+    });
+  const others = zeroWorld.checks.findings.filter((f) => f !== firing && (f.severity === 'HIGH' || f.severity === 'CRITICAL'));
+  assert.deepEqual(others, [], 'the fixture fires only the rule under test');
+  assert.deepEqual(summary(detPrior('WAIVED', LIVE)).outcome, 'PROCEED');
+  assert.deepEqual(summary(detPrior('WAIVED', LAPSED)).blocking, ['current']);
+  assert.deepEqual(summary(detPrior('VERIFIED')).closure, [['VERIFIED', 'regression']]);
+  assert.deepEqual(summary(detPrior('VERIFIED')).blocking, ['current']);
+  assert.deepEqual(summary(detPrior('OPEN')).blocking, ['current']);
 });
 
 test("waiver expiry is judged at the round's opening time", () => {

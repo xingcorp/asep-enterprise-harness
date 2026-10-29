@@ -4,8 +4,10 @@
 // recorded in `ruleFired`. The blocking set is the deterministic and SARIF findings
 // at a blocking severity, plus grounded model findings at a blocking severity, plus
 // prior findings of every source that are still blocking after closure authority is
-// applied. Deterministic evidence outranks model review: a model verdict never clears a
-// deterministic or SARIF finding, and an ungrounded model finding never blocks. Shadow mode
+// applied. A finding of this round that re-raises a prior is reconciled with it first, so
+// the prior's disposition decides and the pair is counted once. Deterministic evidence
+// outranks model review: a model verdict never clears a deterministic or SARIF finding,
+// and an ungrounded model finding never blocks. Shadow mode
 // records what gating would have decided and returns only PROCEED or BLOCK.
 //
 // Pure: no IO, no clock, no model call. Waiver expiry is judged at the round's opening
@@ -124,6 +126,7 @@ export type ClosureRule =
   | 'independent-reviewer'
   | 'raiser-claim'
   | 'closure-without-change'
+  | 'regression'
   | 'unchanged';
 
 export interface ClosureDecision {
@@ -252,6 +255,25 @@ function scannerRecheckProven(input: AdjudicationInput, prior: PriorFindingInput
   );
 }
 
+/** A prior finding as persisted, with a waiver that had expired when the round opened lifted. */
+function persistedAggregate(prior: PriorFindingInput, asOf: string): FindingAggregate {
+  return expireWaiver(toAggregate(prior.record, prior.record.lifecycleState, prior.waiverExpiresAt), asOf);
+}
+
+/** The identity a finding keeps across rounds; a finding key is local to one review output. */
+function persistedIdentity(f: { readonly raisedBy: string; readonly fingerprint: string; readonly requirementId?: string | undefined }): string {
+  return JSON.stringify([f.raisedBy, f.fingerprint, f.requirementId ?? null]);
+}
+
+/**
+ * Whether a prior's authoritative disposition makes a re-raise of it non-blocking: an
+ * unexpired waiver, or a refutation of a grounded finding (only a human refutes those). A
+ * finding the harness refuted as ungrounded shields nothing.
+ */
+function shields(state: FindingLifecycleState, prior: PriorFindingInput): boolean {
+  return state === 'WAIVED' || ((state === 'REFUTED' || state === 'ADJUDICATED') && prior.record.grounded);
+}
+
 /** Closure authority for one prior finding. */
 function closePrior(
   input: AdjudicationInput,
@@ -274,7 +296,7 @@ function closePrior(
   });
   const asOf = input.roundOpenedAt;
   const at = { rationale: 'decided by the round adjudication', at: asOf };
-  let agg = expireWaiver(toAggregate(F, F.lifecycleState, prior.waiverExpiresAt), asOf);
+  let agg = persistedAggregate(prior, asOf);
   const current = effectiveFindingState(agg, asOf);
 
   if (F.source === 'deterministic') {
@@ -447,17 +469,45 @@ export function adjudicate(input: AdjudicationInput): Adjudication {
     }
   }
 
-  // Prior findings under closure authority, of every source. A deterministic or SARIF prior
-  // that this round's checks report again is carried by the current finding, so it is not
-  // counted twice.
+  // Reconcile this round's grounded findings with the priors of the same persisted identity.
+  // The prior's disposition as persisted decides: a live waiver or a human refutation keeps
+  // the re-raise non-blocking, a verified or closed prior makes it a regression, and any other
+  // prior is carried by the re-raise. A linked prior is not counted again below. An ungrounded
+  // finding links nothing, so it can never stand in for a prior that still blocks.
+  const priors = sortBy(input.priorFindings, (p) => p.record.id).map((prior) => ({
+    prior,
+    state: effectiveFindingState(persistedAggregate(prior, input.roundOpenedAt), input.roundOpenedAt),
+  }));
+  const linked = new Set<string>();
+  const regressions = new Set<string>();
+  for (const [i, f] of evaluated.entries()) {
+    if (!f.grounded) continue;
+    const matches = priors.filter((p) => persistedIdentity(p.prior.record) === persistedIdentity(f));
+    if (matches.length === 0) continue;
+    for (const m of matches) linked.add(m.prior.record.id);
+    const open = matches.filter((m) => !shields(m.state, m.prior));
+    if (open.length === 0) {
+      evaluated[i] = { ...f, priorFindingId: matches[0]!.prior.record.id, lifecycleState: matches[0]!.state, blocking: false };
+      continue;
+    }
+    const settled = open.find((m) => m.state === 'VERIFIED' || m.state === 'CLOSED');
+    if (settled !== undefined) regressions.add(settled.prior.record.id);
+    evaluated[i] = {
+      ...f,
+      priorFindingId: (settled ?? open[0]!).prior.record.id,
+      lifecycleState: 'OPEN',
+      blocking: blockingSeverity.has(f.severity),
+    };
+  }
+
+  // Prior findings under closure authority, of every source.
   const closureDecisions: ClosureDecision[] = [];
-  const reported = new Set(input.checks.findings.map((f) => `${f.raisedBy}\n${f.fingerprint}`));
-  for (const prior of sortBy(input.priorFindings, (p) => p.record.id)) {
-    const { decision, state } = closePrior(input, ctx, prior);
-    closureDecisions.push(decision);
-    const carried = prior.record.source !== 'model' && reported.has(`${prior.record.raisedBy}\n${prior.record.fingerprint}`);
+  for (const { prior } of priors) {
+    const closed = closePrior(input, ctx, prior);
+    const { state } = closed;
+    closureDecisions.push(regressions.has(prior.record.id) ? { ...closed.decision, rule: 'regression' } : closed.decision);
     const blocking =
-      !carried &&
+      !linked.has(prior.record.id) &&
       prior.record.grounded &&
       blockingSeverity.has(prior.record.severity) &&
       (['OPEN', 'ACKNOWLEDGED', 'FIXED'] as const).some((s) => s === state);
