@@ -1728,6 +1728,25 @@ the production check red. Architecture §3; exit B2; risk PR3-42; threat T3-22; 
 - **`baseBranch` in the task input, and the extra purity rules** (local `declare`, `import.meta`, the error `stack`
   members) are accepted (R29).
 
+### S2 follow-up commits (v7)
+
+One finding or tight group per commit, on top of the docs commit `0aedc3f`, invariant first. Each fix commit's new
+tests failed on the code before it, and removing or bending the fix again turned them red; the counts below are of the
+decision-core test files (`decide.test.ts`, `invariants.test.ts`; `purity.test.ts` for the purity commit). `pnpm
+verify:all` passed after each commit.
+
+| Finding | Commit | Proof |
+|---|---|---|
+| P3-S2V6-MED-001 | `5e6363a` | The 21 new base-branch rule cases (the reviewer's `undefined`, `null`, `""` and `main..evil`, and every other rule of R31) were red before the fix (21 of 237). The fixtures use the base `release/2026.10` and the generator draws several bases; the oracle checks every PR upsert and reconciliation request against the input's base. The reviewer's surviving mutation, the upsert base forced to `main`, now fails 6 tests (the non-`main` base test, both property suites, the reconciled-push tests and seed 1351); the reconciliation's base forced to `main` fails 7. |
+| P3-S2V6-HIGH-001 (P3-PLAN6-MED-002) | `5d0c413` | On the old decision with the full observation, 77 of 278 tests were red: the `IDENTITY_MATRIX` cases (fork head, closed, merged, two candidates, the attempt's PR beside a closed one) on both paths, with and without a cancel, a PR into another repository, a branch in another repository, and both property suites. Dropping one clause of the predicate fails tests each time: branch repository 5, several candidates 9, merged 4, state 6, head repository 5, base repository 5, case-insensitive compare 1. |
+| P3-S2V6-HIGH-003 | `27d825b` | 6 of 280 tests were red before the fix, among them the reviewer's `R29_lookup-failure` and `R29_lookup-failure-cancel` and the task property. Letting a pending cancel win fails 2 tests; restoring `attempt-registration-failed` fails 3; hiding the attempt from `unrecordedAttempts` fails 3; an audit without the idempotency key fails 3. |
+| P3-S2V6-HIGH-002 (P3-PLAN6-HIGH-001) | `aa41f2f`, `243680b` | On the old decision, 20 of 303 tests were red: the reviewer's `R29_acquire-failure` and `R29_acquire-cancel`, lease found, absent, a late grant refusing the pre-lease write, a second absent lookup, a failed lookup and a failed pre-lease write, each with and without a cancel, the fences, and the task property. No lookup after a failed acquisition fails 17; the old behaviour 16; a cancel closing at once after the abort 8; a refused write taken as recorded 5; a pre-lease terminal that ignores the cancel 2; a terminal without the fence 8; a second absent lookup that goes round again 2. Removing the core's unsettled-lease guard alone left every test green, because no valid path reaches it; `243680b` replays the happy path with the fence cleared before the terminal and expects the refusal, so the removal now fails 1 test. |
+| Observation E12 (R31 purity hardening) | `8fc1f61` | The 9 new seeds (E12 as a constructor call and as a double cast, an angle-bracket key, a computed property name, a nested key, double casts through `unknown`, `any`, angle brackets and parentheses) were red under the previous detector (9 of 83). The asserted-key rule removed fails 4; the double-cast rule removed fails 5. The reviewer's E12 expression appended to `task-core.ts` turns the production check red (2 tests); under the previous detector it stays green, as the re-audit found. |
+
+The release guard from Review v5 also survives its removal alone, for the same reason as the new guard. The defect it
+guards against is held without it: with the guard removed and the release moved before the `REPAIR` outcome, the
+per-path test and the task property fail.
+
 ### Freeze gate (v7)
 
 - [x] Every finding of the re-audit dispositioned: 7/7 new ACCEPTED; the three PARTIAL findings closed through
