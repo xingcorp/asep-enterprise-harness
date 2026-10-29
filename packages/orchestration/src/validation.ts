@@ -53,12 +53,21 @@ export function orchestrationPolicyErrors(policy: OrchestrationPolicy): string[]
   return errors;
 }
 
+/** True for a forge repository in its normalized form: lower-case owner and name within the forge's name rules. */
+function isNormalizedRepository(repository: unknown): boolean {
+  if (typeof repository !== 'object' || repository === null) return false;
+  const { owner, name } = repository as { readonly owner?: unknown; readonly name?: unknown };
+  return typeof owner === 'string' && /^[a-z0-9](?:-?[a-z0-9]){0,38}$/.test(owner)
+    && typeof name === 'string' && /^[a-z0-9._-]{1,100}$/.test(name) && name !== '.' && name !== '..';
+}
+
 /**
- * Why the task input is invalid, or an empty list: every money amount must be exact and in range, and the base branch
- * the PR targets must be a Git branch name.
+ * Why the task input is invalid, or an empty list: every money amount must be exact and in range, the repository
+ * must be the binding's in its normalized form, and the base branch the PR targets must be a Git branch name.
  */
 export function taskInputErrors(input: TaskCoreInput): string[] {
   const errors: string[] = [];
+  if (!isNormalizedRepository(input.repository)) errors.push('repository: must be a forge repository, owner and name in lower case');
   const branchProblem = branchNameProblem(input.baseBranch);
   if (branchProblem !== null) errors.push(`baseBranch: must be a Git branch name (${branchProblem})`);
   amountErrors(errors, 'attemptBudget.maxCostUsd', input.attemptBudget.maxCostUsd, true);

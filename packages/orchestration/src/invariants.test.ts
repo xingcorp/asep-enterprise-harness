@@ -27,6 +27,7 @@ import type {
   FailureClass,
   ObservedPullRequest,
   ProjectedTaskStatus,
+  RepositoryId,
   TaskCommand,
   TaskCoreInput,
   TaskDecision,
@@ -104,6 +105,7 @@ function randomInput(rng: Rng, side: Rng, bases: Rng): TaskCoreInput {
     runId: 'run-p' as RunId,
     risk: 'R0',
     baseSha: TASK_BASE,
+    repository: { owner: 'acme', name: 'widgets' },
     baseBranch: bases.pick(BASE_BRANCHES),
     attemptBudget: { maxTurns: 10, maxToolCalls: 50, maxCostUsd: attemptCost, maxWallClockMinutes: rng.int(10, 60) },
     taskBudget: {
@@ -136,19 +138,46 @@ function failure(rng: Rng): Answer {
   return { kind: 'activityFailed', failureClass: rng.pick(CLASSES), timedOut: rng.chance(0.4) };
 }
 
-/** The PR a reconciliation read reports: mostly the attempt's own, sometimes one that differs in a single field. */
-function observedPr(side: Rng, request: Extract<TaskRequest, { kind: 'reconcilePublication' }>, head: string | null): ObservedPullRequest {
-  const own: ObservedPullRequest = { number: 11, headBranch: request.remoteBranch, headSha: head ?? request.expectedHeadSha, baseBranch: request.expectedBaseBranch };
-  switch (side.pick(['own', 'head', 'branch', 'base'] as const)) {
-    case 'own':
-      return own;
-    case 'head':
-      return { ...own, headSha: 'e'.repeat(40) };
-    case 'branch':
-      return { ...own, headBranch: `${request.remoteBranch}-other` };
-    case 'base':
-      return { ...own, baseBranch: 'release' };
-  }
+const OTHER_REPOSITORY: RepositoryId = { owner: 'attacker', name: 'fork' };
+
+/**
+ * The PRs a reconciliation read reports for the branch: mostly one, the attempt's own or one that differs in a single
+ * respect (head SHA, head branch, base branch, base repository, a fork head, closed, merged), and sometimes a second
+ * candidate beside it.
+ */
+function observedPrs(side: Rng, request: Extract<TaskRequest, { kind: 'reconcilePublication' }>, head: string | null): ObservedPullRequest[] {
+  const own: ObservedPullRequest = {
+    number: 11,
+    headRepository: request.repository,
+    headBranch: request.remoteBranch,
+    headSha: head ?? request.expectedHeadSha,
+    baseRepository: request.repository,
+    baseBranch: request.expectedBaseBranch,
+    state: 'open',
+    merged: false,
+  };
+  const variant = (): ObservedPullRequest => {
+    switch (side.pick(['own', 'own', 'head', 'branch', 'base', 'base-repository', 'fork', 'closed', 'merged'] as const)) {
+      case 'own':
+        return own;
+      case 'head':
+        return { ...own, headSha: 'e'.repeat(40) };
+      case 'branch':
+        return { ...own, headBranch: `${request.remoteBranch}-other` };
+      case 'base':
+        return { ...own, baseBranch: 'release' };
+      case 'base-repository':
+        return { ...own, baseRepository: OTHER_REPOSITORY };
+      case 'fork':
+        return { ...own, headRepository: OTHER_REPOSITORY };
+      case 'closed':
+        return { ...own, state: 'closed' };
+      case 'merged':
+        return { ...own, state: 'closed', merged: true };
+    }
+  };
+  const first = variant();
+  return side.chance(0.12) ? [first, { ...variant(), number: 12 }] : [first];
 }
 
 /** A publication failure: it reports the push or PR as applied, absent or unknown, or reports nothing (unknown). */
@@ -290,13 +319,14 @@ function randomEnvironment(rng: Rng, side: Rng, input: TaskCoreInput): TaskEnvir
           if (!side.chance(0.5)) return happyAnswer(request);
           return { kind: 'activityFailed', failureClass: 'provider', timedOut: false, effect: side.pick(['unknown', 'unknown', 'applied'] as const) };
         case 'reconcilePublication': {
-          // The remote holds the attempt's commit, nothing, or something else; the PR is there or not, and is the
-          // attempt's or differs in head branch, head SHA or base; or the read fails. The PR's details come from the
-          // side stream, so the main draws of a seed are unchanged.
+          // The remote holds the attempt's commit, nothing, or something else, in the binding repository or another;
+          // PRs are listed for the branch or not, and are the attempt's or differ (see observedPrs); or the read fails.
+          // The details come from the side stream, so the main draws of a seed are unchanged.
           if (rng.chance(0.15)) return failure(rng);
           const head = rng.pick([request.expectedHeadSha, null, 'f'.repeat(40)]);
           const hasPr = head !== null ? rng.chance(0.5) : side.chance(0.15);
-          return { kind: 'reconcilePublication', branchHeadSha: head, pullRequest: hasPr ? observedPr(side, request, head) : null };
+          const branch = head === null ? null : { repository: side.chance(0.08) ? OTHER_REPOSITORY : request.repository, headSha: head };
+          return { kind: 'reconcilePublication', branch, pullRequests: hasPr ? observedPrs(side, request, head) : [] };
         }
         case 'verifyApprovalDecision': {
           const sent = accepted.get(request.decisionId);
@@ -650,16 +680,16 @@ function checkTrace(input: TaskCoreInput, trace: TaskTrace, label: string): void
       || reconciliations.some((r) => r.seq < upsertSeq && isThisAttempts(identity, r.result));
     const upserted = trace.events.find((e) => e.type === 'result' && e.result.kind === 'upsertPullRequest');
     const upsertedPr = upserted?.type === 'result' && upserted.result.kind === 'upsertPullRequest' ? upserted.result.prNumber : null;
-    const reconciledPr = reconciliations.find((r) => r.seq > upsertSeq && r.result.pullRequest !== null && isThisAttempts(identity, r.result));
+    const reconciledPr = reconciliations.find((r) => r.seq > upsertSeq && r.result.pullRequests.length === 1 && isThisAttempts(identity, r.result));
     if (trace.summary.prNumber !== null) {
-      assert.ok((pushApplied && upsertedPr === trace.summary.prNumber) || reconciledPr?.result.pullRequest?.number === trace.summary.prNumber,
+      assert.ok((pushApplied && upsertedPr === trace.summary.prNumber) || reconciledPr?.result.pullRequests[0]?.number === trace.summary.prNumber,
         `${label}: PR ${trace.summary.prNumber} is not shown to be attempt ${n}'s`);
     } else {
       // Without a PR the remote is known to hold nothing (the push failed with effect none, or the reconciliation
       // after it found no branch and no PR), or the task ends FAILED / publication-incomplete with an audit naming the
       // attempt's branch. Retryability plays no part.
       const definite = trace.events.some((e) => e.type === 'activityFailed' && e.seq === push.seq && e.effect === 'none')
-        || reconciliations.some((r) => r.seq < upsertSeq && r.result.branchHeadSha === null && r.result.pullRequest === null);
+        || reconciliations.some((r) => r.seq < upsertSeq && r.result.branch === null && r.result.pullRequests.length === 0);
       if (!definite) {
         assert.deepEqual([trace.summary.outcome, trace.summary.reason], ['FAILED', 'publication-incomplete'], `${label}: branch left without a PR is reported`);
         const incident = effectsOf(commands, 'audit').find((a) => a.action === 'publication.incomplete');
@@ -692,6 +722,7 @@ function checkTrace(input: TaskCoreInput, trace: TaskTrace, label: string): void
 }
 
 interface PublicationIdentity {
+  readonly repository: RepositoryId;
   readonly branch: string;
   readonly head: string;
   readonly base: string;
@@ -709,14 +740,33 @@ function publicationIdentity(input: TaskCoreInput, trace: TaskTrace, n: number):
     if (e.result.kind === 'commitAttempt') head = e.result.resultSha;
   }
   assert.ok(branch !== null && head !== null, `attempt ${n} published without a registered branch or a commit`);
-  return { branch, head, base: input.baseBranch };
+  return { repository: input.repository, branch, head, base: input.baseBranch };
 }
 
-/** The identity rule, stated here independently of the core: the branch tip and any PR are exactly the attempt's. */
+function sameRepository(a: RepositoryId, b: RepositoryId): boolean {
+  return a.owner.toLowerCase() === b.owner.toLowerCase() && a.name.toLowerCase() === b.name.toLowerCase();
+}
+
+/** How a listed PR differs from the attempt's own, the first difference found; `own` when it does not. */
+function prDifference(identity: PublicationIdentity, pr: ObservedPullRequest): string {
+  if (pr.merged) return 'merged';
+  if (pr.state !== 'open') return 'closed';
+  if (!sameRepository(pr.headRepository, identity.repository)) return 'fork';
+  if (pr.headBranch !== identity.branch) return 'head-branch';
+  if (pr.headSha !== identity.head) return 'head-sha';
+  if (!sameRepository(pr.baseRepository, identity.repository)) return 'base-repository';
+  if (pr.baseBranch !== identity.base) return 'base';
+  return 'own';
+}
+
+/**
+ * The identity rule, stated here independently of the core over the same full observation: the branch is in the
+ * binding repository at the attempt's commit, and the PRs listed are none or exactly one that is the attempt's own.
+ */
 function isThisAttempts(identity: PublicationIdentity, read: Extract<TaskResult, { kind: 'reconcilePublication' }>): boolean {
-  const pr = read.pullRequest;
-  return read.branchHeadSha === identity.head
-    && (pr === null || (pr.headBranch === identity.branch && pr.headSha === identity.head && pr.baseBranch === identity.base));
+  const branchOwn = read.branch !== null && sameRepository(read.branch.repository, identity.repository) && read.branch.headSha === identity.head;
+  const [pr, ...others] = read.pullRequests;
+  return branchOwn && others.length === 0 && (pr === undefined || prDifference(identity, pr) === 'own');
 }
 
 interface ReplayedStep {
@@ -768,11 +818,11 @@ function checkPublicationEffects(input: TaskCoreInput, trace: TaskTrace, label: 
       const afterPush = event.seq < upsertSeq;
       if (afterPush && own) {
         assert.deepEqual([issued, ended], [['upsertPullRequest'], null], `${label}: this attempt's remote after the push continues to the PR`);
-      } else if (afterPush && read.branchHeadSha === null && read.pullRequest === null) {
+      } else if (afterPush && read.branch === null && read.pullRequests.length === 0) {
         assert.ok(ended !== null && (ended[1] === 'publication-failed' || ended[1] === 'cancelled') && ended[2] === null,
           `${label}: nothing on the remote after the push ends ${JSON.stringify(ended)}`);
-      } else if (!afterPush && own && read.pullRequest !== null) {
-        assert.ok(ended !== null && ['WAITING_FOR_HUMAN_REVIEW', 'CANCELLED'].includes(String(ended[0])) && ended[2] === read.pullRequest.number,
+      } else if (!afterPush && own && read.pullRequests.length === 1) {
+        assert.ok(ended !== null && ['WAITING_FOR_HUMAN_REVIEW', 'CANCELLED'].includes(String(ended[0])) && ended[2] === read.pullRequests[0]!.number,
           `${label}: this attempt's PR after the upsert ends ${JSON.stringify(ended)}`);
       } else {
         assert.deepEqual(ended, incomplete, `${label}: a remote that is not attempt ${n}'s (${JSON.stringify(read)}) must end publication-incomplete`);
@@ -874,6 +924,8 @@ function generate(seed: number): { input: TaskCoreInput; trace: TaskTrace } {
   return { input, trace: runTaskSequentially(input, randomEnvironment(rng, side, input)) };
 }
 
+const PUBLICATION_SEEDS = 3000;
+
 const PUBLICATION_REQUESTS: readonly TaskRequestKind[] = ['publishBranch', 'upsertPullRequest', 'reconcilePublication'];
 
 /**
@@ -939,10 +991,10 @@ test('the generator covers repair, replacement, approvals, pause and cancel path
     for (const e of trace.events) {
       if (e.type === 'activityFailed' && (e.activity === 'publishBranch' || e.activity === 'upsertPullRequest')) seen.add(`${e.activity}-${e.effect}`);
       if (e.type === 'result' && e.result.kind === 'reconcilePublication') {
-        seen.add(e.result.branchHeadSha === null ? 'reconciled-absent' : 'reconciled-present');
+        seen.add(e.result.branch === null ? 'reconciled-absent' : 'reconciled-present');
         const n = trace.commands.flatMap((c) => (c.type === 'request' && c.seq === e.seq && c.request.kind === 'reconcilePublication' ? [c.request.attemptNumber] : []))[0]!;
         const own = isThisAttempts(publicationIdentity(input, trace, n), e.result);
-        if (e.result.pullRequest !== null) seen.add(own ? 'reconciled-own-pr' : e.result.branchHeadSha === publicationIdentity(input, trace, n).head ? 'reconciled-pr-not-own' : 'reconciled-branch-not-own-with-pr');
+        if (e.result.pullRequests.length > 0) seen.add(own ? 'reconciled-own-pr' : e.result.branch?.headSha === publicationIdentity(input, trace, n).head ? 'reconciled-pr-not-own' : 'reconciled-branch-not-own-with-pr');
       }
       if (e.type === 'activityFailed' && e.activity === 'reconcilePublication') seen.add('reconciliation-failed');
     }
@@ -998,7 +1050,7 @@ test('generated publication traces satisfy the invariants and meet every kind of
   const seen = new Set<string>();
   let published = 0;
   let publishedOffMain = 0;
-  for (let seed = 1; seed <= 1000; seed += 1) {
+  for (let seed = 1; seed <= PUBLICATION_SEEDS; seed += 1) {
     const { input, trace } = generatePublication(seed);
     checkTrace(input, trace, `publication seed ${seed}`);
     checkPublicationEffects(input, trace, `publication seed ${seed}`);
@@ -1010,23 +1062,23 @@ test('generated publication traces satisfy the invariants and meet every kind of
     const upsertSeq = trace.commands.flatMap((c) => (c.type === 'request' && c.request.kind === 'upsertPullRequest' ? [c.seq] : []))[0] ?? Infinity;
     for (const e of trace.events) {
       if (e.type !== 'result' || e.result.kind !== 'reconcilePublication') continue;
-      const pr = e.result.pullRequest;
-      const branch = e.result.branchHeadSha === null ? 'absent' : e.result.branchHeadSha === identity.head ? 'own' : 'moved';
-      const differs = pr === null ? 'none' : isThisAttempts(identity, e.result) ? 'own'
-        : pr.baseBranch !== identity.base ? 'base' : pr.headBranch !== identity.branch ? 'head-branch' : pr.headSha !== identity.head ? 'head-sha' : 'own';
+      const read = e.result;
+      const branch = read.branch === null ? 'absent' : !sameRepository(read.branch.repository, identity.repository) ? 'other-repository'
+        : read.branch.headSha === identity.head ? 'own' : 'moved';
+      const differs = read.pullRequests.length === 0 ? 'none' : read.pullRequests.length > 1 ? 'multiple' : prDifference(identity, read.pullRequests[0]!);
       seen.add(`${e.seq < upsertSeq ? 'push' : 'pr'}:branch-${branch}:pr-${differs}`);
     }
   }
-  assert.ok(published >= 250, `only ${published} of 1000 traces published`);
-  assert.ok(publishedOffMain >= 150, `only ${publishedOffMain} traces published against a base other than main`);
-  // Every predicate clause is met on its own, on both paths: a PR that differs only in its base, its head branch or
-  // its head SHA, with the branch at the attempt's commit.
+  assert.ok(published >= PUBLICATION_SEEDS / 4, `only ${published} of ${PUBLICATION_SEEDS} traces published`);
+  assert.ok(publishedOffMain >= PUBLICATION_SEEDS / 8, `only ${publishedOffMain} traces published against a base other than main`);
+  // Every predicate clause is met on its own, on both paths: a PR that differs in one respect only, or a second
+  // candidate, with the branch at the attempt's commit; and a branch absent, moved or in another repository.
   for (const path of ['push', 'pr']) {
-    for (const differs of ['base', 'head-branch', 'head-sha', 'own']) {
+    for (const differs of ['base', 'base-repository', 'head-branch', 'head-sha', 'fork', 'closed', 'merged', 'multiple', 'own']) {
       assert.ok(seen.has(`${path}:branch-own:pr-${differs}`), `no ${path} reconciliation read a PR (${differs}) on the attempt's branch: ${[...seen].sort().join(' ')}`);
     }
-    for (const branch of ['absent', 'moved']) {
-      assert.ok(seen.has(`${path}:branch-${branch}:pr-none`), `no ${path} reconciliation read a ${branch} branch`);
+    for (const branch of ['absent', 'moved', 'other-repository']) {
+      assert.ok(seen.has(`${path}:branch-${branch}:pr-none`), `no ${path} reconciliation read a ${branch} branch: ${[...seen].sort().join(' ')}`);
     }
   }
 });
@@ -1037,7 +1089,7 @@ test('the generator\'s seed 1351: a PR found while the branch holds another comm
   const { input, trace } = generate(1351);
   const read = trace.events.flatMap((e) => (e.type === 'result' && e.result.kind === 'reconcilePublication' ? [e.result] : []));
   assert.equal(read.length, 1, 'one reconciliation read');
-  assert.ok(read[0]!.branchHeadSha !== shaFor(1) && read[0]!.pullRequest !== null, 'the read found a PR while the branch holds another commit');
+  assert.ok(read[0]!.branch?.headSha !== shaFor(1) && read[0]!.pullRequests.length > 0, 'the read found a PR while the branch holds another commit');
   assert.ok(trace.events.some((e) => e.type === 'activityFailed' && e.activity === 'upsertPullRequest' && e.effect === 'unknown'), 'after a PR upsert failure');
   assert.deepEqual([trace.summary.outcome, trace.summary.reason, trace.summary.prNumber], ['FAILED', 'publication-incomplete', null]);
   checkTrace(input, trace, 'seed 1351');

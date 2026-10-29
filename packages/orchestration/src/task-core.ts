@@ -28,10 +28,13 @@ import type {
   AttemptTerminal,
   ControlReceipt,
   FailureClass,
+  ObservedBranch,
+  ObservedPullRequest,
   OpenApproval,
   ProjectedTaskStatus,
   PublicationEffect,
   RepairLineage,
+  RepositoryId,
   RunEventDetail,
   RunEventType,
   TaskCommand,
@@ -727,11 +730,11 @@ function onActivityFailed(
       return;
     case 'upsertPullRequest':
       // Known absent: the branch is left without a PR. Otherwise the PR may exist and its number is unknown.
-      if (effect === 'none') publicationIncomplete(step);
+      if (effect === 'none') publicationIncomplete(step, 'upsert-not-applied', null);
       else reconcilePublication(step);
       return;
     case 'reconcilePublication':
-      publicationIncomplete(step);
+      publicationIncomplete(step, 'remote-unreadable', null);
       return;
   }
 }
@@ -759,34 +762,66 @@ function reconcilePublication(step: Step): void {
   issue(step, {
     kind: 'reconcilePublication',
     attemptNumber: a.attemptNumber,
+    repository: s.input.repository,
     remoteBranch: a.branch,
     expectedHeadSha: a.resultSha,
     expectedBaseBranch: s.input.baseBranch,
   });
 }
 
+type ReconciliationRead = Extract<TaskResult, { kind: 'reconcilePublication' }>;
+
+/** The forge names repositories case-insensitively. */
+function sameRepository(observed: RepositoryId, binding: RepositoryId): boolean {
+  return observed.owner.toLowerCase() === binding.owner.toLowerCase() && observed.name.toLowerCase() === binding.name.toLowerCase();
+}
+
+/** What a read found of the attempt branch: `own` when it is in the binding repository at the attempt's commit. */
+function branchFinding(s: Draft, a: MutableAttempt, branch: ObservedBranch | null): string {
+  if (branch === null) return 'branch-missing';
+  if (!sameRepository(branch.repository, s.input.repository)) return 'branch-other-repository';
+  return branch.headSha === a.resultSha ? 'own' : 'branch-moved';
+}
+
+/**
+ * What a read found among the PRs listed for the attempt branch: `none`, or `own` for exactly one that is open,
+ * unmerged, from the binding repository with the attempt's branch and commit as head, into the binding repository's
+ * task base; anything else names the first difference.
+ */
+function pullRequestFinding(s: Draft, a: MutableAttempt, candidates: readonly ObservedPullRequest[]): string {
+  const [pr, ...others] = candidates;
+  if (pr === undefined) return 'none';
+  if (others.length > 0) return 'pull-requests-multiple';
+  if (pr.merged) return 'pull-request-merged';
+  if (pr.state !== 'open') return 'pull-request-closed';
+  if (!sameRepository(pr.headRepository, s.input.repository)) return 'pull-request-fork-head';
+  if (pr.headBranch !== a.branch || pr.headSha !== a.resultSha) return 'pull-request-other-head';
+  if (!sameRepository(pr.baseRepository, s.input.repository) || pr.baseBranch !== s.input.baseBranch) return 'pull-request-other-base';
+  return 'own';
+}
+
 /**
  * Settle an unknown effect from what the remote holds. The remote is this
- * attempt's publication only when the branch tip is the attempt's commit and a
- * PR, if there is one, has that branch as head, that commit as head SHA and the
- * task's base branch as base; the same rule holds before and after the push is
- * confirmed. Before it, a remote with no branch and no PR means nothing was
- * pushed; after it, the PR must be there. Anything else cannot be reconciled.
+ * attempt's publication only when the branch is in the binding repository at
+ * the attempt's commit and the PRs listed for it are none or exactly the
+ * attempt's own; the same rule holds before and after the push is confirmed.
+ * Before it, a remote with no branch and no PR means nothing was pushed; after
+ * it, the PR must be there. Anything else cannot be reconciled.
  */
-function publicationReconciled(step: Step, result: Extract<TaskResult, { kind: 'reconcilePublication' }>): void {
+function publicationReconciled(step: Step, result: ReconciliationRead): void {
   const s = step.s;
   const a = attempt(s, publication(s).attemptNumber);
-  const pr = result.pullRequest;
-  const ownRemote = result.branchHeadSha === a.resultSha
-    && (pr === null || (pr.headBranch === a.branch && pr.headSha === a.resultSha && pr.baseBranch === s.input.baseBranch));
+  const branch = branchFinding(s, a, result.branch);
+  const pr = pullRequestFinding(s, a, result.pullRequests);
   if (!s.pushConfirmed) {
-    if (ownRemote) pushApplied(step);
-    else if (result.branchHeadSha === null && pr === null) close(step, 'FAILED', 'publication-failed');
-    else publicationIncomplete(step);
+    if (branch === 'own' && (pr === 'none' || pr === 'own')) pushApplied(step);
+    else if (branch === 'branch-missing' && pr === 'none') close(step, 'FAILED', 'publication-failed');
+    else publicationIncomplete(step, branch === 'own' ? pr : branch, result);
     return;
   }
-  if (ownRemote && pr !== null) pullRequestUpserted(step, pr.number);
-  else publicationIncomplete(step);
+  const [own] = result.pullRequests;
+  if (branch === 'own' && pr === 'own' && own !== undefined) pullRequestUpserted(step, own.number);
+  else publicationIncomplete(step, branch !== 'own' ? branch : pr === 'none' ? 'pull-request-missing' : pr, result);
 }
 
 function upsertPullRequest(step: Step): void {
@@ -801,12 +836,12 @@ function upsertPullRequest(step: Step): void {
 }
 
 /**
- * The publication cannot reconcile: the PR upsert failed with the branch
- * possibly on the remote, or the remote could not be read or holds another
- * commit. The task fails, also over a pending cancel, and the audit names the
- * branch for a human.
+ * The publication cannot reconcile: the PR upsert failed with the branch on the
+ * remote, the remote could not be read, or it is not exactly the attempt's. The
+ * task fails, also over a pending cancel, and the audit names the branch, what
+ * was found and the read as observed, for a human.
  */
-function publicationIncomplete(step: Step): void {
+function publicationIncomplete(step: Step, finding: string, read: ReconciliationRead | null): void {
   const s = step.s;
   const a = attempt(s, publication(s).attemptNumber);
   audit(step, 'publication.incomplete', {
@@ -814,6 +849,8 @@ function publicationIncomplete(step: Step): void {
     remoteBranch: a.branch ?? '',
     pushConfirmed: s.pushConfirmed,
     cancelRequested: s.cancelPending,
+    finding,
+    ...(read === null ? {} : { observed: JSON.stringify({ branch: read.branch, pullRequests: read.pullRequests }) }),
   });
   close(step, 'FAILED', 'publication-incomplete', 'failed', true);
 }

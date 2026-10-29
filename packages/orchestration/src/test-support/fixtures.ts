@@ -11,6 +11,7 @@ import type {
 import { DEFAULT_ORCHESTRATION_POLICY } from '../defaults.js';
 import type {
   OrchestrationPolicy,
+  RepositoryId,
   TaskCommand,
   TaskCoreInput,
   TaskEffect,
@@ -23,6 +24,8 @@ import type { Answer, TaskEnvironment } from '../sequential-interpreter.js';
 export const TASK_BASE = 'b'.repeat(40);
 /** Not `main`, so a base the core takes from anywhere but the input shows up in every scenario. */
 export const TASK_BASE_BRANCH = 'release/2026.10';
+/** The repository binding's repository, normalized. */
+export const TASK_REPOSITORY: RepositoryId = { owner: 'acme', name: 'widgets' };
 
 export function shaFor(attemptNumber: number): string {
   return attemptNumber.toString(16).padStart(40, 'c');
@@ -53,6 +56,7 @@ export function baseInput(overrides: Partial<TaskCoreInput> = {}): TaskCoreInput
     runId: 'run-1' as RunId,
     risk: 'R0',
     baseSha: TASK_BASE,
+    repository: TASK_REPOSITORY,
     baseBranch: TASK_BASE_BRANCH,
     attemptBudget: { maxTurns: 10, maxToolCalls: 50, maxCostUsd: 5, maxWallClockMinutes: 30 },
     taskBudget: { maxAttempts: 3, maxCostUsd: 20, softCostUsd: 12, maxWallClockMinutes: 240 },
@@ -125,8 +129,17 @@ export function happyAnswer(request: TaskRequest): Answer {
     case 'reconcilePublication':
       return {
         kind: 'reconcilePublication',
-        branchHeadSha: request.expectedHeadSha,
-        pullRequest: { number: 7, headBranch: request.remoteBranch, headSha: request.expectedHeadSha, baseBranch: request.expectedBaseBranch },
+        branch: { repository: request.repository, headSha: request.expectedHeadSha },
+        pullRequests: [{
+          number: 7,
+          headRepository: request.repository,
+          headBranch: request.remoteBranch,
+          headSha: request.expectedHeadSha,
+          baseRepository: request.repository,
+          baseBranch: request.expectedBaseBranch,
+          state: 'open',
+          merged: false,
+        }],
       };
   }
 }

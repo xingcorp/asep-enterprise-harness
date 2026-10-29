@@ -174,11 +174,19 @@ export interface VerificationReserve {
   readonly wallClockMinutes: number;
 }
 
+/** A forge repository. The input carries it normalized (lower case); the forge compares names case-insensitively. */
+export interface RepositoryId {
+  readonly owner: string;
+  readonly name: string;
+}
+
 export interface TaskCoreInput {
   readonly taskId: TaskId;
   readonly runId: RunId;
   readonly risk: RiskLevel;
   readonly baseSha: string;
+  /** The repository binding's repository: every publication of the task goes there. */
+  readonly repository: RepositoryId;
   /** The branch the task's PR targets; the PR upsert uses it and a publication reconciliation checks the PR's base. */
   readonly baseBranch: string;
   readonly attemptBudget: Budget;
@@ -241,6 +249,8 @@ export type TaskRequest =
       /** A read-only look at the remote after a publication effect reported `unknown`. */
       readonly kind: 'reconcilePublication';
       readonly attemptNumber: number;
+      /** The binding repository the attempt branch was pushed to. */
+      readonly repository: RepositoryId;
       readonly remoteBranch: string;
       /** The attempt's commit: the push applied exactly when the branch head is this commit. */
       readonly expectedHeadSha: string;
@@ -381,18 +391,31 @@ export type TaskResult =
   | { readonly kind: 'upsertPullRequest'; readonly effect: 'applied'; readonly prNumber: number }
   | {
       readonly kind: 'reconcilePublication';
-      /** The remote branch head as read, or null when the branch does not exist. */
-      readonly branchHeadSha: string | null;
-      /** The open PR whose head is the branch, as read, or null when there is none. */
-      readonly pullRequest: ObservedPullRequest | null;
+      /** The attempt branch as read, or null when it does not exist. */
+      readonly branch: ObservedBranch | null;
+      /**
+       * Every PR the forge lists with the attempt branch as head branch, in any state and from any head repository.
+       * The core decides which, if any, is the attempt's; it does not rely on the read's filter.
+       */
+      readonly pullRequests: readonly ObservedPullRequest[];
     };
+
+/** The attempt branch as a reconciliation read observed it. */
+export interface ObservedBranch {
+  readonly repository: RepositoryId;
+  readonly headSha: string;
+}
 
 /** A PR as a reconciliation read observed it; the core, not the activity, decides whether it is the attempt's. */
 export interface ObservedPullRequest {
   readonly number: number;
+  readonly headRepository: RepositoryId;
   readonly headBranch: string;
   readonly headSha: string;
+  readonly baseRepository: RepositoryId;
   readonly baseBranch: string;
+  readonly state: 'open' | 'closed';
+  readonly merged: boolean;
 }
 
 /**
