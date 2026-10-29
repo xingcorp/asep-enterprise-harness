@@ -26,7 +26,7 @@ import { MIGRATIONS } from './migrations.js';
 import { requirePgUrl, makePool, migratedClient } from './itest-support.js';
 import {
   OrganizationRepository, ProjectRepository, RepositoryBindingRepository,
-  RunRepository, TaskRepository,
+  RunRepository, TaskRepository, AttemptRepository,
 } from './repositories.js';
 import { SqlWorkspaceLeaseRepository } from './lease-repository.js';
 import { OptimisticConcurrencyError } from './sql.js';
@@ -39,7 +39,9 @@ console.log('SUITE-ID: asep-suite:pg-concurrency');
 // gate hands us one database; we isolate by using fresh ULID-keyed rows per test
 // and never asserting global row counts. Migrations are idempotent so applying
 // them once up front is safe.
-async function seedScope(client: SqlClient): Promise<{ scope: TenantScope; binding: RepositoryBindingId }> {
+async function seedScope(client: SqlClient): Promise<{
+  scope: TenantScope; binding: RepositoryBindingId; newAttempt: () => Promise<AttemptId>;
+}> {
   const orgs = new OrganizationRepository(client);
   const projects = new ProjectRepository(client);
   const bindings = new RepositoryBindingRepository(client);
@@ -49,7 +51,17 @@ async function seedScope(client: SqlClient): Promise<{ scope: TenantScope; bindi
   const binding = await bindings.create(scope, {
     githubHost: 'github.com', githubOwner: 'acme', githubRepo: `r-${Math.random().toString(36).slice(2)}`, defaultBaseBranch: 'main',
   });
-  return { scope, binding: binding.id };
+  // A lease names a real attempt of its own tenant and binding (FK).
+  const newAttempt = async (): Promise<AttemptId> => {
+    const run = await new RunRepository(client).create(scope, {
+      repositoryBindingId: binding.id, status: 'EXECUTING', risk: 'R0',
+    });
+    const task = await new TaskRepository(client).create(scope, {
+      runId: run.id, repositoryBindingId: binding.id, risk: 'R0',
+    });
+    return (await new AttemptRepository(client).create(scope, { taskId: task.id, repositoryBindingId: binding.id })).id;
+  };
+  return { scope, binding: binding.id, newAttempt };
 }
 
 // ---------------------------------------------------------------------------
@@ -98,7 +110,8 @@ test('C5 (multi-conn): two migrators on separate connections converge with no do
 test('C3 (multi-conn): a genuine two-connection race yields exactly one ACTIVE lease', async () => {
   const setup = await migratedClient();
   try {
-    const { scope, binding } = await seedScope(setup.client);
+    const { scope, binding, newAttempt } = await seedScope(setup.client);
+    const [attemptA, attemptB] = [await newAttempt(), await newAttempt()];
 
     // Two SEPARATE clients (separate pools → separate backends) race to acquire
     // the SAME (binding, branch). The partial unique index — not app logic —
@@ -110,8 +123,8 @@ test('C3 (multi-conn): a genuine two-connection race yields exactly one ACTIVE l
       const leasesB = new SqlWorkspaceLeaseRepository(PgPoolClient.fromPool(poolB));
       const branch = `asep/race-${Math.random().toString(36).slice(2)}`;
       const [ra, rb] = await Promise.all([
-        leasesA.acquire(scope, { repositoryBindingId: binding, branch, attemptId: 'A'.repeat(26) as AttemptId, ttlMs: 60_000 }),
-        leasesB.acquire(scope, { repositoryBindingId: binding, branch, attemptId: 'B'.repeat(26) as AttemptId, ttlMs: 60_000 }),
+        leasesA.acquire(scope, { repositoryBindingId: binding, branch, attemptId: attemptA, ttlMs: 60_000 }),
+        leasesB.acquire(scope, { repositoryBindingId: binding, branch, attemptId: attemptB, ttlMs: 60_000 }),
       ]);
       const wins = [ra, rb].filter((r) => 'leaseId' in r).length;
       const denied = [ra, rb].filter((r) => 'denied' in r).length;
@@ -129,15 +142,16 @@ test('C3 (multi-conn): a genuine two-connection race yields exactly one ACTIVE l
 test('C3 (multi-conn): a fleet of N racers still yields exactly one winner', async () => {
   const setup = await migratedClient();
   try {
-    const { scope, binding } = await seedScope(setup.client);
+    const { scope, binding, newAttempt } = await seedScope(setup.client);
     const N = 8;
+    const attempts: AttemptId[] = [];
+    for (let i = 0; i < N; i++) attempts.push(await newAttempt());
     const pools = Array.from({ length: N }, () => makePool(1));
     try {
       const branch = `asep/fleet-${Math.random().toString(36).slice(2)}`;
       const results = await Promise.all(pools.map((p, i) => {
         const leases = new SqlWorkspaceLeaseRepository(PgPoolClient.fromPool(p));
-        const attemptId = String.fromCharCode(65 + i).repeat(26) as AttemptId;
-        return leases.acquire(scope, { repositoryBindingId: binding, branch, attemptId, ttlMs: 60_000 });
+        return leases.acquire(scope, { repositoryBindingId: binding, branch, attemptId: attempts[i]!, ttlMs: 60_000 });
       }));
       const wins = results.filter((r) => 'leaseId' in r).length;
       assert.equal(wins, 1, `exactly one of ${N} concurrent racers wins`);

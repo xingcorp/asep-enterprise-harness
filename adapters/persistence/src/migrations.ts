@@ -721,6 +721,45 @@ create trigger side_effect_guard
   for each row execute function asep_side_effect_guard();
 `;
 
+// ---------------------------------------------------------------------------
+// 0015 — a lease belongs to a real attempt.
+//
+// workspace_leases.attempt_id was free text: a lease could name an attempt that
+// never existed, or an attempt of another tenant or another repository
+// binding, and every side-effect record owned by that lease (0014) inherited
+// the dangling identity. A composite foreign key onto attempts (id,
+// organization_id, project_id, repository_binding_id) — the key 0013 added
+// for side-effect records — makes the lease's attempt one of its own tenant
+// and binding.
+//
+// A lease that already names no such attempt has no recoverable owner, and the
+// migration fails rather than delete or re-point it. Append-only: earlier
+// migrations are untouched.
+// ---------------------------------------------------------------------------
+const M0015 = `
+do $chk$
+declare orphans bigint;
+begin
+  select count(*) into orphans
+  from workspace_leases l
+  where not exists (
+    select 1 from attempts a
+    where a.id = l.attempt_id
+      and a.organization_id = l.organization_id
+      and a.project_id = l.project_id
+      and a.repository_binding_id = l.repository_binding_id);
+  if orphans > 0 then
+    raise exception 'workspace_leases: % lease(s) name no attempt of their own tenant and binding; refusing to guess one', orphans;
+  end if;
+end
+$chk$;
+
+alter table workspace_leases
+  add constraint workspace_lease_attempt_fk
+  foreign key (attempt_id, organization_id, project_id, repository_binding_id)
+  references attempts (id, organization_id, project_id, repository_binding_id);
+`;
+
 // Ordered, immutable migration set. Order is by id; the runner asserts it.
 export const MIGRATIONS: readonly Migration[] = Object.freeze([
   { id: '0001_init_tenancy', sql: M0001 },
@@ -737,4 +776,5 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   { id: '0012_side_effect_binding_fk', sql: M0012 },
   { id: '0013_side_effect_records_closed', sql: M0013 },
   { id: '0014_fenced_lease_takeover', sql: M0014 },
+  { id: '0015_lease_attempt_fk', sql: M0015 },
 ]);

@@ -19,7 +19,7 @@ import { SqlAuditSink } from './audit-sink.js';
 import { auditEvent, type CorrelationContext } from '@asep/observability';
 import { SqlWorkspaceLeaseRepository } from './lease-repository.js';
 import { LeaseLostError } from '@asep/ports';
-import { OptimisticConcurrencyError, ScopeViolationError } from './sql.js';
+import { OptimisticConcurrencyError, ScopeViolationError, type SqlClient } from './sql.js';
 import type {
   OrganizationId, ProjectId, RepositoryBindingId, TenantScope, AttemptId,
 } from '@asep/contracts';
@@ -583,8 +583,8 @@ test('C3: a second ACTIVE lease on the same (binding, branch) is denied', async 
   const client = await freshDb();
   const { scope, binding } = await seedScope(client);
   const leases = new SqlWorkspaceLeaseRepository(client);
-  const a1 = 'A'.repeat(26) as AttemptId;
-  const a2 = 'B'.repeat(26) as AttemptId;
+  const a1 = await seedAttempt(client, scope, binding.id);
+  const a2 = await seedAttempt(client, scope, binding.id);
   const first = await leases.acquire(scope, {
     repositoryBindingId: binding.id, branch: 'asep/x', attemptId: a1, ttlMs: 60_000,
   });
@@ -606,7 +606,7 @@ test('each granted lease takes the next fencing epoch for its (binding, branch)'
   const client = await freshDb();
   const { scope, binding } = await seedScope(client);
   const leases = new SqlWorkspaceLeaseRepository(client);
-  const attemptId = 'A'.repeat(26) as AttemptId;
+  const attemptId = await seedAttempt(client, scope, binding.id);
   const epochs: number[] = [];
   for (let i = 0; i < 3; i++) {
     const l = await leases.acquire(scope, {
@@ -646,7 +646,7 @@ test('a heartbeat renews a live lease by its TTL and refuses a dead one', async 
   const client = await freshDb();
   const { scope, binding } = await seedScope(client);
   const leases = new SqlWorkspaceLeaseRepository(client);
-  const attemptId = 'A'.repeat(26) as AttemptId;
+  const attemptId = await seedAttempt(client, scope, binding.id);
   const l = await leases.acquire(scope, {
     repositoryBindingId: binding.id, branch: 'asep/x', attemptId, ttlMs: 300,
   });
@@ -676,6 +676,115 @@ test('a heartbeat renews a live lease by its TTL and refuses a dead one', async 
     RangeError,
   );
   await client.close();
+});
+
+// A lease belongs to a real attempt of its own tenant and repository binding:
+// a composite foreign key (attempt, organization, project, binding) onto
+// attempts. Without it a lease could name an attempt that never existed or
+// one in another tenant, and every side-effect record owned by that lease
+// would inherit the dangling identity.
+test('the DB refuses a lease for an attempt that does not exist', async () => {
+  const client = await freshDb();
+  const { scope, binding } = await seedScope(client);
+  const leases = new SqlWorkspaceLeaseRepository(client);
+  await assert.rejects(
+    () => leases.acquire(scope, {
+      repositoryBindingId: binding.id, branch: 'asep/x', attemptId: 'Z'.repeat(26) as AttemptId, ttlMs: 60_000,
+    }),
+    /foreign key|violates/i,
+  );
+  await assert.rejects(
+    () => client.query(
+      `insert into workspace_leases
+         (id, organization_id, project_id, repository_binding_id, branch, attempt_id,
+          workspace_id, state, expires_at, ttl_ms, fencing_epoch)
+       values ($1, $2, $3, $4, 'asep/x', $5, 'ws', 'ACTIVE', now() + interval '1 minute', 60000, 1)`,
+      ['Q'.repeat(26), scope.organizationId, scope.projectId, binding.id, 'Z'.repeat(26)] as never,
+    ),
+    /foreign key|violates/i,
+  );
+  const n = await client.query(`select count(*)::int as n from workspace_leases`);
+  assert.equal(n.rows[0]!['n'], 0, 'no lease row was written');
+  await client.close();
+});
+
+test("the DB refuses a lease for another tenant's attempt", async () => {
+  const client = await freshDb();
+  const { scope, binding } = await seedScope(client);
+  const other = await seedScope(client);
+  const foreignAttempt = await seedAttempt(client, other.scope, other.binding.id);
+  const leases = new SqlWorkspaceLeaseRepository(client);
+  // Scope A's binding, scope B's attempt.
+  await assert.rejects(
+    () => leases.acquire(scope, {
+      repositoryBindingId: binding.id, branch: 'asep/x', attemptId: foreignAttempt, ttlMs: 60_000,
+    }),
+    /foreign key|violates/i,
+  );
+  // Scope A naming scope B's binding and attempt is refused as well.
+  await assert.rejects(
+    () => leases.acquire(scope, {
+      repositoryBindingId: other.binding.id, branch: 'asep/x', attemptId: foreignAttempt, ttlMs: 60_000,
+    }),
+    /foreign key|violates/i,
+  );
+  // The owning tenant gets it.
+  const own = await leases.acquire(other.scope, {
+    repositoryBindingId: other.binding.id, branch: 'asep/x', attemptId: foreignAttempt, ttlMs: 60_000,
+  });
+  assert.ok('leaseId' in own, 'the attempt\'s own tenant and binding are granted the lease');
+  await client.close();
+});
+
+test("the DB refuses a lease whose binding is not its attempt's binding", async () => {
+  const client = await freshDb();
+  const { scope, binding } = await seedScope(client);
+  const otherBinding = await seedBinding(client, scope);
+  const attemptId = await seedAttempt(client, scope, binding.id);
+  const leases = new SqlWorkspaceLeaseRepository(client);
+  await assert.rejects(
+    () => leases.acquire(scope, {
+      repositoryBindingId: otherBinding, branch: 'asep/x', attemptId, ttlMs: 60_000,
+    }),
+    /foreign key|violates/i,
+  );
+  const own = await leases.acquire(scope, {
+    repositoryBindingId: binding.id, branch: 'asep/x', attemptId, ttlMs: 60_000,
+  });
+  assert.ok('leaseId' in own);
+  await client.close();
+});
+
+test('upgrading a database whose lease names no attempt fails instead of guessing one', async () => {
+  const before = MIGRATIONS.findIndex((m) => m.id === '0015_lease_attempt_fk');
+  assert.ok(before > 0, 'the lease-attempt migration is registered');
+  const insertLease = (client: SqlClient, scope: TenantScope, bindingId: string, id: string, attemptId: string) =>
+    client.query(
+      `insert into workspace_leases
+         (id, organization_id, project_id, repository_binding_id, branch, attempt_id,
+          workspace_id, state, expires_at, ttl_ms, fencing_epoch)
+       values ($1, $2, $3, $4, $5, $6, 'ws', 'RELEASED', now(), 1000, 1)`,
+      [id, scope.organizationId, scope.projectId, bindingId, `asep/${id}`, attemptId] as never,
+    );
+
+  // A database whose leases all name a real attempt upgrades cleanly.
+  const clean = await PgliteClient.create();
+  await migrate(clean, MIGRATIONS.slice(0, before));
+  const ok = await seedScope(clean);
+  await insertLease(clean, ok.scope, ok.binding.id, 'L'.repeat(26), await seedAttempt(clean, ok.scope, ok.binding.id));
+  const report = await migrate(clean);
+  assert.deepEqual(report.applied, MIGRATIONS.slice(before).map((m) => m.id));
+  await clean.close();
+
+  // One dangling lease stops the upgrade, and nothing is deleted.
+  const dirty = await PgliteClient.create();
+  await migrate(dirty, MIGRATIONS.slice(0, before));
+  const bad = await seedScope(dirty);
+  await insertLease(dirty, bad.scope, bad.binding.id, 'M'.repeat(26), 'Z'.repeat(26));
+  await assert.rejects(() => migrate(dirty), /name no attempt of their own tenant and binding/);
+  const n = await dirty.query(`select count(*)::int as n from workspace_leases`);
+  assert.equal(n.rows[0]!['n'], 1, 'the dangling lease is left for an operator, not deleted');
+  await dirty.close();
 });
 
 // ---------------------------------------------------------------------------

@@ -52,17 +52,17 @@ async function seed(dataDir?: string) {
   const task = await new TaskRepository(client).create(scope, {
     runId: run.id, repositoryBindingId: binding.id, risk: 'R0',
   });
-  const attempt = await new AttemptRepository(client).create(scope, {
-    taskId: task.id, repositoryBindingId: binding.id,
-  });
-  const attemptId: AttemptId = attempt.id;
+  const attempts = new AttemptRepository(client);
+  const newAttempt = async (): Promise<AttemptId> =>
+    (await attempts.create(scope, { taskId: task.id, repositoryBindingId: binding.id })).id;
+  const attemptId = await newAttempt();
   // Every side-effect record is owned by a live workspace lease of its attempt
   // (migration 0014), exactly as the pipeline writes them.
   const granted = await new SqlWorkspaceLeaseRepository(client).acquire(scope, {
     repositoryBindingId: binding.id, branch: 'asep/x', attemptId, ttlMs: 60_000,
   });
   if ('denied' in granted) throw new Error('seed lease denied');
-  return { client, scope, binding, attemptId, owner: granted.leaseId };
+  return { client, scope, binding, attemptId, owner: granted.leaseId, newAttempt };
 }
 
 // --- Fault 2 — DB restart mid-attempt: a PENDING side-effect row is reconciled
@@ -139,24 +139,24 @@ test('M3/Fault3: an object-store outage fails closed on read (no partial-evidenc
 test('M3/Fault4: a stale (expired) lease is swept so a fresh acquire wins; a live one is denied', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'asep-rehearsal-'));
   try {
-    const { client, scope, binding } = await seed();
+    const { client, scope, binding, newAttempt } = await seed();
     const leases = new SqlWorkspaceLeaseRepository(client);
     const branch = 'asep/run/task/attempt';
     // A dead worker's lease with an immediately-past TTL (1ms).
     const dead = await leases.acquire(scope, {
-      repositoryBindingId: binding.id, branch, attemptId: 'A'.repeat(26) as AttemptId, ttlMs: 1,
+      repositoryBindingId: binding.id, branch, attemptId: await newAttempt(), ttlMs: 1,
     });
     assert.ok('leaseId' in dead, 'the first (soon-stale) lease is granted');
     // A tiny wait so expires_at is strictly in the past.
     await new Promise((r) => setTimeout(r, 5));
     // The next acquire sweeps the expired ACTIVE lease and wins.
     const fresh = await leases.acquire(scope, {
-      repositoryBindingId: binding.id, branch, attemptId: 'B'.repeat(26) as AttemptId, ttlMs: 60_000,
+      repositoryBindingId: binding.id, branch, attemptId: await newAttempt(), ttlMs: 60_000,
     });
     assert.ok('leaseId' in fresh, 'a fresh acquire wins after the stale lease is swept');
     // A concurrent LIVE acquire on the same (binding, branch) is denied.
     const denied = await leases.acquire(scope, {
-      repositoryBindingId: binding.id, branch, attemptId: 'C'.repeat(26) as AttemptId, ttlMs: 60_000,
+      repositoryBindingId: binding.id, branch, attemptId: await newAttempt(), ttlMs: 60_000,
     });
     assert.ok('denied' in denied, 'a concurrent live acquire is denied');
     await client.close();
