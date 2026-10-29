@@ -343,7 +343,10 @@ test('the lifecycle observer sees each moment of an attempt in order, and one th
     ]);
     assert.ok(h.lifecycle.every((e) => e.attemptId === ATTEMPT));
     assert.ok(h.lifecycle.every((e, i) => i === 0 || e.at >= h.lifecycle[i - 1]!.at), 'in the order they happened');
-    assert.equal(h.lifecycle[0]!.deadline, h.lifecycle[0]!.at + BUDGET.maxWallClockMinutes * 60_000);
+    // The deadline is the budget from the start of execute(), which the first
+    // moment is reported just after.
+    const sinceDeadlineSet = h.lifecycle[0]!.at + BUDGET.maxWallClockMinutes * 60_000 - h.lifecycle[0]!.deadline!;
+    assert.ok(sinceDeadlineSet >= 0 && sinceDeadlineSet <= 50, `deadline off by ${sinceDeadlineSet} ms`);
 
     let calls = 0;
     const throwing = await h.provider('ok', {}, undefined, () => { calls++; throw new Error('observer failure'); });
