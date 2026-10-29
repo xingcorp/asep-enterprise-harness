@@ -74,9 +74,20 @@ export type SandboxExecution =
 // providers below write it; the runner only reads it.
 const EXECUTIONS = new WeakMap<SandboxHandle, SandboxExecution>();
 
+const frozenCopy = <T>(xs: readonly T[]): readonly T[] => Object.freeze([...xs]);
+
+// The handle and the execution record share no mutable state: each array the
+// handle exposes is its own frozen copy, and the record the runner executes
+// holds another, so nothing reachable from a handle can change what runs.
 function issue(handle: SandboxHandleEx, execution: SandboxExecution): SandboxHandleEx {
-  const frozen: SandboxHandleEx = Object.freeze(handle);
-  EXECUTIONS.set(frozen, Object.freeze(execution));
+  const frozen: SandboxHandleEx = Object.freeze({
+    ...handle,
+    ...(handle.dockerRunPrefix !== undefined ? { dockerRunPrefix: frozenCopy(handle.dockerRunPrefix) } : {}),
+    ...(handle.runFlags !== undefined ? { runFlags: frozenCopy(handle.runFlags) } : {}),
+  });
+  EXECUTIONS.set(frozen, Object.freeze(execution.kind === 'container'
+    ? { ...execution, runFlags: frozenCopy(execution.runFlags) }
+    : { ...execution }));
   return frozen;
 }
 

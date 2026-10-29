@@ -211,9 +211,13 @@ export class TrustedCommandRunner implements CommandRunner {
       stderrBytes: err.totalBytes,
       truncated: out.truncated || err.truncated,
       // Where it ran is the provider's record of the handle — the same record
-      // the argv above was built from.
+      // the argv above was built from. The result gets its own frozen copy of
+      // the flags, never the array the runner executes.
       provenance: execution.kind === 'container'
-        ? { where: 'container', image: execution.image, container: container as string, runFlags: execution.runFlags }
+        ? {
+            where: 'container', image: execution.image, container: container as string,
+            runFlags: Object.freeze([...execution.runFlags]),
+          }
         : { where: 'host' },
     };
   }

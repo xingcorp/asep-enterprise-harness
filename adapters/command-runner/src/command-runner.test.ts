@@ -19,7 +19,7 @@ import { BoundedCapture, TRUNCATION_MARKER } from './bounded-capture.js';
 import { resolveEnvironment, UnknownEnvironmentProfileError } from './environment-profiles.js';
 import {
   DockerSandboxProvider, LocalUnsandboxedProvider, SandboxUnavailableError,
-  buildSandboxRunFlags, isDigestPinned,
+  buildSandboxRunFlags, isDigestPinned, executionOf, sandboxLabels,
   type SandboxHandleEx,
 } from './sandbox.js';
 import { SandboxTeardownError } from './container-teardown.js';
@@ -673,6 +673,69 @@ test('a handle a provider made cannot be altered after the fact', async () => {
       assert.throws(() => { delete (handle as { sandboxId?: string }).sandboxId; }, TypeError);
     }
   } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// What the runner executes is its own frozen copy of the provider's execution
+// record: the arrays the handle and the result expose are separate frozen
+// copies, so nothing reachable from them can change the next docker argv.
+test('the flags a handle and a result expose are frozen copies, never the ones the runner executes', async () => {
+  const { client, store, scope, dir } = await harness();
+  try {
+    const d = await fakeDaemon(dir);
+    const handle = await dockerHandle(d);
+    const record = executionOf(handle);
+    assert.equal(record?.kind, 'container');
+    if (record?.kind !== 'container') return;
+    const flags = handle.runFlags as string[];
+    const prefix = handle.dockerRunPrefix as string[];
+    // The reviewer's probe printed `true false true`: handle frozen, its flags
+    // not, and the same array as the record the runner executes.
+    assert.deepEqual([Object.isFrozen(handle), Object.isFrozen(flags), flags === record.runFlags], [true, true, false]);
+    assert.ok(Object.isFrozen(record), 'the runner\'s record is frozen');
+    assert.notEqual(flags, record.runFlags, 'the handle does not share the runner\'s array');
+    for (const [what, arr] of [['handle flags', flags], ['handle prefix', prefix], ['runner flags', record.runFlags]] as const) {
+      assert.ok(Object.isFrozen(arr), `${what} are frozen`);
+    }
+    const at = flags.indexOf('--network');
+    // The reviewer's probe, and its relatives: none of them may land.
+    assert.throws(() => { flags.splice(at + 1, 1, 'host'); }, TypeError);
+    assert.throws(() => { flags.push('--privileged', '-v', '/var/run/docker.sock:/var/run/docker.sock'); }, TypeError);
+    assert.throws(() => { flags[at + 1] = 'host'; }, TypeError);
+    assert.throws(() => { prefix.push('--privileged'); }, TypeError);
+
+    const runner = new TrustedCommandRunner(scope, store);
+    const first = await runner.run(spec({ cwd: d.wt }), handle);
+    assert.equal(first.timedOut, false);
+    const where = first.provenance;
+    assert.equal(where?.where, 'container');
+    if (where?.where !== 'container') return;
+    assert.notEqual(where.runFlags, record.runFlags, 'the result does not share the runner\'s array');
+    assert.ok(Object.isFrozen(where.runFlags));
+    assert.throws(() => { (where.runFlags as string[]).push('--privileged'); }, TypeError);
+    assert.throws(() => { (where.runFlags as string[])[at + 1] = 'host'; }, TypeError);
+
+    // The next run still executes exactly the provider's profile.
+    const second = await runner.run(spec({ cwd: d.wt }), handle);
+    assert.equal(second.timedOut, false);
+    const runs = d.invocations().filter((a) => a[0] === 'run');
+    assert.equal(runs.length, 2);
+    for (const [n, run] of runs.entries()) {
+      const name = `${handle.sandboxId}-${n + 1}`;
+      assert.deepEqual(run, [
+        ...buildSandboxRunFlags('verification-no-network', {
+          workspaceId: 'W'.repeat(26) as never, readOnlyPaths: [], writablePaths: [d.wt], attemptId: ATTEMPT as never,
+        }),
+        ...sandboxLabels(handle.sandboxId, 'verification-no-network', {
+          workspaceId: 'W'.repeat(26) as never, readOnlyPaths: [], writablePaths: [d.wt], attemptId: ATTEMPT as never,
+        }).flatMap((l) => ['--label', l]),
+        '--name', name, '--label', `asep.container=${name}`,
+        '-w', d.wt, `alpine@sha256:${'a'.repeat(64)}`, 'node', '-e', 'process.exit(0)',
+      ], `docker run ${n + 1} is the provider's profile, byte for byte`);
+    }
+  } finally {
+    await client.close();
     await rm(dir, { recursive: true, force: true });
   }
 });
