@@ -11,6 +11,26 @@ export type ReviewKind = 'fresh' | 're-review';
 export type PacketOmissionReason = 'binary' | 'too-large' | 'deleted' | 'submodule' | 'non-utf8';
 export type BlockReason = 'secret-in-diff' | 'forbidden-path' | 'unscannable-sensitive-change';
 export type EgressDecision = 'CLEAR' | 'STOP_SECRET' | 'STOP_CLASSIFIED' | 'STOP_UNSCANNABLE';
+export type ReviewMode = 'not-required' | 'shadow' | 'gating';
+export type ReviewerRole = 'primary' | 'comparator';
+
+export type EscalationReason =
+  | 'packet-over-budget'
+  | 'egress-stopped'
+  | 'independence-unsatisfiable'
+  | 'reviewer-unavailable'
+  | 'reviewer-escalated'
+  | 'max-repair-rounds'
+  | 'budget-exhausted';
+
+export type ReviewRecordStatus = 'COMPLETED_VALID' | 'COMPLETED_INVALID' | 'FAILED' | 'EGRESS_STOPPED' | 'SKIPPED_PUSH_GUARD';
+
+/** What gating mode would have decided. Recorded only; it never changes the workflow. */
+export interface ShadowVerdict {
+  readonly wouldBe: 'PROCEED' | 'REPAIR' | 'ESCALATE';
+  readonly reason: EscalationReason | 'blocking-findings' | null;
+  readonly blockingFindings: number;
+}
 
 // --- trusted review source port (@asep/ports: ReviewSourceReader) ----------------------
 

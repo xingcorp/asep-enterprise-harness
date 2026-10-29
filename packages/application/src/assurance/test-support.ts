@@ -4,7 +4,12 @@
 
 import { createHash } from 'node:crypto';
 import type { ArtifactId, ArtifactRef, AttemptId, OrganizationId, ProjectId, RepositoryBindingId, RunId, TaskId } from '@asep/contracts';
-import type { PacketLimits, PacketSources } from './packet.js';
+import { loadReviewPolicy } from '@asep/policy';
+import { buildReviewPacket, type PacketLimits, type PacketSources } from './packet.js';
+import { runDeterministicCheckRules } from './checks.js';
+import { parseUnifiedDiff } from './diff.js';
+import type { AdjudicationInput, ReviewInput } from './adjudication.js';
+import type { ModelFindingOutput, ReviewOutput } from './prompt.js';
 import type { ChangedFile, PacketOmissionReason, ReviewBlob } from './local-types.js';
 
 export function utf8(text: string): Uint8Array {
@@ -284,4 +289,87 @@ export function worldFromDiff(entries: readonly DiffEntry[], options: Omit<Fixtu
     ...(e.status === 'D' || e.binary ? {} : { content: [...(e.context ?? []), ...(e.added ?? [])].map((l) => `${l}\n`).join('') }),
   }));
   return fixtureWorld({ ...options, diff: gitDiff(entries), files });
+}
+
+// --- adjudication fixtures -------------------------------------------------------------------
+
+export const PRIMARY = 'primary-gpt';
+export const COMPARATOR = 'comparator-deepseek';
+export const MODEL_EVIDENCE = 'greet() interpolates the name without escaping it for HTML output';
+export const MODEL_FIX = 'Escape the name before interpolating it';
+
+export function modelFinding(over: Partial<ModelFindingOutput> = {}): ModelFindingOutput {
+  return {
+    key: 'f1',
+    severity: 'HIGH',
+    category: 'CORRECTNESS',
+    file: 'src/feature.ts',
+    lineStart: 2,
+    lineEnd: 2,
+    requirementId: null,
+    evidence: MODEL_EVIDENCE,
+    requiredFix: MODEL_FIX,
+    confidence: 0.8,
+    ...over,
+  };
+}
+
+export function reviewOutput(over: Partial<ReviewOutput> = {}): ReviewOutput {
+  return {
+    verdict: 'APPROVE',
+    findings: [],
+    priorFindingClaims: [],
+    packetAssessment: { coverage: 'complete', notes: '' },
+    ...over,
+  };
+}
+
+export function completedReview(reviewerConfigId: string, output: ReviewOutput, recordSha256 = sha256Of(utf8(reviewerConfigId))): ReviewInput {
+  return { reviewerConfigId, status: 'COMPLETED_VALID', failureReason: null, recordSha256, output };
+}
+
+/** A consistent adjudication input: one independent primary reviewer that approved, gating mode. */
+export function adjudicationBase(options: { readonly round?: number; readonly world?: FixtureWorld } = {}): AdjudicationInput {
+  const world = options.world ?? fixtureWorld({ round: options.round ?? 1 });
+  const round = world.sources.identity.round;
+  const built = buildReviewPacket(world.sources, world.limits);
+  const policy = loadReviewPolicy();
+  const checks = runDeterministicCheckRules({
+    policy: { ...policy, egress: { ...policy.egress, enabledProjects: ['project-1'] } },
+    built,
+    contents: world.contents,
+    recordedVerdicts: world.sources.execution.evidence.checks.map((c) => ({
+      checkId: c.id,
+      verdict: c.exitCode === 0 ? ('PASS' as const) : ('FAIL' as const),
+    })),
+    invariants: [],
+    sarif: [],
+  });
+  const decode = (id: string) => new TextDecoder().decode(world.contents.get(id)!);
+  return {
+    roundKey: built.packet.identity.roundKey,
+    attemptId: built.packet.identity.attemptId,
+    round,
+    mode: 'gating',
+    maxRounds: 2,
+    blockingSeverities: ['CRITICAL', 'HIGH'],
+    groundingMinChars: { evidence: 40, requiredFix: 20 },
+    policyVersion: `1.0.0+sha256:${'7'.repeat(64)}`,
+    now: '2026-10-29T10:00:00.000Z',
+    packet: built.packet,
+    packetSha256: built.sha256,
+    diff: parseUnifiedDiff(decode('art-diff')),
+    repairDelta: round > 1 ? parseUnifiedDiff(decode('art-delta')) : null,
+    checks: {
+      pushGuard: checks.pushGuard,
+      egress: { decision: checks.egress.decision, packetSha256: checks.egress.packetSha256 },
+      findings: checks.findings,
+      reportSha256: sha256Of(utf8(JSON.stringify(checks.findings))),
+    },
+    unsatisfiable: null,
+    reviewers: [{ reviewerConfigId: PRIMARY, role: 'primary', independentOfImplementer: true }],
+    reviews: [completedReview(PRIMARY, reviewOutput())],
+    priorFindings: [],
+    fence: { leaseId: 'lease-1', leaseEpoch: 1 },
+  };
 }

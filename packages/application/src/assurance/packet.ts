@@ -200,7 +200,8 @@ function buildChecks(execution: PacketSources['execution'], limits: PacketLimits
   return { checks, excerptBytes: limits.excerptBytesTotal - remaining };
 }
 
-function pickFinding(f: ReviewFindingRecord): ReviewFindingRecord {
+/** A review-finding/v1 record with exactly its own fields, whatever else the source object carries. */
+export function pickFindingRecord(f: ReviewFindingRecord): ReviewFindingRecord {
   return {
     id: f.id,
     source: f.source,
@@ -247,7 +248,7 @@ export function buildReviewPacket(sources: PacketSources, limits: PacketLimits):
   const overBudget =
     includedBytes > limits.maxBytes || change.cumulativeDiff.overLimit || (change.repairDelta?.overLimit ?? false);
 
-  const priorFindings = [...sources.priorFindings].map(pickFinding).sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const priorFindings = [...sources.priorFindings].map(pickFindingRecord).sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 
   const packet: ReviewPacket = {
     packetVersion: 'review-packet/v1',

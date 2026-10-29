@@ -62,6 +62,45 @@ function deepFreeze<T>(value: T): T {
 
 const nullable = (type: string) => ({ type: [type, 'null'] });
 
+/** A finding as the model reports it (REVIEW_OUTPUT_SCHEMA). Untrusted until grounded. */
+export interface ModelFindingOutput {
+  readonly key: string;
+  readonly severity: 'INFO' | 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+  readonly category:
+    | 'SPEC'
+    | 'ARCHITECTURE'
+    | 'CORRECTNESS'
+    | 'SECURITY'
+    | 'PERFORMANCE'
+    | 'TEST_QUALITY'
+    | 'MAINTAINABILITY'
+    | 'EVIDENCE_INTEGRITY';
+  readonly file: string | null;
+  readonly lineStart: number | null;
+  readonly lineEnd: number | null;
+  readonly requirementId: string | null;
+  readonly evidence: string;
+  readonly requiredFix: string;
+  readonly confidence: number;
+}
+
+/** A re-review claim about a prior finding. */
+export interface PriorFindingClaimOutput {
+  readonly priorFindingId: string;
+  readonly status: 'RESOLVED' | 'PARTIAL' | 'OPEN';
+  readonly evidence: string;
+  readonly resolutionFile: string | null;
+  readonly resolutionLine: number | null;
+}
+
+/** The model's whole answer, after schema validation. */
+export interface ReviewOutput {
+  readonly verdict: 'APPROVE' | 'REQUEST_CHANGES' | 'ESCALATE';
+  readonly findings: readonly ModelFindingOutput[];
+  readonly priorFindingClaims: readonly PriorFindingClaimOutput[];
+  readonly packetAssessment: { readonly coverage: 'complete' | 'partial'; readonly notes: string };
+}
+
 /** Strict structured-output schema: every property required, optional values nullable, no extra keys. */
 export const REVIEW_OUTPUT_SCHEMA = deepFreeze({
   type: 'object',

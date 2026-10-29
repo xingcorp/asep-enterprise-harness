@@ -244,6 +244,12 @@ export const REQUIRED_SUITES = Object.freeze({
   // seeded violation and false-green evidence.
   'asep-suite:assurance-checks': 'packages/application/src/assurance/checks.test.ts',
   'asep-suite:assurance-egress': 'packages/application/src/assurance/egress.test.ts',
+  // The round decision: grounding refutes citations outside the packet, the rule table
+  // is total in gating and shadow mode, closure authority decides which findings still
+  // block, and repair orders stay bounded and anchored to the reviewed commit.
+  'asep-suite:review-grounding': 'packages/application/src/assurance/grounding.test.ts',
+  'asep-suite:adjudication': 'packages/application/src/assurance/adjudication.test.ts',
+  'asep-suite:repair-order': 'packages/application/src/assurance/repair.test.ts',
 });
 
 /** The machine-readable marker a suite prints at module load: `SUITE-ID: <id>`. */
