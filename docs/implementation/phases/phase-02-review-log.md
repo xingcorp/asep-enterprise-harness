@@ -263,8 +263,9 @@ owner, live owner refused, lapsed owner refused, newer epoch required, the
 database refuses a forbidden move); `apps/control-plane-api/src/crash-recovery.test.ts`
 (five cases); `apps/control-plane-api/src/crash-takeover.itest.ts` SIGKILLs a
 real executor child on real PostgreSQL.
-**Residual:** no FK from a lease to its attempt; the lease TTL must outlive the
-agent's wall-clock budget (`leaseTtlForBudget` refuses a shorter one).
+**Residual:** no FK from a lease to its attempt (added since, by migration 0015
+— see "Cycle 7 follow-up dispositions"); the lease TTL must outlive the agent's
+wall-clock budget (`leaseTtlForBudget` refuses a shorter one).
 
 ### HIGH-008 — the live agent could not run — ACCEPTED (live run not performed)
 
@@ -395,3 +396,211 @@ or any other personal address, fails.
   (fixed in `0d23b31`).
 - Many PGlite instances in one process intermittently aborted V8 (fixed in
   `a73ddb6`).
+
+---
+
+## Cycle 7 follow-up dispositions (controller)
+
+> Raised by the controller after reading the cycle-7 report at `863fed0`, while
+> its independent gate run and Codex re-review cycle 7 ran on snapshots of that
+> commit. Item 1 was reported by Lane A. Items 4–6 are concerns the cycle-7
+> report itself listed. Repairs are on `phase/02-single-agent-vertical-slice`
+> from `863fed0`. As with cycle 7, every disposition, repair and mutation check
+> below was made and verified by the implementer only. From this follow-up on,
+> commits carry no AI attribution lines (lane-contract addendum, item 3);
+> earlier commits are left as they are.
+
+### Summary
+
+| Item | Concern | Disposition | Commit |
+|---|---|---|---|
+| 1 | Integration gate published backends on every host interface | ACCEPTED — fixed | `ec280f8` |
+| 2 | A container could outlive a killed docker client | ACCEPTED — fixed | `dec962b` |
+| 3 | No AI attribution in commits; no memory-file changes | ACCEPTED — applied from `ec280f8` on | — |
+| 4 | The verifier's fake-provider check was a deny-prefix | ACCEPTED — fixed | `d5e4bb3` |
+| 5 | No foreign key from a lease to its attempt | ACCEPTED — fixed | `7d1b4df` |
+| 6 | Verification runner timeout killed the client, not the container | ACCEPTED — fixed with item 2 | `dec962b` |
+
+### 1 — gate backends published on every interface — ACCEPTED
+
+**Change (`ec280f8`):** `runContainer` builds its argv through
+`containerRunArgv`, which refuses any publish spec that does not name
+`127.0.0.1` explicitly, before a docker client is invoked. The CLI builds both
+specs with `loopbackPublish()`. Every `compose.yaml` port is bound to
+`127.0.0.1`, including jaeger's two random-port publishes (`127.0.0.1::4317`).
+`docker compose config` was run to confirm compose parses these as host IP
+`127.0.0.1`.
+**Tests:** `scripts/integration/run-integration.test.ts`
+(`asep-suite:integration-gate`):
+- "a publish spec is accepted only when it names 127.0.0.1 explicitly";
+- "the gate publishes every backend port on 127.0.0.1 and refuses anything
+  else before docker runs";
+- "no gate source publishes a port except through the loopback-checked
+  builder" (scans the CLI, its helpers, every itest and the CI job);
+- "compose.yaml publishes every service port on 127.0.0.1 only";
+- "the compose port parser reports what it cannot read instead of skipping it".
+
+Against the old CLI and compose file, the scan and the compose test failed.
+**Mutation check:** unguarded publish in the builder, a host-agnostic spec
+rule, and no port-range bound — all 3 killed.
+
+### 2 / 6 — a container could outlive its docker client — ACCEPTED
+
+**Change (`dec962b`):**
+
+Verification containers:
+- Each is named `<sandboxId>-<n>` and labelled `asep.role=verification`,
+  `asep.sandbox`, `asep.workspace`, `asep.attempt` (from the new optional
+  `WorkspaceMount.attemptId`, which the workflow sets) and `asep.container`.
+- On a timeout or a cancellation the container is stopped by name with
+  `docker kill` before the client is killed. Measured on this host:
+  `docker rm -f` on a `--rm` container whose client was still attached took
+  11.04 s; `docker kill` took 0.32 s.
+- Whenever the client ends, the container is removed by name and confirmed
+  absent with `docker ps -a`. A container that cannot be shown gone makes
+  `run()` throw `SandboxTeardownError`.
+- `DockerSandboxProvider.stop` sweeps anything still carrying the sandbox
+  label, and throws when it cannot.
+
+Agent and egress-proxy containers:
+- Each also carries `asep.container`.
+- A stop kills the container before its client.
+- The proxy is stopped before its attached client is killed.
+- After name-based removal, everything labelled `asep.attempt=<id>` is swept
+  and confirmed absent, and the network is checked with `docker network ls`.
+- Anything left fails the attempt as FAILED.
+
+Every docker client call of a sandbox now uses the shared docker-client
+environment, so a removal reaches the daemon the run did.
+
+**Tests:**
+
+`adapters/command-runner/src/command-runner.test.ts` (fake docker client,
+whose containers outlive a killed client):
+- naming and labels;
+- "killing the docker client mid-run does not leave its container running";
+- timeout;
+- cancellation;
+- "a container that cannot be removed fails the run closed";
+- "stopping a sandbox removes any container still carrying its id, and fails
+  when it cannot".
+
+`adapters/agent-claude/src/agent-claude.test.ts`:
+- "killing the agent and proxy docker clients mid-run leaves no container or
+  network behind";
+- "an attempt whose containers cannot be shown removed fails closed".
+
+Real daemon:
+- `sandbox-exec.itest.ts`: client SIGKILLed mid-run, timeout, cancellation and
+  normal exit.
+- `agent-sandbox.itest.ts`: agent and proxy clients SIGKILLed mid-run;
+  cancellation.
+
+**Mutation check:** 11 mutants against the fake-docker suites — all killed:
+
+| Area | Mutant |
+|---|---|
+| Runner | no removal after the client ends |
+| Runner | timeout kills only the client |
+| Runner | container unnamed and unlabelled |
+| Runner | a leftover is not fatal |
+| Runner | sandbox labels dropped |
+| Sandbox | `stop` is a no-op |
+| Teardown | removal never reports failure |
+| Agent | agent not removed by identity |
+| Agent | leftovers not fatal |
+| Agent | proxy not removed by identity |
+| Agent | network leftovers ignored |
+
+Two of these were also run against the real daemon; the SIGKILL itest of each
+suite failed:
+- runner, no removal after the client ends;
+- agent not removed by identity.
+
+**Residual:** the harness removes what it started only while it is alive. If
+the harness process itself dies, its containers keep running until the
+operator sweep in the pilot runbook, which now says so.
+
+### 4 — the provider check was a deny-prefix — ACCEPTED
+
+**Change (`d5e4bb3`):**
+
+What is checked:
+- The manifest's `providerId` must have the real adapter's shape
+  (`claude:<model>@cli-<version>`), in the verifier and in
+  `pilot-manifest.schema.json`.
+- The persisted provider must be exactly
+  `claude:<pinned model>@cli-<pinned version>`, and the manifest must claim
+  the same id.
+- The attempt must carry exactly one of each of these, re-hashed from the
+  object store:
+  - an invocation manifest naming that id, the pinned agent and proxy images
+    and the pinned model origin;
+  - a CLI event stream whose init event reports the pinned version and model
+    and the manifest's `providerSessionId`, ending in success;
+  - an egress-proxy log with at least one forwarded `POST /v1/messages` the
+    model answered 2xx.
+
+How it is wired:
+- The Claude adapter links the artifacts it records to the attempt.
+- The resolver gains `resolveAgentRun` and `pinnedAgent`, and
+  `createSqlAuthorityResolver` requires the pins.
+- `createResolverFromEnv` reads them from the pilot's own variables.
+
+**Tests:**
+- `apps/control-plane-api/src/pilot-verifier.test.ts` now runs the slice
+  through the real `ClaudeCodingProvider` (fake docker client, real egress
+  proxy, fake model API, strict fake CLI scenario `ok-model`). The verifier
+  accepts it under its pins. It refuses it under another CLI version, model
+  origin or image; after the egress log is rewritten; and for the cycle-7
+  reasons.
+- "a run through the local agent double is refused, whatever the manifest
+  claims about it": `fake-claude`, claimed as the real id or declared
+  honestly.
+- `scripts/pilot/verify-pilot-manifest.test.ts`: every agent-evidence refusal
+  and the pins.
+- `adapters/persistence/src/authority-resolver-sql.test.ts`: one attempt's
+  artifacts only, against the real schema.
+- `adapters/agent-claude/src/agent-claude.test.ts`: every recorded artifact is
+  linked to its attempt.
+
+**Mutation check:** 16 mutants — all killed:
+- verifier: deny-prefix authority check, no agent-run check, bytes not
+  compared, session unchecked, model calls unchecked, upstream unchecked,
+  manifest id vs persisted, shape check off, ambiguity allowed, result
+  unchecked, init version unchecked;
+- resolver: no attempt filter, any egress line counts, pins not
+  digest-checked, bytes not re-hashed;
+- adapter: artifacts not linked to the attempt.
+
+**Residual:** the check proves the run went through the real adapter, under
+the pinned CLI, images and model origin, and that the proxy forwarded model
+calls the origin answered. It cannot prove who answers at that origin. Someone
+able to write both the database and the object store could still fabricate
+these artifacts; there is no provider-side attestation.
+
+### 5 — no foreign key from a lease to its attempt — ACCEPTED
+
+**Change (`7d1b4df`, migration 0015):** composite FK `(attempt_id,
+organization_id, project_id, repository_binding_id)` → `attempts`, the key
+0013 added for side-effect records. An upgrade over a lease that names no such
+attempt fails with a count instead of deleting or re-pointing it. Production
+creates the attempt before acquiring its lease. Tests that leased fabricated
+attempt ids now lease real ones, including `concurrency.itest.ts`.
+**Tests:** `adapters/persistence/src/persistence.test.ts`:
+- "the DB refuses a lease for an attempt that does not exist";
+- "… for another tenant's attempt";
+- "… whose binding is not its attempt's binding";
+- "upgrading a database whose lease names no attempt fails instead of
+  guessing one".
+
+All three refusal tests failed before the migration.
+**Mutation check:** no FK, FK without the binding column, no orphan pre-check —
+all 3 killed.
+
+### Live proof after the follow-up
+
+Items 2 and 4 changed the Claude provider's teardown and artifact linking. The
+opt-in CONFORMANCE proof (`pnpm test:live:claude` with
+`ASEP_CLAUDE_CONFORMANCE_CLI` set to the host's Claude CLI 2.1.286) was re-run
+at `dec962b` and passed: 1 pass, 1 skipped (LIVE, no credential), 0 fail.
