@@ -16,5 +16,8 @@ export function orchestrationPolicyErrors(policy: OrchestrationPolicy): string[]
       errors.push(`replaceableFailureClasses: ${failureClass} is never replaceable`);
     }
   }
+  if (!Number.isInteger(policy.agentKillGraceSeconds) || policy.agentKillGraceSeconds < 0) {
+    errors.push('agentKillGraceSeconds: must be a whole number of seconds, zero or more');
+  }
   return errors;
 }

@@ -160,6 +160,12 @@ export interface OrchestrationPolicy {
    * approval unavailable: a task-cap shortfall then ends the task BUDGET_EXHAUSTED.
    */
   readonly maxBudgetExtensionUsd: number | null;
+  /**
+   * The agent adapter's interval between its stop signal at the wall-clock cap
+   * and its hard kill: the only tolerance on the measured wall-clock. Data, not
+   * a business allowance; 0 means none.
+   */
+  readonly agentKillGraceSeconds: number;
 }
 
 /** Reserved for mandatory verification at every attempt start, apart from the agent's cap. */
@@ -279,6 +285,8 @@ export type TaskEffect =
       readonly attemptNumber: number;
       readonly overrunUsd: number;
       readonly overrunToolCalls: number;
+      /** Measured wall-clock beyond the cap, once it exceeded the cap plus the kill grace. */
+      readonly overrunWallClockMs: number;
     }
   | { readonly kind: 'recordExtension'; readonly approvalRequestId: string; readonly extensionUsd: number }
   | { readonly kind: 'reapContainers'; readonly attemptNumber: number }
@@ -412,6 +420,7 @@ export interface AgentUsage {
 export interface AttemptOverrun {
   readonly overrunUsd: number;
   readonly overrunToolCalls: number;
+  readonly overrunWallClockMs: number;
 }
 
 export interface AttemptState {
@@ -426,7 +435,7 @@ export interface AttemptState {
   readonly workspaceDisposed: boolean;
   readonly agentStarted: boolean;
   readonly agentUsage: AgentUsage | null;
-  /** Reported usage above a cap the adapter did not stop at. */
+  /** Usage above a cap the adapter did not stop at: reported cost or tool calls, or measured wall-clock. */
   readonly overrun: AttemptOverrun | null;
   /** The agent stopped at a cap or overran one: the attempt is inspected, never verified or published. */
   readonly exhausted: boolean;

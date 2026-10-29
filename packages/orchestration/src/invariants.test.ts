@@ -96,6 +96,7 @@ function randomInput(rng: Rng): TaskCoreInput {
         ? [...DEFAULT_ORCHESTRATION_POLICY.replaceableFailureClasses, rng.pick(NEVER_REPLACEABLE_FAILURE_CLASSES)]
         : DEFAULT_ORCHESTRATION_POLICY.replaceableFailureClasses,
       maxBudgetExtensionUsd: rng.chance(0.7) ? 10 : null,
+      agentKillGraceSeconds: rng.pick([0, 30]),
     },
   };
 }
@@ -145,17 +146,24 @@ function randomEnvironment(rng: Rng, input: TaskCoreInput): TaskEnvironment {
           const cost = rng.chance(0.1) ? Math.round(cap.maxCostUsd * (100 + rng.int(1, 60))) / 100
             : rng.chance(0.1) ? cap.maxCostUsd : Math.round(rng.next() * cap.maxCostUsd * 100) / 100;
           const toolCalls = rng.chance(0.05) ? cap.maxToolCalls + rng.int(1, 5) : rng.int(0, cap.maxToolCalls);
+          // Measured wall-clock: mostly within the cap, sometimes exactly at the cap or at the cap plus the
+          // kill grace, sometimes one millisecond or minutes beyond that (an overrun).
+          const capMs = cap.maxWallClockMinutes * 60_000;
+          const toleratedMs = capMs + input.policy.agentKillGraceSeconds * 1000;
+          const w = rng.next();
+          const wallClockMs = w < 0.06 ? capMs : w < 0.12 ? toleratedMs : w < 0.18 ? toleratedMs + 1
+            : w < 0.24 ? toleratedMs + rng.int(1, 30) * 60_000 : rng.int(1, capMs);
           if (rng.chance(0.2)) {
             return {
               kind: 'runAgent',
               status: rng.pick(['FAILED', 'BLOCKED', 'BUDGET_EXHAUSTED'] as const),
               reportedCostUsd: cost,
               reportedToolCalls: toolCalls,
-              wallClockMs: rng.int(1, 3_600_000),
+              wallClockMs,
               failureClass: rng.chance(0.9) ? rng.pick(CLASSES) : null,
             };
           }
-          return { kind: 'runAgent', status: 'AGENT_DONE', reportedCostUsd: cost, reportedToolCalls: toolCalls, wallClockMs: rng.int(1, 3_600_000), failureClass: null };
+          return { kind: 'runAgent', status: 'AGENT_DONE', reportedCostUsd: cost, reportedToolCalls: toolCalls, wallClockMs, failureClass: null };
         }
         case 'inspectWorkspace':
           if (rng.chance(0.06)) return failure(rng);
@@ -254,6 +262,9 @@ function checkTrace(input: TaskCoreInput, trace: TaskTrace, label: string): void
   assert.ok(reqs.filter((r) => r.kind === 'publishBranch').length <= 1, `${label}: at most one push`);
   assert.ok(reqs.filter((r) => r.kind === 'upsertPullRequest').length <= 1, `${label}: at most one PR upsert`);
 
+  const seqRequests = new Map<number, TaskRequest>();
+  for (const c of commands) if (c.type === 'request') seqRequests.set(c.seq, c.request);
+
   // Attempt numbering: contiguous from 1, never above maxAttempts.
   const ensured = reqs.flatMap((r) => (r.kind === 'ensureAttempt' ? [r] : []));
   assert.deepEqual(ensured.map((r) => r.attemptNumber), ensured.map((_r, i) => i + 1), `${label}: contiguous attempts`);
@@ -334,10 +345,29 @@ function checkTrace(input: TaskCoreInput, trace: TaskTrace, label: string): void
   };
   for (const [n, got] of roundOf) assert.deepEqual(got, lineageRound(n), `${label}: assurance round of attempt ${n}`);
 
+  // An agent measured above its wall-clock cap plus the kill grace is never verified or published, and its
+  // overrun records the excess over the cap.
+  const capMs = input.attemptBudget.maxWallClockMinutes * 60_000;
+  const toleratedMs = capMs + input.policy.agentKillGraceSeconds * 1000;
+  const agentResults = trace.events.flatMap((e) => {
+    if (e.type !== 'result' || e.result.kind !== 'runAgent') return [];
+    const request = seqRequests.get(e.seq);
+    assert.ok(request?.kind === 'runAgent', `${label}: agent result answers runAgent`);
+    return [{ n: request.attemptNumber, wallClockMs: e.result.wallClockMs }];
+  });
+  for (const { n, wallClockMs } of agentResults.filter((x) => x.wallClockMs > toleratedMs)) {
+    for (const k of ['runVerification', 'commitAttempt', 'publishBranch'] as const) {
+      assert.ok(!reqs.some((r) => r.kind === k && r.attemptNumber === n), `${label}: ${k} after a wall-clock overrun of ${n}`);
+    }
+  }
+  for (const { n, wallClockMs } of agentResults) {
+    const recorded = effectsOf(commands, 'recordOverrun').find((o) => o.attemptNumber === n);
+    const excess = wallClockMs > toleratedMs ? Math.ceil(wallClockMs - capMs) : 0;
+    if (recorded) assert.equal(recorded.overrunWallClockMs, excess, `${label}: wall-clock excess of ${n}`);
+  }
+
   // A non-replaceable agent failure ends the task FAILED (or CANCELLED), overrun or not, whatever the policy
   // lists: no further attempt follows it.
-  const requestBySeq = new Map<number, TaskRequest>();
-  for (const c of commands) if (c.type === 'request') requestBySeq.set(c.seq, c.request);
   for (const e of trace.events) {
     if (e.type !== 'result' || e.result.kind !== 'runAgent') continue;
     const r = e.result;
@@ -345,7 +375,7 @@ function checkTrace(input: TaskCoreInput, trace: TaskTrace, label: string): void
     const replaceable = r.failureClass !== null && !NEVER_REPLACEABLE_FAILURE_CLASSES.includes(r.failureClass)
       && input.policy.replaceableFailureClasses.includes(r.failureClass);
     if (!failed || replaceable) continue;
-    const request = requestBySeq.get(e.seq);
+    const request = seqRequests.get(e.seq);
     assert.ok(request?.kind === 'runAgent', `${label}: agent result answers runAgent`);
     const n = request.attemptNumber;
     assert.ok(ensured.every((x) => x.attemptNumber <= n), `${label}: attempt after non-replaceable failure of ${n}`);
@@ -492,6 +522,12 @@ test('the generator covers repair, replacement, approvals, pause and cancel path
     if (effectsOf(trace.commands, 'emitRunEvent').some((e) => e.eventType === 'workflow.recovered')) seen.add('recovered');
     if (effectsOf(trace.commands, 'recordAttemptOutcome').some((o) => o.terminal === 'budget-exhausted')) seen.add('exhausted');
     if (effectsOf(trace.commands, 'recordOverrun').length > 0) seen.add('overrun');
+    if (effectsOf(trace.commands, 'recordOverrun').some((o) => o.overrunWallClockMs > 0)) seen.add('wall-clock-overrun');
+    const toleratedMs = input.attemptBudget.maxWallClockMinutes * 60_000 + input.policy.agentKillGraceSeconds * 1000;
+    if (input.policy.agentKillGraceSeconds > 0 && trace.events.some((e) => e.type === 'result' && e.result.kind === 'runAgent'
+      && e.result.status === 'AGENT_DONE' && e.result.wallClockMs === toleratedMs) && reqs.some((r) => r.kind === 'runVerification')) {
+      seen.add('verified-within-grace');
+    }
     if (effectsOf(trace.commands, 'audit').some((a) => a.action === 'assurance-unavailable')) seen.add('assurance-unavailable');
     if (reqs.some((r) => r.kind === 'ensureAttempt' && r.attemptKind === 'retry' && r.repairOrderRef !== null)) seen.add('lineage-retry');
     const hostile = input.policy.replaceableFailureClasses.filter((c) => NEVER_REPLACEABLE_FAILURE_CLASSES.includes(c));
@@ -500,8 +536,8 @@ test('the generator covers repair, replacement, approvals, pause and cancel path
   }
   assert.deepEqual([...seen].sort(), [
     'abort', 'approval-expired', 'assurance-unavailable', 'budget-approval', 'exhausted', 'extension-granted',
-    'hostile-policy-failure', 'lineage-retry', 'overrun', 'pause-timeout', 'paused', 'publish-approval', 'recovered', 'repair', 'retry',
-    'verification-stop', 'violation',
+    'hostile-policy-failure', 'lineage-retry', 'overrun', 'pause-timeout', 'paused', 'publish-approval', 'recovered',
+    'repair', 'retry', 'verification-stop', 'verified-within-grace', 'violation', 'wall-clock-overrun',
   ]);
 });
 

@@ -358,9 +358,10 @@ function nonNegative(value: number): number | null {
 }
 
 /**
- * Note the agent's reported usage and detect an overrun: reported cost or tool
- * calls above a cap the adapter did not stop at. A recorded overrun fails every
- * later reservation of the task.
+ * Note the agent's usage and detect an overrun: reported cost or tool calls
+ * above a cap the adapter did not stop at, or harness-measured wall-clock above
+ * the cap plus the adapter's kill grace. A recorded overrun fails every later
+ * reservation of the task.
  */
 function noteAgentUsage(step: Step, a: MutableAttempt, result: Extract<TaskResult, { kind: 'runAgent' }>): void {
   const s = step.s;
@@ -374,11 +375,14 @@ function noteAgentUsage(step: Step, a: MutableAttempt, result: Extract<TaskResul
     reportedCostUsd,
     minutes: wallClockMs !== null ? Math.ceil(wallClockMs / 60_000) : budget.maxWallClockMinutes,
   };
+  const capMs = budget.maxWallClockMinutes * 60_000;
+  const toleratedMs = capMs + s.input.policy.agentKillGraceSeconds * 1000;
   const overrun: AttemptOverrun = {
     overrunUsd: reportedCostUsd !== null ? fromMicroUsd(Math.max(0, toMicroUsd(reportedCostUsd) - capMicro)) : 0,
     overrunToolCalls: toolCalls !== null ? Math.max(0, Math.ceil(toolCalls) - budget.maxToolCalls) : 0,
+    overrunWallClockMs: wallClockMs !== null && wallClockMs > toleratedMs ? Math.ceil(wallClockMs - capMs) : 0,
   };
-  if (overrun.overrunUsd > 0 || overrun.overrunToolCalls > 0) {
+  if (overrun.overrunUsd > 0 || overrun.overrunToolCalls > 0 || overrun.overrunWallClockMs > 0) {
     a.overrun = overrun;
     s.overrun = true;
   }

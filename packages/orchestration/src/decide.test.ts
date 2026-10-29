@@ -826,13 +826,16 @@ test('agent outcome: a cap stop with no room for a fresh reservation ends the ta
 });
 
 for (const [name, answer, overrun] of [
-  ['reported cost above the cap', { status: 'AGENT_DONE', reportedCostUsd: 7, reportedToolCalls: 10 }, { overrunUsd: 2, overrunToolCalls: 0 }],
-  ['reported tool calls above the cap', { status: 'AGENT_DONE', reportedCostUsd: 1, reportedToolCalls: 53 }, { overrunUsd: 0, overrunToolCalls: 3 }],
-  ['a replaceable agent failure that also overran its cost', { status: 'FAILED', reportedCostUsd: 7, reportedToolCalls: 10 }, { overrunUsd: 2, overrunToolCalls: 0 }],
+  ['reported cost above the cap', { status: 'AGENT_DONE', reportedCostUsd: 7, reportedToolCalls: 10, wallClockMs: 1000 }, { overrunUsd: 2, overrunToolCalls: 0, overrunWallClockMs: 0 }],
+  ['reported tool calls above the cap', { status: 'AGENT_DONE', reportedCostUsd: 1, reportedToolCalls: 53, wallClockMs: 1000 }, { overrunUsd: 0, overrunToolCalls: 3, overrunWallClockMs: 0 }],
+  ['a replaceable agent failure that also overran its cost', { status: 'FAILED', reportedCostUsd: 7, reportedToolCalls: 10, wallClockMs: 1000 }, { overrunUsd: 2, overrunToolCalls: 0, overrunWallClockMs: 0 }],
+  // The cap is 30 minutes and the default kill grace is 0: one millisecond more is an overrun.
+  ['measured wall-clock above the cap', { status: 'AGENT_DONE', reportedCostUsd: 1, reportedToolCalls: 10, wallClockMs: 1_800_001 }, { overrunUsd: 0, overrunToolCalls: 0, overrunWallClockMs: 1 }],
+  ['a cap stop measured above the cap', { status: 'BUDGET_EXHAUSTED', reportedCostUsd: 1, reportedToolCalls: 10, wallClockMs: 2_040_000 }, { overrunUsd: 0, overrunToolCalls: 0, overrunWallClockMs: 240_000 }],
 ] as const) {
   test(`agent outcome: ${name} is an overrun: recorded and audited, never verified or published, and the task ends BUDGET_EXHAUSTED`, () => {
     const trace = runTaskSequentially(baseInput(), scripted({
-      runAgent: () => ({ kind: 'runAgent', wallClockMs: 1000, failureClass: answer.status === 'FAILED' ? 'provider' : null, ...answer }),
+      runAgent: () => ({ kind: 'runAgent', failureClass: answer.status === 'FAILED' ? 'provider' : null, ...answer }),
     }));
     const kinds = requestKinds(trace.commands);
     assert.ok(kinds.includes('inspectWorkspace'), 'the overrun attempt is inspected');
@@ -888,6 +891,61 @@ test('agent outcome: an infrastructure error is replaced only with a fresh reser
   assert.equal(ensured(trace).length, 1);
   assert.equal(trace.summary.outcome, 'BUDGET_EXHAUSTED');
   assert.equal(trace.summary.reason, 'task-budget');
+});
+
+// Wall-clock: the cap is 30 minutes (1 800 000 ms); a kill grace of 30 s is the only tolerance.
+const withGrace = baseInput({ policy: policy({ agentKillGraceSeconds: 30 }) });
+const agentDoneAfter = (wallClockMs: number) => scripted({
+  runAgent: () => ({ kind: 'runAgent', status: 'AGENT_DONE', reportedCostUsd: 1, reportedToolCalls: 10, wallClockMs, failureClass: null }),
+});
+
+for (const [name, wallClockMs] of [['exactly at the cap', 1_800_000], ['at the cap plus the kill grace', 1_830_000]] as const) {
+  test(`wall-clock: AGENT_DONE measured ${name} gets the full path`, () => {
+    const trace = runTaskSequentially(withGrace, agentDoneAfter(wallClockMs));
+    assert.deepEqual(requestsOfAttempt(trace, 1).slice(-6), [
+      'runVerification', 'commitAttempt', 'persistEvidence', 'assuranceRound', 'publishBranch', 'upsertPullRequest',
+    ]);
+    assert.deepEqual(effectsOf(trace.commands, 'recordOverrun'), []);
+    assert.equal(trace.summary.outcome, 'WAITING_FOR_HUMAN_REVIEW');
+  });
+}
+
+test('wall-clock: AGENT_DONE measured one millisecond above the cap plus the kill grace is an overrun: inspected only, audited, nothing published', () => {
+  const trace = runTaskSequentially(withGrace, agentDoneAfter(1_830_001));
+  const kinds = requestKinds(trace.commands);
+  assert.ok(kinds.includes('inspectWorkspace'), 'the overrun attempt is inspected');
+  for (const k of NEVER_AFTER_EXHAUSTION) assert.ok(!kinds.includes(k), `${k} after a wall-clock overrun`);
+  // The recorded excess is measured from the cap, not from the end of the grace.
+  assert.deepEqual(effectsOf(trace.commands, 'recordOverrun'),
+    [{ kind: 'recordOverrun', attemptNumber: 1, overrunUsd: 0, overrunToolCalls: 0, overrunWallClockMs: 30_001 }]);
+  const incident = effectsOf(trace.commands, 'audit').find((a) => a.action === 'budget.overrun');
+  assert.equal(incident?.detail['overrunWallClockMs'], 30_001, 'overrun incident audited with the excess');
+  assert.deepEqual(outcomes(trace), [[1, 'budget-exhausted']]);
+  assert.equal(trace.summary.outcome, 'BUDGET_EXHAUSTED');
+  assert.equal(trace.summary.reason, 'overrun');
+  assertLegalProjections(trace);
+});
+
+test('wall-clock: a non-replaceable failure still beats a wall-clock overrun, which is still recorded', () => {
+  const trace = runTaskSequentially(baseInput(), scripted({
+    runAgent: () => ({ kind: 'runAgent', status: 'FAILED', reportedCostUsd: 1, reportedToolCalls: 10, wallClockMs: 1_900_000, failureClass: 'policy-violation' }),
+  }));
+  assert.ok(!requestKinds(trace.commands).includes('inspectWorkspace'), 'not inspected');
+  assert.deepEqual(effectsOf(trace.commands, 'recordOverrun').map((o) => o.overrunWallClockMs), [100_000]);
+  assert.equal(trace.summary.outcome, 'FAILED');
+  assert.equal(trace.summary.reason, 'policy-violation');
+});
+
+test('wall-clock: the policy rule requires the kill grace to be a whole number of seconds, zero or more', () => {
+  assert.deepEqual(orchestrationPolicyErrors(policy({ agentKillGraceSeconds: 30 })), []);
+  for (const bad of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+    assert.deepEqual(orchestrationPolicyErrors(policy({ agentKillGraceSeconds: bad })),
+      ['agentKillGraceSeconds: must be a whole number of seconds, zero or more'], String(bad));
+  }
+});
+
+test('defaults: no kill grace in code; without a stated adapter interval there is no wall-clock tolerance', () => {
+  assert.equal(DEFAULT_ORCHESTRATION_POLICY.agentKillGraceSeconds, 0);
 });
 
 // ---------------------------------------------------------------------------

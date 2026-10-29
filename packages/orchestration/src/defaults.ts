@@ -52,4 +52,7 @@ export const DEFAULT_ORCHESTRATION_POLICY: OrchestrationPolicy = {
   // Policy data with no default in code: while it is unset, no budget-extension
   // approval is offered and a task-cap shortfall ends the task BUDGET_EXHAUSTED.
   maxBudgetExtensionUsd: null,
+  // The policy file sets this to the agent adapter's stop-to-kill interval;
+  // without it the measured wall-clock has no tolerance at all.
+  agentKillGraceSeconds: 0,
 };
