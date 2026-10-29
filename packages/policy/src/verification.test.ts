@@ -6,6 +6,7 @@ import {
   missingMandatory,
   type AssuranceLevel,
 } from './verification.js';
+import { loadVerificationMatrix, parseVerificationMatrix } from './policy-source.js';
 import type { RiskLevel } from '@asep/contracts';
 
 // Table-driven mandatory verification matrix (mirrors verification-matrix.yaml).
@@ -50,4 +51,20 @@ test('release rehearsal (L9) is mandatory only at R4', () => {
 test('missingMandatory reports gaps against a proposed set', () => {
   assert.deepEqual(missingMandatory('R2', ['L0', 'L1']), ['L2', 'L3', 'L4', 'L8']);
   assert.deepEqual(missingMandatory('R0', ['L0', 'L1']), []);
+});
+
+// The pilot verifier parses the matrix bytes it pinned by hash, through the
+// same parser the engine uses, which refuses a document it cannot trust.
+test('the matrix parser reads the canonical document and refuses a malformed one', () => {
+  const doc = parseVerificationMatrix('levels: [L0, L1, L2]\nmatrix:\n  R0: [L0, L1]\n  R1: [L0, L1, L2]\n');
+  assert.deepEqual(doc.matrix['R1'], ['L0', 'L1', 'L2']);
+  assert.deepEqual(loadVerificationMatrix().matrix['R1'], EXPECTED.R1);
+  for (const [text, why] of [
+    ['matrix:\n  R0: [L0]\n', /no list of levels/],
+    ['levels: [L0]\n', /no matrix/],
+    ['levels: [L0]\nmatrix:\n  R0: []\n', /risk "R0" has no list of mandatory levels/],
+    ['levels: [L0]\nmatrix:\n  R0: [L0, L7]\n', /risk "R0" requires unknown level\(s\) L7/],
+  ] as const) {
+    assert.throws(() => parseVerificationMatrix(text), why);
+  }
 });

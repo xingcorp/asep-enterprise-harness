@@ -42,8 +42,9 @@
 //          diff, and checks that link intact raw output;
 //        - requires the harness's record of where each check ran to match the
 //          evidence check for check: in a container of the pinned verification
-//          image with no network, a read-only root and no capabilities, and
-//          every mandatory check passed;
+//          image, under exactly the verification sandbox profile's flags; and
+//          every level the pinned verification matrix makes mandatory for the
+//          task's risk covered by a mandatory check that passed;
 //        - asks the FORGE, through the forge port, which commit the PR's head
 //          points at now, and requires it to be the attempt's result commit;
 //        - accepts only the provider id the real Claude adapter produces for the
@@ -102,7 +103,7 @@ const DISPOSITIONS = new Set(['ACCEPTED', 'REJECTED', 'CHANGES_REQUESTED', 'PEND
 const EVIDENCE_KIND = 'evidence-bundle';
 const RESOLVER_METHODS = [
   'resolveAttempt', 'resolveEvidence', 'resolvePullRequest', 'resolveLivePullRequest', 'resolveHumanAuthorization',
-  'pinnedAgent', 'resolveAgentRun', 'resolveArtifact', 'resolveVerification',
+  'pinnedAgent', 'verificationPolicy', 'resolveAgentRun', 'resolveArtifact', 'resolveVerification',
 ];
 // A pilot task reaches the human-review handoff and stops there: the harness
 // never moves a task past it.
@@ -257,10 +258,14 @@ export function verifyManifest(manifest) {
 //
 // The resolver contract (all methods async except pinnedAgent, all return null
 // when not found):
-//   pinnedAgent() -> { model, cliVersion, agentImage, proxyImage, modelBaseUrl, verifyImage }
+//   pinnedAgent() -> { model, cliVersion, agentImage, proxyImage, modelBaseUrl, verifyImage,
+//                      verificationMatrixSha256 }
 //     the pilot's pinned Claude and verification configuration (the pilot
 //     entrypoint's own settings), against which every attempt's agent run and
 //     verification are checked;
+//   verificationPolicy() -> { matrixSha256, levels, matrix: { <risk>: [levels] }, sandboxFlags }
+//     the mandatory verification matrix of that hash and the verification
+//     sandbox profile's own flags (authority-resolver loadVerificationPolicy);
 //   resolveAttempt(trace) -> {
 //     attemptId, taskId, runId, repositoryBindingId,
 //     baseSha, resultSha, evidenceArtifactId, evidenceSha256, providerId,
@@ -346,6 +351,20 @@ export async function verifyManifestAgainstAuthority(manifest, resolver) {
     return { ok: false, reasons };
   }
   const realProviderId = realClaudeProviderId(pins);
+  // What verification must have covered, and under which sandbox: the pinned
+  // matrix and the sandbox profile, never the attempt's own claims.
+  let policy;
+  try {
+    policy = resolver.verificationPolicy();
+  } catch (e) {
+    policy = undefined;
+    reasons.push(`the resolver cannot report the verification policy — fail closed (${errText(e)})`);
+  }
+  const policyProblem = verificationPolicyProblem(policy, pins);
+  if (policyProblem !== undefined) {
+    if (policy !== undefined) reasons.push(`the verification policy is unusable: ${policyProblem}`);
+    return { ok: false, reasons };
+  }
 
   const tasks = Array.isArray(manifest.tasks) ? manifest.tasks : [];
   for (const t of tasks) {
@@ -472,7 +491,7 @@ export async function verifyManifestAgainstAuthority(manifest, resolver) {
 
     // Where the checks ran: the harness's own record, which must match the
     // evidence check for check.
-    reasons.push(...await provenanceReasons(resolver, label, trace, attempt, pins, evidence ? evidence.bundle : null));
+    reasons.push(...await provenanceReasons(resolver, label, trace, attempt, pins, policy, evidence ? evidence.bundle : null));
 
     // Pull request: the PR named in the trace must EXIST, point at the SAME
     // attempt, and carry the SAME url the manifest declares.
@@ -560,12 +579,30 @@ export async function verifyManifestAgainstAuthority(manifest, resolver) {
   return { ok: reasons.length === 0, reasons };
 }
 
-const PIN_FIELDS = ['model', 'cliVersion', 'agentImage', 'proxyImage', 'modelBaseUrl', 'verifyImage'];
+const PIN_FIELDS = ['model', 'cliVersion', 'agentImage', 'proxyImage', 'modelBaseUrl', 'verifyImage', 'verificationMatrixSha256'];
 
 function pinsProblem(pins) {
   if (!isObject(pins)) return 'no pins';
   const missing = PIN_FIELDS.filter((k) => typeof pins[k] !== 'string' || pins[k].trim() === '');
   return missing.length > 0 ? `missing ${missing.join(', ')}` : undefined;
+}
+
+const isStringList = (v) => Array.isArray(v) && v.length > 0 && v.every((x) => typeof x === 'string' && x !== '');
+
+function verificationPolicyProblem(policy, pins) {
+  if (!isObject(policy)) return 'no policy';
+  if (policy.matrixSha256 !== pins.verificationMatrixSha256) {
+    return `it is matrix ${JSON.stringify(policy.matrixSha256)}, not the pinned ${pins.verificationMatrixSha256}`;
+  }
+  if (!isStringList(policy.levels)) return 'it has no levels';
+  if (!isObject(policy.matrix)) return 'it has no matrix';
+  for (const [risk, levels] of Object.entries(policy.matrix)) {
+    if (!isStringList(levels) || !levels.every((l) => policy.levels.includes(l))) {
+      return `its mandatory levels for ${risk} are not levels it knows`;
+    }
+  }
+  if (!isStringList(policy.sandboxFlags)) return 'it has no sandbox profile flags';
+  return undefined;
 }
 
 // One artifact of each kind, whose stored bytes still hash to what was
@@ -753,39 +790,92 @@ async function bundleArtifactReasons(resolver, label, trace, bundle) {
   return reasons;
 }
 
-// The isolation every verification container runs under (the Docker sandbox's
-// own flags, adapters/command-runner/src/sandbox.ts).
-const REQUIRED_SANDBOX_FLAGS = Object.freeze([
-  ['--network', 'none'], ['--read-only'], ['--cap-drop', 'ALL'], ['--security-opt', 'no-new-privileges'],
-]);
+// What each assurance level verifies, as the evidence bundle names it (the
+// ladder in policies/verification-matrix.yaml, in the same order as the check
+// categories above): a check recorded at a level must be a check of its kind.
+const LEVEL_CATEGORY = Object.freeze({
+  L0: 'workspace', L1: 'static', L2: 'unit', L3: 'integration', L4: 'architecture',
+  L5: 'security', L6: 'acceptance', L7: 'nonfunctional', L8: 'review', L9: 'release',
+});
 
-function sandboxFlagReasons(label, name, runFlags) {
-  const flags = Array.isArray(runFlags) && runFlags.every((x) => typeof x === 'string') ? runFlags : [];
-  const has = (seq) => flags.some((_, k) => seq.every((s, j) => flags[k + j] === s));
-  const reasons = [];
-  for (const seq of REQUIRED_SANDBOX_FLAGS) {
-    if (!has(seq)) reasons.push(`${label}: ${name} ran without ${seq.join(' ')}`);
+// The spellings docker accepts for the flags of the sandbox profile.
+const FLAG_ALIASES = Object.freeze({ '--net': '--network', '-v': '--volume', '-l': '--label' });
+const BOOLEAN_FLAGS = new Set(['--rm', '--read-only']);
+
+/**
+ * docker run flags in one spelling: `--flag=value` split in two, aliases
+ * resolved, `--bool=true` as `--bool`. Anything else is kept as it is, so it
+ * can only differ from the profile.
+ */
+export function normalizeDockerFlags(flags) {
+  const out = [];
+  for (const raw of flags) {
+    const eq = raw.startsWith('-') ? raw.indexOf('=') : -1;
+    const name = eq > 0 ? raw.slice(0, eq) : raw;
+    const flag = Object.hasOwn(FLAG_ALIASES, name) ? FLAG_ALIASES[name] : name;
+    if (eq < 0) out.push(flag);
+    else if (BOOLEAN_FLAGS.has(flag) && raw.slice(eq + 1) === 'true') out.push(flag);
+    else if (BOOLEAN_FLAGS.has(flag)) out.push(`${flag}=${raw.slice(eq + 1)}`);
+    else out.push(flag, raw.slice(eq + 1));
   }
-  flags.forEach((x, k) => {
-    if ((x === '--network' || x === '--net') && flags[k + 1] !== 'none') {
-      reasons.push(`${label}: ${name} ran with ${x} ${flags[k + 1]}`);
-    } else if (/^--net(work)?=/.test(x) && x.slice(x.indexOf('=') + 1) !== 'none') {
-      reasons.push(`${label}: ${name} ran with ${x}`);
-    } else if (/^--(privileged|cap-add)(=|$)/.test(x)) {
-      reasons.push(`${label}: ${name} ran with ${x}`);
-    }
-  });
+  return out;
+}
+
+/**
+ * The flags a check ran under must be exactly the verification sandbox
+ * profile's: its own flags, then the attempt's working tree as the one
+ * writable mount with its `.git` read-only over it, then the sandbox's labels
+ * for this attempt. Compared whole after normalizing, so no flag can be added,
+ * dropped, reordered or swapped for another spelling of something else.
+ */
+function sandboxFlagReasons(label, name, where, policy, attemptId) {
+  const given = Array.isArray(where.runFlags) && where.runFlags.every((x) => typeof x === 'string')
+    ? normalizeDockerFlags(where.runFlags) : null;
+  if (given === null) return [`${label}: ${name} records no docker run flags`];
+  const profile = normalizeDockerFlags(policy.sandboxFlags);
+  const rest = given.slice(profile.length);
+  // The per-attempt parts are read from the record, then held to their shape:
+  // the working tree is an absolute, normalized path below the root.
+  const mounted = /^(\/[^:]*):\1:rw$/.exec(rest[1] ?? '')?.[1];
+  const tree = mounted !== undefined && mounted.split('/').slice(1).every((p) => p !== '' && p !== '.' && p !== '..')
+    ? mounted : '<working tree>';
+  const labelled = (key) => {
+    const v = rest.find((x, k) => rest[k - 1] === '--label' && x.startsWith(`${key}=`));
+    return v === undefined || v === `${key}=` ? `<${key}>` : v.slice(key.length + 1);
+  };
+  const sandboxId = labelled('asep.sandbox');
+  const expected = [
+    ...profile,
+    '--volume', `${tree}:${tree}:rw`,
+    '--volume', `${tree}/.git:${tree}/.git:ro`,
+    '--label', 'asep.role=verification',
+    '--label', `asep.sandbox=${sandboxId}`,
+    '--label', `asep.workspace=${labelled('asep.workspace')}`,
+    '--label', `asep.attempt=${attemptId}`,
+  ];
+  const reasons = [];
+  const at = expected.findIndex((x, k) => given[k] !== x);
+  if (at >= 0 || given.length !== expected.length) {
+    const k = at >= 0 ? at : expected.length;
+    reasons.push(`${label}: ${name} ran with flags that are not the verification sandbox profile: ` +
+      `at ${k} ${given[k] === undefined ? 'nothing' : JSON.stringify(given[k])} where the profile has ` +
+      `${expected[k] === undefined ? 'nothing' : JSON.stringify(expected[k])}`);
+  }
+  if (typeof where.container !== 'string' || !where.container.startsWith(`${sandboxId}-`)) {
+    reasons.push(`${label}: ${name} ran in container ${JSON.stringify(where.container)}, not one of its sandbox "${sandboxId}"`);
+  }
   return reasons;
 }
 
 /**
  * The harness's record of where the attempt's checks ran: one, intact, for
  * this task, attempt and risk, of a verification that passed, matching the
- * evidence check for check; every check in a container of the pinned
- * verification image under the sandbox's isolation; and at least one
- * mandatory check, every one of which passed.
+ * evidence check for check; every check at a level the matrix knows, of that
+ * level's kind, in a container of the pinned verification image under exactly
+ * the sandbox profile; and every level the matrix makes mandatory for the
+ * task's risk covered by a mandatory check, every one of which passed.
  */
-async function provenanceReasons(resolver, label, trace, attempt, pins, bundle) {
+async function provenanceReasons(resolver, label, trace, attempt, pins, policy, bundle) {
   let list;
   try {
     list = await resolver.resolveVerification(trace);
@@ -813,7 +903,6 @@ async function provenanceReasons(resolver, label, trace, attempt, pins, bundle) 
   if (evidenceChecks && evidenceChecks.length !== r.checks.length) {
     reasons.push(`${label}: the verification provenance record records ${r.checks.length} checks, the evidence bundle ${evidenceChecks.length}`);
   }
-  let mandatory = 0;
   r.checks.forEach((c, k) => {
     if (!isObject(c)) {
       reasons.push(`${label}: provenance check ${k} is not a check record`);
@@ -828,6 +917,14 @@ async function provenanceReasons(resolver, label, trace, attempt, pins, bundle) 
       }
     }
     const name = `check "${c.id}"`;
+    if (!policy.levels.includes(c.level)) {
+      reasons.push(`${label}: ${name} records level ${JSON.stringify(c.level)}, which the verification matrix does not have`);
+    } else if (isObject(e) && e.category !== LEVEL_CATEGORY[c.level]) {
+      reasons.push(`${label}: ${name} is recorded at ${c.level}, but the evidence records a ${JSON.stringify(e.category)} check, not ${LEVEL_CATEGORY[c.level]}`);
+    }
+    if (typeof c.mandatory !== 'boolean') {
+      reasons.push(`${label}: ${name} does not record whether it was mandatory`);
+    }
     const where = c.provenance;
     if (!isObject(where)) {
       reasons.push(`${label}: ${name} has no record of where it ran`);
@@ -837,17 +934,27 @@ async function provenanceReasons(resolver, label, trace, attempt, pins, bundle) 
       if (where.image !== pins.verifyImage) {
         reasons.push(`${label}: ${name} ran in image ${JSON.stringify(where.image)}, not the pinned verification image "${pins.verifyImage}"`);
       }
-      reasons.push(...sandboxFlagReasons(label, name, where.runFlags));
+      reasons.push(...sandboxFlagReasons(label, name, where, policy, trace.attemptId));
     }
-    if (c.mandatory === true) {
-      mandatory += 1;
-      if (c.verdict !== 'PASS' || c.exitCode !== 0) {
-        reasons.push(`${label}: mandatory ${name} did not pass (verdict ${JSON.stringify(c.verdict)}, exit code ${JSON.stringify(c.exitCode)})`);
-      }
+    if (c.mandatory === true && (c.verdict !== 'PASS' || c.exitCode !== 0)) {
+      reasons.push(`${label}: mandatory ${name} did not pass (verdict ${JSON.stringify(c.verdict)}, exit code ${JSON.stringify(c.exitCode)})`);
     }
   });
-  if (mandatory === 0) {
-    reasons.push(`${label}: the verification provenance record records no mandatory check — nothing the plan required was verified`);
+  // Coverage comes from the pinned matrix for the task's own risk, not from
+  // what the record calls mandatory.
+  const required = Object.hasOwn(policy.matrix, attempt.taskRisk) ? policy.matrix[attempt.taskRisk] : undefined;
+  if (required === undefined) {
+    reasons.push(`${label}: the verification matrix has no mandatory levels for the task's risk ${JSON.stringify(attempt.taskRisk)}`);
+    return reasons;
+  }
+  const checks = r.checks.filter(isObject);
+  for (const level of required) {
+    const at = checks.filter((c) => c.level === level);
+    if (at.length === 0) {
+      reasons.push(`${label}: no check covers ${level}, which the verification matrix makes mandatory at ${attempt.taskRisk}`);
+    } else if (!at.some((c) => c.mandatory === true)) {
+      reasons.push(`${label}: ${at.map((c) => `check "${c.id}"`).join(', ')} at ${level}, mandatory at ${attempt.taskRisk}, ${at.length === 1 ? 'is' : 'are'} recorded advisory`);
+    }
   }
   return reasons;
 }
@@ -999,7 +1106,8 @@ const USAGE =
   '  ASEP_OBJECT_STORE_DIR, the GitHub App settings and the Claude pins the pilot\n' +
   '  ran with (ASEP_CLAUDE_MODEL, ASEP_CLAUDE_CLI_VERSION, ASEP_AGENT_IMAGE_DIGEST,\n' +
   '  ASEP_EGRESS_PROXY_IMAGE_DIGEST, ASEP_VERIFY_IMAGE_DIGEST, optional\n' +
-  '  ASEP_ANTHROPIC_BASE_URL) — see the runbook\n' +
+  '  ASEP_ANTHROPIC_BASE_URL), and ASEP_VERIFICATION_MATRIX_SHA256, the sha256 of\n' +
+  '  policies/verification-matrix.yaml the pilot ran under — see the runbook\n' +
   '\n' +
   '--self-check-only skips that cross-check and validates ONLY self-declared\n' +
   'fields. A COMPLETE verdict is REJECTED in that mode by design.\n';

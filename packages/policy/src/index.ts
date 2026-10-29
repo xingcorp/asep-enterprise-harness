@@ -46,6 +46,7 @@ export {
 export {
   loadRiskTaxonomy,
   loadVerificationMatrix,
+  parseVerificationMatrix,
   loadApprovalMatrix,
   loadFailureTaxonomy,
   type RiskTaxonomyDoc,

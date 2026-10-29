@@ -27,7 +27,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { generateKeyPairSync, randomUUID } from 'node:crypto';
+import { createHash, generateKeyPairSync, randomUUID } from 'node:crypto';
 import http from 'node:http';
 import type net from 'node:net';
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
@@ -47,7 +47,7 @@ import {
   // @ts-expect-error - .mjs has no type declarations; runtime import is fine under tsx.
 } from '../../../scripts/pilot/verify-pilot-manifest.mjs';
 import {
-  createSqlAuthorityResolver, filesystemObjectReader,
+  createSqlAuthorityResolver, filesystemObjectReader, loadVerificationPolicy, VERIFICATION_MATRIX_FILE,
   // @ts-expect-error - .mjs has no type declarations; runtime import is fine under tsx.
 } from '../../../scripts/pilot/authority-resolver.mjs';
 import {
@@ -70,6 +70,10 @@ const AGENT_IMAGE = `asep-agent@sha256:${'a'.repeat(64)}`;
 const PROXY_IMAGE = `node@sha256:${'b'.repeat(64)}`;
 // The image the verification sandbox runs checks in.
 const VERIFY_IMAGE = `alpine@sha256:${'c'.repeat(64)}`;
+// The repository's verification matrix, pinned by its hash, and the policy the
+// resolver loads for that pin.
+const MATRIX_SHA = createHash('sha256').update(await readFile(VERIFICATION_MATRIX_FILE)).digest('hex');
+const POLICY = await loadVerificationPolicy(MATRIX_SHA);
 // The pilot's tool policy: the Claude provider runs only under restricted egress.
 const PILOT_POLICY: ToolPolicyProfile = {
   allowedTools: ['read', 'write'], disallowedTools: ['bash', 'network'], networkProfile: 'restricted-egress',
@@ -274,7 +278,7 @@ test('the verifier accepts a run of the real Claude adapter under its pins, and 
     const result = await slice(client, r, true);
     const pins = {
       model: MODEL, cliVersion: CLI_VERSION, agentImage: AGENT_IMAGE, proxyImage: PROXY_IMAGE, modelBaseUrl: r.modelUrl,
-      verifyImage: VERIFY_IMAGE,
+      verifyImage: VERIFY_IMAGE, verificationMatrixSha256: MATRIX_SHA,
     };
     const realId = realClaudeProviderId(pins) as string;
     const attempt = (await client.query('select agent_provider_id from attempts where id = $1', [result.attemptId])).rows[0]!;
@@ -299,6 +303,7 @@ test('the verifier accepts a run of the real Claude adapter under its pins, and 
     const manifest = manifestFor(result, prId, realId, init['session_id'] as string, workOrder.sha256);
     const resolverWith = (p: typeof pins) => createSqlAuthorityResolver(client, {
       reviewerPublicKeyPem: REVIEWER_PUB, objects: filesystemObjectReader(r.objectRoot), forge: r.forge, agent: p,
+      verificationPolicy: POLICY,
     });
     const verify = async (p = pins, m: Record<string, unknown> = manifest) =>
       verifyManifestAgainstAuthority(m, resolverWith(p)) as Promise<{ ok: boolean; reasons: string[] }>;
@@ -320,8 +325,15 @@ test('the verifier accepts a run of the real Claude adapter under its pins, and 
     for (const c of provenance.checks) {
       assert.equal(c.provenance.where, 'container');
       assert.equal(c.provenance.image, VERIFY_IMAGE);
-      assert.ok(c.provenance.runFlags.join(' ').includes('--network none'), c.provenance.runFlags.join(' '));
+      assert.deepEqual(c.provenance.runFlags.slice(0, POLICY.sandboxFlags.length), [...POLICY.sandboxFlags],
+        'the checks ran under the sandbox profile the verifier compares with');
     }
+
+    // The same run at R1: the matrix asks for L2 as well, which a run planned
+    // for R0 did not cover.
+    await client.query(`update tasks set risk = 'R1' where id = $1`, [result.taskId]);
+    await refused(/no check covers L2, which the verification matrix makes mandatory at R1/, pins, claiming({ risk: 'R1' }));
+    await client.query(`update tasks set risk = 'R0' where id = $1`, [result.taskId]);
 
     // The task leaves human review.
     await client.query(`update tasks set status = 'FAILED' where id = $1`, [result.taskId]);
@@ -394,7 +406,7 @@ test('a run through the local agent double is refused, whatever the manifest cla
     const result = await slice(client, r, false);
     const pins = {
       model: MODEL, cliVersion: CLI_VERSION, agentImage: AGENT_IMAGE, proxyImage: PROXY_IMAGE, modelBaseUrl: r.modelUrl,
-      verifyImage: VERIFY_IMAGE,
+      verifyImage: VERIFY_IMAGE, verificationMatrixSha256: MATRIX_SHA,
     };
     const attempt = (await client.query('select agent_provider_id from attempts where id = $1', [result.attemptId])).rows[0]!;
     const workOrder = await workOrderOf(client, result.taskId);
@@ -404,6 +416,7 @@ test('a run through the local agent double is refused, whatever the manifest cla
     await authorize(client, result, prId, result.commitSha);
     const resolver = createSqlAuthorityResolver(client, {
       reviewerPublicKeyPem: REVIEWER_PUB, objects: filesystemObjectReader(r.objectRoot), forge: r.forge, agent: pins,
+      verificationPolicy: POLICY,
     });
 
     // Claimed as the real adapter: everything else about the run checks out,

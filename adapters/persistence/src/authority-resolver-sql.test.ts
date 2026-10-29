@@ -32,6 +32,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash, generateKeyPairSync } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -49,6 +50,8 @@ import {
   createSqlAuthorityResolver,
   filesystemObjectReader,
   sqlBindingReader,
+  loadVerificationPolicy,
+  VERIFICATION_MATRIX_FILE,
   // @ts-expect-error - .mjs has no type declarations; runtime import is fine under tsx.
 } from '../../../scripts/pilot/authority-resolver.mjs';
 import {
@@ -76,10 +79,12 @@ const TASK = 'T'.repeat(26);
 const ATTEMPT = 'A'.repeat(26);
 const PR = 'Q'.repeat(26);
 const RESULT_SHA = 'd'.repeat(40);
+const MATRIX_SHA = createHash('sha256').update(readFileSync(VERIFICATION_MATRIX_FILE)).digest('hex');
+const POLICY = await loadVerificationPolicy(MATRIX_SHA);
 const PINS = {
   model: 'claude-sonnet-4-20250514', cliVersion: '2.1.185', agentImage: `agent@sha256:${'1'.repeat(64)}`,
   proxyImage: `node@sha256:${'2'.repeat(64)}`, modelBaseUrl: 'https://api.anthropic.com',
-  verifyImage: `verify@sha256:${'3'.repeat(64)}`,
+  verifyImage: `verify@sha256:${'3'.repeat(64)}`, verificationMatrixSha256: MATRIX_SHA,
 };
 const REAL_ID = `claude:${PINS.model}@cli-${PINS.cliVersion}`;
 
@@ -139,6 +144,7 @@ function resolverFor(
     objects: filesystemObjectReader(objectRoot),
     forge,
     agent: PINS,
+    verificationPolicy: POLICY,
   });
 }
 

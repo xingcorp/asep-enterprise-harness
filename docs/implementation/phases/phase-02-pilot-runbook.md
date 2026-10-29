@@ -129,7 +129,8 @@ and evidence bytes to. Keep it for the life of the pilot: the verifier reads the
 evidence back from it.
 
 A COMPLETE verdict is gated by `scripts/pilot/verify-pilot-manifest.mjs`. Run
-`pnpm build` first (it loads the built GitHub App adapter), then:
+`pnpm build` first (it loads the built GitHub App adapter, policy package and
+command runner), then:
 
 ```sh
 ASEP_PG_URL=… ASEP_REVIEWER_PUBLIC_KEY=<reviewer public key PEM> \
@@ -137,18 +138,25 @@ ASEP_OBJECT_STORE_DIR=<the pilot's object store> \
 ASEP_GITHUB_APP_ID=… ASEP_GITHUB_PRIVATE_KEY_PATH=… ASEP_GITHUB_INSTALLATION_ID=… \
 ASEP_CLAUDE_MODEL=… ASEP_CLAUDE_CLI_VERSION=… \
 ASEP_AGENT_IMAGE_DIGEST=… ASEP_EGRESS_PROXY_IMAGE_DIGEST=… ASEP_VERIFY_IMAGE_DIGEST=… \
+ASEP_VERIFICATION_MATRIX_SHA256=<sha256 of policies/verification-matrix.yaml> \
 [ASEP_ANTHROPIC_BASE_URL=…] \
   node scripts/pilot/verify-pilot-manifest.mjs <manifest.json>
 ```
 
 Every variable is required except `ASEP_ANTHROPIC_BASE_URL` (the public API by
 default, https only); a missing one is a rejection, not a downgrade. The Claude
-and image variables must hold the values the pilot ran with. For each task the
-verifier, besides matching the manifest against the database rows:
+and image variables must hold the values the pilot ran with.
+`ASEP_VERIFICATION_MATRIX_SHA256` pins the mandatory verification matrix the
+pilot ran under: record `shasum -a 256 policies/verification-matrix.yaml` at the
+start of the pilot. The verifier reads the repository's copy only if it still
+hashes to the pin, and refuses to run otherwise. For each task the verifier,
+besides matching the manifest against the database rows:
 
 - reads the task from the database: it must be `WAITING_FOR_HUMAN_REVIEW`, at a
   risk Phase-2 admission admits (`R0` or `R1`; the manifest's `risk` must be
-  the task's), and the manifest's `baseSha` and `workOrderSha256` must be the
+  the task's — note that the pilot workflow plans checks for `L0` and `L1`
+  only, which covers `R0`; an `R1` task stops at verification for its missing
+  mandatory `L2`, so pilot tasks are `R0`), and the manifest's `baseSha` and `workOrderSha256` must be the
   attempt's base and the work order the task carries. The work order and the
   attempt's context pack must be artifacts of their kind whose stored bytes
   still hash to what is recorded, and the agent's invocation manifest must name
@@ -176,11 +184,18 @@ verifier, besides matching the manifest against the database rows:
 - requires one intact `verification-provenance` artifact of the attempt — the
   harness's record of where each check ran — for this task, attempt and risk,
   with a `PASS` verdict, matching the bundle check for check (id, command, exit
-  code, raw output), every check run in a container of the pinned verification
-  image (`ASEP_VERIFY_IMAGE_DIGEST`) with `--network none`, `--read-only`,
-  `--cap-drop ALL` and `--security-opt no-new-privileges` and no other network,
-  `--privileged` or `--cap-add`, and at least one mandatory check, every one of
-  which passed;
+  code, raw output), every check recorded at a level the matrix has and of
+  that level's kind (`L0` workspace, `L1` static, `L2` unit, …), and run in a
+  container of the pinned verification image (`ASEP_VERIFY_IMAGE_DIGEST`)
+  under exactly the verification sandbox profile — the flags the command
+  runner's `buildSandboxRunFlags` gives the profile, then the attempt's working
+  tree as the one writable mount with its `.git` read-only over it, then the
+  sandbox's labels for this attempt — compared whole after normalizing
+  `--flag=value` and alias spellings (`--net`, `-v`, `-l`), so any added,
+  dropped or changed flag is refused. Coverage is read from the pinned matrix
+  for the task's own risk: every mandatory level must have a check recorded as
+  mandatory (a check at a mandatory level recorded advisory is refused), and
+  every mandatory check must have passed;
 - asks GitHub, through the same GitHub App and forge port the pilot uses, for
   the PR on the attempt's branch, and requires its number and URL to match the
   record and its head to be the attempt's result commit — a PR whose branch has

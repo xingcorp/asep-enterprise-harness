@@ -32,7 +32,13 @@
 //                               stream, egress-proxy log), fetched, re-hashed and
 //                               parsed for what they say about the run
 //   pinnedAgent               → the pilot's pinned Claude configuration, which
-//                               those artifacts are checked against
+//                               those artifacts are checked against, and the
+//                               hash the verification matrix is pinned by
+//   verificationPolicy        → the mandatory verification matrix, read from
+//                               policies/verification-matrix.yaml only when its
+//                               bytes hash to that pin, and the exact flags of
+//                               the verification sandbox profile, from the
+//                               command runner's own builder
 //   resolveHumanAuthorization → the `human_authorizations` row, WITH its ed25519
 //                               signature verified against the reviewer public
 //                               key (migration 0010). `signatureValid` is the
@@ -52,6 +58,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync, statSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { verifyAuthorizationSignature } from './human-authorization-crypto.mjs';
 
 // Environment contract for the production gate. Both are REQUIRED to honour a
@@ -76,6 +83,12 @@ export const MODEL_BASE_URL_ENV = 'ASEP_ANTHROPIC_BASE_URL';
 export const DEFAULT_MODEL_BASE_URL = 'https://api.anthropic.com';
 // The image the pilot's verification sandbox runs checks in.
 export const VERIFY_IMAGE_ENV = 'ASEP_VERIFY_IMAGE_DIGEST';
+// The sha256 of the mandatory verification matrix the pilot ran under: the
+// verifier checks every attempt's coverage against that file, and only when
+// the repository's copy still hashes to it.
+export const VERIFICATION_MATRIX_SHA256_ENV = 'ASEP_VERIFICATION_MATRIX_SHA256';
+export const VERIFICATION_MATRIX_FILE = fileURLToPath(new URL('../../policies/verification-matrix.yaml', import.meta.url));
+const SHA256_HEX = /^[0-9a-f]{64}$/;
 
 // The artifacts the real Claude adapter writes for an attempt that reached the
 // agent container (adapters/agent-claude/src/claude-provider.ts).
@@ -107,7 +120,7 @@ export function normalizeModelBaseUrl(raw) {
  */
 export function pinnedAgentConfig(agent) {
   const out = {};
-  for (const k of ['model', 'cliVersion', 'agentImage', 'proxyImage', 'modelBaseUrl', 'verifyImage']) {
+  for (const k of ['model', 'cliVersion', 'agentImage', 'proxyImage', 'modelBaseUrl', 'verifyImage', 'verificationMatrixSha256']) {
     const v = agent?.[k];
     if (typeof v !== 'string' || v.trim() === '') {
       throw new Error(`the pinned Claude configuration lacks ${k} — refusing to accept an agent run without knowing what the real one is`);
@@ -117,11 +130,86 @@ export function pinnedAgentConfig(agent) {
   for (const k of ['agentImage', 'proxyImage', 'verifyImage']) {
     if (!DIGEST_PINNED.test(out[k])) throw new Error(`the pinned ${k} '${out[k]}' is not digest-pinned (…@sha256:<64hex>)`);
   }
+  if (!SHA256_HEX.test(out.verificationMatrixSha256)) {
+    throw new Error(`the pinned verificationMatrixSha256 '${out.verificationMatrixSha256}' is not a sha256 (64 lowercase hex)`);
+  }
   out.modelBaseUrl = normalizeModelBaseUrl(out.modelBaseUrl);
   return Object.freeze(out);
 }
 
 const utf8 = (bytes) => new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+
+const isStringList = (v) => Array.isArray(v) && v.length > 0 && v.every((x) => typeof x === 'string' && x !== '');
+
+/**
+ * Validate and freeze the verification policy a resolver checks attempts
+ * against: the matrix's hash, its levels, the mandatory levels per risk, and
+ * the exact flags of the verification sandbox profile (mounts and labels are
+ * per attempt and checked by shape).
+ */
+export function verificationPolicyConfig(policy) {
+  if (!policy || typeof policy !== 'object') throw new Error('no verification policy — refusing to check coverage against nothing');
+  if (typeof policy.matrixSha256 !== 'string' || !SHA256_HEX.test(policy.matrixSha256)) {
+    throw new Error('the verification policy does not say which matrix it is (matrixSha256)');
+  }
+  if (!isStringList(policy.levels)) throw new Error('the verification policy has no levels');
+  if (!policy.matrix || typeof policy.matrix !== 'object' || Array.isArray(policy.matrix)) {
+    throw new Error('the verification policy has no matrix');
+  }
+  const matrix = {};
+  for (const [risk, levels] of Object.entries(policy.matrix)) {
+    if (!isStringList(levels) || !levels.every((l) => policy.levels.includes(l))) {
+      throw new Error(`the verification policy's mandatory levels for ${risk} are not levels it knows`);
+    }
+    matrix[risk] = Object.freeze([...levels]);
+  }
+  if (!isStringList(policy.sandboxFlags)) throw new Error('the verification policy has no sandbox profile flags');
+  return Object.freeze({
+    matrixSha256: policy.matrixSha256,
+    levels: Object.freeze([...policy.levels]),
+    matrix: Object.freeze(matrix),
+    sandboxFlags: Object.freeze([...policy.sandboxFlags]),
+  });
+}
+
+/**
+ * The verification policy the pilot pinned: policies/verification-matrix.yaml,
+ * read only when its bytes hash to `matrixSha256` and parsed by the policy
+ * package's own parser, and the verification sandbox profile from the command
+ * runner's own flag builder — both from the built packages (`pnpm build`).
+ */
+export async function loadVerificationPolicy(matrixSha256, { matrixFile = VERIFICATION_MATRIX_FILE } = {}) {
+  if (typeof matrixSha256 !== 'string' || !SHA256_HEX.test(matrixSha256)) {
+    throw new Error(`the pinned verification matrix hash '${matrixSha256}' is not a sha256 (64 lowercase hex)`);
+  }
+  let bytes;
+  try {
+    bytes = readFileSync(matrixFile);
+  } catch (e) {
+    throw new Error(`cannot read the verification matrix at "${matrixFile}": ${e.message}`);
+  }
+  const actual = sha256Hex(bytes);
+  if (actual !== matrixSha256) {
+    throw new Error(`the verification matrix at "${matrixFile}" hashes to ${actual}, not the pinned ${matrixSha256} — refusing to check coverage against a policy the pilot did not run under`);
+  }
+  const load = async (rel) => {
+    const url = new URL(rel, import.meta.url);
+    try {
+      return await import(url.href);
+    } catch (e) {
+      throw new Error(`cannot load ${url.pathname} — run \`pnpm build\` first: ${e.message}`);
+    }
+  };
+  const policy = await load('../../packages/policy/dist/index.js');
+  const runner = await load('../../adapters/command-runner/dist/index.js');
+  const doc = policy.parseVerificationMatrix(utf8(bytes));
+  // The profile's own flags: what buildSandboxRunFlags gives a verification
+  // sandbox under the provider's defaults, before any mount.
+  const sandboxFlags = runner.buildSandboxRunFlags('verification-no-network', {
+    workspaceId: 'profile', readOnlyPaths: [], writablePaths: [],
+  });
+  return verificationPolicyConfig({ matrixSha256: actual, levels: doc.levels, matrix: doc.matrix, sandboxFlags });
+}
 
 function parseJsonObject(bytes) {
   try {
@@ -248,8 +336,12 @@ export function sqlBindingReader(db) {
  *     rather than taken from its metadata row;
  *   forge — the forge port's PR lookup, so a PR is checked as it is now;
  *   agent — the pilot's pinned configuration { model, cliVersion, agentImage,
- *     proxyImage, modelBaseUrl, verifyImage }, so only a run of the real
- *     adapter under those pins, verified in that image, is accepted.
+ *     proxyImage, modelBaseUrl, verifyImage, verificationMatrixSha256 }, so
+ *     only a run of the real adapter under those pins, verified in that image,
+ *     is accepted;
+ *   verificationPolicy — what loadVerificationPolicy returns for that matrix
+ *     hash, so coverage is checked against the pinned matrix and the sandbox
+ *     against its exact profile.
  *   All REQUIRED: without any one of them a check would silently not run, so
  *   the factory refuses to build.
  */
@@ -275,6 +367,10 @@ export function createSqlAuthorityResolver(db, opts) {
     throw new Error('createSqlAuthorityResolver requires the forge port — refusing to trust a PR record without its live state');
   }
   const agent = pinnedAgentConfig(opts?.agent);
+  const verification = verificationPolicyConfig(opts?.verificationPolicy);
+  if (verification.matrixSha256 !== agent.verificationMatrixSha256) {
+    throw new Error(`the verification policy is matrix ${verification.matrixSha256}, not the pinned ${agent.verificationMatrixSha256}`);
+  }
 
   // Scope every lookup by the trace's tenant pair. A manifest that names another
   // tenant's attempt resolves to zero rows and fails closed.
@@ -292,6 +388,10 @@ export function createSqlAuthorityResolver(db, opts) {
   return {
     pinnedAgent() {
       return agent;
+    },
+
+    verificationPolicy() {
+      return verification;
     },
 
     // The artifacts the real adapter recorded for this attempt, each re-hashed
@@ -556,6 +656,7 @@ export async function createResolverFromEnv(env = process.env) {
   if (!isDir) throw new Error(`${OBJECT_STORE_DIR_ENV} "${objectDir}" is not a directory`);
   const github = githubAppFromEnv(env);
   const agent = agentPinsFromEnv(env);
+  const verificationPolicy = await loadVerificationPolicy(agent.verificationMatrixSha256);
 
   const { Pool } = await import('pg');
   const pool = new Pool({ connectionString: pgUrl });
@@ -569,7 +670,7 @@ export async function createResolverFromEnv(env = process.env) {
     const forge = await createGitHubForgePort(db, github);
     return {
       resolver: createSqlAuthorityResolver(db, {
-        reviewerPublicKeyPem, objects: filesystemObjectReader(objectDir), forge, agent,
+        reviewerPublicKeyPem, objects: filesystemObjectReader(objectDir), forge, agent, verificationPolicy,
       }),
       close: () => pool.end(),
     };
@@ -605,6 +706,7 @@ function agentPinsFromEnv(env) {
     proxyImage: need(PROXY_IMAGE_ENV),
     modelBaseUrl,
     verifyImage: need(VERIFY_IMAGE_ENV),
+    verificationMatrixSha256: need(VERIFICATION_MATRIX_SHA256_ENV),
   });
 }
 

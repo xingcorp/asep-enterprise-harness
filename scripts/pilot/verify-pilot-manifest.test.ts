@@ -9,7 +9,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash, generateKeyPairSync } from 'node:crypto';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -18,6 +18,7 @@ import {
   verifyManifest,
   verifyManifestAgainstAuthority,
   realClaudeProviderId,
+  normalizeDockerFlags,
   MIN_PILOT_TASKS,
   // @ts-expect-error - .mjs sibling has no type declarations; runtime import is fine under tsx.
 } from './verify-pilot-manifest.mjs';
@@ -27,6 +28,8 @@ import {
   filesystemObjectReader,
   sqlBindingReader,
   createGitHubForgePort,
+  loadVerificationPolicy,
+  VERIFICATION_MATRIX_FILE,
   // @ts-expect-error - .mjs sibling has no type declarations; runtime import is fine under tsx.
 } from './authority-resolver.mjs';
 import {
@@ -38,6 +41,10 @@ console.log('SUITE-ID: asep-suite:pilot-manifest');
 
 const SHA64 = 'a'.repeat(64);
 const SHA40 = '0'.repeat(40);
+// The repository's verification matrix, pinned by its hash as the operator pins
+// it, and the policy the resolver loads for that pin.
+const MATRIX_SHA = createHash('sha256').update(readFileSync(VERIFICATION_MATRIX_FILE)).digest('hex');
+const POLICY = await loadVerificationPolicy(MATRIX_SHA);
 // The pilot's pinned Claude configuration, and the id the real adapter reports
 // for it.
 const PINS = Object.freeze({
@@ -47,6 +54,7 @@ const PINS = Object.freeze({
   proxyImage: `node@sha256:${'2'.repeat(64)}`,
   modelBaseUrl: 'https://api.anthropic.com',
   verifyImage: `verify@sha256:${'6'.repeat(64)}`,
+  verificationMatrixSha256: MATRIX_SHA,
 });
 const REAL_ID = 'claude:claude-sonnet@cli-1.2.3';
 
@@ -213,12 +221,38 @@ const resultOf = (i: number) => (i + 1).toString(16).padStart(40, '0');
 const workOrderShaOf = (i: number) => i.toString(16).padStart(64, '0');
 const contextPackShaOf = (i: number) => i.toString(16).padStart(64, 'c');
 const DIFF_SHA = '7'.repeat(64);
-// The hardened flags the Docker sandbox runs verification with (mounts and
-// labels left out).
-const VERIFY_FLAGS = Object.freeze([
+// The hardened flags of the verification sandbox profile, then what a sandbox
+// adds for one attempt: its working tree as the one writable mount with `.git`
+// read-only over it, and its labels.
+const PROFILE_FLAGS = Object.freeze([
   'run', '--rm', '--network', 'none', '--read-only', '--tmpfs', '/tmp', '--cap-drop', 'ALL',
   '--security-opt', 'no-new-privileges', '--pids-limit', '256', '--cpus', '1', '--memory', '512m',
 ]);
+const TREE = '/work/wt';
+const verifyFlags = (i: number): string[] => [
+  ...PROFILE_FLAGS,
+  '-v', `${TREE}:${TREE}:rw`, '-v', `${TREE}/.git:${TREE}/.git:ro`,
+  '--label', 'asep.role=verification', '--label', `asep.sandbox=sb-${i}`,
+  '--label', 'asep.workspace=ws-1', '--label', `asep.attempt=att-${i}`,
+];
+// R1, the genuine tasks' risk, makes L0, L1 and L2 mandatory.
+const GENUINE_CHECKS = [['L0-workspace', 'workspace'], ['L1-static', 'static'], ['L2-unit', 'unit']] as const;
+
+test('the verification policy is the pinned matrix and the sandbox profile the command runner builds', () => {
+  assert.deepEqual([...POLICY.sandboxFlags], [...PROFILE_FLAGS]);
+  assert.deepEqual([...POLICY.matrix.R1], ['L0', 'L1', 'L2']);
+  assert.equal(POLICY.matrixSha256, MATRIX_SHA);
+});
+
+test('a verification matrix that does not hash to its pin is never loaded', async () => {
+  await assert.rejects(() => loadVerificationPolicy('b'.repeat(64)), /hashes to [0-9a-f]{64}, not the pinned b{64}/);
+  await assert.rejects(() => loadVerificationPolicy('not-a-hash'), /is not a sha256/);
+  const dir = mkdtempSync(join(tmpdir(), 'asep-matrix-'));
+  const edited = join(dir, 'verification-matrix.yaml');
+  // The reviewer's case: R1 asking for L0 only.
+  writeFileSync(edited, readFileSync(VERIFICATION_MATRIX_FILE, 'utf8').replace('R1: [L0, L1, L2]', 'R1: [L0]'));
+  await assert.rejects(() => loadVerificationPolicy(MATRIX_SHA, { matrixFile: edited }), /hashes to .* not the pinned/);
+});
 
 function genuineBundle(i: number): Record<string, any> {
   return {
@@ -229,8 +263,8 @@ function genuineBundle(i: number): Record<string, any> {
     createdAt: '2026-10-29T00:00:00.000Z',
     environment: { imageDigest: PINS.agentImage, lockfileHash: 'f'.repeat(64), nodeVersion: 'v24.6.0' },
     diff: { artifactId: `diff-${i}`, sha256: DIFF_SHA },
-    checks: ['L0-workspace', 'L1-static'].map((id, k) => ({
-      id, category: k === 0 ? 'workspace' : 'static', command: 'git status --porcelain', exitCode: 0, durationMs: 0,
+    checks: GENUINE_CHECKS.map(([id, category], k) => ({
+      id, category, command: 'git status --porcelain', exitCode: 0, durationMs: 0,
       stdoutArtifactId: `out-${i}-${k}`, stderrArtifactId: `err-${i}-${k}`,
     })),
   };
@@ -246,7 +280,7 @@ function genuineProvenance(i: number): Record<string, any> {
     checks: genuineBundle(i).checks.map((c: Record<string, unknown>, k: number) => ({
       id: c.id, level: `L${k}`, mandatory: true, verdict: 'PASS', command: c.command, exitCode: c.exitCode,
       stdoutArtifactId: c.stdoutArtifactId, stderrArtifactId: c.stderrArtifactId,
-      provenance: { where: 'container', image: PINS.verifyImage, container: `sb-${i}-${k + 1}`, runFlags: VERIFY_FLAGS },
+      provenance: { where: 'container', image: PINS.verifyImage, container: `sb-${i}-${k + 1}`, runFlags: verifyFlags(i) },
     })),
   };
 }
@@ -267,6 +301,7 @@ function genuineArtifact(i: number, id: string): Record<string, unknown> | null 
 // this authority to drive a specific mismatch.
 function genuineAuthority(over: {
   pins?: () => unknown;
+  policy?: () => unknown;
   agentRun?: (i: number, base: Record<string, any>) => unknown;
   attempt?: (i: number, base: Record<string, unknown>) => Record<string, unknown> | null;
   evidence?: (i: number, base: Record<string, any>) => Record<string, unknown> | null;
@@ -281,6 +316,9 @@ function genuineAuthority(over: {
   return {
     pinnedAgent() {
       return over.pins ? over.pins() : PINS;
+    },
+    verificationPolicy() {
+      return over.policy ? over.policy() : POLICY;
     },
     // What the real adapter recorded for this attempt: its invocation
     // manifest, the CLI's event stream and the egress proxy's log, each intact.
@@ -485,10 +523,11 @@ test('HIGH-009: a manifest disposition that disagrees with the authoritative rec
 
 // --- the evidence bytes, the live PR, and what the signature binds ----------------
 
-async function rejectsWith(authority: ReturnType<typeof genuineAuthority>, pattern: RegExp) {
+async function rejectsWith(authority: ReturnType<typeof genuineAuthority>, pattern: RegExp, what = '') {
   const res = await verifyManifestAgainstAuthority(makeManifest(MIN_PILOT_TASKS), authority);
-  assert.equal(res.ok, false, `expected a rejection matching ${pattern}`);
-  assert.ok(res.reasons.some((r: string) => pattern.test(r)), `${pattern} not among: ${res.reasons.join('; ')}`);
+  const of = what === '' ? '' : `${what}: `;
+  assert.equal(res.ok, false, `${of}expected a rejection matching ${pattern}`);
+  assert.ok(res.reasons.some((r: string) => pattern.test(r)), `${of}${pattern} not among: ${res.reasons.join('; ')}`);
 }
 
 test('evidence whose stored bytes no longer hash to the recorded sha256 is rejected', async () => {
@@ -839,7 +878,7 @@ test('a provenance record of another task, attempt or risk, or of a verification
 });
 
 test('a provenance record that does not match the evidence check for check is refused', async () => {
-  await rejectsWith(withRecord((r) => { r.checks.pop(); }), /records 1 checks, the evidence bundle 2/);
+  await rejectsWith(withRecord((r) => { r.checks.pop(); }), /records 2 checks, the evidence bundle 3/);
   await rejectsWith(withRecord((r) => { r.checks = 'ran'; }), /records no checks/);
   for (const field of ['id', 'command', 'exitCode', 'stdoutArtifactId', 'stderrArtifactId']) {
     await rejectsWith(withRecord((r) => { r.checks[1][field] = field === 'exitCode' ? 7 : 'other'; }),
@@ -854,57 +893,171 @@ test('a check that did not run in the pinned, hardened verification sandbox is r
     /check "L0-workspace" has no record of where it ran/);
   await rejectsWith(withRecord((r) => { r.checks[0].provenance.image = `verify@sha256:${'9'.repeat(64)}`; }),
     /check "L0-workspace" ran in image .* not the pinned verification image/);
-  const flags = (edit: (f: string[]) => string[]) => withRecord((r) => { r.checks[0].provenance.runFlags = edit([...VERIFY_FLAGS]); });
-  for (const [drop, why] of [
-    [['--network', 'none'], /without --network none/],
-    [['--read-only'], /without --read-only/],
-    [['--cap-drop', 'ALL'], /without --cap-drop ALL/],
-    [['--security-opt', 'no-new-privileges'], /without --security-opt no-new-privileges/],
-  ] as Array<[string[], RegExp]>) {
-    await rejectsWith(flags((f) => {
-      const at = f.findIndex((x, k) => drop.every((d, j) => f[k + j] === d));
-      f.splice(at, drop.length);
-      return f;
-    }), why);
-  }
-  await rejectsWith(flags((f) => [...f, '--network', 'host']), /with --network host/);
-  await rejectsWith(flags((f) => [...f, '--network=bridge']), /with --network=bridge/);
-  await rejectsWith(flags((f) => [...f, '--privileged']), /with --privileged/);
-  await rejectsWith(flags((f) => [...f, '--cap-add', 'NET_ADMIN']), /with --cap-add/);
-  await rejectsWith(withRecord((r) => { r.checks[0].provenance.runFlags = 'run --rm'; }), /without --network none/);
 });
 
-test('a verification with no mandatory check, or with a mandatory check that did not pass, is refused', async () => {
-  await rejectsWith(withRecord((r) => { for (const c of r.checks) c.mandatory = false; }), /records no mandatory check/);
+// The flags a check ran under are compared whole with the sandbox profile, not
+// searched for known-dangerous ones: any flag added, dropped or changed, in any
+// spelling docker accepts, is refused.
+test('a check whose docker flags are not exactly the verification sandbox profile is refused', async () => {
+  const flags = (edit: (f: string[], i: number) => string[]) => withRecord((r) => {
+    const i = Number(String(r.attemptId).replace(/\D/g, ''));
+    r.checks[0].provenance.runFlags = edit(verifyFlags(i), i);
+  });
+  const notProfile = /check "L0-workspace" ran with flags that are not the verification sandbox profile/;
+  const without = (f: string[], ...drop: string[]) => {
+    const at = f.findIndex((x, k) => drop.every((d, j) => f[k + j] === d));
+    assert.ok(at >= 0, `${drop.join(' ')} is in the profile`);
+    f.splice(at, drop.length);
+    return f;
+  };
+  const swap = (f: string[], from: string[], to: string[]) => {
+    const at = f.findIndex((x, k) => from.every((d, j) => f[k + j] === d));
+    assert.ok(at >= 0, `${from.join(' ')} is in the profile`);
+    f.splice(at, from.length, ...to);
+    return f;
+  };
+  const refused: Array<[string, (f: string[], i: number) => string[]]> = [
+    ['--network none dropped', (f) => without(f, '--network', 'none')],
+    ['--read-only dropped', (f) => without(f, '--read-only')],
+    ['--cap-drop ALL dropped', (f) => without(f, '--cap-drop', 'ALL')],
+    ['no-new-privileges dropped', (f) => without(f, '--security-opt', 'no-new-privileges')],
+    ['--net host appended', (f) => [...f, '--net', 'host']],
+    ['--net=host appended', (f) => [...f, '--net=host']],
+    ['--network=host appended', (f) => [...f, '--network=host']],
+    ['--net host instead of --network none', (f) => swap(f, ['--network', 'none'], ['--net', 'host'])],
+    ['--net=host instead of --network none', (f) => swap(f, ['--network', 'none'], ['--net=host'])],
+    ['--network=host instead of --network none', (f) => swap(f, ['--network', 'none'], ['--network=host'])],
+    ['--network=bridge appended', (f) => [...f, '--network=bridge']],
+    ['--privileged appended', (f) => [...f, '--privileged']],
+    ['--cap-add NET_ADMIN appended', (f) => [...f, '--cap-add', 'NET_ADMIN']],
+    ['the docker socket mounted', (f) => [...f, '-v', '/var/run/docker.sock:/var/run/docker.sock']],
+    ['a read-only root made writable', (f) => swap(f, ['--read-only'], ['--read-only=false'])],
+    ['a looser memory limit', (f) => swap(f, ['--memory', '512m'], ['--memory', '64g'])],
+    ['.git left writable', (f) => without(f, '-v', `${TREE}/.git:${TREE}/.git:ro`)],
+    ['a second writable mount', (f) => swap(f, ['-v', `${TREE}:${TREE}:rw`], ['-v', `${TREE}:${TREE}:rw`, '-v', '/home:/home:rw'])],
+    ['the host root as the working tree', (f, i) => [...PROFILE_FLAGS, '-v', '/:/:rw', '-v', '//.git://.git:ro',
+      ...verifyFlags(i).slice(PROFILE_FLAGS.length + 4)]],
+    ['a working tree that climbs out', (f) => swap(swap(f, ['-v', `${TREE}:${TREE}:rw`], ['-v', '/work/..:/work/..:rw']),
+      ['-v', `${TREE}/.git:${TREE}/.git:ro`], ['-v', '/work/../.git:/work/../.git:ro'])],
+    ['another attempt\'s label', (f, i) => swap(f, ['--label', `asep.attempt=att-${i}`], ['--label', `asep.attempt=att-${i + 100}`])],
+    ['the flags reordered', (f) => swap(f, ['--read-only', '--tmpfs', '/tmp'], ['--tmpfs', '/tmp', '--read-only'])],
+  ];
+  for (const [what, edit] of refused) await rejectsWith(flags(edit), notProfile, what);
+  await rejectsWith(withRecord((r) => { r.checks[0].provenance.runFlags = 'run --rm'; }),
+    /check "L0-workspace" records no docker run flags/);
+  await rejectsWith(withRecord((r) => { r.checks[0].provenance.container = 'elsewhere-1'; }),
+    /ran in container "elsewhere-1", not one of its sandbox "sb-\d+"/);
+  // The same profile in another spelling docker accepts is the same profile.
+  const respelled = await verifyManifestAgainstAuthority(makeManifest(MIN_PILOT_TASKS), flags((f) => {
+    swap(f, ['--network', 'none'], ['--network=none']);
+    swap(f, ['--rm'], ['--rm=true']);
+    swap(f, ['--label', 'asep.role=verification'], ['-l', 'asep.role=verification']);
+    return swap(f, ['--cap-drop', 'ALL'], ['--cap-drop=ALL']);
+  }));
+  assert.equal(respelled.ok, true, respelled.reasons.join('; '));
+  assert.deepEqual(normalizeDockerFlags(['--net=host', '-v', 'a:a:ro', '--rm=true', '--read-only=false', '-l', 'k=v']),
+    ['--network', 'host', '--volume', 'a:a:ro', '--rm', '--read-only=false', '--label', 'k=v']);
+});
+
+// Both the evidence bundle and the provenance record, edited together, so only
+// the coverage of the checks differs from a genuine run.
+const withChecks = (edit: (bundleChecks: any[], recordChecks: any[]) => void) => genuineAuthority({
+  evidence: (i, base) => {
+    const bundle = JSON.parse(JSON.stringify(base.bundle));
+    edit(bundle.checks, []);
+    return { ...base, bundle };
+  },
+  verification: (i, base) => {
+    const record = JSON.parse(JSON.stringify(base[0]!.record));
+    edit([], record.checks);
+    return [{ ...base[0], record }];
+  },
+});
+
+// What verification must cover is the pinned matrix's row for the task's own
+// risk: R1 makes L0, L1 and L2 mandatory, whatever the record calls mandatory.
+test('a verification that does not cover every level the matrix makes mandatory for the task\'s risk is refused', async () => {
+  // The reviewer's probe: R1 with only its L0 check, under an invented plan.
+  const onlyL0 = genuineAuthority({
+    evidence: (i, base) => {
+      const bundle = JSON.parse(JSON.stringify(base.bundle));
+      bundle.checks = bundle.checks.slice(0, 1);
+      return { ...base, bundle };
+    },
+    verification: (i, base) => {
+      const record = JSON.parse(JSON.stringify(base[0]!.record));
+      Object.assign(record, { planId: 'invented', checks: record.checks.slice(0, 1) });
+      return [{ ...base[0], record }];
+    },
+  });
+  const probe = await verifyManifestAgainstAuthority(makeManifest(MIN_PILOT_TASKS), onlyL0);
+  assert.equal(probe.ok, false);
+  assert.ok(probe.reasons.some((r: string) => /no check covers L1, which the verification matrix makes mandatory at R1/.test(r)), probe.reasons.join('; '));
+  assert.ok(probe.reasons.some((r: string) => /no check covers L2, which the verification matrix makes mandatory at R1/.test(r)), probe.reasons.join('; '));
+  // A missing level.
+  await rejectsWith(withChecks((b, r) => { b.pop(); r.pop(); }), /no check covers L2, which the verification matrix makes mandatory at R1/);
+  // A wrong level: the unit check recorded at another level, or at none the matrix has.
+  await rejectsWith(withChecks((b, r) => { if (r[2]) r[2].level = 'L3'; }), /check "L2-unit" is recorded at L3, but the evidence records a "unit" check/);
+  await rejectsWith(withChecks((b, r) => { if (r[2]) r[2].level = 'L3'; }), /no check covers L2/);
+  await rejectsWith(withChecks((b, r) => { if (r[2]) r[2].level = 'L10'; }), /check "L2-unit" records level "L10", which the verification matrix does not have/);
+  await rejectsWith(withChecks((b, r) => { if (b[2]) b[2].category = 'static'; }), /check "L2-unit" is recorded at L2, but the evidence records a "static" check/);
+  // A mandatory check relabelled advisory — passing or not.
+  await rejectsWith(withChecks((b, r) => { if (r[1]) r[1].mandatory = false; }), /check "L1-static" at L1, mandatory at R1, is recorded advisory/);
+  await rejectsWith(withChecks((b, r) => {
+    if (b[1]) b[1].exitCode = 1;
+    if (r[1]) Object.assign(r[1], { exitCode: 1, mandatory: false, verdict: 'FAIL' });
+  }), /check "L1-static" at L1, mandatory at R1, is recorded advisory/);
+  await rejectsWith(withChecks((b, r) => { for (const c of r) c.mandatory = false; }), /at L0, mandatory at R1, is recorded advisory/);
+  await rejectsWith(withChecks((b, r) => { if (r[0]) delete r[0].mandatory; }), /check "L0-workspace" does not record whether it was mandatory/);
+});
+
+test('a mandatory check that did not pass is refused; an advisory check at a level the risk does not require may fail', async () => {
   await rejectsWith(withRecord((r) => { r.checks[0].verdict = 'FAIL'; }), /mandatory check "L0-workspace" did not pass/);
-  const failed = genuineAuthority({
-    evidence: (i, base) => {
-      const bundle = JSON.parse(JSON.stringify(base.bundle));
-      bundle.checks[0].exitCode = 1;
-      return { ...base, bundle };
-    },
-    verification: (i, base) => {
-      const record = JSON.parse(JSON.stringify(base[0]!.record));
-      record.checks[0].exitCode = 1;
-      return [{ ...base[0], record }];
-    },
-  });
-  await rejectsWith(failed, /mandatory check "L0-workspace" did not pass/);
-  // A check the plan does not require may fail without refusing the task.
-  const advisory = genuineAuthority({
-    evidence: (i, base) => {
-      const bundle = JSON.parse(JSON.stringify(base.bundle));
-      bundle.checks[1].exitCode = 1;
-      return { ...base, bundle };
-    },
-    verification: (i, base) => {
-      const record = JSON.parse(JSON.stringify(base[0]!.record));
-      Object.assign(record.checks[1], { exitCode: 1, mandatory: false, verdict: 'FAIL' });
-      return [{ ...base[0], record }];
-    },
-  });
-  const res = await verifyManifestAgainstAuthority(makeManifest(MIN_PILOT_TASKS), advisory);
+  await rejectsWith(withChecks((b, r) => {
+    if (b[0]) b[0].exitCode = 1;
+    if (r[0]) r[0].exitCode = 1;
+  }), /mandatory check "L0-workspace" did not pass/);
+  // L3 is not mandatory at R1: a failing advisory integration check is evidence, not a gate.
+  const extra = (b: any[], r: any[]) => {
+    if (b.length > 0) b.push({ ...b[2], id: 'L3-integration', category: 'integration', exitCode: 1, stdoutArtifactId: b[2].stdoutArtifactId.replace(/-2$/, '-3'), stderrArtifactId: b[2].stderrArtifactId.replace(/-2$/, '-3') });
+    if (r.length > 0) r.push({ ...r[2], id: 'L3-integration', level: 'L3', mandatory: false, verdict: 'FAIL', exitCode: 1, stdoutArtifactId: r[2].stdoutArtifactId.replace(/-2$/, '-3'), stderrArtifactId: r[2].stderrArtifactId.replace(/-2$/, '-3') });
+  };
+  const res = await verifyManifestAgainstAuthority(makeManifest(MIN_PILOT_TASKS), withChecks(extra));
   assert.equal(res.ok, true, res.reasons.join('; '));
+});
+
+test('coverage is read from the matrix row of the task\'s own risk', async () => {
+  // At R0 the matrix asks for L0 and L1 only: the same run without its L2 check is complete.
+  const r0 = (i: number, base: Record<string, unknown>) => ({ ...base, taskRisk: 'R0' });
+  const authority = genuineAuthority({
+    attempt: r0,
+    evidence: (i, base) => {
+      const bundle = JSON.parse(JSON.stringify(base.bundle));
+      bundle.checks.pop();
+      return { ...base, bundle };
+    },
+    verification: (i, base) => {
+      const record = JSON.parse(JSON.stringify(base[0]!.record));
+      Object.assign(record, { risk: 'R0', checks: record.checks.slice(0, 2) });
+      return [{ ...base[0], record }];
+    },
+  });
+  const m = makeManifest(MIN_PILOT_TASKS);
+  for (const t of m.tasks as Record<string, unknown>[]) t.risk = 'R0';
+  const res = await verifyManifestAgainstAuthority(m, authority);
+  assert.equal(res.ok, true, res.reasons.join('; '));
+});
+
+test('a verification policy that is not the pinned matrix, or is malformed, refuses every task', async () => {
+  await rejectsWith(genuineAuthority({ policy: () => ({ ...POLICY, matrixSha256: 'c'.repeat(64) }) }),
+    /the verification policy is unusable: it is matrix "c{64}", not the pinned/);
+  await rejectsWith(genuineAuthority({ policy: () => ({ ...POLICY, matrix: { ...POLICY.matrix, R1: ['L0', 'L42'] } }) }),
+    /its mandatory levels for R1 are not levels it knows/);
+  await rejectsWith(genuineAuthority({ policy: () => ({ ...POLICY, sandboxFlags: [] }) }), /it has no sandbox profile flags/);
+  await rejectsWith(genuineAuthority({ policy: () => { throw new Error('no matrix'); } }),
+    /cannot report the verification policy — fail closed \(no matrix\)/);
+  await rejectsWith(genuineAuthority({ attempt: (i, base) => ({ ...base, taskRisk: 'R9' }) }),
+    /the verification matrix has no mandatory levels for the task's risk "R9"/);
 });
 
 test('HIGH-009: a structurally malformed manifest never reaches the resolver', async () => {
@@ -1018,7 +1171,7 @@ const REVIEWER_PRIV = keys.privateKey.export({ type: 'pkcs8', format: 'pem' }).t
 const NO_OBJECTS = { get: async (key: string) => { throw new Error(`no object at ${key}`); } };
 const NO_FORGE = { findPullRequest: async () => null };
 const resolverOpts = (over: Record<string, unknown> = {}) => ({
-  reviewerPublicKeyPem: REVIEWER_PUB, objects: NO_OBJECTS, forge: NO_FORGE, agent: PINS, ...over,
+  reviewerPublicKeyPem: REVIEWER_PUB, objects: NO_OBJECTS, forge: NO_FORGE, agent: PINS, verificationPolicy: POLICY, ...over,
 });
 
 function signedAuthRow(over: Record<string, unknown> = {}) {
@@ -1122,6 +1275,12 @@ test('a resolver cannot be built without usable Claude pins', () => {
   assert.throws(() => createSqlAuthorityResolver(db, resolverOpts({ agent: { ...PINS, verifyImage: 'alpine:3' } })),
     /verifyImage .* is not digest-pinned/);
   assert.throws(() => createSqlAuthorityResolver(db, resolverOpts({ agent: { ...PINS, modelBaseUrl: 'ftp://x' } })), /http\(s\)/);
+  assert.throws(() => createSqlAuthorityResolver(db, resolverOpts({ agent: { ...PINS, verificationMatrixSha256: 'R1: [L0]' } })),
+    /verificationMatrixSha256 .* is not a sha256/);
+  // The policy must be the matrix the pins name, and be one.
+  assert.throws(() => createSqlAuthorityResolver(db, resolverOpts({ verificationPolicy: undefined })), /no verification policy/);
+  assert.throws(() => createSqlAuthorityResolver(db, resolverOpts({ verificationPolicy: { ...POLICY, matrixSha256: 'd'.repeat(64) } })),
+    /the verification policy is matrix d{64}, not the pinned/);
   // The origin is compared the way the adapter records it.
   const pinned = createSqlAuthorityResolver(db, resolverOpts({ agent: { ...PINS, modelBaseUrl: 'https://api.anthropic.com/' } }))
     .pinnedAgent();
@@ -1365,6 +1524,7 @@ test('HIGH-009 (resolver): createResolverFromEnv fails closed on missing env', a
     ASEP_CLAUDE_MODEL: PINS.model, ASEP_CLAUDE_CLI_VERSION: PINS.cliVersion,
     ASEP_AGENT_IMAGE_DIGEST: PINS.agentImage, ASEP_EGRESS_PROXY_IMAGE_DIGEST: PINS.proxyImage,
     ASEP_VERIFY_IMAGE_DIGEST: PINS.verifyImage,
+    ASEP_VERIFICATION_MATRIX_SHA256: MATRIX_SHA,
   };
   for (const name of Object.keys(pins)) {
     const { [name as keyof typeof pins]: _gone, ...rest } = pins;
@@ -1381,6 +1541,11 @@ test('HIGH-009 (resolver): createResolverFromEnv fails closed on missing env', a
   await assert.rejects(
     () => createResolverFromEnv({ ...withApp, ...pins, ASEP_VERIFY_IMAGE_DIGEST: 'alpine:3' }),
     /verifyImage .* not digest-pinned/,
+  );
+  // A matrix the repository no longer holds is never checked against.
+  await assert.rejects(
+    () => createResolverFromEnv({ ...withApp, ...pins, ASEP_VERIFICATION_MATRIX_SHA256: 'e'.repeat(64) }),
+    /verification matrix .* hashes to [0-9a-f]{64}, not the pinned e{64}/,
   );
 });
 
@@ -1438,16 +1603,18 @@ test('createResolverFromEnv builds the resolver over the real GitHub App forge p
     ASEP_AGENT_IMAGE_DIGEST: PINS.agentImage,
     ASEP_EGRESS_PROXY_IMAGE_DIGEST: PINS.proxyImage,
     ASEP_VERIFY_IMAGE_DIGEST: PINS.verifyImage,
+    ASEP_VERIFICATION_MATRIX_SHA256: MATRIX_SHA,
   });
   try {
     for (const m of [
       'resolveAttempt', 'resolveEvidence', 'resolvePullRequest', 'resolveLivePullRequest', 'resolveHumanAuthorization',
-      'pinnedAgent', 'resolveAgentRun', 'resolveArtifact', 'resolveVerification',
+      'pinnedAgent', 'verificationPolicy', 'resolveAgentRun', 'resolveArtifact', 'resolveVerification',
     ]) {
       assert.equal(typeof handle.resolver[m], 'function', m);
     }
     // No base URL set: the public API, as for the pilot.
     assert.deepEqual({ ...handle.resolver.pinnedAgent() }, PINS);
+    assert.deepEqual(handle.resolver.verificationPolicy(), POLICY);
   } finally {
     await handle.close();
   }
