@@ -55,6 +55,35 @@ export {
   type FailureTaxonomyDoc,
 } from './policy-source.js';
 
+export {
+  REVIEW_POLICY_FILE,
+  REVIEW_SEVERITIES,
+  POLICY_REVIEW_MODES,
+  REASONING_EFFORTS,
+  INDEPENDENT_REVIEWER_KINDS,
+  ReviewPolicyError,
+  parseReviewPolicy,
+  loadReviewPolicy,
+  resolveModelFamily,
+  reviewerIndependence,
+  independentReviewRequirement,
+  isEgressEnabled,
+  isSensitivePath,
+  matchesPathGlob,
+  type ReviewPolicy,
+  type ReviewSeverity,
+  type PolicyReviewMode,
+  type ReasoningEffort,
+  type IndependentReviewerKind,
+  type ReviewerPolicyRole,
+  type ModelFamilyRule,
+  type ReviewerPricing,
+  type ReviewerConfig,
+  type IndependenceFailure,
+  type IndependenceVerdict,
+  type IndependentReviewRequirement,
+} from './review.js';
+
 // ---------------------------------------------------------------------------
 // Legacy gate-policy surface (kept compatible). It is now DERIVED from the
 // canonical approval matrix rather than being an independent hardcoded table,

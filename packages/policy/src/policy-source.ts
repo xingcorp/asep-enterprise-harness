@@ -20,7 +20,12 @@ const REPO_ROOT = join(HERE, '..', '..', '..');
 const POLICY_DIR = join(REPO_ROOT, 'policies');
 
 function loadYaml<T>(file: string): T {
-  return parseYaml(readFileSync(join(POLICY_DIR, file), 'utf8')) as T;
+  return parseYaml(readPolicyFile(file).toString('utf8')) as T;
+}
+
+/** Raw bytes of a policy file, for loaders that hash their exact source (review.ts). */
+export function readPolicyFile(file: string): Buffer {
+  return readFileSync(join(POLICY_DIR, file));
 }
 
 export interface RiskTaxonomyDoc {

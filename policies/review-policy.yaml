@@ -1,0 +1,118 @@
+# ASEP review policy — SINGLE CANONICAL SOURCE for independent assurance.
+#
+# Reviewer independence, egress classification and review modes as data. The TS
+# loader in packages/policy/src/review.ts is a strict projection of this file:
+# unknown keys, unknown model families and any `gating` mode are rejected, so a
+# production composition built from this file can only run shadow reviews.
+#
+# Values are experimental starting values. No secret, credential or endpoint
+# appears here; the composition root supplies those.
+#
+# Fields:
+#   modelFamilies               longest-prefix match on the pinned model id; an
+#                               unknown family fails closed
+#   reviewers                   pinned reviewer configurations: exactly one
+#                               primary, at most one comparator of a different
+#                               family than the primary
+#   runtime                     runtime switches for planned reviewers
+#   modes                       per risk: not-required | shadow | deferred
+#   independentReviewSatisfiedBy  per risk: who satisfies the approval matrix's
+#                               independent review; `human` is always required in
+#                               the list; `promoted-model` is inactive until
+#                               promotion exists
+#   maxRounds                   review rounds before escalation (gating only)
+#   blockingSeverities          grounded severities that block (gating only)
+#   groundingMinChars           minimum evidence / requiredFix length of a finding
+#   repairOrderLimits           byte caps of a repair order
+#   egress                      per-project opt-in, sensitive path classification
+#                               and execution-output excerpt caps
+#   credential                  maximum age of a cached reviewer credential
+apiVersion: asep.policy/v1
+kind: ReviewPolicy
+version: 1.0.0
+
+modelFamilies:
+  - family: anthropic-claude
+    prefixes: [claude-]
+  - family: openai-gpt
+    prefixes: [gpt-]
+  - family: deepseek
+    prefixes: [deepseek-]
+  - family: alibaba-qwen
+    prefixes: [qwen]
+  - family: xai-grok
+    prefixes: [grok-]
+
+reviewers:
+  # Primary candidate chosen by the controller; the corpus labeller was mostly
+  # gpt-5.6-sol (same vendor). Not yet probed against the gateway.
+  - id: primary-gpt-6.1-sol
+    role: primary
+    providerId: openai-responses
+    model: gpt-6.1-sol
+    reasoningEffort: high
+    maxOutputTokens: 16000
+    packetBudgetBytes: 400000
+    # Set from a published price with source and date, or leave null.
+    pricing: null
+  # Mandatory different-family comparator. Not yet probed; reasoningEffort is
+  # kept only if the probe shows the gateway accepts it for this model.
+  - id: comparator-deepseek-v4-pro
+    role: comparator
+    providerId: openai-responses
+    model: deepseek-v4-pro
+    reasoningEffort: high
+    maxOutputTokens: 16000
+    packetBudgetBytes: 400000
+    pricing: null
+
+runtime:
+  comparatorInShadowRounds: false
+
+modes:
+  R0: not-required
+  R1: shadow
+  # Admission keeps R2-R4 deferred, so these are never reached.
+  R2: deferred
+  R3: deferred
+  R4: deferred
+
+independentReviewSatisfiedBy:
+  R1: [human, promoted-model]
+  R2: [human]
+
+maxRounds:
+  R1: 2
+  R2: 2
+
+blockingSeverities:
+  R1: [CRITICAL, HIGH]
+  R2: [CRITICAL, HIGH, MEDIUM]
+
+groundingMinChars:
+  evidence: 40
+  requiredFix: 20
+
+repairOrderLimits:
+  perFieldBytes: 4096
+  totalBytes: 65536
+
+egress:
+  # Explicit per-project opt-in; empty means the reviewer is never called.
+  enabledProjects: []
+  denyPathGlobs:
+    - '**/.env'
+    - '**/.env.*'
+    - '**/*.pem'
+    - '**/*.key'
+    - '**/*.p12'
+    - '**/*.pfx'
+    - '**/id_rsa*'
+    - '**/id_ed25519*'
+    - '**/secrets/**'
+    - '**/*credential*'
+  excerptBytesPerStream: 4096
+  excerptBytesTotal: 65536
+
+credential:
+  maxCredentialAgeMs: 900000

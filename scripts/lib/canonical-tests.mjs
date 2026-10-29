@@ -227,6 +227,10 @@ export const REQUIRED_SUITES = Object.freeze({
   // writes on it.
   'asep-suite:assurance-slot-contract': 'packages/application/src/orchestration-activities/assurance-slot.test.ts',
   'asep-suite:run-event-sink': 'adapters/persistence/src/run-events/run-event-sink.test.ts',
+  // Independent assurance: the review policy loader is the only path from the
+  // committed policy to a reviewer composition. It must reject gating, unknown
+  // model families and same-family reviewers, so a dropped suite turns the gate RED.
+  'asep-suite:review-policy': 'packages/policy/src/review.test.ts',
 });
 
 /** The machine-readable marker a suite prints at module load: `SUITE-ID: <id>`. */
