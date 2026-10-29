@@ -297,6 +297,11 @@ export type TaskEffect =
       readonly overrunToolCalls: number;
       /** Measured wall-clock beyond the cap, once it exceeded the cap plus the kill grace. */
       readonly overrunWallClockMs: number;
+      /**
+       * A reported cost, tool-call count or measured wall-clock was not a valid amount within its bound: an overrun
+       * by itself, also when the excess cannot be stated (a cost above MAX_USD on a cap at the bound).
+       */
+      readonly usageOutOfBound: boolean;
     }
   | { readonly kind: 'recordExtension'; readonly approvalRequestId: string; readonly extensionUsd: number }
   | { readonly kind: 'reapContainers'; readonly attemptNumber: number }
@@ -461,6 +466,8 @@ export interface AttemptOverrun {
   readonly overrunUsd: number;
   readonly overrunToolCalls: number;
   readonly overrunWallClockMs: number;
+  /** A reported cost, tool-call count or measured wall-clock was not a valid amount within its bound. */
+  readonly usageOutOfBound: boolean;
 }
 
 export interface AttemptState {

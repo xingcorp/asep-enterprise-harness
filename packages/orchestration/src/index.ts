@@ -16,7 +16,7 @@ export {
   verificationStartToCloseSeconds,
 } from './activity-options.js';
 export type { ActivityName, ActivityOptions, RetryOptions } from './activity-options.js';
-export { MAX_USD, checkReservation, crossesSoftThreshold, fromMicroUsd, isExactUsd, toMicroUsd, usageMicroUsd } from './budget.js';
+export { MAX_USD, checkReservation, crossesSoftThreshold, fromMicroUsd, isExactUsd, reportedMicroUsd, toMicroUsd } from './budget.js';
 export type { Reservation, ReservationFailureReason, ReservationInput } from './budget.js';
 export {
   ALLOWED_DECISIONS,

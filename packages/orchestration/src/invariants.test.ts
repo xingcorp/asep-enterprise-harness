@@ -19,6 +19,7 @@ import { runTaskSequentially } from './sequential-interpreter.js';
 import type { Answer, TaskEnvironment, TaskTrace } from './sequential-interpreter.js';
 import { decideTask, startTask } from './task-core.js';
 import { TASK_BASE, attemptOf, branchFor, effectsOf, happyAnswer, proceed, ref, requests, shaFor } from './test-support/fixtures.js';
+import { MAX_USD } from './budget.js';
 import { DEFAULT_ORCHESTRATION_POLICY, NEVER_REPLACEABLE_FAILURE_CLASSES } from './defaults.js';
 import type {
   FailureClass,
@@ -81,9 +82,13 @@ function cents(rng: Rng, lo: number, hi: number): number {
   return rng.int(lo * 100, hi * 100) / 100;
 }
 
-function randomInput(rng: Rng): TaskCoreInput {
-  const attemptCost = cents(rng, 1, 6);
-  const taskCap = cents(rng, 2, 20);
+// The bound choices draw from their own stream (`side`), so adding them left every other draw of a seed unchanged.
+function randomInput(rng: Rng, side: Rng): TaskCoreInput {
+  // Sometimes every money cap sits at or next to the input bound, with no verification reserve, so the reservation
+  // still fits and usage around the bound reaches the overrun check.
+  const nearBound = side.chance(0.12);
+  const attemptCost = nearBound ? side.pick([MAX_USD, MAX_USD - 0.000001]) : cents(rng, 1, 6);
+  const taskCap = nearBound ? MAX_USD : cents(rng, 2, 20);
   return {
     taskId: 'task-p' as TaskId,
     runId: 'run-p' as RunId,
@@ -93,11 +98,11 @@ function randomInput(rng: Rng): TaskCoreInput {
     taskBudget: {
       maxAttempts: rng.int(1, 4),
       maxCostUsd: taskCap,
-      softCostUsd: cents(rng, 1, taskCap),
+      softCostUsd: nearBound ? MAX_USD : cents(rng, 1, taskCap),
       maxWallClockMinutes: rng.int(30, 240),
     },
-    verificationReserve: { costUsd: cents(rng, 0, 2), wallClockMinutes: rng.int(0, 20) },
-    runRemainingUsd: cents(rng, 1, 40),
+    verificationReserve: { costUsd: nearBound ? 0 : cents(rng, 0, 2), wallClockMinutes: rng.int(0, 20) },
+    runRemainingUsd: nearBound ? MAX_USD : cents(rng, 1, 40),
     governance: {
       publicationApprovalRequired: rng.chance(0.3),
       approvalTtlSeconds: 600,
@@ -126,7 +131,7 @@ function publicationFailure(rng: Rng): Answer {
   return { kind: 'activityFailed', failureClass: rng.pick(CLASSES), timedOut: rng.chance(0.3), ...(effect === null ? {} : { effect }) };
 }
 
-function randomEnvironment(rng: Rng, input: TaskCoreInput): TaskEnvironment {
+function randomEnvironment(rng: Rng, side: Rng, input: TaskCoreInput): TaskEnvironment {
   const sentDecisions = new Map<string, Extract<TaskMessage, { type: 'approvalDecisionReceived' }>>();
   let controlCounter = 0;
   const controlId = () => (rng.chance(0.3) && controlCounter > 0 ? `ctl-${rng.int(1, controlCounter)}` : `ctl-${++controlCounter}`);
@@ -170,6 +175,8 @@ function randomEnvironment(rng: Rng, input: TaskCoreInput): TaskEnvironment {
             : c < 0.12 ? cap.maxCostUsd + rng.pick([0.0000004, 0.000001, 1e-9])
               : c < 0.2 ? cap.maxCostUsd : Math.round(rng.next() * cap.maxCostUsd * 100) / 100;
           const toolCalls = rng.chance(0.05) ? cap.maxToolCalls + rng.int(1, 5) : rng.int(0, cap.maxToolCalls);
+          // Now and then a report that is no valid amount at all.
+          const invalid = (v: number) => (side.chance(0.02) ? side.pick([Number.NaN, -1, Number.POSITIVE_INFINITY]) : v);
           // Measured wall-clock: mostly within the cap, sometimes exactly at the cap or at the cap plus the
           // kill grace, sometimes one millisecond or minutes beyond that (an overrun).
           const capMs = cap.maxWallClockMinutes * 60_000;
@@ -181,13 +188,16 @@ function randomEnvironment(rng: Rng, input: TaskCoreInput): TaskEnvironment {
             return {
               kind: 'runAgent',
               status: rng.pick(['FAILED', 'BLOCKED', 'BUDGET_EXHAUSTED'] as const),
-              reportedCostUsd: cost,
-              reportedToolCalls: toolCalls,
-              wallClockMs,
+              reportedCostUsd: invalid(cost),
+              reportedToolCalls: invalid(toolCalls),
+              wallClockMs: invalid(wallClockMs),
               failureClass: rng.chance(0.9) ? rng.pick(CLASSES) : null,
             };
           }
-          return { kind: 'runAgent', status: 'AGENT_DONE', reportedCostUsd: cost, reportedToolCalls: toolCalls, wallClockMs, failureClass: null };
+          return {
+            kind: 'runAgent', status: 'AGENT_DONE', reportedCostUsd: invalid(cost), reportedToolCalls: invalid(toolCalls), wallClockMs: invalid(wallClockMs),
+            failureClass: null,
+          };
         }
         case 'ensureAttempt':
           return rng.chance(0.08) ? failure(rng) : happyAnswer(request);
@@ -402,39 +412,44 @@ function checkTrace(input: TaskCoreInput, trace: TaskTrace, label: string): void
   };
   for (const [n, got] of roundOf) assert.deepEqual(got, lineageRound(n), `${label}: assurance round of attempt ${n}`);
 
-  // An agent measured above its wall-clock cap plus the kill grace is never verified or published, and its
-  // overrun records the excess over the cap.
+  // An agent measured above its wall-clock cap plus the kill grace overran it, and its overrun records the excess
+  // over the cap.
   const capMs = input.attemptBudget.maxWallClockMinutes * 60_000;
   const toleratedMs = capMs + input.policy.agentKillGraceSeconds * 1000;
-  const agentResults = trace.events.flatMap((e) => {
-    if (e.type !== 'result' || e.result.kind !== 'runAgent') return [];
-    const request = seqRequests.get(e.seq);
-    assert.ok(request?.kind === 'runAgent', `${label}: agent result answers runAgent`);
-    return [{ n: request.attemptNumber, wallClockMs: e.result.wallClockMs }];
-  });
-  for (const { n, wallClockMs } of agentResults.filter((x) => x.wallClockMs > toleratedMs)) {
-    for (const k of ['runVerification', 'commitAttempt', 'publishBranch'] as const) {
-      assert.ok(!reqs.some((r) => r.kind === k && r.attemptNumber === n), `${label}: ${k} after a wall-clock overrun of ${n}`);
-    }
-  }
-  // An overrun is recorded exactly when the agent's usage exceeded a cap, by any amount: the oracle compares the
-  // reported numbers with the caps directly, so no conversion can round an overrun away.
+  // An overrun is recorded exactly when the agent's usage exceeded a cap, by any amount, or a usage value was not a
+  // valid amount within its bound: the oracle compares the reported numbers with the caps and the bound directly,
+  // before any clamping, so no conversion or saturation can hide an overrun. An overrun attempt is never verified or
+  // published.
+  const valid = (v: number) => Number.isFinite(v) && v >= 0;
   for (const e of trace.events) {
     if (e.type !== 'result' || e.result.kind !== 'runAgent') continue;
     const request = seqRequests.get(e.seq);
     if (request?.kind !== 'runAgent') continue;
     const r = e.result;
+    const n = request.attemptNumber;
     const cap = input.attemptBudget;
-    const costOver = r.reportedCostUsd > cap.maxCostUsd;
-    const expected = costOver || Math.ceil(r.reportedToolCalls) > cap.maxToolCalls || r.wallClockMs > toleratedMs;
-    const recorded = effectsOf(commands, 'recordOverrun').find((o) => o.attemptNumber === request.attemptNumber);
-    assert.equal(recorded !== undefined, expected, `${label}: overrun recorded for attempt ${request.attemptNumber}`);
-    if (recorded) assert.equal(recorded.overrunUsd > 0, costOver, `${label}: cost overrun of attempt ${request.attemptNumber}`);
-  }
-  for (const { n, wallClockMs } of agentResults) {
+    const costOutOfBound = !(valid(r.reportedCostUsd) && r.reportedCostUsd <= MAX_USD);
+    const outOfBound = costOutOfBound || !valid(r.reportedToolCalls) || !valid(r.wallClockMs);
+    const costOver = !costOutOfBound && r.reportedCostUsd > cap.maxCostUsd;
+    const wallOver = valid(r.wallClockMs) && r.wallClockMs > toleratedMs;
+    const expected = outOfBound || costOver || (valid(r.reportedToolCalls) && Math.ceil(r.reportedToolCalls) > cap.maxToolCalls) || wallOver;
     const recorded = effectsOf(commands, 'recordOverrun').find((o) => o.attemptNumber === n);
-    const excess = wallClockMs > toleratedMs ? Math.ceil(wallClockMs - capMs) : 0;
-    if (recorded) assert.equal(recorded.overrunWallClockMs, excess, `${label}: wall-clock excess of ${n}`);
+    assert.equal(recorded !== undefined, expected, `${label}: overrun recorded for attempt ${n}`);
+    if (recorded) {
+      assert.equal(recorded.usageOutOfBound, outOfBound, `${label}: out-of-bound usage of attempt ${n}`);
+      if (!costOutOfBound) assert.equal(recorded.overrunUsd > 0, costOver, `${label}: cost overrun of attempt ${n}`);
+      assert.equal(recorded.overrunWallClockMs, wallOver ? Math.ceil(r.wallClockMs - capMs) : 0, `${label}: wall-clock excess of ${n}`);
+    }
+    if (expected) {
+      for (const k of ['runVerification', 'commitAttempt', 'publishBranch'] as const) {
+        assert.ok(!reqs.some((q) => q.kind === k && q.attemptNumber === n), `${label}: ${k} after an overrun of ${n}`);
+      }
+    }
+  }
+  // Every number the core hands to an activity is finite, so it survives JSON payloads unchanged.
+  for (const c of commands) {
+    if (c.type !== 'effect') continue;
+    for (const v of Object.values(c.effect)) if (typeof v === 'number') assert.ok(Number.isFinite(v), `${label}: ${c.effect.kind} carries ${v}`);
   }
 
   // A non-replaceable agent failure ends the task FAILED (or CANCELLED), overrun or not, whatever the policy
@@ -678,8 +693,9 @@ function checkApprovalGates(input: TaskCoreInput, trace: TaskTrace, label: strin
 
 function generate(seed: number): { input: TaskCoreInput; trace: TaskTrace } {
   const rng = rngFor(seed);
-  const input = randomInput(rng);
-  return { input, trace: runTaskSequentially(input, randomEnvironment(rng, input)) };
+  const side = rngFor(seed + 1_000_003);
+  const input = randomInput(rng, side);
+  return { input, trace: runTaskSequentially(input, randomEnvironment(rng, side, input)) };
 }
 
 test('generated task traces satisfy the orchestration safety invariants', () => {
@@ -719,6 +735,10 @@ test('the generator covers repair, replacement, approvals, pause and cancel path
     if (effectsOf(trace.commands, 'recordOverrun').length > 0) seen.add('overrun');
     if (effectsOf(trace.commands, 'recordOverrun').some((o) => o.overrunWallClockMs > 0)) seen.add('wall-clock-overrun');
     if (effectsOf(trace.commands, 'recordOverrun').some((o) => o.overrunUsd === 0.000001)) seen.add('micro-overrun');
+    if (effectsOf(trace.commands, 'recordOverrun').some((o) => o.usageOutOfBound)) seen.add('usage-out-of-bound');
+    if (input.attemptBudget.maxCostUsd === MAX_USD && effectsOf(trace.commands, 'recordOverrun').some((o) => o.usageOutOfBound && o.overrunUsd === 0)) {
+      seen.add('overrun-at-bound');
+    }
     if (trace.summary.reason === 'publication-incomplete') seen.add('publication-incomplete');
     for (const e of trace.events) {
       if (e.type === 'activityFailed' && (e.activity === 'publishBranch' || e.activity === 'upsertPullRequest')) seen.add(`${e.activity}-${e.effect}`);
@@ -753,12 +773,14 @@ test('the generator covers repair, replacement, approvals, pause and cancel path
   assert.deepEqual([...seen].sort(), [
     'abort', 'approval-expired', 'assurance-unavailable', 'budget-approval', 'exhausted', 'expired-while-paused',
     'expiry-during-verification', 'extension-granted', 'hostile-policy-failure', 'lineage-retry', 'micro-overrun', 'overrun',
+    'overrun-at-bound',
     'pause-timeout', 'pause-timeout-in-flight', 'paused', 'paused-while-waiting', 'publication-incomplete',
     'publish-approval', 'publishBranch-applied', 'publishBranch-none', 'publishBranch-unknown', 'reconciled-absent',
     'reconciled-present', 'reconciliation-failed',
     'recovered', 'registration-absent', 'registration-found', 'registration-unknown',
     'repair', 'retry', 'unconfirmed-approve', 'upsertPullRequest-applied', 'upsertPullRequest-none',
-    'upsertPullRequest-unknown', 'verification-stop', 'verified-within-grace', 'violation', 'wall-clock-overrun',
+    'upsertPullRequest-unknown', 'usage-out-of-bound', 'verification-stop', 'verified-within-grace', 'violation',
+    'wall-clock-overrun',
   ]);
 });
 

@@ -249,13 +249,83 @@ test('budget precision: a reported 5.0000004 on a cap of 5 is an overrun of one 
   assert.deepEqual(effectsOf(subMicro.commands, 'recordUsage').map((u) => u.chargedCostUsd), [1.000001], 'sub-micro usage is charged one micro-dollar');
 });
 
-test('budget precision: a reported cost beyond the bound is charged at the bound and is an overrun', () => {
-  const trace = runTaskSequentially(baseInput(), scripted({
-    runAgent: () => ({ kind: 'runAgent', status: 'AGENT_DONE', reportedCostUsd: 1e300, reportedToolCalls: 10, wallClockMs: 1000, failureClass: null }),
-  }));
-  assert.deepEqual(effectsOf(trace.commands, 'recordUsage').map((u) => u.chargedCostUsd), [MAX_USD]);
-  assert.deepEqual(effectsOf(trace.commands, 'recordOverrun').map((o) => o.overrunUsd), [MAX_USD - 5]);
-  assert.equal(trace.summary.outcome, 'BUDGET_EXHAUSTED');
+// Overrun detection comes before any saturation of the ledger amount: at a cap equal to the bound, usage above it
+// is still an overrun, and a usage value outside its bound is one whatever the cap.
+
+const atBound = (attemptCapUsd: number = MAX_USD) => baseInput({
+  attemptBudget: { ...baseInput().attemptBudget, maxCostUsd: attemptCapUsd },
+  taskBudget: { ...baseInput().taskBudget, maxCostUsd: MAX_USD, softCostUsd: MAX_USD },
+  verificationReserve: { costUsd: 0, wallClockMinutes: 0 },
+  runRemainingUsd: MAX_USD,
+});
+const agentReports = (reportedCostUsd: number, reportedToolCalls = 10, wallClockMs = 1000) => () => ({
+  kind: 'runAgent' as const, status: 'AGENT_DONE' as const, reportedCostUsd, reportedToolCalls, wallClockMs, failureClass: null,
+});
+
+function assertInspectedOnly(trace: TaskTrace, label: string): void {
+  const kinds = requestKinds(trace.commands);
+  for (const k of ['runVerification', 'commitAttempt', 'publishBranch', 'upsertPullRequest'] as const) {
+    assert.ok(!kinds.includes(k), `${label}: ${k} after an overrun`);
+  }
+  assert.ok(kinds.includes('inspectWorkspace'), `${label}: inspected`);
+  assert.ok(effectsOf(trace.commands, 'audit').some((a) => a.action === 'budget.overrun'), `${label}: incident audited`);
+  assert.deepEqual([trace.summary.outcome, trace.summary.reason], ['BUDGET_EXHAUSTED', 'overrun'], label);
+  for (const c of trace.commands) {
+    if (c.type !== 'effect') continue;
+    for (const v of Object.values(c.effect)) if (typeof v === 'number') assert.ok(Number.isFinite(v), `${label}: ${c.effect.kind} carries ${v}`);
+  }
+}
+
+test('budget bound: with every money cap at the bound, usage one dollar or one micro-dollar above it is an overrun', () => {
+  // The reviewer's CAP_PROBE: the input is valid, and the usage is above the attempt cap.
+  assert.deepEqual(taskInputErrors(atBound()), []);
+  for (const reported of [MAX_USD + 1, MAX_USD + 0.000001]) {
+    const trace = runTaskSequentially(atBound(), scripted({ runAgent: agentReports(reported) }));
+    assertInspectedOnly(trace, `${reported}`);
+    assert.deepEqual(effectsOf(trace.commands, 'recordOverrun').map((o) => [o.overrunUsd, o.usageOutOfBound]), [[0, true]],
+      'the excess is beyond what the ledger can hold, so the overrun says so');
+    assert.deepEqual(effectsOf(trace.commands, 'recordUsage').map((u) => u.chargedCostUsd), [MAX_USD], 'the ledger amount saturates');
+  }
+});
+
+test('budget bound: usage equal to a cap at the bound is within it; next to the bound the excess is exact', () => {
+  const atCap = runTaskSequentially(atBound(), scripted({ runAgent: agentReports(MAX_USD) }));
+  assert.deepEqual(effectsOf(atCap.commands, 'recordOverrun'), []);
+  assert.equal(atCap.summary.outcome, 'WAITING_FOR_HUMAN_REVIEW');
+
+  const below = MAX_USD - 0.000001;
+  const justOver = runTaskSequentially(atBound(below), scripted({ runAgent: agentReports(MAX_USD) }));
+  assertInspectedOnly(justOver, 'one micro-dollar over a cap next to the bound');
+  assert.deepEqual(effectsOf(justOver.commands, 'recordOverrun').map((o) => [o.overrunUsd, o.usageOutOfBound]), [[0.000001, false]]);
+
+  const atBelow = runTaskSequentially(atBound(below), scripted({ runAgent: agentReports(below) }));
+  assert.deepEqual(effectsOf(atBelow.commands, 'recordOverrun'), []);
+  assert.equal(atBelow.summary.outcome, 'WAITING_FOR_HUMAN_REVIEW');
+});
+
+test('budget bound: a reported cost beyond the bound is an overrun on any cap and is charged at the bound', () => {
+  for (const reported of [1e9, 1e300, Number.POSITIVE_INFINITY]) {
+    const trace = runTaskSequentially(baseInput(), scripted({ runAgent: agentReports(reported) }));
+    assertInspectedOnly(trace, `${reported}`);
+    assert.deepEqual(effectsOf(trace.commands, 'recordOverrun').map((o) => [o.overrunUsd, o.usageOutOfBound]), [[MAX_USD - 5, true]]);
+    assert.deepEqual(effectsOf(trace.commands, 'recordUsage').map((u) => u.chargedCostUsd), [MAX_USD]);
+  }
+});
+
+test('budget bound: a cost, tool-call count or wall-clock that is negative, not a number or not finite is an overrun', () => {
+  const invalid = [-1, Number.NaN, Number.NEGATIVE_INFINITY];
+  const cases = [
+    ...invalid.map((v) => ({ label: `cost ${v}`, answer: agentReports(v), chargedCostUsd: 5, minutes: 1 })),
+    ...[...invalid, Number.POSITIVE_INFINITY].map((v) => ({ label: `tool calls ${v}`, answer: agentReports(1, v), chargedCostUsd: 1, minutes: 1 })),
+    ...[...invalid, Number.POSITIVE_INFINITY].map((v) => ({ label: `wall-clock ${v}`, answer: agentReports(1, 10, v), chargedCostUsd: 1, minutes: 30 })),
+  ];
+  for (const c of cases) {
+    const trace = runTaskSequentially(baseInput(), scripted({ runAgent: c.answer }));
+    assertInspectedOnly(trace, c.label);
+    assert.deepEqual(effectsOf(trace.commands, 'recordOverrun').map((o) => o.usageOutOfBound), [true], c.label);
+    assert.deepEqual(effectsOf(trace.commands, 'recordUsage').map((u) => [u.chargedCostUsd, u.chargedWallClockMinutes]),
+      [[c.chargedCostUsd, c.minutes]], `${c.label}: an invalid cost is charged the cap, an invalid wall-clock the wall-clock cap`);
+  }
 });
 
 test('soft threshold: crossed once, when spending moves from below to at-or-above it', () => {
@@ -1119,12 +1189,12 @@ test('agent outcome: a cap stop with no room for a fresh reservation ends the ta
 });
 
 for (const [name, answer, overrun] of [
-  ['reported cost above the cap', { status: 'AGENT_DONE', reportedCostUsd: 7, reportedToolCalls: 10, wallClockMs: 1000 }, { overrunUsd: 2, overrunToolCalls: 0, overrunWallClockMs: 0 }],
-  ['reported tool calls above the cap', { status: 'AGENT_DONE', reportedCostUsd: 1, reportedToolCalls: 53, wallClockMs: 1000 }, { overrunUsd: 0, overrunToolCalls: 3, overrunWallClockMs: 0 }],
-  ['a replaceable agent failure that also overran its cost', { status: 'FAILED', reportedCostUsd: 7, reportedToolCalls: 10, wallClockMs: 1000 }, { overrunUsd: 2, overrunToolCalls: 0, overrunWallClockMs: 0 }],
+  ['reported cost above the cap', { status: 'AGENT_DONE', reportedCostUsd: 7, reportedToolCalls: 10, wallClockMs: 1000 }, { overrunUsd: 2, overrunToolCalls: 0, overrunWallClockMs: 0, usageOutOfBound: false }],
+  ['reported tool calls above the cap', { status: 'AGENT_DONE', reportedCostUsd: 1, reportedToolCalls: 53, wallClockMs: 1000 }, { overrunUsd: 0, overrunToolCalls: 3, overrunWallClockMs: 0, usageOutOfBound: false }],
+  ['a replaceable agent failure that also overran its cost', { status: 'FAILED', reportedCostUsd: 7, reportedToolCalls: 10, wallClockMs: 1000 }, { overrunUsd: 2, overrunToolCalls: 0, overrunWallClockMs: 0, usageOutOfBound: false }],
   // The cap is 30 minutes and the default kill grace is 0: one millisecond more is an overrun.
-  ['measured wall-clock above the cap', { status: 'AGENT_DONE', reportedCostUsd: 1, reportedToolCalls: 10, wallClockMs: 1_800_001 }, { overrunUsd: 0, overrunToolCalls: 0, overrunWallClockMs: 1 }],
-  ['a cap stop measured above the cap', { status: 'BUDGET_EXHAUSTED', reportedCostUsd: 1, reportedToolCalls: 10, wallClockMs: 2_040_000 }, { overrunUsd: 0, overrunToolCalls: 0, overrunWallClockMs: 240_000 }],
+  ['measured wall-clock above the cap', { status: 'AGENT_DONE', reportedCostUsd: 1, reportedToolCalls: 10, wallClockMs: 1_800_001 }, { overrunUsd: 0, overrunToolCalls: 0, overrunWallClockMs: 1, usageOutOfBound: false }],
+  ['a cap stop measured above the cap', { status: 'BUDGET_EXHAUSTED', reportedCostUsd: 1, reportedToolCalls: 10, wallClockMs: 2_040_000 }, { overrunUsd: 0, overrunToolCalls: 0, overrunWallClockMs: 240_000, usageOutOfBound: false }],
 ] as const) {
   test(`agent outcome: ${name} is an overrun: recorded and audited, never verified or published, and the task ends BUDGET_EXHAUSTED`, () => {
     const trace = runTaskSequentially(baseInput(), scripted({
@@ -1210,7 +1280,7 @@ test('wall-clock: AGENT_DONE measured one millisecond above the cap plus the kil
   for (const k of NEVER_AFTER_EXHAUSTION) assert.ok(!kinds.includes(k), `${k} after a wall-clock overrun`);
   // The recorded excess is measured from the cap, not from the end of the grace.
   assert.deepEqual(effectsOf(trace.commands, 'recordOverrun'),
-    [{ kind: 'recordOverrun', attemptNumber: 1, overrunUsd: 0, overrunToolCalls: 0, overrunWallClockMs: 30_001 }]);
+    [{ kind: 'recordOverrun', attemptNumber: 1, overrunUsd: 0, overrunToolCalls: 0, overrunWallClockMs: 30_001, usageOutOfBound: false }]);
   const incident = effectsOf(trace.commands, 'audit').find((a) => a.action === 'budget.overrun');
   assert.equal(incident?.detail['overrunWallClockMs'], 30_001, 'overrun incident audited with the excess');
   assert.deepEqual(outcomes(trace), [[1, 'budget-exhausted']]);

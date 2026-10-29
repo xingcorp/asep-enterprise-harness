@@ -46,9 +46,14 @@ export function isExactUsd(usd: number): boolean {
   return parts !== null && !parts.remainder && usd <= MAX_USD;
 }
 
-/** Provider-reported cost (untrusted) in micro-dollars; beyond MAX_USD it is charged at MAX_USD, an overrun either way. */
-export function usageMicroUsd(reportedUsd: number): number {
-  return toMicroUsd(Math.min(reportedUsd, MAX_USD));
+/**
+ * Provider-reported cost (untrusted) in micro-dollars, rounded up, or null when
+ * it is not an amount within the bound (negative, not a number, not finite, or
+ * above MAX_USD). Such a report is an overrun by itself; it is never clamped
+ * into the bound before the comparison with the cap.
+ */
+export function reportedMicroUsd(reportedUsd: number): number | null {
+  return Number.isFinite(reportedUsd) && reportedUsd >= 0 && reportedUsd <= MAX_USD ? toMicroUsd(reportedUsd) : null;
 }
 
 export function fromMicroUsd(micro: number): number {

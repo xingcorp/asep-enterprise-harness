@@ -18,7 +18,7 @@
 import { ACTIVITY_OPTIONS } from './activity-options.js';
 import { approvalRequestId, isWellFormedDecision, validateApprovalDecision } from './approvals.js';
 import { parseAssuranceOutcome } from './assurance.js';
-import { checkReservation, crossesSoftThreshold, fromMicroUsd, toMicroUsd, usageMicroUsd } from './budget.js';
+import { MAX_USD, checkReservation, crossesSoftThreshold, fromMicroUsd, reportedMicroUsd, toMicroUsd } from './budget.js';
 import { NEVER_REPLACEABLE_FAILURE_CLASSES } from './defaults.js';
 import { isLegalProjection, isWorkStatus, statusForRequest } from './projection.js';
 import type {
@@ -396,31 +396,35 @@ function nonNegative(value: number): number | null {
 
 /**
  * Note the agent's usage and detect an overrun: reported cost or tool calls
- * above a cap the adapter did not stop at, or harness-measured wall-clock above
- * the cap plus the adapter's kill grace. A recorded overrun fails every later
- * reservation of the task.
+ * above a cap the adapter did not stop at, harness-measured wall-clock above
+ * the cap plus the adapter's kill grace, or a usage value that is not a valid
+ * amount within its bound. A recorded overrun fails every later reservation of
+ * the task.
  */
 function noteAgentUsage(step: Step, a: MutableAttempt, result: Extract<TaskResult, { kind: 'runAgent' }>): void {
   const s = step.s;
   const budget = s.input.attemptBudget;
-  const reportedCostUsd = nonNegative(result.reportedCostUsd);
   const toolCalls = nonNegative(result.reportedToolCalls);
   const wallClockMs = nonNegative(result.wallClockMs);
   const capMicro = toMicroUsd(budget.maxCostUsd);
-  const reportedMicro = reportedCostUsd !== null ? usageMicroUsd(reportedCostUsd) : null;
+  // Compared with the cap before any saturation: a report outside the bound is an overrun by itself, and only the
+  // ledger amount saturates (at the bound above it, at the cap for a report that is no amount at all).
+  const reportedMicro = reportedMicroUsd(result.reportedCostUsd);
+  const chargedMicro = reportedMicro ?? (result.reportedCostUsd > MAX_USD ? toMicroUsd(MAX_USD) : capMicro);
   a.agentUsage = {
-    chargedMicroUsd: reportedMicro ?? capMicro,
-    reportedCostUsd,
+    chargedMicroUsd: chargedMicro,
+    reportedCostUsd: nonNegative(result.reportedCostUsd),
     minutes: wallClockMs !== null ? Math.ceil(wallClockMs / 60_000) : budget.maxWallClockMinutes,
   };
   const capMs = budget.maxWallClockMinutes * 60_000;
   const toleratedMs = capMs + s.input.policy.agentKillGraceSeconds * 1000;
   const overrun: AttemptOverrun = {
-    overrunUsd: reportedMicro !== null ? fromMicroUsd(Math.max(0, reportedMicro - capMicro)) : 0,
+    overrunUsd: fromMicroUsd(Math.max(0, chargedMicro - capMicro)),
     overrunToolCalls: toolCalls !== null ? Math.max(0, Math.ceil(toolCalls) - budget.maxToolCalls) : 0,
     overrunWallClockMs: wallClockMs !== null && wallClockMs > toleratedMs ? Math.ceil(wallClockMs - capMs) : 0,
+    usageOutOfBound: reportedMicro === null || toolCalls === null || wallClockMs === null,
   };
-  if (overrun.overrunUsd > 0 || overrun.overrunToolCalls > 0 || overrun.overrunWallClockMs > 0) {
+  if (overrun.overrunUsd > 0 || overrun.overrunToolCalls > 0 || overrun.overrunWallClockMs > 0 || overrun.usageOutOfBound) {
     a.overrun = overrun;
     s.overrun = true;
   }
