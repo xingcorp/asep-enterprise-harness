@@ -442,3 +442,28 @@ test('closure authority decides which prior findings still block', () => {
   }).record;
   assert.equal(expired.outcome, 'REPAIR');
 });
+
+test("waiver expiry is judged at the round's opening time", () => {
+  const opened = '2026-10-29T09:00:00.000Z';
+  const waived = (waiverExpiresAt: string) =>
+    adjudicate({
+      ...reReview({}),
+      roundOpenedAt: opened,
+      priorFindings: [{ record: priorFinding({ lifecycleState: 'WAIVED' }), waiverExpiresAt }],
+    }).record;
+
+  // A waiver that runs past the round's opening holds for the whole round, even when the
+  // round is adjudicated after the waiver's expiry, so a later execution of the same round
+  // cannot decide differently.
+  const held = waived('2026-10-29T09:30:00.000Z');
+  assert.equal(held.outcome, 'PROCEED');
+  assert.deepEqual([held.closureDecisions[0]!.effectiveState, held.closureDecisions[0]!.rule], ['WAIVED', 'unchanged']);
+  // A waiver that had expired when the round opened no longer covers the finding.
+  const lapsed = waived('2026-10-29T08:59:59.999Z');
+  assert.equal(lapsed.outcome, 'REPAIR');
+  assert.deepEqual(lapsed.blocking.map((b) => b.findingRef), ['prior:prior-1']);
+
+  // The decision record carries no timestamp, so its bytes depend only on the round's inputs.
+  assert.equal(JSON.stringify(held).includes('2026-10-29'), false);
+  assert.deepEqual(waived('2026-10-29T09:30:00.000Z'), held);
+});

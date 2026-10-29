@@ -8,7 +8,9 @@
 // deterministic finding, and an ungrounded model finding never blocks. Shadow mode
 // records what gating would have decided and returns only PROCEED or BLOCK.
 //
-// Pure: no IO, no clock (`now` is an input), no model call.
+// Pure: no IO, no clock, no model call. Waiver expiry is judged at the round's opening
+// time, an input fixed when the round opened, so every execution of a round decides the
+// same and the record carries no timestamp.
 
 import {
   FindingDispositionError,
@@ -73,8 +75,11 @@ export interface AdjudicationInput {
   readonly groundingMinChars: { readonly evidence: number; readonly requiredFix: number };
   /** Review-policy version plus its sha256. */
   readonly policyVersion: string;
-  /** The step's logical time, ISO-8601 UTC. */
-  readonly now: string;
+  /**
+   * When the round opened (`review_rounds.opened_at`), ISO-8601 UTC. Waiver expiry is judged
+   * at this time, never at the clock of the execution that adjudicates.
+   */
+  readonly roundOpenedAt: string;
   readonly packet: ReviewPacket;
   readonly packetSha256: string;
   readonly diff: readonly DiffFileChange[];
@@ -236,13 +241,14 @@ function closePrior(
     },
     state,
   });
-  const at = { rationale: 'decided by the round adjudication', at: input.now };
-  let agg = expireWaiver(toAggregate(F, F.lifecycleState, prior.waiverExpiresAt), input.now);
-  const current = effectiveFindingState(agg, input.now);
+  const asOf = input.roundOpenedAt;
+  const at = { rationale: 'decided by the round adjudication', at: asOf };
+  let agg = expireWaiver(toAggregate(F, F.lifecycleState, prior.waiverExpiresAt), asOf);
+  const current = effectiveFindingState(agg, asOf);
 
   if (F.source === 'deterministic') {
     const firing = input.checks.findings.some((f) => f.raisedBy === F.raisedBy && f.fingerprint === F.fingerprint);
-    if (!firing && isLifecycleBlocking(agg, input.now)) {
+    if (!firing && isLifecycleBlocking(agg, asOf)) {
       const verified = dispose(agg, {
         ...at,
         disposition: 'RESOLUTION_VERIFIED',
@@ -252,7 +258,7 @@ function closePrior(
     }
     return decision(current, 'unchanged');
   }
-  if (F.source !== 'model' || !isLifecycleBlocking(agg, input.now)) return decision(current, 'unchanged');
+  if (F.source !== 'model' || !isLifecycleBlocking(agg, asOf)) return decision(current, 'unchanged');
 
   const eligible = new Set(input.reviewers.filter((r) => r.independentOfImplementer).map((r) => r.reviewerConfigId));
   const resolved = claims
@@ -283,7 +289,7 @@ function closePrior(
       agg =
         dispose(agg, { ...at, disposition: 'REOPENED', actor: { kind: 'harness-rule', rule: 'closure-without-change' } }) ?? agg;
     }
-    return decision(effectiveFindingState(agg, input.now), 'closure-without-change');
+    return decision(effectiveFindingState(agg, asOf), 'closure-without-change');
   }
   return decision(current, 'unchanged');
 }
@@ -349,7 +355,7 @@ export function adjudicate(input: AdjudicationInput): Adjudication {
           disposition: 'REJECTED_WITH_EVIDENCE',
           actor: { kind: 'harness-rule', rule: 'citation-unresolvable' },
           rationale: `citation-unresolvable: ${result.reason}`,
-          at: input.now,
+          at: input.roundOpenedAt,
           waiver: null,
           resolution: null,
         }).state;

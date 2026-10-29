@@ -355,7 +355,7 @@ export function adjudicationBase(options: { readonly round?: number; readonly wo
     blockingSeverities: ['CRITICAL', 'HIGH'],
     groundingMinChars: { evidence: 40, requiredFix: 20 },
     policyVersion: `1.0.0+sha256:${'7'.repeat(64)}`,
-    now: '2026-10-29T10:00:00.000Z',
+    roundOpenedAt: '2026-10-29T10:00:00.000Z',
     packet: built.packet,
     packetSha256: built.sha256,
     diff: parseUnifiedDiff(decode('art-diff')),
