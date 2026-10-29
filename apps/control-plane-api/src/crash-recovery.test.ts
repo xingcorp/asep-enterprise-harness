@@ -22,7 +22,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   PgliteClient, migrate, SqlSideEffectLog, SqlWorkspaceLeaseRepository, FilesystemObjectStore,
-  ContentAddressedEvidenceStore, type SqlClient, type ObjectStore,
+  ContentAddressedEvidenceStore, type SqlClient, type SqlExecutor, type ObjectStore,
 } from '@asep/persistence';
 import { DockerSandboxProvider } from '@asep/command-runner';
 import { runGit, attemptBranch } from '@asep/git-worktree';
@@ -113,7 +113,27 @@ interface Crashed {
   readonly deadLease: string;
 }
 
-async function crashRun(at: CrashPoint | 'at-verify' | 'at-evidence'): Promise<Crashed> {
+// The run's database connection, through which the executor "dies" as it is
+// about to record its harness commit — after the commit landed in git.
+function crashingAtCommitRecord(client: SqlClient): SqlClient {
+  const guard = (db: SqlExecutor): SqlExecutor => ({
+    query: (text, params) => {
+      if (/update side_effect_records\s+set state/.test(text)
+        && params?.includes('commit') && params.includes('COMPLETED')) {
+        return Promise.reject(new SimulatedCrash('executor died between the commit and its record'));
+      }
+      return db.query(text, params);
+    },
+  });
+  return {
+    query: (text, params) => guard(client).query(text, params),
+    transaction: (fn) => client.transaction((tx) => fn(guard(tx))),
+    ping: () => client.ping(),
+    close: () => client.close(),
+  };
+}
+
+async function crashRun(at: CrashPoint | 'at-verify' | 'at-evidence' | 'at-commit-record'): Promise<Crashed> {
   const dir = await mkdtemp(join(tmpdir(), 'asep-crash-recovery-'));
   const client = await PgliteClient.create();
   await migrate(client);
@@ -126,7 +146,7 @@ async function crashRun(at: CrashPoint | 'at-verify' | 'at-evidence'): Promise<C
   const sandbox = await fakeDockerSandbox(join(dir, 'sandbox'));
   await assert.rejects(
     () => runVerticalSlice({
-      client,
+      client: at === 'at-commit-record' ? crashingAtCommitRecord(client) : client,
       sandbox,
       dir,
       checkCommand: at === 'at-verify' ? failingCheck : checkCommandFor,
@@ -318,10 +338,45 @@ test('an attempt whose commit never became durable is reported for re-execution,
     assert.deepEqual(await records(c), [], 'nothing was recorded before verification failed');
     const r = await resume(c);
     assert.equal(r.stoppedAt, 'not-resumable');
-    assert.match(r.reason ?? '', /no harness commit was recorded/);
+    assert.match(r.reason ?? '', /no harness commit was begun/);
     const refs = (await runGit(['-C', c.forgeRemote, 'for-each-ref', 'refs/heads/'])).stdout.trim();
     assert.equal(refs, '', 'nothing reached the remote');
     assert.equal((await c.forge.listPullRequests()).length, 0);
+  } finally {
+    await cleanup(c);
+  }
+});
+
+test('a crash after the commit landed but before it was recorded: the successor adopts that commit, never a second', async () => {
+  const c = await crashRun('at-commit-record');
+  try {
+    const before = await records(c);
+    assert.deepEqual(before.map((r) => [r['operation'], r['state']]), [['commit', 'PENDING']]);
+    const landed = (await runGit(['-C', join(c.dir, 'mirror.git'), 'rev-parse', `refs/asep/attempts/${c.attemptId}`]))
+      .stdout.trim();
+    assert.match(landed, /^[0-9a-f]{40}$/, 'the commit landed in git');
+    assert.equal((await c.forge.listPullRequests()).length, 0, 'nothing was published');
+
+    const r = await resume(c);
+    assert.equal(r.stoppedAt, 'complete', r.reason);
+    assert.equal(r.commitSha, landed, 'the landed commit is adopted');
+    assert.equal(r.taskStatus, 'WAITING_FOR_HUMAN_REVIEW');
+    await assertConverged(c, landed);
+
+    const after = await records(c);
+    const commit = after.find((x) => x['operation'] === 'commit')!;
+    assert.equal(commit['state'], 'COMPLETED');
+    assert.equal(commit['owner_lease_id'], r.leaseId, 'the successor took the record over to finish it');
+    const evidence = new ContentAddressedEvidenceStore(c.client, new FilesystemObjectStore(join(c.dir, 'objects')));
+    const reservation = await evidence.getReservation(c.scope, r.evidenceArtifactId!);
+    assert.deepEqual(
+      await evidence.getEvidence(c.scope, r.evidenceArtifactId!),
+      evidenceBundleFrom(reservation.draft, landed),
+      'the evidence the commit names, completed with that commit',
+    );
+    const attempts = await c.client.query(
+      `select count(*)::int as n from attempts where task_id = $1`, [c.taskId]);
+    assert.equal(attempts.rows[0]!['n'], 1, 'the same attempt was resumed; none was started');
   } finally {
     await cleanup(c);
   }

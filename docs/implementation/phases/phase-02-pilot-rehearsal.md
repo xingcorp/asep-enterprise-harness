@@ -64,28 +64,34 @@ protected. Verdict context: R0-only automated completion.
 
 ## Fault 3 — Object-store outage during evidence persist
 
-- **Injected:** into a real `runVerticalSlice` run. Once verification has run
-  and stored its outputs, the object store's root directory is replaced by a
-  plain file, so the evidence write fails as it would with the store gone.
+- **Injected:** into a real `runVerticalSlice` run, through the run's object
+  store: the store goes down at the evidence-bundle write — after the harness
+  commit — and stays down until restored.
 - **Asserted behaviour:** the run fails at the evidence write. The harness
-  commit exists locally and is the only side-effect record; nothing reaches the
-  remote, no PR is opened, no evidence row exists, and the task does not reach
+  commit is recorded and is the only side-effect record; the evidence draft
+  reserved before the commit is durable. Nothing reaches the remote, no PR is
+  opened, no evidence bundle exists, and the task does not reach
   `WAITING_FOR_HUMAN_REVIEW`. After the store is restored, every artifact
-  written before the outage still verifies by checksum. Resuming the attempt
-  reports it **not resumable** ("no evidence bundle … re-execute the attempt"):
-  the harness never re-derives evidence it did not persist, and nothing is
-  pushed.
+  written before the outage still verifies by checksum, and resuming the SAME
+  attempt completes it: the evidence is the reserved draft plus the recorded
+  commit SHA (nothing is re-derived), and exactly one ref and one PR are
+  published for the one commit. No new attempt is started.
 - **Tests:** `apps/control-plane-api/src/pilot-faults.test.ts` (fault 3), with
   the real artifact and evidence stores, side-effect log, lease repository, git
   mirror/worktree/remote and the DockerSandboxProvider (through the fake docker
   client). `adapters/persistence/src/pilot-rehearsal.test.ts` (Fault 3) covers
   the store's own fail-closed read and create-only write.
+  `apps/control-plane-api/src/crash-recovery.test.ts` covers the neighbouring
+  windows: a crash after the commit landed in git but before it was recorded,
+  and between the commit and its evidence.
 - **Runbook section:** §3.1 (artifact-store outage).
 - **Decision:** **stop dispatch, restore the store, reconcile orphans,
-  re-verify recent artifacts by checksum**, then run the stopped task again as a
-  **new attempt** (§3.1 step 5). Evidence failed closed, so there is no false
-  completion — a recovery path, not a §2 hard stop, unless confirmed artifact
-  loss or corruption is found (§2 condition 4).
+  re-verify recent artifacts by checksum**, then **resume the stopped attempt**
+  (§3.1 step 5). Evidence failed closed, so there is no false completion — a
+  recovery path, not a §2 hard stop, unless confirmed artifact loss or
+  corruption is found (§2 condition 4). If the reserved draft itself is
+  unreadable the resume publishes nothing and the task is re-run as a new
+  attempt.
 
 ## Fault 4 — Stale lease from a dead worker
 

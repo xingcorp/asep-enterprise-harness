@@ -56,6 +56,7 @@ import type {
   EvidenceStore,
   EvidenceDraft,
   SideEffectLog,
+  SideEffectRecord,
   PullRequestResultRef,
 } from '@asep/ports';
 import {
@@ -288,8 +289,8 @@ export interface CommitStepInput {
   readonly workspace: WorkspaceCapability;
   readonly allowedPaths: readonly string[];
   readonly attemptId: AttemptId;
-  readonly baseSha: string;              // reconciliation: HEAD==base ⇒ no commit landed
-  readonly evidenceId: ArtifactId;       // preallocated, embedded in trailer
+  readonly baseSha: string;              // the commit's parent; reconciliation key with the attempt
+  readonly evidenceId: ArtifactId;       // reserved, embedded in trailer
   readonly identity: { readonly name: string; readonly email: string };
   readonly extraTrailers?: Record<string, string>;
   // Two-phase side-effect protocol (HIGH-006). The commit is a durable,
@@ -332,6 +333,52 @@ export async function commitStep(input: CommitStepInput): Promise<CommitStepResu
     requestFingerprint: commitFingerprint(input.attemptId),
     ownerToken: input.leaseId,
   });
+  const settled = await settleCommit(begun, input);
+  if (settled !== null) return settled;
+  // No commit landed for this attempt — safe to mint it now under the PENDING
+  // record (complete() below transitions it to COMPLETED). The committer
+  // records it create-only under the attempt, so this is the attempt's only
+  // commit even if a stale executor tries again.
+  const trailers: Record<string, string> = {
+    'ASEP-Attempt': input.attemptId,
+    'ASEP-Evidence': input.evidenceId,
+    ...(input.extraTrailers ?? {}),
+  };
+  const { commitSha } = await input.committer.commit(input.scope, {
+    workspace: input.workspace,
+    attemptId: input.attemptId,
+    baseSha: input.baseSha,
+    allowedPaths: input.allowedPaths,
+    trailers,
+    identity: input.identity,
+  });
+  // Persist the commit SHA + the evidence id it embeds so a resume adopts BOTH.
+  await input.log.complete(input.scope, {
+    operation: 'commit',
+    repositoryBindingId: input.repositoryBindingId,
+    attemptId: input.attemptId,
+    ownerToken: input.leaseId,
+    resultRef: { kind: 'commit', commitSha, evidenceId: input.evidenceId },
+  });
+  return { step: 'commit', status: 'OK', commitSha, evidenceId: input.evidenceId, adopted: false };
+}
+
+// An existing commit record, settled without committing: a COMPLETED record is
+// adopted as a fact; a PENDING one (the executor died after `begin`, maybe after
+// the commit itself) is reconciled against the attempt's recorded commit and,
+// when one landed, completed with it. Null when no commit landed.
+async function settleCommit(
+  begun: SideEffectRecord,
+  input: {
+    readonly committer: Pick<GitCommitter, 'reconcile'>;
+    readonly log: SideEffectLog;
+    readonly scope: TenantScope;
+    readonly repositoryBindingId: RepositoryBindingId;
+    readonly attemptId: AttemptId;
+    readonly baseSha: string;
+    readonly leaseId: string;
+  },
+): Promise<CommitStepResult | null> {
   // Already COMPLETED for this attempt → adopt the recorded commit SHA + the
   // evidence id embedded in that commit; do NOT mint a second commit.
   if (begun.existed && begun.state === 'COMPLETED' && begun.resultRef) {
@@ -339,8 +386,6 @@ export async function commitStep(input: CommitStepInput): Promise<CommitStepResu
     // truncated/foreign JSONB row surfaced as undefined fields deep inside the
     // pipeline — the adopted commit SHA could be `undefined` and get pushed as a
     // ref. The parser pins the expected shape and throws instead.
-    // parseSideEffectResultRef(_, 'commit') returns a commit ref or throws, so
-    // there is no other shape to re-check for here.
     const rec = parseSideEffectResultRef(begun.resultRef, 'commit');
     return {
       step: 'commit',
@@ -350,15 +395,13 @@ export async function commitStep(input: CommitStepInput): Promise<CommitStepResu
       adopted: true,
     };
   }
-  // Crash-after-commit-before-complete (HIGH-006): the record exists but is
-  // still PENDING, so the completion write never landed. Naively falling through
-  // would mint a SECOND, divergent commit. Instead reconcile against the
-  // worktree: if HEAD already carries this attempt's harness commit (ASEP-Attempt
-  // trailer matches and HEAD advanced past base), adopt that commit + the
-  // evidence id embedded in its ASEP-Evidence trailer and finish the record.
+  // Crash-after-commit-before-complete: the record exists but is still
+  // PENDING, so the completion write never landed. Naively committing would
+  // mint a SECOND, divergent commit. Instead ask for the attempt's recorded
+  // commit; when there is one, adopt it + the evidence id in its ASEP-Evidence
+  // trailer and finish the record.
   if (begun.existed && begun.state === 'PENDING') {
     const found = await input.committer.reconcile(input.scope, {
-      workspace: input.workspace,
       attemptId: input.attemptId,
       baseSha: input.baseSha,
     });
@@ -378,29 +421,31 @@ export async function commitStep(input: CommitStepInput): Promise<CommitStepResu
         adopted: true,
       };
     }
-    // No commit landed before the crash — safe to mint it now under the same
-    // PENDING record (complete() below transitions it to COMPLETED).
   }
-  const trailers: Record<string, string> = {
-    'ASEP-Attempt': input.attemptId,
-    'ASEP-Evidence': input.evidenceId,
-    ...(input.extraTrailers ?? {}),
-  };
-  const { commitSha } = await input.committer.commit(input.scope, {
-    workspace: input.workspace,
-    allowedPaths: input.allowedPaths,
-    trailers,
-    identity: input.identity,
-  });
-  // Persist the commit SHA + the evidence id it embeds so a resume adopts BOTH.
-  await input.log.complete(input.scope, {
+  return null;
+}
+
+// The resume's commit step: it holds no workspace, so it can only settle the
+// commit an executor already began — take the record over under the resume's
+// lease, then adopt or reconcile it. Null when no commit landed (the attempt
+// has to be re-executed; nothing left the harness before the commit).
+export async function settleCommitStep(input: {
+  readonly committer: Pick<GitCommitter, 'reconcile'>;
+  readonly log: SideEffectLog;
+  readonly scope: TenantScope;
+  readonly repositoryBindingId: RepositoryBindingId;
+  readonly attemptId: AttemptId;
+  readonly baseSha: string;
+  readonly leaseId: string;
+}): Promise<CommitStepResult | null> {
+  const begun = await input.log.begin(input.scope, {
     operation: 'commit',
     repositoryBindingId: input.repositoryBindingId,
     attemptId: input.attemptId,
+    requestFingerprint: commitFingerprint(input.attemptId),
     ownerToken: input.leaseId,
-    resultRef: { kind: 'commit', commitSha, evidenceId: input.evidenceId },
   });
-  return { step: 'commit', status: 'OK', commitSha, evidenceId: input.evidenceId, adopted: false };
+  return settleCommit(begun, input);
 }
 
 // ---------------------------------------------------------------------------

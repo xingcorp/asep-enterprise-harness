@@ -216,24 +216,30 @@ export interface GitChangeInspector {
 }
 
 export interface GitCommitter {
+  // The attempt's one harness commit. It is recorded, create-only, under a ref
+  // keyed by the attempt in the repository the workspaces share, BEFORE the
+  // workspace HEAD moves: so an attempt can never get a second, divergent
+  // commit, and the commit stays discoverable without the workspace that made
+  // it (a crashed executor's worktree is never reused).
   commit(scope: TenantScope, input: {
     workspace: WorkspaceCapability;
+    attemptId: string;
+    baseSha: string;
     allowedPaths: readonly string[];
     trailers: Record<string, string>;
     identity: { name: string; email: string };
   }): Promise<{ commitSha: string }>;
-  // Crash-recovery reconciliation for the commit side effect (disp.
-  // P2-FINAL-HIGH-006, exit C7). A commit is NOT idempotent: re-running commit()
-  // would mint a second, divergent object. So when a resume finds a PENDING
-  // commit record, the caller must first ask whether the harness ALREADY
-  // committed for this attempt. This inspects the workspace HEAD and returns the
-  // recorded commit SHA + the evidence id carried in its `ASEP-Evidence` trailer
-  // IFF HEAD is a harness commit whose `ASEP-Attempt` trailer matches; otherwise
-  // null (the commit never landed, so it is safe to perform). Reading trailers
-  // off the real object is the natural-key reconciliation the two-phase protocol
-  // requires for the one effect that cannot be replayed.
+  // Crash-recovery reconciliation for the commit side effect (exit C7/D8). A
+  // commit is NOT idempotent: re-running commit() would mint a second,
+  // divergent object. So when a resume finds a PENDING commit record, the
+  // caller first asks whether the harness ALREADY committed for this attempt.
+  // Returns the attempt's recorded commit SHA + the evidence id carried in its
+  // `ASEP-Evidence` trailer, or null when the attempt has no commit (it never
+  // landed, so it is safe to perform). A recorded commit that is not this
+  // attempt's harness commit on `baseSha` throws: it is never adopted, and never
+  // a reason to commit again. Needs no workspace, so a successor that never
+  // held the dead executor's worktree can reconcile.
   reconcile(scope: TenantScope, input: {
-    workspace: WorkspaceCapability;
     attemptId: string;
     baseSha: string;
   }): Promise<{ commitSha: string; evidenceId: string } | null>;

@@ -21,7 +21,7 @@ export {
 
 export type { WorktreeManagerConfig } from './worktree-manager.js';
 export {
-  GitWorktreeManager, WorktreeContainmentError, BaseShaError,
+  GitWorktreeManager, WorktreeContainmentError, BaseShaError, HarnessCommitError,
 } from './worktree-manager.js';
 
 export { ulid, isUlid } from './ulid.js';

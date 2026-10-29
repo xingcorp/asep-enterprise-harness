@@ -41,13 +41,12 @@ import type {
   TaskStatus, RiskLevel,
 } from '@asep/contracts';
 import type {
-  EvidenceStore, ForgeProvider, SideEffectLog, WorkspaceLeaseRepository, Lease,
+  EvidenceStore, ForgeProvider, GitCommitter, SideEffectLog, WorkspaceLeaseRepository, Lease,
 } from '@asep/ports';
-import { parseSideEffectResultRef } from '@asep/ports';
 import type { SpanTracer, AuditSink } from '@asep/observability';
 import { completionObserver, fencedBy } from './completion-observer.js';
 import { admitRisk } from './risk-admission.js';
-import { pushStep, upsertPrStep, evidenceStep } from './pipeline-steps.js';
+import { pushStep, upsertPrStep, evidenceStep, settleCommitStep } from './pipeline-steps.js';
 import type { SlicePullRequestPort } from './vertical-slice-workflow.js';
 
 // --- repository ports (structural; the concrete repositories satisfy them) ----
@@ -101,6 +100,8 @@ export interface ResumeAttemptInput {
   readonly sideEffects: SideEffectLog;
   readonly evidence: EvidenceStore;
   readonly forge: ForgeProvider;
+  // Finds the attempt's recorded harness commit without its workspace.
+  readonly committer: Pick<GitCommitter, 'reconcile'>;
   readonly repositories: ResumeAttemptRepositories;
 
   readonly tracer?: SpanTracer;
@@ -213,23 +214,39 @@ async function resumeUnderLease(
     return { stoppedAt: 'not-resumable', reason: `task is ${task.status}` };
   }
 
-  // --- the harness commit must be durable --------------------------------------
-  const commit = await input.sideEffects.find(scope, {
+  // --- the harness commit: adopted when recorded, reconciled when the executor
+  // died between the commit and its record --------------------------------------
+  const begun = await input.sideEffects.find(scope, {
     operation: 'commit',
     repositoryBindingId: input.repositoryBindingId,
     attemptId: input.attemptId,
   });
-  if (!commit || commit.state !== 'COMPLETED') {
+  if (!begun) {
+    return { stoppedAt: 'not-resumable', reason: 'no harness commit was begun — re-execute the attempt' };
+  }
+  if (begun.state !== 'COMPLETED' && begun.state !== 'PENDING') {
+    return { stoppedAt: 'not-resumable', reason: `the harness commit is ${begun.state} — re-execute the attempt` };
+  }
+  const commit = await observe(
+    { span: 'git.commit', action: 'git.commit', detail: { baseSha: input.baseSha, resumed: true } },
+    () => settleCommitStep({
+      committer: input.committer,
+      log: input.sideEffects,
+      scope,
+      repositoryBindingId: input.repositoryBindingId,
+      attemptId: input.attemptId,
+      baseSha: input.baseSha,
+      leaseId: lease.leaseId,
+    }),
+  );
+  if (commit === null) {
     return {
       stoppedAt: 'not-resumable',
-      reason: commit
-        ? `the harness commit is ${commit.state}, not durable — re-execute the attempt`
-        : 'no harness commit was recorded — re-execute the attempt',
+      reason: 'the harness commit never landed — re-execute the attempt (nothing left the harness)',
     };
   }
-  const committed = parseSideEffectResultRef(commit.resultRef, 'commit');
-  const commitSha = committed.commitSha;
-  const evidenceId = committed.evidenceId as ArtifactId;
+  const commitSha = commit.commitSha;
+  const evidenceId = commit.evidenceId;
 
   // --- …and its evidence: adopted when stored, else completed from the draft
   // reserved for it before the commit (a crash between commit and evidence).

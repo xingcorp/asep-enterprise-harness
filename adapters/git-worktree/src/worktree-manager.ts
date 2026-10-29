@@ -45,6 +45,23 @@ export class BaseShaError extends Error {
 }
 
 const FULL_SHA = /^[0-9a-f]{40}$/;
+const ZERO_SHA = '0'.repeat(40);
+
+// The attempt's one harness commit, recorded in the shared mirror. Not a branch
+// (refs/heads), so inspection never counts it as a ref the agent created, and
+// never pushed: pushes name a SHA and the attempt's branch.
+function attemptCommitRef(attemptId: string): string {
+  return `refs/asep/attempts/${safeSegment('attempt', attemptId)}`;
+}
+
+// The harness commit could not be made, or a recorded one is not what it must
+// be. Never a reason to commit again.
+export class HarnessCommitError extends Error {
+  constructor(reason: string) {
+    super(`harness commit: ${reason} (fail closed)`);
+    this.name = 'HarnessCommitError';
+  }
+}
 
 export interface WorktreeManagerConfig {
   // Absolute root under which ALL worktrees live. Containment is asserted here.
@@ -223,13 +240,35 @@ export class GitWorktreeManager implements WorkspaceManager, GitChangeInspector,
   // E5: the HARNESS creates the commit, with ASEP trailers. Only files under
   // allowedPaths are staged; the commit identity is the harness bot, not the
   // agent. Returns the resulting commit SHA (the authoritative result_sha).
+  //
+  // ONE COMMIT PER ATTEMPT, DISCOVERABLE WITHOUT THE WORKSPACE. The commit
+  // object is made first (commit-tree, so HEAD has not moved), then recorded
+  // create-only under the attempt's ref in the mirror, and only then does the
+  // workspace HEAD move onto it. So:
+  //   - a second commit for the attempt — a zombie executor, a retry — is
+  //     refused by the ref, and its object is never named by anything;
+  //   - a crash after the ref is written leaves the commit findable by
+  //     reconcile() from the mirror alone, whatever became of this worktree;
+  //   - a crash before it leaves an object nothing names, so committing again
+  //     is still the first commit of the attempt.
   async commit(scope: TenantScope, input: {
     workspace: WorkspaceCapability;
+    attemptId: string;
+    baseSha: string;
     allowedPaths: readonly string[];
     trailers: Record<string, string>;
     identity: { name: string; email: string };
   }): Promise<{ commitSha: string }> {
     const wtPath = this.pathOf(input.workspace);
+    const ref = attemptCommitRef(input.attemptId);
+    if (!FULL_SHA.test(input.baseSha)) throw new BaseShaError(input.baseSha);
+    if (input.trailers['ASEP-Attempt'] !== input.attemptId) {
+      throw new HarnessCommitError(`the ASEP-Attempt trailer does not name attempt ${input.attemptId}`);
+    }
+    const head = (await runGit(['-C', wtPath, 'rev-parse', 'HEAD'])).stdout.trim();
+    if (head !== input.baseSha) {
+      throw new HarnessCommitError(`workspace HEAD ${head} is not the attempt's base ${input.baseSha}`);
+    }
 
     // Stage ONLY the explicitly allowed paths (pathspec, end-of-options guarded).
     if (input.allowedPaths.length > 0) {
@@ -237,6 +276,9 @@ export class GitWorktreeManager implements WorkspaceManager, GitChangeInspector,
     } else {
       await runGit(['-C', wtPath, 'add', '-A']);
     }
+    const tree = (await runGit(['-C', wtPath, 'write-tree'])).stdout.trim();
+    const baseTree = (await runGit(['-C', wtPath, 'rev-parse', `${input.baseSha}^{tree}`])).stdout.trim();
+    if (tree === baseTree) throw new HarnessCommitError('nothing to commit');
 
     // Build the commit message with ASEP trailers appended in a stable order.
     const trailerLines = Object.entries(input.trailers)
@@ -244,46 +286,64 @@ export class GitWorktreeManager implements WorkspaceManager, GitChangeInspector,
       .join('\n');
     const message = `ASEP harness commit\n\n${trailerLines}\n`;
 
-    // Commit with an explicit author/committer identity via -c, so no ambient
-    // git identity is required and the harness owns authorship.
-    await runGit([
+    // An explicit author/committer identity via -c, so no ambient git identity
+    // is required and the harness owns authorship. commit-tree runs no hooks.
+    const commitSha = (await runGit([
       '-C', wtPath,
       '-c', `user.name=${input.identity.name}`,
       '-c', `user.email=${input.identity.email}`,
-      'commit', '--no-verify', '--no-gpg-sign', '-m', message,
-    ]);
+      'commit-tree', '--no-gpg-sign', tree, '-p', input.baseSha, '-m', message,
+    ])).stdout.trim();
 
-    const commitSha = (await runGit(['-C', wtPath, 'rev-parse', 'HEAD'])).stdout.trim();
+    // Record it as the attempt's commit. The zero old value makes this a
+    // create: it fails if the attempt already has a commit.
+    const recorded = await runGit(
+      ['--git-dir', this.cfg.mirrorPath, 'update-ref', ref, commitSha, ZERO_SHA],
+      { allowNonZero: true },
+    );
+    if (recorded.exitCode !== 0) {
+      throw new HarnessCommitError(`attempt ${input.attemptId} already has a harness commit — refusing a second`);
+    }
+    // Move the workspace onto it, only from the base it was made on.
+    await runGit(['-C', wtPath, 'update-ref', '--no-deref', 'HEAD', commitSha, input.baseSha]);
     return { commitSha };
   }
 
-  // HIGH-006: reconcile a PENDING commit record on resume. A commit is the one
-  // side effect that is NOT idempotent — re-running commit() mints a second,
-  // divergent object — so before a resume performs it again we ask whether the
-  // harness already committed for THIS attempt. HEAD is a harness commit iff it
-  // has advanced past baseSha AND carries an `ASEP-Attempt` trailer matching the
-  // attempt; in that case we return its recorded SHA + the `ASEP-Evidence`
-  // trailer so the caller adopts both instead of minting a divergent commit.
+  // Reconcile a PENDING commit record on resume. The commit is the one side
+  // effect that is NOT idempotent, so before anything commits again we ask
+  // whether the harness already committed for THIS attempt: the attempt's ref in
+  // the mirror. No ref → nothing was committed; safe to perform. A ref that
+  // names anything but this attempt's harness commit on `baseSha`, carrying an
+  // evidence id, is refused rather than adopted or committed over.
   async reconcile(scope: TenantScope, input: {
-    workspace: WorkspaceCapability;
     attemptId: string;
     baseSha: string;
   }): Promise<{ commitSha: string; evidenceId: string } | null> {
-    const wtPath = this.pathOf(input.workspace);
-    const head = (await runGit(['-C', wtPath, 'rev-parse', 'HEAD'])).stdout.trim();
-    // HEAD still at base → the commit never landed; safe to perform it.
-    if (head === input.baseSha) return null;
-    // Read the trailers off the real HEAD object (natural-key reconciliation).
-    const body = (await runGit(['-C', wtPath, 'log', '-1', '--format=%B', head])).stdout;
+    const ref = attemptCommitRef(input.attemptId);
+    const git = ['--git-dir', this.cfg.mirrorPath];
+    const found = await runGit([...git, 'rev-parse', '--verify', '--quiet', `${ref}^{commit}`],
+      { allowNonZero: true });
+    if (found.exitCode !== 0) return null;
+    const commitSha = found.stdout.trim();
+    const parents = (await runGit([...git, 'log', '-1', '--format=%P', commitSha])).stdout.trim();
+    if (parents !== input.baseSha) {
+      throw new HarnessCommitError(
+        `attempt ${input.attemptId} names ${commitSha}, whose parent is not the base ${input.baseSha}`);
+    }
+    // Read the trailers off the real object (natural-key reconciliation).
+    const body = (await runGit([...git, 'log', '-1', '--format=%B', commitSha])).stdout;
     const trailerOf = (key: string): string | null => {
       const m = body.match(new RegExp(`^${key}:\\s*(.+)$`, 'm'));
       return m && m[1] !== undefined ? m[1].trim() : null;
     };
-    // Only adopt a commit that is genuinely THIS attempt's harness commit.
-    if (trailerOf('ASEP-Attempt') !== input.attemptId) return null;
+    if (trailerOf('ASEP-Attempt') !== input.attemptId) {
+      throw new HarnessCommitError(`attempt ${input.attemptId} names ${commitSha}, another attempt's commit`);
+    }
     const evidenceId = trailerOf('ASEP-Evidence');
-    if (evidenceId === null) return null;
-    return { commitSha: head, evidenceId };
+    if (evidenceId === null) {
+      throw new HarnessCommitError(`attempt ${input.attemptId} names ${commitSha}, which carries no evidence id`);
+    }
+    return { commitSha, evidenceId };
   }
 
   // E7: idempotent cleanup — removing an already-removed worktree is not an error.

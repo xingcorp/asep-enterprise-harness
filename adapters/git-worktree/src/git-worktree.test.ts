@@ -11,7 +11,7 @@ import { mkdtemp, rm, mkdir, writeFile, symlink, stat, readFile } from 'node:fs/
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  GitWorktreeManager, WorktreeContainmentError, BaseShaError,
+  GitWorktreeManager, WorktreeContainmentError, BaseShaError, HarnessCommitError,
   buildCloneUrl, rejectRawRemoteUrl, RemoteIdentityError,
   attemptBranch, safeRefspecFor, RefSafetyError,
   runGit,
@@ -32,6 +32,8 @@ const scope: TenantScope = {
   projectId: 'B'.repeat(26) as ProjectId,
 };
 const bindingId = 'C'.repeat(26) as RepositoryBindingId;
+const ATTEMPT = 'P'.repeat(26);
+const OTHER_ATTEMPT = 'Q'.repeat(26);
 
 // Build a real bare mirror seeded with one commit; return { mirror, baseSha }.
 async function seedMirror(dir: string): Promise<{ mirror: string; baseSha: string }> {
@@ -192,13 +194,15 @@ test('E3/E5: inspector derives change from git; harness commit carries ASEP trai
     // Harness commit with trailers.
     const { commitSha } = await mgr.commit(scope, {
       workspace: ws.capability,
+      attemptId: ATTEMPT,
+      baseSha,
       allowedPaths: ['feature.txt'],
-      trailers: { 'ASEP-Run': 'R', 'ASEP-Task': 'T', 'ASEP-Attempt': 'P', 'ASEP-Evidence': 'E' },
+      trailers: { 'ASEP-Run': 'R', 'ASEP-Task': 'T', 'ASEP-Attempt': ATTEMPT, 'ASEP-Evidence': 'E' },
       identity: { name: 'asep-harness', email: 'harness@asep.dev' },
     });
     assert.match(commitSha, /^[0-9a-f]{40}$/);
     const body = (await runGit(['-C', wtPath, 'log', '-1', '--format=%B'])).stdout;
-    for (const t of ['ASEP-Run: R', 'ASEP-Task: T', 'ASEP-Attempt: P', 'ASEP-Evidence: E']) {
+    for (const t of ['ASEP-Run: R', 'ASEP-Task: T', `ASEP-Attempt: ${ATTEMPT}`, 'ASEP-Evidence: E']) {
       assert.ok(body.includes(t), `commit message carries trailer ${t}`);
     }
     // The committer identity is the harness bot, not the agent.
@@ -380,61 +384,160 @@ test('E7: cleanup is idempotent and quarantine never reuses a worktree', async (
 });
 
 // --------------------------------------------------------------------------
-// HIGH-006 — the commit is the one side effect that is NOT idempotent: running
-// commit() twice mints two divergent objects. reconcile() is what a resume calls
-// on a PENDING commit record to decide adopt-vs-perform. This exercises it on a
-// REAL git worktree: after a genuine harness commit, reconcile() must return the
-// exact recorded SHA + the ASEP-Evidence trailer (adopt, no second commit); when
-// HEAD is still at base it must return null (safe to perform); and a commit whose
-// ASEP-Attempt trailer belongs to a DIFFERENT attempt must not be adopted.
+// The commit is the one side effect that is NOT idempotent: running commit()
+// twice mints two divergent objects. So an attempt's commit is recorded,
+// create-only, under a ref keyed by the attempt in the shared mirror before the
+// worktree HEAD moves, and reconcile() — what a resume calls on a PENDING commit
+// record — reads that ref. These run on REAL git.
 // --------------------------------------------------------------------------
 
-test('HIGH-006: reconcile adopts THIS attempt\'s real commit and refuses base/foreign HEAD', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'asep-gw-'));
-  try {
-    const { mirror, baseSha } = await seedMirror(dir);
-    const store = await artifactStore(dir);
-    const root = join(dir, 'wt');
-    await mkdir(root, { recursive: true });
-    const mgr = new GitWorktreeManager(
-      { workspaceRoot: root, mirrorPath: mirror, repositoryBindingId: bindingId }, store,
-    );
+async function commitFixture(dir: string) {
+  const { mirror, baseSha } = await seedMirror(dir);
+  const store = await artifactStore(dir);
+  const root = join(dir, 'wt');
+  await mkdir(root, { recursive: true });
+  const mgr = new GitWorktreeManager(
+    { workspaceRoot: root, mirrorPath: mirror, repositoryBindingId: bindingId }, store,
+  );
+  const workspace = async () => {
     const ws = await mgr.create(scope, { repositoryBindingId: bindingId, baseSha, leaseId: 'l' });
-    const wtPath = mgr['paths'].get(ws.workspaceId)!;
-
-    // Before any harness commit, HEAD is still at base → reconcile must say "not
-    // committed yet" so the resume performs the commit rather than adopting.
-    const atBase = await mgr.reconcile(scope, {
-      workspace: ws.capability, attemptId: 'P', baseSha,
-    });
-    assert.equal(atBase, null, 'HEAD at base → no commit to adopt');
-
-    // A genuine harness commit for attempt 'P' with a preallocated evidence id.
-    await writeFile(join(wtPath, 'feature.txt'), 'harness change\n');
-    const { commitSha } = await mgr.commit(scope, {
-      workspace: ws.capability,
+    return { ws, wtPath: mgr['paths'].get(ws.workspaceId)! };
+  };
+  const commit = (ws: { capability: { workspaceId: WorkspaceId; leaseId: string } }, attemptId: string, evidenceId: string) =>
+    mgr.commit(scope, {
+      workspace: ws.capability, attemptId, baseSha,
       allowedPaths: ['feature.txt'],
-      trailers: { 'ASEP-Attempt': 'P', 'ASEP-Evidence': 'ev-xyz' },
+      trailers: { 'ASEP-Attempt': attemptId, 'ASEP-Evidence': evidenceId },
       identity: { name: 'asep-harness', email: 'harness@asep.dev' },
     });
+  return { mirror, baseSha, mgr, workspace, commit };
+}
 
-    // Crash-after-commit-before-complete: the resume reconciles and MUST adopt
-    // the exact recorded SHA + the evidence id embedded in the trailer — never
-    // mint a second commit.
-    const adopted = await mgr.reconcile(scope, {
-      workspace: ws.capability, attemptId: 'P', baseSha,
-    });
-    assert.ok(adopted, 'a landed commit for this attempt must be adopted');
-    assert.equal(adopted!.commitSha, commitSha, 'adopts the exact recorded SHA');
-    assert.equal(adopted!.evidenceId, 'ev-xyz', 'adopts the evidence id from the trailer');
+test('reconcile adopts the attempt\'s recorded commit and nothing else', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'asep-gw-'));
+  try {
+    const { baseSha, mgr, workspace, commit } = await commitFixture(dir);
+    const { ws, wtPath } = await workspace();
 
-    // A DIFFERENT attempt must not adopt this commit (trailer mismatch → null).
-    const foreign = await mgr.reconcile(scope, {
-      workspace: ws.capability, attemptId: 'OTHER', baseSha,
-    });
-    assert.equal(foreign, null, 'a commit for another attempt is never adopted');
+    // Before any harness commit there is nothing to adopt: the resume may commit.
+    assert.equal(await mgr.reconcile(scope, { attemptId: ATTEMPT, baseSha }), null);
 
+    await writeFile(join(wtPath, 'feature.txt'), 'harness change\n');
+    const { commitSha } = await commit(ws, ATTEMPT, 'ev-xyz');
+    assert.equal((await runGit(['-C', wtPath, 'rev-parse', 'HEAD'])).stdout.trim(), commitSha,
+      'the workspace HEAD is the commit');
+    assert.equal((await runGit(['-C', wtPath, 'status', '--porcelain'])).stdout.trim(), '',
+      'the committed change is clean in the workspace');
+
+    // Crash after the commit, before its record completed: the resume adopts the
+    // exact SHA and the evidence id in its trailer — never a second commit.
+    const adopted = await mgr.reconcile(scope, { attemptId: ATTEMPT, baseSha });
+    assert.deepEqual(adopted, { commitSha, evidenceId: 'ev-xyz' });
+
+    // Another attempt has no commit of its own here.
+    assert.equal(await mgr.reconcile(scope, { attemptId: OTHER_ATTEMPT, baseSha }), null);
     await mgr.cleanup(scope, ws.workspaceId);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('a successor without the dead executor\'s worktree still finds the attempt\'s commit', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'asep-gw-'));
+  try {
+    const { mirror, baseSha, mgr, workspace, commit } = await commitFixture(dir);
+    const { ws, wtPath } = await workspace();
+    await writeFile(join(wtPath, 'feature.txt'), 'harness change\n');
+    const { commitSha } = await commit(ws, ATTEMPT, 'ev-xyz');
+    // The worktree is gone (quarantined, cleaned up, or on another host) and the
+    // successor is a fresh manager over the same mirror.
+    await mgr.quarantine(scope, ws.workspaceId, 'executor crashed');
+    const successor = new GitWorktreeManager(
+      { workspaceRoot: join(dir, 'wt'), mirrorPath: mirror, repositoryBindingId: bindingId },
+      await artifactStore(join(dir, 'other')),
+    );
+    assert.deepEqual(await successor.reconcile(scope, { attemptId: ATTEMPT, baseSha }), {
+      commitSha, evidenceId: 'ev-xyz',
+    });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('an attempt gets one harness commit: a second commit for it is refused and moves nothing', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'asep-gw-'));
+  try {
+    const { baseSha, mgr, workspace, commit } = await commitFixture(dir);
+    const first = await workspace();
+    await writeFile(join(first.wtPath, 'feature.txt'), 'one\n');
+    const { commitSha } = await commit(first.ws, ATTEMPT, 'ev-1');
+
+    // A zombie of the same attempt in another worktree tries to commit again.
+    const second = await workspace();
+    await writeFile(join(second.wtPath, 'feature.txt'), 'two\n');
+    await assert.rejects(() => commit(second.ws, ATTEMPT, 'ev-2'), HarnessCommitError);
+    assert.equal((await runGit(['-C', second.wtPath, 'rev-parse', 'HEAD'])).stdout.trim(), baseSha,
+      'the refused commit did not move the workspace');
+    assert.deepEqual(await mgr.reconcile(scope, { attemptId: ATTEMPT, baseSha }), {
+      commitSha, evidenceId: 'ev-1',
+    }, 'the attempt still names its first commit');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('a recorded attempt commit that is not that attempt\'s harness commit on the base is never adopted', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'asep-gw-'));
+  try {
+    const { mirror, baseSha, mgr, workspace, commit } = await commitFixture(dir);
+    const { ws, wtPath } = await workspace();
+    await writeFile(join(wtPath, 'feature.txt'), 'change\n');
+    const { commitSha } = await commit(ws, OTHER_ATTEMPT, 'ev-other');
+    const ref = (attemptId: string) => `refs/asep/attempts/${attemptId}`;
+    // The ref for ATTEMPT points at another attempt's commit…
+    await runGit(['--git-dir', mirror, 'update-ref', ref(ATTEMPT), commitSha]);
+    await assert.rejects(() => mgr.reconcile(scope, { attemptId: ATTEMPT, baseSha }), HarnessCommitError);
+    // …or at the base itself, which is no harness commit.
+    await runGit(['--git-dir', mirror, 'update-ref', ref(ATTEMPT), baseSha]);
+    await assert.rejects(() => mgr.reconcile(scope, { attemptId: ATTEMPT, baseSha }), HarnessCommitError);
+    // A commit on another base is not this attempt's either.
+    await assert.rejects(
+      () => mgr.reconcile(scope, { attemptId: OTHER_ATTEMPT, baseSha: commitSha }), HarnessCommitError);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('a commit whose attempt trailer names another attempt is refused', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'asep-gw-'));
+  try {
+    const { baseSha, mgr, workspace } = await commitFixture(dir);
+    const { ws, wtPath } = await workspace();
+    await writeFile(join(wtPath, 'feature.txt'), 'change\n');
+    await assert.rejects(() => mgr.commit(scope, {
+      workspace: ws.capability, attemptId: ATTEMPT, baseSha, allowedPaths: ['feature.txt'],
+      trailers: { 'ASEP-Attempt': OTHER_ATTEMPT, 'ASEP-Evidence': 'ev-1' },
+      identity: { name: 'asep-harness', email: 'harness@asep.dev' },
+    }), HarnessCommitError);
+    assert.equal(await mgr.reconcile(scope, { attemptId: ATTEMPT, baseSha }), null);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('a harness commit of nothing is refused', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'asep-gw-'));
+  try {
+    const { baseSha, mgr, workspace } = await commitFixture(dir);
+    const { ws, wtPath } = await workspace();
+    // An allowed path that exists but did not change: the tree is the base's.
+    await assert.rejects(() => mgr.commit(scope, {
+      workspace: ws.capability, attemptId: ATTEMPT, baseSha, allowedPaths: ['README.md'],
+      trailers: { 'ASEP-Attempt': ATTEMPT, 'ASEP-Evidence': 'ev-1' },
+      identity: { name: 'asep-harness', email: 'harness@asep.dev' },
+    }), HarnessCommitError);
+    assert.equal((await runGit(['-C', wtPath, 'rev-parse', 'HEAD'])).stdout.trim(), baseSha);
+    assert.equal(await mgr.reconcile(scope, { attemptId: ATTEMPT, baseSha }), null);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

@@ -14,6 +14,11 @@
 //      remote and converges on exactly one commit, one remote ref and one PR;
 //   3. the dead executor's lease can never act again.
 //
+// The executor is killed at three points: after its push landed, after its PR
+// was opened, and after its harness commit landed in git but before the commit
+// was recorded — where the successor must adopt that commit, never mint a
+// second one.
+//
 // The same file is the child: when ASEP_CRASH_EXECUTOR is set it runs the
 // crashing executor instead of registering tests.
 
@@ -28,6 +33,7 @@ import { fileURLToPath } from 'node:url';
 import { Pool } from 'pg';
 import {
   PgPoolClient, migrate, SqlSideEffectLog, SqlWorkspaceLeaseRepository,
+  type SqlClient, type SqlExecutor,
 } from '@asep/persistence';
 import { DockerSandboxProvider } from '@asep/command-runner';
 import { runGit, attemptBranch } from '@asep/git-worktree';
@@ -50,7 +56,7 @@ const ALPINE = 'alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be1216
 const LEASE_TTL_MS = 10_000;
 const AGENT_BUDGET = { maxTurns: 5, maxToolCalls: 10, maxCostUsd: 1, maxWallClockMinutes: 0.05 };
 
-type CrashPoint = 'after-push' | 'after-pr';
+type CrashPoint = 'after-push' | 'after-pr' | 'at-commit-record';
 
 interface ChildConfig {
   readonly dir: string;
@@ -82,15 +88,34 @@ function checkCommand(wtPath: string): CommandSpec {
 
 // --- the child: an executor that dies the moment its forge effect lands -------
 
+// The executor's database connection, through which it dies as it is about to
+// record its harness commit — the commit has already landed in git.
+function dyingAtCommitRecord(client: SqlClient, die: () => never): SqlClient {
+  const guard = (db: SqlExecutor): SqlExecutor => ({
+    query: (text, params) => {
+      if (/update side_effect_records\s+set state/.test(text)
+        && params?.includes('commit') && params.includes('COMPLETED')) die();
+      return db.query(text, params);
+    },
+  });
+  return {
+    query: (text, params) => guard(client).query(text, params),
+    transaction: (fn) => client.transaction((tx) => fn(guard(tx))),
+    ping: () => client.ping(),
+    close: () => client.close(),
+  };
+}
+
 async function runCrashingExecutor(cfg: ChildConfig): Promise<never> {
   const pool = new Pool({ connectionString: requirePgUrl(), max: 4 });
-  const client = PgPoolClient.fromPool(pool);
-  const seeded = await seedMirror(join(cfg.dir, 'seed'));
-  const inner = new LocalBareForgeProvider(join(cfg.dir, 'forge.git'));
   const die = (): never => {
     process.kill(process.pid, 'SIGKILL');
     throw new Error('unreachable');
   };
+  const pooled = PgPoolClient.fromPool(pool);
+  const client = cfg.crashAt === 'at-commit-record' ? dyingAtCommitRecord(pooled, die) : pooled;
+  const seeded = await seedMirror(join(cfg.dir, 'seed'));
+  const inner = new LocalBareForgeProvider(join(cfg.dir, 'forge.git'));
   const forge: ForgeProvider = {
     async pushBranch(scope, input) {
       await inner.pushBranch(scope, input);
@@ -169,7 +194,7 @@ interface Crashed {
 function registerTests(): void {
   console.log('SUITE-ID: asep-suite:crash-takeover-real');
 
-  for (const crashAt of ['after-push', 'after-pr'] as const) {
+  for (const crashAt of ['after-push', 'after-pr', 'at-commit-record'] as const) {
     test(`a SIGKILLed executor (${crashAt}): the successor waits out its lease, takes over and converges on one commit, one ref, one PR`, async () => {
       const dir = await mkdtemp(join(tmpdir(), 'asep-crash-takeover-'));
       const pool = new Pool({ connectionString: requirePgUrl(), max: 4 });
@@ -217,7 +242,7 @@ function registerTests(): void {
         assert.equal(lease.rows[0]!['state'], 'ACTIVE', 'a killed executor never released its lease');
         assert.equal(Number(lease.rows[0]!['fencing_epoch']), 1);
 
-        const pending = crashAt === 'after-push' ? 'push' : 'pr-upsert';
+        const pending = crashAt === 'after-push' ? 'push' : crashAt === 'after-pr' ? 'pr-upsert' : 'commit';
         const recordsOf = async () => (await client.query(
           `select operation, state, owner_lease_id, owner_epoch
              from side_effect_records where attempt_id = $1 order by operation`,
@@ -233,6 +258,13 @@ function registerTests(): void {
           attemptId: c.attemptId, baseSha: c.baseSha, branch: c.branch,
           remoteBare: forgeRemote, pushFrom: join(dir, 'seed', 'mirror.git'),
         });
+
+        // The harness commit is in git, recorded under the attempt, whatever the
+        // record says.
+        const mirror = join(dir, 'seed', 'mirror.git');
+        const landed = (await runGit(['--git-dir', mirror, 'rev-parse', `refs/asep/attempts/${c.attemptId}`]))
+          .stdout.trim();
+        assert.match(landed, /^[0-9a-f]{40}$/);
 
         // --- 1. the dead executor's lease is still live: no takeover --------
         const stillLive = await client.query(
@@ -259,8 +291,14 @@ function registerTests(): void {
         const r = await resume();
         assert.equal(r.stoppedAt, 'complete', r.reason);
         assert.equal(r.fencingEpoch, 2, 'the successor holds the next epoch');
-        assert.equal(r.pushes, 0, 'the push had landed; the successor never re-pushed');
-        assert.equal(r.pushAdopted, true);
+        assert.equal(r.commitSha, landed, 'the commit that landed is the one recorded and published');
+        if (crashAt === 'at-commit-record') {
+          assert.equal(r.pushes, 1, 'nothing had been pushed; the successor pushed once');
+          assert.equal(r.pushAdopted, false);
+        } else {
+          assert.equal(r.pushes, 0, 'the push had landed; the successor never re-pushed');
+          assert.equal(r.pushAdopted, true);
+        }
         assert.equal(r.prAdopted, crashAt === 'after-pr',
           'a PR that reached the forge is adopted; one that did not is opened once');
         assert.equal(r.taskStatus, 'WAITING_FOR_HUMAN_REVIEW');

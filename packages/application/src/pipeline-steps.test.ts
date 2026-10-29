@@ -472,6 +472,37 @@ test('commitStep ADOPTS the recorded commit SHA + evidence id on a resume (HIGH-
   assert.equal(resume.evidenceId, 'ev-first', 'adopts the id embedded in the original commit');
 });
 
+// The executor died after the commit landed but before its record completed:
+// the record is PENDING. The step asks for the attempt's recorded commit and
+// completes the record with it — it never commits again.
+test('commitStep completes a PENDING record with the attempt\'s recorded commit instead of committing again', async () => {
+  const log = new MemorySideEffectLog();
+  await log.begin(scope, {
+    operation: 'commit', repositoryBindingId: bindingId, attemptId,
+    requestFingerprint: `commit:${attemptId}`, ownerToken: 'lease-1',
+  });
+  let commits = 0;
+  const asked: unknown[] = [];
+  const committer: GitCommitter = {
+    async commit() { commits += 1; return { commitSha: 'e'.repeat(40) }; },
+    async reconcile(_s, input) { asked.push(input); return { commitSha: 'd'.repeat(40), evidenceId: 'ev-landed' }; },
+  };
+  const res = await commitStep({
+    committer, scope, workspace, allowedPaths: ['src/'], attemptId,
+    baseSha: '0'.repeat(40), evidenceId: 'ev-fresh' as ArtifactId,
+    identity: { name: 'ASEP Bot', email: 'bot@asep.invalid' },
+    log, repositoryBindingId: bindingId, leaseId: 'lease-1',
+  });
+  assert.equal(commits, 0, 'no second commit');
+  assert.deepEqual(asked, [{ attemptId, baseSha: '0'.repeat(40) }]);
+  assert.equal(res.adopted, true);
+  assert.equal(res.commitSha, 'd'.repeat(40));
+  assert.equal(res.evidenceId, 'ev-landed', 'the evidence id the landed commit carries');
+  const rec = await log.find(scope, { operation: 'commit', repositoryBindingId: bindingId, attemptId });
+  assert.equal(rec?.state, 'COMPLETED');
+  assert.deepEqual(rec?.resultRef, { kind: 'commit', commitSha: 'd'.repeat(40), evidenceId: 'ev-landed' });
+});
+
 test('evidenceStep stores the reserved draft completed by the harness commit SHA (D8)', async () => {
   const draft = evidenceDraft({
     taskId, attemptId, baseSha: '0'.repeat(40), change: cleanChange, environment,

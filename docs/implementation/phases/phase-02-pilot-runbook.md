@@ -237,10 +237,12 @@ merged code is possible because nothing is auto-merged.
      is an orphan (defined in D7) — reconcile/delete orphans; metadata rows
      without a verifiable object are quarantined, not served.
   4. Re-verify a sample of recent artifacts by checksum before resuming.
-  5. An attempt that stopped at the evidence step is not resumed: its commit is
-     local only (nothing was pushed), and a resume reports it not resumable
-     because the harness never re-derives evidence it did not persist. Run the
-     task again as a new attempt.
+  5. Resume an attempt that stopped at the evidence step. Its commit is local
+     only (nothing was pushed) and its evidence was fixed before the commit as
+     a reserved draft, so the resume stores that draft completed with the
+     recorded commit SHA and publishes exactly one ref and one PR. Evidence is
+     never re-derived: if the draft itself is unreadable the resume publishes
+     nothing, and the task is run again as a new attempt.
 
 ### 3.2 Database (PostgreSQL) outage / restart
 
@@ -257,10 +259,12 @@ merged code is possible because nothing is auto-merged.
      fingerprint + fencing) is the source of truth for what already happened
      (exit C7).
   2. For each in-flight attempt, reconcile the `PENDING` side-effect row against
-     the remote before deciding retry-vs-adopt: if the external commit/push/PR
-     already landed, adopt it (do not repeat); if not, retry with the same
-     semantic key. Reusing a key with a **different** request fingerprint fails
-     closed.
+     the outside world before deciding retry-vs-adopt: if the commit (recorded
+     in the mirror under the attempt), push or PR already landed, adopt it (do
+     not repeat); if not, retry with the same semantic key. Reusing a key with a
+     **different** request fingerprint fails closed. A resume holds no
+     workspace, so an attempt whose harness commit never landed is run again as
+     a new attempt — nothing had left the harness.
   3. Confirm migration checksums match before serving traffic.
 
 ### 3.3 GitHub outage / rate limiting / token expiry

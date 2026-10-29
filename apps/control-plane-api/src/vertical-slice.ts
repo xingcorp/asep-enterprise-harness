@@ -445,6 +445,9 @@ export interface ResumeVerticalSliceInput {
   // The crashed run's object store, when it was not `<dir>/objects`.
   readonly objectStoreDir?: string;
   readonly objectStore?: ObjectStore;
+  // The bare mirror the crashed run's worktrees shared: it records the
+  // attempt's harness commit. Defaults to `pushFrom`, then `<dir>/mirror.git`.
+  readonly mirrorPath?: string;
   readonly scope: TenantScope;
   readonly repositoryBindingId: RepositoryBindingId;
   readonly runId: RunId;
@@ -474,6 +477,16 @@ export async function resumeVerticalSlice(
   const { client } = input;
   const objects = input.objectStore ?? new FilesystemObjectStore(input.objectStoreDir ?? join(input.dir, 'objects'));
   const evidenceStore = new ContentAddressedEvidenceStore(client, objects);
+  // Only reconcile() is used: it reads the attempt's commit from the mirror and
+  // needs no workspace, so nothing is checked out here.
+  const committer = new GitWorktreeManager(
+    {
+      workspaceRoot: join(input.dir, 'wt'),
+      mirrorPath: input.mirrorPath ?? input.pushFrom ?? join(input.dir, 'mirror.git'),
+      repositoryBindingId: input.repositoryBindingId,
+    },
+    new ContentAddressedArtifactStore(client, objects),
+  );
 
   let localForge: LocalBareForgeProvider | null = null;
   let forge: ForgeProvider;
@@ -504,6 +517,7 @@ export async function resumeVerticalSlice(
     sideEffects: new SqlSideEffectLog(client),
     evidence: evidenceStore,
     forge,
+    committer,
     repositories: {
       attempts: new AttemptRepository(client),
       tasks: new TaskRepository(client),
