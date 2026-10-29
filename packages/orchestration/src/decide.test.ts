@@ -69,7 +69,7 @@ function outcomes(trace: TaskTrace) {
 // ---------------------------------------------------------------------------
 
 const ALL_REQUESTS: readonly TaskRequestKind[] = [
-  'admitTask', 'ensureAttempt', 'acquireLease', 'prepareWorkspace', 'storeAttemptInputs', 'runAgent',
+  'admitTask', 'ensureAttempt', 'findAttempt', 'acquireLease', 'prepareWorkspace', 'storeAttemptInputs', 'runAgent',
   'inspectWorkspace', 'runVerification', 'commitAttempt', 'persistEvidence', 'assuranceRound',
   'openApprovalRequest', 'verifyApprovalDecision', 'publishBranch', 'upsertPullRequest',
 ];
@@ -100,6 +100,11 @@ test('activity options: the critical units are commit plus evidence, push, and P
   for (const name of ['runAgent', 'runVerification', 'assuranceRound', 'inspectWorkspace', 'prepareWorkspace'] as const) {
     assert.equal(ACTIVITY_OPTIONS[name].cancellable, true, name);
   }
+});
+
+test('activity options: the attempt registration and its lookup are short writes a cancel waits for', () => {
+  assert.equal(ACTIVITY_OPTIONS.ensureAttempt.cancellable, false);
+  assert.equal(ACTIVITY_OPTIONS.findAttempt.cancellable, false);
 });
 
 test('activity options: derived timeouts add five minutes of grace', () => {
@@ -417,6 +422,58 @@ test('agent failure: replacement stops at maxAttempts', () => {
   assert.equal(requestKinds(trace.commands).filter((k) => k === 'ensureAttempt').length, 3);
   assert.deepEqual(outcomes(trace), [[1, 'failed'], [2, 'failed'], [3, 'failed']]);
   assert.equal(trace.summary.outcome, 'FAILED');
+});
+
+// ---------------------------------------------------------------------------
+// Attempt registration that fails
+// ---------------------------------------------------------------------------
+
+const registrationFails = () => ({ kind: 'activityFailed' as const, failureClass: 'environment' as const, timedOut: false });
+
+function assertRegistrationFailed(trace: TaskTrace): void {
+  const kinds = requestKinds(trace.commands);
+  assert.deepEqual(kinds, ['admitTask', 'ensureAttempt', 'findAttempt'], 'the registration is reconciled, never replaced');
+  assert.equal(trace.summary.outcome, 'FAILED');
+  assert.equal(trace.summary.reason, 'attempt-registration-failed');
+  assertLegalProjections(trace);
+}
+
+test('registration: ensureAttempt fails but the lookup finds the attempt: it ends failed with zero usage', () => {
+  const trace = runTaskSequentially(baseInput(), scripted({ ensureAttempt: registrationFails }));
+  assertRegistrationFailed(trace);
+  assert.deepEqual(outcomes(trace), [[1, 'failed']]);
+  assert.deepEqual(effectsOf(trace.commands, 'recordUsage').map((u) => [u.attemptNumber, u.chargedCostUsd, u.chargedWallClockMinutes]), [[1, 0, 0]]);
+  assert.equal(trace.summary.attempts, 1);
+});
+
+test('registration: ensureAttempt fails before the insert: no usage and no outcome for an attempt that does not exist', () => {
+  const trace = runTaskSequentially(baseInput(), scripted({
+    ensureAttempt: registrationFails,
+    findAttempt: () => ({ kind: 'findAttempt', attemptId: null }),
+  }));
+  assertRegistrationFailed(trace);
+  assert.deepEqual(effectsOf(trace.commands, 'recordAttemptOutcome'), []);
+  assert.deepEqual(effectsOf(trace.commands, 'recordUsage'), []);
+  assert.equal(trace.summary.attempts, 0);
+});
+
+test('registration: when the lookup fails too, no attempt effect is emitted and the unknown registration is audited', () => {
+  const trace = runTaskSequentially(baseInput(), scripted({ ensureAttempt: registrationFails, findAttempt: registrationFails }));
+  assertRegistrationFailed(trace);
+  assert.deepEqual(effectsOf(trace.commands, 'recordAttemptOutcome'), []);
+  assert.deepEqual(effectsOf(trace.commands, 'recordUsage'), []);
+  const audit = effectsOf(trace.commands, 'audit').find((a) => a.action === 'attempt.registration-unreconciled');
+  assert.equal(audit?.detail['attemptNumber'], 1, 'the attempt number is named for a human');
+});
+
+test('registration: a cancel during ensureAttempt waits for it, then cancels the registered attempt', () => {
+  const trace = runTaskSequentially(baseInput(), scripted({}, {
+    messagesDuring: (request) => (request.kind === 'ensureAttempt' ? [cancel()] : []),
+  }));
+  assert.equal(trace.aborts, 0, 'the registration is not interrupted');
+  assert.deepEqual(requestKinds(trace.commands), ['admitTask', 'ensureAttempt']);
+  assert.deepEqual(outcomes(trace), [[1, 'cancelled']]);
+  assert.equal(trace.summary.outcome, 'CANCELLED');
 });
 
 test('an overstep found by inspection is a policy violation and is not retried', () => {

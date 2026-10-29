@@ -200,6 +200,8 @@ export type TaskRequest =
       readonly parentAttemptNumber: number | null;
       readonly repairOrderRef: ArtifactRef | null;
     }
+  /** After a failed ensureAttempt: look the attempt up by its natural key, to learn whether it exists. */
+  | { readonly kind: 'findAttempt'; readonly attemptNumber: number }
   | { readonly kind: 'acquireLease'; readonly attemptNumber: number }
   | { readonly kind: 'prepareWorkspace'; readonly attemptNumber: number; readonly baseSha: string }
   | {
@@ -328,6 +330,8 @@ export type TaskResult =
       /** The attempt's remote branch, named by the Git adapter's attempt branch rule. */
       readonly branch: string;
     }
+  /** Null: no attempt row exists, so the failed registration never inserted one. */
+  | { readonly kind: 'findAttempt'; readonly attemptId: AttemptId | null }
   | { readonly kind: 'acquireLease' }
   | { readonly kind: 'prepareWorkspace' }
   | { readonly kind: 'storeAttemptInputs' }
@@ -436,6 +440,12 @@ export interface AttemptState {
   readonly lineage: RepairLineage | null;
   readonly attemptId: AttemptId | null;
   readonly branch: string | null;
+  /**
+   * The attempt is known to exist: its registration returned, or the lookup
+   * after a failed registration found it. Only registered attempts get usage
+   * and outcome records.
+   */
+  readonly registered: boolean;
   readonly leaseRequested: boolean;
   readonly leaseReleased: boolean;
   readonly workspaceRequested: boolean;

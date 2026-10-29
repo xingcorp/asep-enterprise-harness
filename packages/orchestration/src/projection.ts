@@ -39,6 +39,7 @@ export function isWorkStatus(status: ProjectedTaskStatus): boolean {
 export function statusForRequest(kind: TaskRequestKind, workStatus: ProjectedTaskStatus): ProjectedTaskStatus | null {
   switch (kind) {
     case 'admitTask':
+    case 'findAttempt':
     case 'openApprovalRequest':
     case 'verifyApprovalDecision':
       return null;

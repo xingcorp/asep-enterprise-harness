@@ -55,7 +55,10 @@ function options(
 
 export const ACTIVITY_OPTIONS: Readonly<Record<ActivityName, ActivityOptions>> = {
   admitTask: options(30, null, retry(3), true),
-  ensureAttempt: options(30, null, retry(10), true),
+  // A short registration write and its lookup: a cancel waits for them, so the
+  // core always knows whether the attempt exists.
+  ensureAttempt: options(30, null, retry(10), false),
+  findAttempt: options(30, null, retry(10), false),
   acquireLease: options(30, null, retry(10), true),
   prepareWorkspace: options(300, 30, retry(3), true),
   storeAttemptInputs: options(120, null, retry(5), true),

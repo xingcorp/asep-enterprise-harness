@@ -91,6 +91,8 @@ export function happyAnswer(request: TaskRequest): Answer {
       return { kind: 'admitTask', admitted: true, reason: 'admitted' };
     case 'ensureAttempt':
       return { kind: 'ensureAttempt', attemptId: `att-${request.attemptNumber}` as AttemptId, branch: branchFor(request.attemptNumber) };
+    case 'findAttempt':
+      return { kind: 'findAttempt', attemptId: `att-${request.attemptNumber}` as AttemptId };
     case 'acquireLease':
       return { kind: 'acquireLease' };
     case 'prepareWorkspace':

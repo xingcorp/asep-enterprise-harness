@@ -71,6 +71,7 @@ interface Step {
 const PHASE_OF: Readonly<Record<TaskRequestKind, TaskPhase>> = {
   admitTask: 'ADMITTING',
   ensureAttempt: 'ATTEMPT_STARTING',
+  findAttempt: 'ATTEMPT_STARTING',
   acquireLease: 'ATTEMPT_STARTING',
   prepareWorkspace: 'ATTEMPT_STARTING',
   storeAttemptInputs: 'ATTEMPT_STARTING',
@@ -253,11 +254,14 @@ function baseOf(s: Draft, lineage: RepairLineage | null): string {
 }
 
 /**
- * True for the request that finishes a critical unit already under way: the
- * evidence binding after its commit, and the PR upsert once a push has started.
+ * True for the request that finishes a unit already under way: the evidence
+ * binding after its commit, the PR upsert once a push has started, and the
+ * lookup that settles whether a failed registration inserted its attempt.
  */
 function completesStartedUnit(s: Draft, request: TaskRequest): boolean {
-  return request.kind === 'persistEvidence' || (request.kind === 'upsertPullRequest' && s.pushRequested);
+  return request.kind === 'persistEvidence'
+    || request.kind === 'findAttempt'
+    || (request.kind === 'upsertPullRequest' && s.pushRequested);
 }
 
 /**
@@ -296,6 +300,7 @@ function markIssued(s: Draft, request: TaskRequest): void {
         lineage: plan.lineage,
         attemptId: null,
         branch: null,
+        registered: false,
         leaseRequested: false,
         leaseReleased: false,
         workspaceRequested: false,
@@ -495,9 +500,21 @@ function onResult(step: Step, result: TaskResult): void {
       const a = current(s);
       a.attemptId = result.attemptId;
       a.branch = result.branch;
+      a.registered = true;
       emit(step, 'attempt.started', a.attemptNumber);
       if (a.kind === 'repair' && a.lineage !== null) emit(step, 'repair.started', a.attemptNumber, { repairRound: a.lineage.round });
       issue(step, { kind: 'acquireLease', attemptNumber: a.attemptNumber });
+      return;
+    }
+    case 'findAttempt': {
+      // The registration failed; the attempt exists only if the lookup found it.
+      // Either way it is never replaced, so numbering stays contiguous.
+      const a = current(s);
+      if (result.attemptId !== null) {
+        a.attemptId = result.attemptId;
+        a.registered = true;
+      }
+      close(step, 'FAILED', 'attempt-registration-failed');
       return;
     }
     case 'acquireLease': {
@@ -622,7 +639,12 @@ function onActivityFailed(
       close(step, 'BLOCKED', 'admission-unavailable');
       return;
     case 'ensureAttempt':
-      // Numbering must stay contiguous, so an attempt that may not exist is never followed by another.
+      // The insert may or may not have committed: settle it before any attempt-bound effect.
+      issue(step, { kind: 'findAttempt', attemptNumber: request.attemptNumber });
+      return;
+    case 'findAttempt':
+      // Whether the attempt exists stays unknown: no attempt-bound effect, and a human reconciles it.
+      audit(step, 'attempt.registration-unreconciled', { attemptNumber: request.attemptNumber });
       close(step, 'FAILED', 'attempt-registration-failed');
       return;
     case 'acquireLease':
@@ -1073,7 +1095,8 @@ function acceptControl(
 /**
  * Close the task. An accepted cancel wins over any other outcome, except an
  * incomplete publication (`overridesCancel`), which must stay visible. Every
- * attempt ends with its resources released, one usage entry and one outcome record.
+ * registered attempt ends with its resources released, one usage entry and one
+ * outcome record; an attempt not known to exist gets none.
  */
 function close(
   step: Step,
@@ -1090,7 +1113,7 @@ function close(
   }
   const handedOff = outcome === 'WAITING_FOR_HUMAN_REVIEW';
   const attemptTerminal: AttemptTerminal = terminal ?? (outcome === 'CANCELLED' ? 'cancelled' : 'failed');
-  for (const a of s.attempts) {
+  for (const a of s.attempts.filter((x) => x.registered)) {
     releaseAttempt(step, a, handedOff ? 'cleanup' : 'quarantine', reason);
     endAttempt(step, a, attemptTerminal);
   }
@@ -1116,7 +1139,7 @@ function close(
     summary: {
       outcome,
       reason,
-      attempts: s.attempts.length,
+      attempts: s.attempts.filter((a) => a.registered).length,
       chargedCostUsd: fromMicroUsd(s.spentMicroUsd),
       prNumber: s.prNumber,
     },

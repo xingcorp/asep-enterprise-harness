@@ -180,6 +180,14 @@ function randomEnvironment(rng: Rng, input: TaskCoreInput): TaskEnvironment {
           }
           return { kind: 'runAgent', status: 'AGENT_DONE', reportedCostUsd: cost, reportedToolCalls: toolCalls, wallClockMs, failureClass: null };
         }
+        case 'ensureAttempt':
+          return rng.chance(0.08) ? failure(rng) : happyAnswer(request);
+        case 'findAttempt': {
+          // After a failed registration the row may exist, may not, or the lookup may fail too.
+          const r = rng.next();
+          if (r < 0.2) return failure(rng);
+          return r < 0.6 ? happyAnswer(request) : { kind: 'findAttempt', attemptId: null };
+        }
         case 'inspectWorkspace':
           if (rng.chance(0.06)) return failure(rng);
           return { kind: 'inspectWorkspace', overstep: rng.chance(0.05) };
@@ -314,14 +322,23 @@ function checkTrace(input: TaskCoreInput, trace: TaskTrace, label: string): void
     assert.ok(!reqs.some((r) => r.kind === 'openApprovalRequest' && r.approvalKind === 'budget-extension'), `${label}: extension approval without a bound`);
   }
 
-  // Exactly one attempt outcome and one usage entry per ensured attempt.
+  // Exactly one attempt outcome and one usage entry per registered attempt, and none for an attempt not known to
+  // exist: registered means its ensureAttempt returned, or the lookup after a failed one found it.
+  const registered = trace.events.flatMap((e) => {
+    const request = e.type === 'result' ? seqRequests.get(e.seq) : undefined;
+    if (e.type !== 'result' || request === undefined) return [];
+    if (e.result.kind === 'ensureAttempt' && request.kind === 'ensureAttempt') return [request.attemptNumber];
+    if (e.result.kind === 'findAttempt' && request.kind === 'findAttempt' && e.result.attemptId !== null) return [request.attemptNumber];
+    return [];
+  }).sort();
   const outcomes = effectsOf(commands, 'recordAttemptOutcome');
-  assert.deepEqual(outcomes.map((o) => o.attemptNumber).sort(), ensured.map((r) => r.attemptNumber), `${label}: one outcome per attempt`);
+  assert.deepEqual(outcomes.map((o) => o.attemptNumber).sort(), registered, `${label}: one outcome per registered attempt`);
   assert.deepEqual(
     effectsOf(commands, 'recordUsage').map((u) => u.attemptNumber).sort(),
-    ensured.map((r) => r.attemptNumber),
-    `${label}: one usage entry per attempt`,
+    registered,
+    `${label}: one usage entry per registered attempt`,
   );
+  assert.equal(trace.summary.attempts, registered.length, `${label}: the summary counts registered attempts`);
 
   // An exhausted attempt is never verified, committed or published; usage includes the verification
   // reserve exactly when verification ran.
@@ -572,6 +589,10 @@ test('the generator covers repair, replacement, approvals, pause and cancel path
     if (effectsOf(trace.commands, 'recordOverrun').some((o) => o.overrunWallClockMs > 0)) seen.add('wall-clock-overrun');
     if (effectsOf(trace.commands, 'recordOverrun').some((o) => o.overrunUsd === 0.000001)) seen.add('micro-overrun');
     if (trace.summary.reason === 'publication-incomplete') seen.add('publication-incomplete');
+    for (const e of trace.events) {
+      if (e.type === 'result' && e.result.kind === 'findAttempt') seen.add(e.result.attemptId === null ? 'registration-absent' : 'registration-found');
+      if (e.type === 'activityFailed' && e.activity === 'findAttempt') seen.add('registration-unknown');
+    }
     const toleratedMs = input.attemptBudget.maxWallClockMinutes * 60_000 + input.policy.agentKillGraceSeconds * 1000;
     if (input.policy.agentKillGraceSeconds > 0 && trace.events.some((e) => e.type === 'result' && e.result.kind === 'runAgent'
       && e.result.status === 'AGENT_DONE' && e.result.wallClockMs === toleratedMs) && reqs.some((r) => r.kind === 'runVerification')) {
@@ -587,7 +608,7 @@ test('the generator covers repair, replacement, approvals, pause and cancel path
   assert.deepEqual([...seen].sort(), [
     'abort', 'approval-expired', 'assurance-unavailable', 'budget-approval', 'exhausted', 'extension-granted',
     'hostile-policy-failure', 'lineage-retry', 'micro-overrun', 'overrun', 'pause-timeout', 'paused', 'publication-incomplete',
-    'publish-approval', 'recovered',
+    'publish-approval', 'recovered', 'registration-absent', 'registration-found', 'registration-unknown',
     'repair', 'retry', 'verification-stop', 'verified-within-grace', 'violation', 'wall-clock-overrun',
   ]);
 });
