@@ -7,7 +7,7 @@
 
 export { decideTask, startTask, taskWorkflowId } from './task-core.js';
 export { decideRun, runWorkflowId, startRun } from './run-core.js';
-export type { RunBudget, RunCarry, RunCommand, RunCoreInput, RunDecision, RunEvent, RunState } from './run-core.js';
+export type { RunBudget, RunCarry, RunCommand, RunControl, RunCoreInput, RunDecision, RunEvent, RunState } from './run-core.js';
 export {
   ACTIVITY_OPTIONS,
   CRITICAL_UNITS,

@@ -215,8 +215,8 @@ test('budget precision: the input rules reject money that is not exact, not posi
     ['runRemainingUsd: must be an amount exact in micro-USD and at most 100000000']);
   assert.deepEqual(taskInputErrors(baseInput({ policy: policy({ maxBudgetExtensionUsd: 0.0000001 }) })),
     ['policy.maxBudgetExtensionUsd: must be unset or a positive amount exact in micro-USD and at most 100000000']);
-  assert.deepEqual(runInputErrors({ runId: 'r' as RunId, runBudget: { maxCostUsd: 10.5, softCostUsd: 8, maxTasks: 3 } }), []);
-  assert.deepEqual(runInputErrors({ runId: 'r' as RunId, runBudget: { maxCostUsd: 10.0000001, softCostUsd: 11, maxTasks: 3 } }), [
+  assert.deepEqual(runInputErrors({ runId: 'r' as RunId, runBudget: { maxCostUsd: 10.5, softCostUsd: 8, maxTasks: 3 }, fixedTasks: null }), []);
+  assert.deepEqual(runInputErrors({ runId: 'r' as RunId, runBudget: { maxCostUsd: 10.0000001, softCostUsd: 11, maxTasks: 3 }, fixedTasks: null }), [
     'runBudget.maxCostUsd: must be a positive amount exact in micro-USD and at most 100000000',
     'runBudget.softCostUsd: must be an amount exact in micro-USD, at most runBudget.maxCostUsd',
   ]);
@@ -1377,7 +1377,7 @@ test('cancel during the PR upsert lets it complete; the PR stays open and the ca
 // The run workflow
 // ---------------------------------------------------------------------------
 
-const RUN: RunCoreInput = { runId: 'run-1' as RunId, runBudget: { maxCostUsd: 10, softCostUsd: 8, maxTasks: 3 } };
+const RUN: RunCoreInput = { runId: 'run-1' as RunId, runBudget: { maxCostUsd: 10, softCostUsd: 8, maxTasks: 3 }, fixedTasks: null };
 const submit = (taskId: string, requestId = `s-${taskId}`) => ({ type: 'submitTask' as const, taskId: taskId as TaskId, requestId });
 const done = (taskId: string, chargedCostUsd: number) => ({ type: 'childCompleted' as const, taskId: taskId as TaskId, outcome: 'WAITING_FOR_HUMAN_REVIEW' as const, chargedCostUsd });
 
@@ -1454,6 +1454,105 @@ test('run pause forwards to the child and holds the queue; cancel cancels the ch
   d = decideRun(d.state, { type: 'childCompleted', taskId: 'b' as TaskId, outcome: 'CANCELLED', chargedCostUsd: 0 });
   const complete = d.commands.find((c) => c.kind === 'complete');
   assert.ok(complete && complete.kind === 'complete' && complete.outcome === 'CANCELLED');
+});
+
+const seal = (requestId = 'seal-1') => ({ type: 'sealRequested' as const, requestId, principalId: 'op' });
+
+function completion(commands: readonly RunCommand[]) {
+  return commands.find((c): c is Extract<RunCommand, { kind: 'complete' }> => c.kind === 'complete');
+}
+
+test('run seal: a run below maxTasks closes once it is sealed and no task is open', () => {
+  let d = startRun(RUN, null);
+  d = decideRun(d.state, submit('a'));
+  d = decideRun(d.state, done('a', 1));
+  assert.equal(completion(d.commands), undefined, 'one of three tasks finished: the run stays open for submissions');
+  d = decideRun(d.state, seal());
+  assert.deepEqual(d.receipt, { accepted: true, duplicate: false, reason: null });
+  assert.deepEqual(d.commands.filter((c) => c.kind === 'recordControl').map((c) => c.kind === 'recordControl' && c.control), ['seal']);
+  assert.deepEqual(completion(d.commands), { kind: 'complete', outcome: 'COMPLETED', finishedTasks: 1, chargedCostUsd: 1 });
+});
+
+test('run seal: a seal during a running child stops submissions; the run closes after its queued tasks', () => {
+  let d = startRun(RUN, null);
+  d = decideRun(d.state, submit('a'));
+  d = decideRun(d.state, submit('b'));
+  d = decideRun(d.state, seal());
+  assert.equal(completion(d.commands), undefined, 'a child is still running');
+  d = decideRun(d.state, submit('c'));
+  assert.deepEqual(d.receipt, { accepted: false, duplicate: false, reason: 'run-sealed' });
+  d = decideRun(d.state, submit('a', 'replayed'));
+  assert.deepEqual(d.receipt, { accepted: true, duplicate: true, reason: null }, 'a known task keeps its original receipt');
+  d = decideRun(d.state, seal('seal-2'));
+  assert.deepEqual(d.receipt, { accepted: false, duplicate: false, reason: 'already-sealed' });
+  d = decideRun(d.state, seal());
+  assert.deepEqual(d.receipt, { accepted: true, duplicate: true, reason: null }, 'a repeated request id is a duplicate');
+  d = decideRun(d.state, done('a', 1));
+  assert.deepEqual(startedChildren(d.commands), [['b', 9]]);
+  d = decideRun(d.state, done('b', 2));
+  assert.equal(completion(d.commands)?.outcome, 'COMPLETED');
+});
+
+test('run seal: a run created sealed with a fixed task list runs exactly those tasks and closes', () => {
+  let d = startRun({ ...RUN, fixedTasks: ['a' as TaskId, 'b' as TaskId] }, null);
+  assert.deepEqual(startedChildren(d.commands), [['a', 10]]);
+  d = decideRun(d.state, submit('c'));
+  assert.deepEqual(d.receipt, { accepted: false, duplicate: false, reason: 'run-sealed' });
+  d = decideRun(d.state, seal());
+  assert.deepEqual(d.receipt, { accepted: false, duplicate: false, reason: 'already-sealed' });
+  d = decideRun(d.state, done('a', 1));
+  assert.deepEqual(startedChildren(d.commands), [['b', 9]]);
+  d = decideRun(d.state, done('b', 1));
+  assert.deepEqual(completion(d.commands), { kind: 'complete', outcome: 'COMPLETED', finishedTasks: 2, chargedCostUsd: 2 });
+});
+
+test('run seal: the sealed flag survives continue-as-new', () => {
+  let d = startRun(RUN, null);
+  d = decideRun(d.state, submit('a'));
+  d = decideRun(d.state, submit('b'));
+  d = decideRun(d.state, seal());
+  d = decideRun(d.state, { type: 'continueAsNewSuggested' });
+  d = decideRun(d.state, done('a', 1));
+  const can = d.commands.find((c) => c.kind === 'continueAsNew');
+  assert.ok(can && can.kind === 'continueAsNew', 'continues as new between children');
+  assert.equal(can.carry.sealed, true);
+  let next = startRun(RUN, JSON.parse(JSON.stringify(can.carry)) as typeof can.carry);
+  assert.deepEqual(startedChildren(next.commands), [['b', 9]]);
+  next = decideRun(next.state, submit('c'));
+  assert.deepEqual(next.receipt, { accepted: false, duplicate: false, reason: 'run-sealed' });
+  next = decideRun(next.state, done('b', 1));
+  assert.equal(completion(next.commands)?.outcome, 'COMPLETED');
+});
+
+test('run seal: a paused run with nothing left closes on seal; with queued tasks it waits for resume', () => {
+  let d = startRun(RUN, null);
+  d = decideRun(d.state, submit('a'));
+  d = decideRun(d.state, { type: 'pauseRequested', requestId: 'p1', principalId: 'op' });
+  d = decideRun(d.state, done('a', 1));
+  d = decideRun(d.state, seal());
+  assert.equal(completion(d.commands)?.outcome, 'COMPLETED', 'a pause holds no work when nothing is queued');
+
+  let q = startRun(RUN, null);
+  q = decideRun(q.state, submit('a'));
+  q = decideRun(q.state, submit('b'));
+  q = decideRun(q.state, { type: 'pauseRequested', requestId: 'p1', principalId: 'op' });
+  q = decideRun(q.state, done('a', 1));
+  q = decideRun(q.state, seal());
+  assert.equal(completion(q.commands), undefined, 'task b is still queued');
+  assert.deepEqual(startedChildren(q.commands), [], 'and the pause holds it');
+  q = decideRun(q.state, { type: 'resumeRequested', requestId: 'r1', principalId: 'op' });
+  assert.deepEqual(startedChildren(q.commands), [['b', 9]]);
+  q = decideRun(q.state, done('b', 1));
+  assert.equal(completion(q.commands)?.outcome, 'COMPLETED');
+});
+
+test('run seal: the run input rule rejects a fixed task list with a repeat or above maxTasks', () => {
+  const base = { runId: 'r' as RunId, runBudget: { maxCostUsd: 10, softCostUsd: 8, maxTasks: 2 } };
+  assert.deepEqual(runInputErrors({ ...base, fixedTasks: ['a' as TaskId, 'b' as TaskId] }), []);
+  for (const fixedTasks of [['a', 'a'], ['a', 'b', 'c']] as const) {
+    assert.deepEqual(runInputErrors({ ...base, fixedTasks: fixedTasks as unknown as TaskId[] }),
+      ['fixedTasks: must list each task once, at most runBudget.maxTasks of them'], fixedTasks.join(','));
+  }
 });
 
 test('run: the run soft threshold is reported once', () => {

@@ -397,7 +397,9 @@ export type ControlRejection =
   | 'decision-conflict'
   | 'decision-not-allowed'
   | 'extension-out-of-bounds'
-  | 'run-task-limit';
+  | 'run-task-limit'
+  | 'run-sealed'
+  | 'already-sealed';
 
 export interface ControlReceipt {
   readonly accepted: boolean;

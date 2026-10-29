@@ -56,5 +56,9 @@ export function runInputErrors(input: RunCoreInput): string[] {
   const errors: string[] = [];
   amountErrors(errors, 'runBudget.maxCostUsd', input.runBudget.maxCostUsd, true);
   softCapErrors(errors, 'runBudget.softCostUsd', input.runBudget.softCostUsd, 'runBudget.maxCostUsd', input.runBudget.maxCostUsd);
+  const fixed = input.fixedTasks;
+  if (fixed !== null && (new Set(fixed).size !== fixed.length || fixed.length > input.runBudget.maxTasks)) {
+    errors.push('fixedTasks: must list each task once, at most runBudget.maxTasks of them');
+  }
   return errors;
 }

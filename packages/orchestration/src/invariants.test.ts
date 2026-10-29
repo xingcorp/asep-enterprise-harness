@@ -637,18 +637,22 @@ test('the same seed always produces the same trace', () => {
 // Run workflow properties
 // ---------------------------------------------------------------------------
 
-test('generated run histories start children one at a time, once each, in submission order', () => {
+test('generated run histories start children one at a time, once each, in submission order, and a sealed run closes', () => {
+  let sealedClosures = 0;
   for (let seed = 1; seed <= 300; seed += 1) {
     const rng = rngFor(seed);
+    const maxTasks = rng.int(1, 6);
+    const fixedTasks = rng.chance(0.2) ? Array.from({ length: rng.int(1, maxTasks) }, (_x, i) => `f${i + 1}` as TaskId) : null;
     const input: RunCoreInput = {
       runId: 'run-p' as RunId,
-      runBudget: { maxCostUsd: rng.int(5, 40), softCostUsd: 4, maxTasks: rng.int(1, 6) },
+      runBudget: { maxCostUsd: rng.int(5, 40), softCostUsd: 4, maxTasks },
+      fixedTasks,
     };
     let decision = startRun(input, null);
     const log: RunCommand[] = [];
-    const accepted: string[] = [];
+    const accepted: string[] = [...(fixedTasks ?? [])];
     const started: string[] = [];
-    const model = { active: null as string | null, spent: 0, closed: false };
+    const model = { active: null as string | null, spent: 0, closed: false, sealed: fixedTasks !== null, cancelled: false };
     const apply = (commands: readonly RunCommand[]) => {
       for (const c of commands) {
         log.push(c);
@@ -681,14 +685,27 @@ test('generated run histories start children one at a time, once each, in submis
         event = { type: 'continueAsNewSuggested' };
       } else if (r < 0.88) {
         event = { type: 'pauseRequested', requestId: `p${rng.int(1, 3)}`, principalId: 'op' };
-      } else if (r < 0.96) {
+      } else if (r < 0.94) {
         event = { type: 'resumeRequested', requestId: `r${rng.int(1, 3)}`, principalId: 'op' };
+      } else if (r < 0.98) {
+        event = { type: 'sealRequested', requestId: `seal${rng.int(1, 2)}`, principalId: 'op' };
       } else {
         event = { type: 'cancelRequested', requestId: `c${step}`, principalId: 'op' };
       }
       decision = decideRun(decision.state, event);
-      if (event.type === 'submitTask' && decision.receipt?.accepted && !decision.receipt.duplicate) accepted.push(event.taskId);
+      const fresh = decision.receipt?.accepted === true && !decision.receipt.duplicate;
+      if (event.type === 'submitTask' && fresh) {
+        assert.ok(!model.sealed, `seed ${seed}: a submission accepted after the seal`);
+        accepted.push(event.taskId);
+      }
+      if (event.type === 'sealRequested' && fresh) model.sealed = true;
+      if (event.type === 'cancelRequested' && fresh) model.cancelled = true;
       apply(decision.commands);
+      // A sealed run with no task open (none active, every accepted task started) is closed.
+      if (model.sealed && !model.cancelled && model.active === null && started.length === accepted.length) {
+        assert.ok(model.closed, `seed ${seed}: a sealed run with no open task stays open`);
+        sealedClosures += 1;
+      }
     }
     assert.equal(new Set(started).size, started.length, `seed ${seed}: a task started twice`);
     assert.deepEqual(started, accepted.slice(0, started.length), `seed ${seed}: start order`);
@@ -699,4 +716,5 @@ test('generated run histories start children one at a time, once each, in submis
     }
     assert.ok(log.filter((c) => c.kind === 'emitRunEvent' && c.eventType === 'run.started').length === 1, `seed ${seed}: one run.started`);
   }
+  assert.ok(sealedClosures > 0, 'the generator must reach sealed runs that close');
 });
