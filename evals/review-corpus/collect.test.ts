@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -16,10 +17,15 @@ import {
   findingIdForms,
   itemId,
   longFindingId,
+  leakPatterns,
   namesFinding,
   severityFromId,
   sha256Hex,
   type CorpusItem,
+  type GateRun,
+  type GateRunner,
+  type GitExec,
+  type PublicationGate,
 } from './collect.js';
 
 console.log('SUITE-ID: asep-suite:review-corpus-collect');
@@ -142,7 +148,7 @@ test('collected provenance and excerpts verify against the repository', () => {
     // Fix commits name the finding and descend from the reviewed tree.
     for (const fix of item.fixCommits) {
       if (git.commit(fix) === null) continue;
-      assert.ok(namesFinding(git.subject(fix)!, item.findingId), `${at}: ${fix} does not name the finding`);
+      assert.ok(namesFinding(git.subject(fix), item.findingId), `${at}: ${fix} does not name the finding`);
       assert.ok(git.isAncestor(item.reviewedSha!, fix), `${at}: ${fix} does not descend from the reviewed tree`);
     }
 
@@ -238,7 +244,82 @@ test('the publication gates refuse an excerpt that cannot be published', () => {
   ]);
   const failing = failingExcerpts(ROOT, candidates);
   assert.ok(failing.get('a'.repeat(64))?.includes('secret-scan'));
-  assert.ok(failing.get('b'.repeat(64))?.includes('check-publication'));
+  assert.ok(failing.get('b'.repeat(64))?.includes('path-leak-scan'));
   assert.ok(failing.get('c'.repeat(64))?.includes('format-check'));
   assert.equal(failing.has('d'.repeat(64)), false);
+});
+
+test('a publication gate that does not complete aborts collection', () => {
+  const encode = (text: string) => new TextEncoder().encode(text);
+  const [a, b] = ['a'.repeat(64), 'b'.repeat(64)];
+  const candidates = new Map([
+    [a, encode('one\n')],
+    [b, encode('two\n')],
+  ]);
+  // The documented codes, stated independently: the four scripts exit 0 clean and 1 with
+  // findings; the path-leak scan is grep, which exits 1 clean and 0 with findings.
+  const CODES: Readonly<Record<PublicationGate, { readonly clean: number; readonly findings: number }>> = {
+    'format-check': { clean: 0, findings: 1 },
+    'secret-scan': { clean: 0, findings: 1 },
+    'pii-scan': { clean: 0, findings: 1 },
+    'large-file-scan': { clean: 0, findings: 1 },
+    'path-leak-scan': { clean: 1, findings: 0 },
+  };
+  const gates = Object.keys(CODES) as PublicationGate[];
+  const gateOf = (command: string, args: readonly string[]): PublicationGate =>
+    command === 'grep' ? 'path-leak-scan' : (/^scripts\/(.+)\.sh$/.exec(args[0] ?? '')![1] as PublicationGate);
+  /** Every gate clean except `faulty`, which returns `run`. */
+  const runner =
+    (faulty: readonly PublicationGate[], run: Partial<GateRun>): GateRunner =>
+    (command, args) => {
+      const gate = gateOf(command, args);
+      const clean: GateRun = { status: CODES[gate].clean, signal: null, error: null, output: `${gate}: PASS` };
+      return faulty.includes(gate) ? { ...clean, status: null, ...run } : clean;
+    };
+  const leftovers = () => readdirSync(tmpdir()).filter((name) => name.startsWith('asep-corpus-gates-')).sort();
+  const before = leftovers();
+
+  for (const gate of gates) {
+    const aborts: readonly (readonly [string, Partial<GateRun>, RegExp])[] = [
+      ['crash', { signal: 'SIGSEGV' }, /killed by SIGSEGV/],
+      ['missing executable', { error: Object.assign(new Error(`spawnSync ${gate} ENOENT`), { code: 'ENOENT' }) }, /could not run/],
+      ['findings code naming no excerpt', { status: CODES[gate].findings, output: `${gate}: FAIL — the scanner could not read its input` }, /named no excerpt/],
+      ['a status outside the documented codes', { status: 2, output: `${gate}: error` }, /exited 2/],
+    ];
+    for (const [label, run, reason] of aborts) {
+      assert.throws(() => failingExcerpts(ROOT, candidates, runner([gate], run)), new RegExp(`publication gate ${gate} .*${reason.source}`), `${gate}: ${label}`);
+    }
+    // A findings code that names an excerpt withholds that excerpt, and only that one.
+    const named = failingExcerpts(ROOT, candidates, runner([gate], { status: CODES[gate].findings, output: `  ${BLOBS_DIR}/${a}: finding` }));
+    assert.deepEqual([...named], [[a, [gate]]], gate);
+  }
+  // The review's probe: all five gates fail with status 2.
+  assert.throws(() => failingExcerpts(ROOT, candidates, runner(gates, { status: 2 })), /publication gate/);
+  // Every gate clean: nothing is withheld.
+  assert.deepEqual([...failingExcerpts(ROOT, candidates, runner([], {}))], []);
+  // No temporary repository is left behind, whatever the outcome.
+  assert.deepEqual(leftovers(), before);
+
+  // The path-leak patterns are read from the publication script, and an unreadable list fails closed.
+  const script = readFileSync(join(ROOT, 'scripts/check-publication.sh'), 'utf8');
+  const patterns = leakPatterns(script);
+  assert.ok(patterns.length > 0);
+  for (const pattern of patterns) assert.ok(script.includes(`'${pattern}'`), pattern);
+  assert.throws(() => leakPatterns('#!/usr/bin/env bash\n'), /LEAK_PATTERNS/);
+  assert.throws(() => leakPatterns('LEAK_PATTERNS=(\n  $(cat patterns)\n)\n'), /LEAK_PATTERNS/);
+  assert.throws(() => leakPatterns('LEAK_PATTERNS=(\n)\n'), /LEAK_PATTERNS/);
+
+  // Git: a spawn error or a signal is never read as "no such object"; a probe's own
+  // not-found status is, and any other failing query aborts.
+  const exec =
+    (result: Partial<ReturnType<GitExec>>): GitExec =>
+    () => ({ status: 0, signal: null, error: null, stdout: Buffer.alloc(0), ...result });
+  assert.throws(() => new GitReader(ROOT, exec({ status: null, signal: 'SIGKILL' })).commit('HEAD'), /git rev-parse was killed by SIGKILL/);
+  assert.throws(() => new GitReader(ROOT, exec({ status: null, error: new Error('spawnSync git ENOENT') })).blob('HEAD', 'a.ts'), /git cat-file could not run/);
+  assert.equal(new GitReader(ROOT, exec({ status: 1 })).commit('HEAD'), null);
+  assert.equal(new GitReader(ROOT, exec({ status: 128 })).blob('HEAD', 'a.ts'), null);
+  assert.equal(new GitReader(ROOT, exec({ status: 1 })).isAncestor('a', 'b'), false);
+  assert.throws(() => new GitReader(ROOT, exec({ status: 128 })).isAncestor('a', 'b'), /git merge-base --is-ancestor exited 128/);
+  assert.throws(() => new GitReader(ROOT, exec({ status: 128 })).addedBy('a.ts'), /git log failed/);
+  assert.throws(() => new GitReader(ROOT, exec({ status: 128 })).commitsBetween('a', 'b'), /git log failed/);
 });

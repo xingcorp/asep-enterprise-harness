@@ -16,7 +16,8 @@
 // The collector reads the working tree, git and the local object store only. It never
 // creates a ref, never reads the controller's bundle, and never prints excerpt content: the
 // publication gates run over candidate excerpts in a temporary repository and only the
-// names of failing excerpts are kept.
+// names of failing excerpts are kept. A gate or a git command that does not complete within
+// its documented exit codes aborts the whole collection before anything is written.
 
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -41,8 +42,11 @@ export type ExclusionReason = 'plan-defect' | 'tree-unavailable' | 'excerpt-unpu
 /** The exclusions collection may record, in the order they apply (plan §7.8 rules 1–3). */
 export const PROVENANCE_EXCLUSIONS: readonly ExclusionReason[] = ['plan-defect', 'tree-unavailable', 'excerpt-unpublishable'];
 
-/** The repository gates an excerpt must pass to be committed. */
-export const PUBLICATION_GATES = ['format-check', 'secret-scan', 'pii-scan', 'large-file-scan', 'check-publication'] as const;
+/**
+ * The repository gates an excerpt must pass to be committed: four repository scripts, and the
+ * path-leak scan of `scripts/check-publication.sh` run on the excerpts alone.
+ */
+export const PUBLICATION_GATES = ['format-check', 'secret-scan', 'pii-scan', 'large-file-scan', 'path-leak-scan'] as const;
 export type PublicationGate = (typeof PUBLICATION_GATES)[number];
 
 export interface CorpusLocation {
@@ -399,28 +403,61 @@ export function extractLocations(text: string, isFile: (path: string) => boolean
 
 // --- git ------------------------------------------------------------------------------------------
 
-/** Read-only access to the repository and its local object store. */
+/** One git invocation's outcome. */
+export interface GitResult {
+  readonly status: number | null;
+  readonly signal: string | null;
+  readonly error: Error | null;
+  readonly stdout: Buffer;
+}
+
+export type GitExec = (args: readonly string[], cwd: string) => GitResult;
+
+const execGit: GitExec = (args, cwd) => {
+  const r = spawnSync('git', args, { cwd, maxBuffer: 256 * 1024 * 1024 });
+  return { status: r.status, signal: r.signal, error: r.error ?? null, stdout: r.stdout ?? Buffer.alloc(0) };
+};
+
+/**
+ * Read-only access to the repository and its local object store. Only an existence probe's own
+ * non-zero status means "not there"; a spawn error, a signal, or any other failing command
+ * aborts, so a broken git is never read as a missing object.
+ */
 export class GitReader {
   private readonly memo = new Map<string, Buffer | null>();
 
-  constructor(readonly root: string) {}
+  constructor(
+    readonly root: string,
+    private readonly exec: GitExec = execGit,
+  ) {}
 
-  private run(args: readonly string[]): Buffer | null {
+  private spawn(args: readonly string[]): GitResult {
+    const r = this.exec(args, this.root);
+    if (r.error !== null) fail(`git ${args[0]} could not run: ${r.error.message}`);
+    if (r.signal !== null) fail(`git ${args[0]} was killed by ${r.signal}`);
+    return r;
+  }
+
+  /** stdout of a command that succeeds, or null when it exits non-zero (an existence probe). */
+  private probe(args: readonly string[]): Buffer | null {
     const key = args.join('\0');
     if (this.memo.has(key)) return this.memo.get(key)!;
-    const r = spawnSync('git', args, { cwd: this.root, maxBuffer: 256 * 1024 * 1024 });
+    const r = this.spawn(args);
     const out = r.status === 0 ? r.stdout : null;
     this.memo.set(key, out);
     return out;
   }
 
-  private text(args: readonly string[]): string | null {
-    return this.run(args)?.toString('utf8') ?? null;
+  /** stdout of a query that must succeed. */
+  private text(args: readonly string[]): string {
+    const out = this.probe(args);
+    if (out === null) fail(`git ${args[0]} failed`);
+    return out.toString('utf8');
   }
 
   /** The full SHA of a commit present in the object store, or null. */
   commit(ref: string): string | null {
-    return this.text(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`])?.trim() || null;
+    return this.probe(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`])?.toString('utf8').trim() || null;
   }
 
   parent(sha: string): string | null {
@@ -429,7 +466,7 @@ export class GitReader {
 
   /** The bytes of `path` at `sha`, or null when it is not a file there. */
   blob(sha: string, path: string): Uint8Array | null {
-    const bytes = this.run(['cat-file', 'blob', `${sha}:${path}`]);
+    const bytes = this.probe(['cat-file', 'blob', `${sha}:${path}`]);
     return bytes === null ? null : new Uint8Array(bytes);
   }
 
@@ -437,7 +474,7 @@ export class GitReader {
   reachable(sha: string): boolean {
     if (this.isAncestor(sha, 'HEAD')) return true;
     const refs = this.text(['for-each-ref', `--contains=${sha}`, '--format=%(refname)', 'refs/heads', 'refs/remotes', 'refs/tags']);
-    return refs !== null && refs.trim() !== '';
+    return refs.trim() !== '';
   }
 
   reachability(sha: string | null): Reachability {
@@ -447,25 +484,29 @@ export class GitReader {
 
   /** The oldest commit on the current history that added `path`. */
   addedBy(path: string): string | null {
-    const lines = (this.text(['log', '--diff-filter=A', '--format=%H', '--', path]) ?? '').trim().split('\n').filter(Boolean);
+    const lines = this.text(['log', '--diff-filter=A', '--format=%H', '--', path]).trim().split('\n').filter(Boolean);
     return lines.at(-1) ?? null;
   }
 
   filesAddedBy(commit: string): readonly string[] {
-    return (this.text(['show', '--diff-filter=A', '--name-only', '--format=', commit]) ?? '').trim().split('\n').filter(Boolean);
+    return this.text(['show', '--diff-filter=A', '--name-only', '--format=', commit]).trim().split('\n').filter(Boolean);
   }
 
-  subject(sha: string): string | null {
-    return this.text(['log', '-1', '--format=%s', sha])?.replace(/\n$/, '') ?? null;
+  subject(sha: string): string {
+    return this.text(['log', '-1', '--format=%s', sha]).replace(/\n$/, '');
   }
 
+  /** Exit 0 is yes and 1 is no; anything else aborts. */
   isAncestor(ancestor: string, descendant: string): boolean {
-    return spawnSync('git', ['merge-base', '--is-ancestor', ancestor, descendant], { cwd: this.root }).status === 0;
+    const { status } = this.spawn(['merge-base', '--is-ancestor', ancestor, descendant]);
+    if (status === 0) return true;
+    if (status === 1) return false;
+    return fail(`git merge-base --is-ancestor exited ${status}`);
   }
 
   /** Commits reachable from `to` and not from `from`, oldest first, with author date and subject. */
   commitsBetween(from: string, to: string): readonly { readonly sha: string; readonly key: string; readonly subject: string }[] {
-    const out = this.text(['log', '--reverse', '--format=%H%x09%aI%x09%s', `${from}..${to}`]) ?? '';
+    const out = this.text(['log', '--reverse', '--format=%H%x09%aI%x09%s', `${from}..${to}`]);
     return out
       .split('\n')
       .filter(Boolean)
@@ -477,7 +518,7 @@ export class GitReader {
 
   /** Author date and subject of every commit in `sha`'s history, to recognise rewritten copies. */
   historyKeys(sha: string): ReadonlySet<string> {
-    const out = this.text(['log', '--format=%aI%x09%s', sha]) ?? '';
+    const out = this.text(['log', '--format=%aI%x09%s', sha]);
     return new Set(out.split('\n').filter(Boolean));
   }
 }
@@ -546,39 +587,96 @@ export function resolveCycle(git: GitReader, root: string, source: CycleSource):
 
 // --- publication gates ------------------------------------------------------------------------
 
-const GATE_FILES = [
-  'LICENSE',
-  'scripts/format-check.sh',
-  'scripts/secret-scan.sh',
-  'scripts/pii-scan.sh',
-  'scripts/large-file-scan.sh',
-  'scripts/check-publication.sh',
-  'scripts/lib/secret-patterns.sh',
-];
+const GATE_SCRIPTS = ['scripts/format-check.sh', 'scripts/secret-scan.sh', 'scripts/pii-scan.sh', 'scripts/large-file-scan.sh', 'scripts/lib/secret-patterns.sh'];
+
+/** One gate invocation's outcome; `output` is stdout and stderr, inspected for excerpt names only and never printed. */
+export interface GateRun {
+  readonly status: number | null;
+  readonly signal: string | null;
+  readonly error: Error | null;
+  readonly output: string;
+}
+
+export type GateRunner = (command: string, args: readonly string[], cwd: string) => GateRun;
+
+export const runGateProcess: GateRunner = (command, args, cwd) => {
+  const r = spawnSync(command, args, { cwd, maxBuffer: 256 * 1024 * 1024 });
+  return {
+    status: r.status,
+    signal: r.signal,
+    error: r.error ?? null,
+    output: `${r.stdout?.toString('utf8') ?? ''}\n${r.stderr?.toString('utf8') ?? ''}`,
+  };
+};
+
+/** The path-leak patterns `scripts/check-publication.sh` declares in `LEAK_PATTERNS`, read from its text. */
+export function leakPatterns(script: string): string[] {
+  const block = /^LEAK_PATTERNS=\(\n([\s\S]*?)^\)/m.exec(script) ?? fail('scripts/check-publication.sh declares no LEAK_PATTERNS');
+  const patterns = block[1]!.split('\n').flatMap((line) => {
+    if (/^\s*(#.*)?$/.test(line)) return [];
+    const quoted = /^\s*'([^']+)'\s*(#.*)?$/.exec(line);
+    return quoted === null ? fail(`LEAK_PATTERNS has a line that is not one quoted pattern: ${JSON.stringify(line)}`) : [quoted[1]!];
+  });
+  if (patterns.length === 0) fail('LEAK_PATTERNS is empty');
+  return patterns;
+}
 
 /**
- * Run the repository's own publication gates over candidate excerpts, laid out where they would
- * be committed, in a temporary repository. Returns the gates each failing excerpt trips. Gate
- * output is inspected for excerpt names only and is never printed.
+ * Run the repository's publication gates over candidate excerpts, laid out where they would be
+ * committed, in a temporary repository where only the excerpts are tracked. Returns the gates
+ * each failing excerpt trips. A gate is accepted only on its documented codes: the four scripts
+ * exit 0 clean and 1 with findings; the path-leak scan (`grep -lE` with the publication
+ * script's `LEAK_PATTERNS`) exits 1 clean and 0 with findings. A spawn error, a signal, any
+ * other code, or a findings code whose output names no excerpt aborts. Gate output is
+ * inspected for excerpt names only and is never printed.
  */
-export function failingExcerpts(root: string, candidates: ReadonlyMap<string, Uint8Array>): Map<string, PublicationGate[]> {
+export function failingExcerpts(
+  root: string,
+  candidates: ReadonlyMap<string, Uint8Array>,
+  run: GateRunner = runGateProcess,
+): Map<string, PublicationGate[]> {
+  const failing = new Map<string, PublicationGate[]>();
+  if (candidates.size === 0) return failing;
+  const patterns = leakPatterns(readFileSync(join(root, 'scripts/check-publication.sh'), 'utf8'));
   const dir = mkdtempSync(join(tmpdir(), 'asep-corpus-gates-'));
   try {
-    for (const file of GATE_FILES) {
+    for (const file of GATE_SCRIPTS) {
       mkdirSync(dirname(join(dir, file)), { recursive: true });
       cpSync(join(root, file), join(dir, file));
     }
     mkdirSync(join(dir, BLOBS_DIR), { recursive: true });
     for (const [sha, bytes] of candidates) writeFileSync(join(dir, BLOBS_DIR, sha), bytes);
+    const files = [...candidates.keys()].map((sha) => `${BLOBS_DIR}/${sha}`).sort();
     const git = (args: readonly string[]) => spawnSync('git', args, { cwd: dir });
-    if (git(['init', '-q']).status !== 0 || git(['add', '-A']).status !== 0) fail('cannot stage candidate excerpts');
-    const failing = new Map<string, PublicationGate[]>();
+    if (git(['init', '-q']).status !== 0) fail('cannot create the temporary repository');
+    // The scripts scan tracked files; only the excerpts are tracked.
+    writeFileSync(join(dir, '.git', 'info', 'exclude'), 'scripts/\n');
+    if (git(['add', '-A']).status !== 0) fail('cannot stage candidate excerpts');
+    const tracked = git(['ls-files']);
+    if (tracked.status !== 0 || tracked.stdout.toString('utf8').trim().split('\n').sort().join('\n') !== files.join('\n')) {
+      fail('the temporary repository tracks more than the candidate excerpts');
+    }
+
+    const script = (name: string) => ({ command: 'bash', args: [`scripts/${name}.sh`], clean: 0, findings: 1 });
+    const commands: Readonly<Record<PublicationGate, { command: string; args: readonly string[]; clean: number; findings: number }>> = {
+      'format-check': script('format-check'),
+      'secret-scan': script('secret-scan'),
+      'pii-scan': script('pii-scan'),
+      'large-file-scan': script('large-file-scan'),
+      'path-leak-scan': { command: 'grep', args: ['-lE', ...patterns.flatMap((p) => ['-e', p]), '--', ...files], clean: 1, findings: 0 },
+    };
     for (const gate of PUBLICATION_GATES) {
-      const r = spawnSync('bash', [`scripts/${gate}.sh`], { cwd: dir, maxBuffer: 256 * 1024 * 1024 });
-      const output = `${r.stdout?.toString('utf8') ?? ''}\n${r.stderr?.toString('utf8') ?? ''}`;
-      for (const sha of candidates.keys()) {
-        if (output.includes(`${BLOBS_DIR}/${sha}`)) failing.set(sha, [...(failing.get(sha) ?? []), gate]);
+      const { command, args, clean, findings } = commands[gate];
+      const r = run(command, args, dir);
+      if (r.error !== null) fail(`publication gate ${gate} could not run: ${r.error.message}`);
+      if (r.signal !== null) fail(`publication gate ${gate} was killed by ${r.signal}`);
+      if (r.status === clean) continue;
+      if (r.status !== findings) {
+        fail(`publication gate ${gate} exited ${r.status}, outside its documented codes (${clean} clean, ${findings} findings)`);
       }
+      const named = [...candidates.keys()].filter((sha) => r.output.includes(`${BLOBS_DIR}/${sha}`));
+      if (named.length === 0) fail(`publication gate ${gate} reported findings but named no excerpt`);
+      for (const sha of named) failing.set(sha, [...(failing.get(sha) ?? []), gate]);
     }
     return failing;
   } finally {
@@ -604,7 +702,7 @@ export function itemId(findingId: string, reviewedSha: string | null): string {
 }
 
 /** Collect every labelled instance and the excerpts its cited files need. */
-export function collectSelfHistory(root: string, git = new GitReader(root)): CollectedCorpus {
+export function collectSelfHistory(root: string, git = new GitReader(root), runGate: GateRunner = runGateProcess): CollectedCorpus {
   const resolved = CYCLES.map((c) => resolveCycle(git, root, c));
   const labels = new Map(resolved.map((r) => [r.source.key, cycleLabels(r.source, readFileSync(join(root, r.source.doc), 'utf8'))]));
   const later = (r: ResolvedCycle) =>
@@ -696,7 +794,7 @@ export function collectSelfHistory(root: string, git = new GitReader(root)): Col
 
   const candidates = new Map<string, Uint8Array>();
   for (const d of drafts) for (const w of d.wanted) candidates.set(sha256Hex(w.bytes), w.bytes);
-  const failing = failingExcerpts(root, candidates);
+  const failing = failingExcerpts(root, candidates, runGate);
 
   const blobs = new Map<string, Uint8Array>();
   const items = drafts.map((d): CorpusItem => {
