@@ -1,6 +1,15 @@
-# Phase 4 — Independent Assurance — Plan (LOCKED v2 (pending controller confirmation))
+# Phase 4 — Independent Assurance — Plan (LOCKED v2)
 
-> Status: **LOCKED v2 (pending controller confirmation).** v1 (`a2a7b8a`) received an independent Codex plan
+> Status: **LOCKED v2.** Confirmed by the controller on 2026-10-29 for the pre-S0 slices (S3, S4 domain file, S5,
+> S6, S7); later slices are released step by step.
+> **Controller-approved amendment (2026-10-29, after `3201335`):** (a) gateway prompt injection is **verified** —
+> the kiro-proxy gateway appends instructions and tools to every request (PR4-30, §11); (b) `gpt-6.1-sol` is the
+> **primary candidate reviewer**, distinct from the corpus labeller `gpt-5.6-sol` (§3 U-4, §7.2); (c) reconciliation
+> R15 is applied: `run_events` keeps its FK onto `runs`, benchmark/replay/corpus measurement never writes there,
+> Lane B has no run-event sink, and `AssuranceStepContext.now()` is one fixed logical time per activity execution
+> (§15, §18). No design decision of v2 is reversed.
+>
+> v1 (`a2a7b8a`) received an independent Codex plan
 > review (`phase-04-plan-review-codex-v1.md`, REQUEST_CHANGES 0.99: 1 CRITICAL, 8 HIGH, 5 MEDIUM, 1 LOW). Every
 > finding is dispositioned in `phase-04-review-log.md` and folded into this plan, the architecture, the data model,
 > the exit criteria and the slice that proves it. The controller's shared-surface reconciliation
@@ -181,6 +190,8 @@ change is re-adjudicated in `phase-04-review-log.md` before the affected slice s
 | D-7 | Policy values | **Accepted as experimental starting values**, stored as data; the `n < 20` rule labels results descriptive only and is never a promotion threshold | controller (R14) |
 | U-1 | Reviewer authority in Phase 4 | **Shadow mode only**: the reviewer records findings and metrics and never blocks a merge. Model-derived `REPAIR`/`ESCALATE` exist only in drill compositions used by tests and the conformance kit; production compositions cannot select gating (§12, exit K3). Deterministic push-guard `BLOCK` (D-5) is not model review and stays active. | user |
 | U-2 | Measurement scope | **Descriptive rediscovery on self-labelled history**, plus the mandatory comparator. The verdict vocabulary says descriptive self-history only, never production-valid (§23). Real measurement moves to a pilot-repository corpus later. | user |
+| U-3 | Gateway behaviour | **Verified prompt injection** (controller, 2026-10-29): the kiro-proxy gateway appends about 330 tokens of style instructions to the request's `instructions` and about 300 tokens of tools, on every request, for `/v1/responses` and `/v1/chat/completions`. Evidence: the returned `instructions` field holds the caller's instructions followed by the injected text, and `usage.attribution.request_fields` reports `tools` and `instructions` token counts the caller never sent. Consequences in §9, §11, §23. | controller |
+| U-4 | Primary candidate reviewer | **`gpt-6.1-sol`** (the controller's current Codex review model). Reason: it differs from the corpus labeller `gpt-5.6-sol`; same vendor, so circularity is reduced, not removed. The different-family comparator stays mandatory. Neither is probed by the lane yet. | controller |
 
 ---
 
@@ -297,11 +308,13 @@ the corpus, or promotion. Validity problems and their handling:
 
 1. **One codebase.** Every scorecard carries `scope: "self-history"` and the constant
    `eligibleForPromotion: false`; the scorer refuses any other value for this scope (exit I3).
-2. **The labeller is the primary reviewer's model.** Almost every label came from Codex on `gpt-5.6-sol`, the
-   proposed primary reviewer. Primary recall is partly circular; any other reviewer is penalised for real defects
-   `gpt-5.6-sol` would not find. *Handling:* the mandatory different-family comparator (§7.6) runs on every item
-   under the same protocol; recall is also reported on the **labeller-miss subset**; non-model baselines are
-   reported; the circularity statement is a required scorecard field.
+2. **The labeller is a sibling of the primary reviewer.** Almost every label came from Codex on `gpt-5.6-sol`.
+   The primary candidate reviewer is `gpt-6.1-sol` (U-4): a different model from the same vendor, so primary recall
+   is still partly circular (shared lineage and training practices), only less than if the labeller itself were
+   measured; any reviewer is penalised for real defects `gpt-5.6-sol` would not find. *Handling:* the mandatory
+   different-family comparator (§7.6) runs on every item under the same protocol; recall is also reported on the
+   **labeller-miss subset**; non-model baselines are reported; the circularity statement (naming labeller and
+   reviewer models) is a required scorecard field.
 3. **Labels were visible to the prompt author.** The planner of this phase read every label while writing the
    plan; a "test split" would not be blind (P4-PLAN-HIGH-003). *Handling:* the v1 dev/test split is replaced by a
    `prompt-development` set (Phase 1 items, used to iterate the rubric) and a `reporting` set (Phase 2 items). The
@@ -328,6 +341,12 @@ the corpus, or promotion. Validity problems and their handling:
 10. **Tiny n.** About 33 top-level code-level IDs; a Wilson 95% interval at 20/33 spans roughly 0.44–0.75. Every
     proportion carries n and a Wilson interval; cells with n < 20 are labelled descriptive-only (D-7); no
     difference is claimed on overlapping intervals.
+11. **Served prompts differ from sent prompts.** The gateway appends instructions and tools to every request (U-3).
+    Every reviewer is measured on "harness prompt + gateway additions", not on the harness prompt alone; the
+    injected terse style may also shorten `evidence`/`requiredFix` text and so interact with grounding minimums.
+    *Handling:* per-call alteration evidence is recorded (§11); the scorecard and the verdict name the gateway; no
+    claim is made about any model outside this gateway; grounding failures are reported by reason so a style effect
+    is visible.
 
 ### 7.3 Guards against a dishonest measurement
 
@@ -374,10 +393,11 @@ Floors make the measurement falsifiable; failing one does not fail the phase, be
 
 ### 7.6 Comparator choice (D-4)
 
-The gateway also serves `deepseek-v4-pro`, `qwen3.8-max` and `grok-4.6`. **Choice: `deepseek-v4-pro`.**
+The primary candidate is `gpt-6.1-sol` (U-4, family `openai-gpt`). The gateway also serves `deepseek-v4-pro`,
+`qwen3.8-max` and `grok-4.6`. **Comparator choice: `deepseek-v4-pro`.**
 
 - Required property, met by all three: its family differs from both the implementer (`anthropic-claude`) and the
-  labeller/primary (`openai-gpt`), so it can expose labeller bias rather than reproduce it.
+  labeller and primary (`openai-gpt`), so it can expose labeller bias rather than reproduce it.
 - Deciding property: DeepSeek has historically published open weights for its flagship line, which leaves a path
   to re-run the comparator outside this gateway if the gateway's snapshot changes. That history is general
   knowledge; whether `deepseek-v4-pro` specifically has published weights is **not verified**.
@@ -427,8 +447,12 @@ terminal, verification stops included (R3). Task status stays `VERIFYING` across
    diffs and post-images, and — in re-review only — prior adjudicated findings in structured form.
 2. **Different model family**, resolved from a policy registry by model id. A reviewer must differ from the
    implementer's family; the comparator must also differ from the primary's family; unknown family fails closed.
-3. **Fresh request.** `store: false`, no `previous_response_id`, no `conversation`, no tools,
-   `tool_choice: "none"`.
+3. **Fresh request.** As sent by the harness: `store: false`, no `previous_response_id`, no `conversation`, no
+   tools, `tool_choice: "none"`. The gateway adds instructions and tools in transit (U-3), so the request the model
+   is served is **not** tool-free and does not carry only the harness rubric. Independence (no shared context with
+   the coder) still holds for everything the harness controls; the gateway's additions are the same for every
+   caller and carry no coder context, but this is a property of the gateway, recorded per call (§11), not
+   something the harness can enforce. Any tool-call item in a response remains `MALFORMED`.
 4. **Blind parallel reviewers** within one round.
 5. **Separate credentials**, held by the harness process only (§10).
 6. **Deterministic evidence outranks model review.**
@@ -492,9 +516,28 @@ the Responses create endpoint exposes no seed (research register §1). Replayabi
 canonical packet and prompt bytes; canonical request (no credential) and exact response bytes stored before
 parsing; a replay reviewer keyed by request hash that fails closed on a miss; pure adjudication and scoring;
 pinned descriptor (model, effort, tier, template hash, schema hash); served model recorded and checked; variance
-measured with k runs. A gateway that alters prompts in transit would break the equality "recorded request = model
-input"; the controller's notes suggest the gateway injects a style instruction (not verified by Lane B), so every
-measurement claim is bounded to "via this gateway" (risk PR4-30).
+measured with k runs.
+
+**The gateway alters requests (verified, U-3; risk PR4-30).** What the served model saw is not what the harness
+sent: the gateway appends roughly 330 tokens of instructions and roughly 300 tokens of tools to every request.
+Consequences:
+
+- Replay determinism holds for the harness side only: replaying a recorded response by request hash reproduces the
+  harness's decisions byte for byte, but re-sending the same request bytes reproduces the served prompt only if the
+  gateway's additions are unchanged. Replay and independence claims are stated "via this gateway".
+- **Per-call detection** (adapter, S10): the adapter compares the response's returned `instructions` with the
+  `instructions` it sent and reads `usage.attribution.request_fields` (when present) for fields the harness never
+  sent (`tools`, extra `instructions` tokens). It records `gatewayAlteration: { instructionsAltered, appendedBytes,
+  appendedSha256, toolsAttributed, attributedFields[] }` on the review record; an absent comparison field is
+  recorded as `unknown`, never as "unaltered". The appended text itself is stored as an artifact (it is
+  gateway-controlled, not harness content) so its drift over time is visible.
+- The S10 probe confirms detection on the live gateway for both reviewers before any capture.
+- Every measurement scorecard and the verdict block name the gateway and its alteration status (§23).
+
+No wall-clock time is read in the assurance steps (R15): timestamps come from `AssuranceStepContext.now()`, which is
+one fixed logical time per activity execution and identical on every retry, so a retried step writes byte-identical
+records. Durations and retry back-off belong to adapters with injected clocks; they are recorded as usage and kept
+out of the bytes that identify a record.
 
 ---
 
@@ -582,7 +625,10 @@ constraint (data model §3).
 - **Event ownership** (§18.4): Lane B emits `attempt.declared_complete`, `attempt.completed`, `review.completed`
   (one per review source per round: each model reviewer record and one deterministic record),
   `review.finding_dispositioned` and `repair.started`, through the shared `RunEventSink` into Lane A's
-  `run_events` (R4). Lane A emits `workflow.recovered`, `task.*`, `run.*` and control events.
+  `run_events` (R4). Lane A emits `workflow.recovered`, `task.*`, `run.*` and control events. Only operational runs
+  emit there: `run_events` keeps its FK onto `runs`, and benchmark, replay and corpus measurement never write to it;
+  their outputs go to eval artifacts (`evals/review-benchmark/**`) or `metric_snapshots` (R15). Lane B owns no
+  run-event sink; the only sink is Lane A's `adapters/persistence/src/run-events/**`.
 - **Authoritative review metrics (P4-PLAN-HIGH-004).** `review_finding_yield` and `review_false_positive_rate`
   take their numerators from `review.finding_dispositioned` events by a **named human**, keeping only the latest
   disposition per `findingId`; denominators stay `sum(review.completed.reviewFindingsTotal)`. A human accepting or
@@ -714,7 +760,11 @@ export interface AssuranceHeartbeat {
  */
 export interface AssuranceStepContext {
   readonly signal: AbortSignal;
-  /** ISO-8601 UTC timestamp. Steps never read the wall clock themselves. */
+  /**
+   * ISO-8601 UTC timestamp: one fixed logical time per activity execution, identical on
+   * every retry of that execution, so a retried step writes byte-identical records. It does
+   * not advance within a step. Steps never read the wall clock themselves.
+   */
   now(): string;
   /** Called at least every 30 seconds while a step is working. */
   heartbeat(details: AssuranceHeartbeat): void;
@@ -1175,9 +1225,13 @@ export class RunEventConflictError extends Error {
 }
 ```
 
-`run_events` (Lane A `0107`, R4 union): composite key `(organization_id, project_id, event_id)`, `payload_sha256`
-with conflict on different bytes, append-only trigger rejecting UPDATE and DELETE, and an index
-`(organization_id, project_id, event_type, occurred_at)`. Lane B adds nothing to that table.
+`run_events` (Lane A `0107`, R4 union, R15): composite key `(organization_id, project_id, event_id)`, composite FK
+onto `runs`, `payload_sha256` with conflict on different bytes, append-only trigger rejecting UPDATE and DELETE, and
+an index `(organization_id, project_id, event_type, occurred_at)`. Lane B adds nothing to that table and writes only
+operational-run events to it.
+
+The only change to the verbatim slot block since `3201335` is the doc comment on `AssuranceStepContext.now()`,
+aligned with R15 (no type or signature change).
 
 `run-event` 1.2.0 (R5), Lane B's part of the superset — one new `eventType` and optional fields:
 
@@ -1332,7 +1386,7 @@ packages/observability/src/metric-eval.ts, metric-eval.test.ts, dashboards.test.
 policies/review-policy.yaml
 adapters/reviewer-openai/**                              Responses reviewer + credential source (new package)
 adapters/reviewer-replay/**                              recorded + scripted reviewers (new package)
-adapters/persistence/src/assurance/**                    repositories, snapshot store, itests
+adapters/persistence/src/assurance/**                    repositories, snapshot store, itests (no run-event sink, R15)
 adapters/git-worktree/src/review-source.ts, review-source.test.ts
 adapters/agent-claude/src/reviewer-credential-isolation.test.ts
 apps/control-plane-api/src/assurance-root.ts, assurance-root.test.ts
@@ -1367,7 +1421,7 @@ revertible; a slice that adds a mutation-proof entry adds it in the same commit.
 | S7 | grounding, adjudication rule table, closure authority, repair order | every rule row × {gating, shadow}; shadow never yields REPAIR/ESCALATE; out-of-packet citations refuted; repair order bounded and anchored | pre-S0 | `feat(assurance): grounding, adjudication and closure authority` |
 | S8 | SR-M1/M3/M4, repositories, fenced decision writes, snapshot store | PGlite + real PG: migrations apply once and stay in range; tenant IDOR rejected; append-only and final-record triggers; shadow check constraint; disposition actor constraints; fence: new owner completes after handoff, old owner fenced, concurrent claim one winner | after P2 + S0 | `feat(persistence): persist review rounds, findings, dispositions and adjudications under fencing` |
 | S9 | `ReviewSourceReader` | real temp repos: exact range diff; binary/too-large/submodule/deleted/non-UTF-8 reported, never dropped; traversal rejected | after S0 | `feat(workspace): trusted range diffs and post-images for review` |
-| S10 | `adapters/reviewer-openai` + credential source + request-byte egress re-check | fake HTTP server rows for every adapter MUST; exact request body asserted; credential canary absent; rotation on 401; expiry refresh; no `process.env` in adapter source; opt-in probe of primary and comparator records the gateway's behaviour | after S0 | `feat(reviewer): OpenAI-compatible Responses reviewer with an injected credential source` |
+| S10 | `adapters/reviewer-openai` + credential source + request-byte egress re-check | fake HTTP server rows for every adapter MUST; exact request body asserted; credential canary absent; rotation on 401; expiry refresh; no `process.env` in adapter source; gateway-alteration detection (returned `instructions` vs sent, usage attribution) recorded per call against a fake gateway that mimics the injection; opt-in probe of primary (`gpt-6.1-sol`) and comparator records the gateway's behaviour and confirms detection live | after S0 | `feat(reviewer): OpenAI-compatible Responses reviewer with an injected credential source` |
 | S11 | `adapters/reviewer-replay` | exact replay by request hash; miss and manifest mismatch fail closed; scripted provider marked fake | after S0 | `feat(reviewer): deterministic replay and scripted reviewers` |
 | S12 | step use cases `planAssurance`, `buildReviewPacket`, `runDeterministicChecks`, `runReviewer`, `adjudicateRound` (application, against fakes) | JSON round trip; zero provider calls on push-guard BLOCK and on every egress stop; crash at each step boundary converges; parallel reviewers blind | after S0 | `feat(assurance): idempotent assurance step use cases` |
 | S13 | `createAssuranceSlot` (composite, `recordAttemptOutcome`, `admitWithAssurance`, `buildRepairContextPack`, event emission); SR-X1 | conformance kit RLC-01…10 on PGlite; events per §15 with deterministic ids; `admitWithAssurance` equals `admitRisk` for production capability; governed-execution suite unchanged | after S0 | `feat(assurance): implement the review-loop slot and attempt-outcome events` |
@@ -1416,6 +1470,10 @@ Each carries `_UNREVIEWED` until the controller's independent final review accep
 reachable** in Phase 4: a production-valid measurement needs DF-6. No verdict may be described as production-valid,
 and none unlocks gating.
 
+Every verdict block in the report carries a mandatory line naming the gateway, generated from the scorecards, for
+example `MEASURED_VIA: kiro-proxy gateway (base URL sha256 <hash>) — alters requests (instructions appended, tools added; per-call
+evidence in review records)`. A verdict block without it fails exit I9.
+
 ---
 
 ## 24. Rollback
@@ -1433,7 +1491,7 @@ migration (data model §3.6).
    slice needs the rebase.
 2. **Lane A S0**: every slice marked "after S0".
 3. **Gateway credential and preregistration** (SR-G2, SR-G3): S21. Without them the verdict is
-   `…MEASUREMENT_PENDING…`. Neither gateway model was probed in this session (not verified).
+   `…MEASUREMENT_PENDING…`. Neither `gpt-6.1-sol` nor the comparator has been probed by the lane (not verified); the gateway's request alteration is verified by the controller (U-3).
 4. **Phase 2 agent-runtime repair**: S22. Without it the verdict carries `ASSURANCE_ONLY_LOOP`.
 5. **Pilot repository**: DF-6 only.
 
@@ -1444,7 +1502,7 @@ None blocks plan lock.
 ## Output
 
 ```text
-PLAN_STATUS: LOCKED v2 (pending controller confirmation)
+PLAN_STATUS: LOCKED v2 (confirmed for pre-S0 slices S3–S7; controller-approved amendment 2026-10-29)
 BASE_SHA: 00a68895d205122767167942326e2e0466571059 (Phase 2 not accepted)
 REVIEWED_V1: a2a7b8ad09a5389339fc3ef7131ae7b2b294d97f — Codex REQUEST_CHANGES 0.99 (1 CRITICAL, 8 HIGH, 5 MEDIUM, 1 LOW), all dispositioned
 BASELINE: lane-observed at a2a7b8a — verify:all exit 0; tests 548 pass 548; 50 files; 28 required suites; compat 13 schemas
@@ -1461,5 +1519,5 @@ PLAN_FILES:
 NEW_THIRD_PARTY_DEPENDENCIES: none
 GATING: shadow only in Phase 4 (user decision); gating/promotion/thresholds/R2 admission deferred
 SHARED_SURFACE_REQUESTS: §19 (S0 4, ports 3, contracts 6 (+ SR-C3 withdrawn, SR-C5 moved to S0), migrations 3 (+ 0201_run_events withdrawn), fencing CR-F1, gates 4, dictionary 2 + loader, other 6, controller 3)
-READY_FOR_IMPLEMENTATION: after controller confirmation, Phase 2 acceptance and Lane A S0 (pre-S0 slices excepted)
+READY_FOR_IMPLEMENTATION: pre-S0 slices S3, S4 (domain file), S5, S6, S7 released; the rest after Phase 2 acceptance, Lane A S0 and per-step controller release
 ```

@@ -1,4 +1,4 @@
-# Phase 4 — Threat Model Delta (LOCKED v2 (pending controller confirmation))
+# Phase 4 — Threat Model Delta (LOCKED v2)
 
 > Delta over `docs/operations/security-threat-model.md` and `phase-02-threat-model-delta.md`. Phase 4 adds the
 > first **external model call made by the trusted harness about untrusted content**, a second credential class,
@@ -37,13 +37,13 @@ and excerpts, recorded responses and scorecards, metric snapshots, human reviewe
 |----|--------|-----------|-------------|
 | T4-01 | Injection in the diff makes the reviewer approve a defect | Shadow-only production: the verdict changes nothing; in any mode adjudication derives from grounded findings and deterministic checks; deterministic checks outrank; spotlighting + strict output as secondary layers | EC E9, K3, D4, D6 |
 | T4-02 | Injection floods humans with findings or escalations | Shadow records only; ungrounded findings machine-refuted; bounded rounds in drill | EC D4, E7 |
-| T4-03 | Output smuggling (tool calls, extra fields, multiple messages, fake terminators) | `tool_choice: "none"`, no tools; one `output_text`; AJV with `additionalProperties: false` | EC C4, D4, G3 |
+| T4-03 | Output smuggling (tool calls, extra fields, multiple messages, fake terminators) | `tool_choice: "none"`, no tools sent by the harness; the gateway is verified to attribute tools the harness never sent (T4-09), so any tool-call output item is still `MALFORMED`, whatever the request carried; one `output_text`; AJV with `additionalProperties: false` | EC C4, D4, G3 |
 | T4-04 | Reviewer credential leaks (artifact, log, DB, coder sandbox, error text) | Injected at the composition root; no `process.env` in adapter code; header-only; bounded lifetime and rotation; scrubbed errors; agent env allowlist; canary scan | EC C5 |
 | T4-05 | **Secret or classified content sent to the gateway before a BLOCK** (v1 ordering) | Push guard and egress decision run before any reviewer call; only `CLEAR` permits a request; the exact request bytes are re-scanned; per-project opt-in; deny-path classification; unscannable sensitive content stops; zero-request tests on the unit and production paths | EC D1, D2, F2 |
 | T4-06 | Source-code egress without tenant consent / residency breach | Per-project `egress.enabledProjects` opt-in (empty by default → reviewer never called); `store: false`; documented as a tenant decision | EC D1, D2 |
 | T4-07 | SSRF / credential exfiltration via `baseUrl` or redirect | `https:` only; host allowlist; `redirect: "error"`; loopback only by explicit test literal | EC G6 |
 | T4-08 | Gateway substitutes a different model | `servedModel` recorded; mismatch fails the review in every mode; config hashes pinned | EC G1, C3 |
-| T4-09 | Gateway alters prompts in transit (style injection suspected, not verified) | Recorded request bytes are what the harness sent; measurement bounded to "via this gateway"; gateway host in scorecards | PR4-30, EC I9 |
+| T4-09 | Gateway alters prompts in transit — **verified**: the kiro-proxy gateway appends a terse-style instruction block (~330 tokens) to `instructions` and attributes ~300 tokens of tools to every request, on `/v1/responses` and `/v1/chat/completions` | Served ≠ sent: recorded request bytes are only what the harness sent; every call compares the returned `instructions` with the sent ones and reads `usage` attribution, recording `gatewayAlteration` and the appended block as an artifact; replay, independence and measurement claims hold only "via this gateway"; every scorecard and verdict names the gateway (`MEASURED_VIA`) | PR4-30, EC G10, I3, I9 |
 | T4-10 | Shared context between coder and reviewer | Packet whitelist; no `previous_response_id`/`conversation`; family registry; blind parallel reviewers | EC C1, C2, C3, C6 |
 | T4-11 | Finding text forwarded to a coder carries injected instructions | Drill only in Phase 4; repair order structured, cited, size-bounded; coder sandboxed; output re-verified and re-reviewed | EC E5 |
 | T4-12 | Trojan Source hides logic | Deterministic SECURITY finding on added lines | EC D5 |

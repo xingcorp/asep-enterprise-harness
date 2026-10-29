@@ -233,6 +233,20 @@ from a clean writable checkout authoritative (exit A1 records exit code, test co
   `AdmissionResult`: no errors. It has not been compiled against the real packages (the files do not exist yet).
 - Data model DDL validation on PGlite: see MED-003.
 
+## Controller-approved amendment (2026-10-29)
+
+Recorded when the controller confirmed the lock for the pre-S0 slices. It changes facts and one shared-surface rule;
+it reopens no finding.
+
+| Item | Before | After | Where |
+|---|---|---|---|
+| U-3 gateway alteration | suspected, not verified | **verified by the controller**: the gateway appends ~330 tokens of terse-style instructions to `instructions` and attributes ~300 tokens of tools on every request (`/v1/responses` and `/v1/chat/completions`); evidence is the returned `instructions` field and `usage` attribution for fields the caller never sent. Served ≠ sent; replay and independence hold only "via this gateway"; S10 detects the alteration per call; every verdict names the gateway | plan §3, §7.2, §11, §23; architecture §6, §10; data model `gateway_alteration`; exit G10, I3, I9; PR4-30 (now HIGH); T4-03, T4-09 |
+| U-4 primary reviewer | `gpt-5.6-sol` (also the labeller) | `gpt-6.1-sol` primary candidate (different model, same vendor: circularity reduced, not removed); the different-family comparator stays mandatory; neither is probed yet | plan §3, §7.6; policy YAML in data model §6; research register; PR4-01 |
+| R15 `run_events` and time | Lane B listed a draft run-event sink; `now()` undocumented | `run_events` keeps its FK onto `runs`; benchmark and replay never write there; the only sink is Lane A's `adapters/persistence/src/run-events/**`; `AssuranceStepContext.now()` is one fixed logical time per activity execution, identical across retries; assurance steps never read the wall clock | plan §11, §15, §18.4, §20; architecture |
+
+The only change to the verbatim slot block (plan §18) is the doc comment on `now()`; no signature changed. The
+gateway address is not recorded in the repository: scorecards carry a label and the sha256 of the base URL.
+
 ---
 
 ## Disposition template
@@ -251,4 +265,4 @@ Every finding is dispositioned; no CRITICAL/HIGH is unresolved; D-1…D-7, U-1 a
 or the user; R1–R14 are applied. Remaining before implementation: the controller confirms this lock, Lane A copies
 the slot text verbatim into S0, and Phase 2 is accepted (for shared-surface and fencing slices).
 
-**PLAN_STATUS: LOCKED v2 (pending controller confirmation)**
+**PLAN_STATUS: LOCKED v2** (confirmed for pre-S0 slices S3–S7 on 2026-10-29; controller-approved amendment recorded above)

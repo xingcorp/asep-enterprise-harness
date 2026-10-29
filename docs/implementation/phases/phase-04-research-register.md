@@ -1,4 +1,4 @@
-# Phase 4 — Research Register (LOCKED v2 (pending controller confirmation))
+# Phase 4 — Research Register (LOCKED v2)
 
 > Research for the independent reviewer, its independence, egress and injection resistance, replayable measurement,
 > and dashboards. All web sources were retrieved on **2026-10-29** in a Lane B session unless marked
@@ -38,13 +38,23 @@ Rate limits (`https://developers.openai.com/api/docs/guides/rate-limits`): `Retr
 503; otherwise exponential backoff with jitter, bounded attempts and time, no nested retry loops, no retry of
 quota/billing errors; log `x-request-id`.
 
-**Gateway.** The environment provides an OpenAI-compatible gateway (kiro-proxy) serving `gpt-5.6-sol` over the
-Responses API, and also `deepseek-v4-pro`, `qwen3.8-max` and `grok-4.6` (controller statement). **Not probed** in
-any Lane B session (no credential; lane rules). Unknown and recorded by the S10 probe for both the primary and the
-comparator: support for the Responses API, `store`, `truncation`, strict `text.format`, `reasoning.effort`,
-`service_tier`, and whether `usage`, `model` and `x-request-id` are returned. The controller's notes suggest the
-gateway injects a style instruction into prompts; not verified by Lane B (risk PR4-30). A parameter the gateway
-rejects or ignores is never dropped silently; the adapter fails closed and the gap is adjudicated.
+**Gateway.** The environment provides an OpenAI-compatible gateway (kiro-proxy, operated by the controller on a private
+network; its address is deliberately not recorded in the repository) serving `gpt-6.1-sol` (the controller's current Codex review model and Phase 4's primary candidate),
+`gpt-5.6-sol` (the corpus labeller), `deepseek-v4-pro`, `qwen3.8-max` and `grok-4.6` (controller statement).
+
+**Verified gateway behaviour (controller, 2026-10-29; Lane B did not contact the gateway):** on every request, for
+both `/v1/responses` and `/v1/chat/completions`, the gateway appends roughly 330 tokens of extra instructions (a
+terse "caveman" writing style) to the request's `instructions` and adds roughly 300 tokens of tools. Evidence is in
+the response: the returned `instructions` field contains the caller's instructions followed by the injected text,
+and `usage.attribution.request_fields` reports `tools` and `instructions` token counts the caller never sent.
+Consequences: the served prompt is not the harness prompt; replay determinism and independence claims hold only "via
+this gateway"; the adapter detects and records alteration per call from those two response fields (exit G10); the
+measurement verdict names the gateway (plan §23).
+
+**Still not probed by the lane** (no credential; lane rules), for both reviewers: support for the Responses API,
+`store`, `truncation`, strict `text.format`, `reasoning.effort`, `service_tier`, and whether `usage`, `model` and
+`x-request-id` are returned. The S10 probe records the answers and confirms alteration detection live. A parameter
+the gateway rejects or ignores is never dropped silently; the adapter fails closed and the gap is adjudicated.
 
 ## 2. Prompt-injection resistance
 
@@ -108,7 +118,7 @@ over human-adjudicated findings; descriptive-only below n = 20 (D-7); floors in 
 
 ## 7. Comparator selection (D-4, user decision: mandatory)
 
-| Candidate | Family | Differs from implementer (`anthropic-claude`) and labeller/primary (`openai-gpt`) | Re-runnable outside the gateway | Probed |
+| Candidate | Family | Differs from implementer (`anthropic-claude`), labeller `gpt-5.6-sol` and primary candidate `gpt-6.1-sol` (all `openai-gpt`) | Re-runnable outside the gateway | Probed |
 |---|---|---|---|---|
 | `deepseek-v4-pro` | deepseek | yes | DeepSeek has historically published open weights for its flagship line; for this model **not verified** | no |
 | `qwen3.8-max` | alibaba-qwen | yes | "max" tiers have historically been API-only; **not verified** | no |
@@ -125,5 +135,5 @@ above are general history, not facts about these specific versions.
 3. Published prices for both models on the gateway; until configured with source and date, cost is reported as
    uncovered. Not verified.
 4. Datamarking vs base64 encoding for diffs — measured by the injection suite.
-5. Whether the gateway alters prompts (PR4-30).
+5. ~~Whether the gateway alters prompts~~ — answered: it does (controller-verified, §1); open is only whether the appended text changes over time, which the per-call appendix hash tracks.
 6. The Grafana 12.x image digest and the dashboard-by-uid path on 12.x. (S18)

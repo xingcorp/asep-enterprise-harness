@@ -1,4 +1,4 @@
-# Phase 4 — Architecture (LOCKED v2 (pending controller confirmation))
+# Phase 4 — Architecture (LOCKED v2)
 
 > Companion to `phase-04-plan.md`. Base `00a6889`; v1 reviewed at `a2a7b8a`. Thesis unchanged from the ADRs: an
 > agent cannot approve its own work (README thesis 3), every framework sits behind a port (ADR 0005),
@@ -104,7 +104,7 @@ coder output (diff, summary, events)        evidence bundle + execution manifest
 repository content in the diff              packet builder (whitelist), egress decision, prompt renderer
 reviewer model output (JSON text)           AJV validation, grounding, adjudication rules, closure authority
 gateway response metadata (served model)    reviewer descriptor pins, family registry
-gateway transport (may alter prompts)       recorded request bytes; measurement bounded to "via this gateway"
+gateway transport (alters prompts: verified) recorded request bytes + per-call alteration evidence; claims "via this gateway"
 finding text forwarded to a repair coder    repair-order renderer (bounded, structured; drill only in Phase 4)
 recorded responses and corpus excerpts      sha256 manifests verified before replay/scoring; publication gates
 ```
@@ -154,6 +154,15 @@ export type ReviewerObservationStatus =
   | 'COMPLETED' | 'REFUSED' | 'INCOMPLETE' | 'MALFORMED' | 'RATE_LIMITED'
   | 'PROVIDER_ERROR' | 'AUTH_ERROR' | 'CONTEXT_OVERFLOW' | 'BUDGET_EXHAUSTED' | 'CANCELLED';
 
+export interface GatewayAlteration {             // what the gateway did to the request in transit
+  readonly status: 'altered' | 'unaltered' | 'unknown' | 'no-request';
+  readonly appendedBytes: number | null;        // bytes appended to the sent instructions, when observable
+  readonly appendedSha256: string | null;
+  readonly appendixRef: ArtifactRef | null;     // the appended text, stored as a gateway-appendix artifact
+  readonly toolsAttributed: boolean | null;     // usage attribution reports tools the harness never sent
+  readonly attributedFields: readonly string[]; // usage.attribution.request_fields keys, verbatim
+}
+
 export interface ReviewerObservation {          // UNTRUSTED
   readonly status: ReviewerObservationStatus;
   readonly outputText: string | null;           // structured-output JSON text, unparsed
@@ -161,6 +170,7 @@ export interface ReviewerObservation {          // UNTRUSTED
   readonly rawResponseRef: ArtifactRef | null;  // exact response bytes, persisted before parsing
   readonly servedModel: string | null;          // provider-reported model id
   readonly providerRequestId: string | null;    // e.g. the x-request-id header
+  readonly gatewayAlteration: GatewayAlteration;
   readonly usage: ReviewerUsage;
   readonly detail: string | null;               // bounded, credential-free failure detail
 }
@@ -255,7 +265,9 @@ runReviewer(input, ctx):
 
 **Durable-engine compatibility.** Inputs/outputs are plain JSON; `AbortSignal`, clock and heartbeat live in
 `AssuranceStepContext`; dependencies live in the closure of `createAssuranceSlot`. PostgreSQL rows are the
-operational projection; the orchestrator holds orchestration authority.
+operational projection; the orchestrator holds orchestration authority. `ctx.now()` is one fixed logical time per
+activity execution, identical on every retry (R15); steps take every timestamp from it and never read the wall
+clock, so a retried step writes byte-identical records.
 
 **Shadow-only production.** `assurance-root.ts` builds the slot from `policies/review-policy.yaml` through the
 loader, which rejects `gating` (exit K3). The drill factory `createAssuranceDrillSlot` (in
@@ -333,6 +345,14 @@ in tests, a fake). Adapter code contains no `process.env` access.
   abort → `CANCELLED`; budget → `BUDGET_EXHAUSTED`.
 - `response.model` recorded as `servedModel`; a mismatch with the pinned model is a `FAILED` review (served-model
   drift) in every mode.
+- **Gateway alteration detection** (the kiro-proxy gateway appends instructions and tools to every request —
+  verified by the controller, plan §3 U-3): the adapter compares the response's returned `instructions` with the
+  `instructions` it sent and reads `usage.attribution.request_fields` when present. It returns
+  `gatewayAlteration: 'altered' | 'unaltered' | 'unknown'` plus `{ appendedBytes, appendedSha256, toolsAttributed,
+  attributedFields[] }`, and stores the appended text as a `gateway-appendix` artifact (gateway-controlled, kept so
+  its drift is visible). A missing comparison field yields `unknown`, never `unaltered`. Alteration does not fail
+  the review (it is a fixed property of the gateway); it is recorded on every review record and surfaced in every
+  scorecard.
 
 `adapters/reviewer-replay`: `RecordedReviewerProvider` keyed by `sha256(configSha256 | promptSha256)` after
 verifying the recording manifest; a miss → `PROVIDER_ERROR` `no-recording`. `ScriptedReviewerProvider` serves tests

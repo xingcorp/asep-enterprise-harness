@@ -1,4 +1,4 @@
-# Phase 4 — Data Model (LOCKED v2 (pending controller confirmation))
+# Phase 4 — Data Model (LOCKED v2)
 
 > Companion to `phase-04-plan.md`. PostgreSQL 17 (digest-pinned in `compose.yaml`). Base `00a6889`; v1 reviewed at
 > `a2a7b8a`. Conventions inherited from `phase-02-data-model.md` §1: ULID `char(26)` ids, `timestamptz` UTC,
@@ -49,7 +49,7 @@ Required: `reviewId` (64 hex), `roundKey`, `attemptId`, `round` (≥ 1), `review
 `validity` (`VALID, INVALID`), `verdict` (`APPROVE, REQUEST_CHANGES, ESCALATE`, null when invalid), `findings`
 (`review-finding/v1[]`), `priorFindingClaims` (`[{priorFindingId, status: RESOLVED|PARTIAL|OPEN, evidence,
 resolutionFile|null, resolutionLine|null}]`, empty for fresh), `usage` (`{inputTokens, cachedInputTokens,
-outputTokens, reasoningTokens, wallClockMs, transportAttempts}`), `providerCalls` (≥ 1). Optional: `confidence`
+outputTokens, reasoningTokens, wallClockMs, transportAttempts}`), `providerCalls` (≥ 1), `gatewayAlteration` (`{status: altered|unaltered|unknown, appendedBytes|null, appendedSha256|null, appendixArtifactId|null, toolsAttributed|null, attributedFields[]}`). Optional: `confidence`
 (0..1), `packetCoverage` (`complete, partial`). Produced by the harness from validated model output only.
 
 ### 2.3 `review-packet/v1`
@@ -99,6 +99,9 @@ Plan §18.4 lists the one new `eventType` (`review.finding_dispositioned`) and t
 `check-report` (JSON, schema in `packages/application/src/assurance/schemas/check-report.schema.json`): raw check
 outputs by artifact ref, findings, push-guard decision, egress decision with per-part scan results, omissions.
 `review-prompt`: instructions, rendered input, output schema, template hash.
+`gateway-appendix`: the text the gateway appended to the sent `instructions`, as returned in the response (gateway-controlled; stored so its drift is visible).
+
+No assurance step reads the wall clock: every timestamp column below is written from `AssuranceStepContext.now()`, one fixed logical time per activity execution (R15), so a retried step writes identical rows.
 
 ## 3. Tables (migrations in Lane B range; withdrawn `0201_run_events`, R4)
 
@@ -219,6 +222,8 @@ create table review_records (
   raw_response_artifact_id char(26),
   record_artifact_id       char(26),
   provider_request_id      text,
+  gateway_alteration       text,
+  gateway_appendix_artifact_id char(26),
   input_tokens             integer,
   cached_input_tokens      integer,
   output_tokens            integer,
@@ -260,6 +265,9 @@ create table review_records (
                                                 and raw_response_artifact_id is null)),
   constraint review_records_counts_ck     check (provider_calls >= 0 and call_generation >= 1 and fence_lease_epoch >= 1),
   constraint review_records_cost_ck       check ((cost_usd is null) = (price_source is null)),
+  constraint review_records_gateway_ck    check (gateway_alteration is null or gateway_alteration in
+                                            ('altered','unaltered','unknown')),
+  constraint review_records_gateway_presence_ck check ((provider_calls = 0) = (gateway_alteration is null)),
   constraint review_records_review_uq     unique (organization_id, project_id, review_id),
   constraint review_records_scope_uq      unique (id, organization_id, project_id),
   constraint review_records_round_fk      foreign key (review_round_id, organization_id, project_id)
@@ -271,6 +279,8 @@ create table review_records (
   constraint review_records_raw_response_fk foreign key (raw_response_artifact_id, organization_id, project_id)
     references artifacts (id, organization_id, project_id),
   constraint review_records_record_fk     foreign key (record_artifact_id, organization_id, project_id)
+    references artifacts (id, organization_id, project_id),
+  constraint review_records_appendix_fk   foreign key (gateway_appendix_artifact_id, organization_id, project_id)
     references artifacts (id, organization_id, project_id)
 );
 create index review_records_round_idx on review_records (organization_id, project_id, review_round_id);
@@ -570,7 +580,9 @@ reject a grounded finding; a reviewer cannot waive; dispositions and adjudicatio
 cannot record `REPAIR` but can record `PROCEED` with a would-be `REPAIR`; a round cannot regress from `ADJUDICATED`
 to `OPEN`; round identity is immutable. Not isolated by the probe: the `review_rounds_attempt_task_fk` path (the
 probe tripped `review_rounds_attempt_uq` first). This is design validation, not the S8 acceptance suite; S8 repeats
-every check on PGlite and on real PostgreSQL 17.
+every check on PGlite and on real PostgreSQL 17. After the 2026-10-29 amendment added the `gateway_alteration`
+columns and constraints to `review_records`, the §3.1–§3.3 blocks and the §3.6 rollback were applied again on PGlite
+`0.5.4` in a fresh scratch directory: all applied, and the three new constraints exist.
 
 ### 3.6 Rollback (forward compensating migrations; applied only by operator decision, never by editing `02xx`)
 
@@ -689,10 +701,10 @@ modelFamilies:                 # longest-prefix match on the pinned model id; un
   - { family: alibaba-qwen,     prefixes: [qwen] }
   - { family: xai-grok,         prefixes: [grok-] }
 reviewers:                     # pinned configurations; no secret appears here
-  - id: primary-gpt-5.6-sol
+  - id: primary-gpt-6.1-sol    # primary candidate (controller); labeller was mostly gpt-5.6-sol; not yet probed
     role: primary
     providerId: openai-responses
-    model: gpt-5.6-sol
+    model: gpt-6.1-sol
     reasoningEffort: high
     maxOutputTokens: 16000
     packetBudgetBytes: 400000
@@ -766,7 +778,7 @@ comparator, `approvedBy` (controller), `approvalRef` (commit SHA or review-log e
 
 ### 7.3 Recorded run (`evals/review-benchmark/recorded/<runId>/`)
 
-`run.json` (descriptor, preregistration sha, corpus sha, set, k, gateway host, timestamps) plus one file per
+`run.json` (descriptor, preregistration sha, corpus sha, set, k, gateway label and base-URL sha256, timestamps) plus one file per
 (item, side, run index) with the observation and raw response bytes (base64) under a `manifest.sha256`. Each file
 stays under the 500 KiB large-file limit and passes the secret and PII gates; one that cannot is excluded with
 reason, never allowlisted.
@@ -774,8 +786,8 @@ reason, never allowlisted.
 ### 7.4 Scorecard (`evals/review-benchmark/scorecards/<runId>.json`)
 
 `scope` (`self-history`, `synthetic-injection`, `synthetic-false-green`), `eligibleForPromotion` (const `false` for
-these scopes), `circularityStatement`, `blindHoldout` (const `false` for self-history), hashes (corpus,
-preregistration, descriptor, recordings, gateway host), denominators (eligible, excluded by reason), per reviewer and
+these scopes), `circularityStatement` (names the labeller model and every measured reviewer model), `gateway` (`{label, baseUrlSha256, altersRequests, alteredCallShare, unknownCallShare, appendixSha256s[]}`; required; the raw address is never written), `blindHoldout` (const `false` for self-history), hashes (corpus,
+preregistration, descriptor, recordings, gateway label and base-URL sha256), denominators (eligible, excluded by reason), per reviewer and
 per metric `{value, n, wilson95: [lo, hi], descriptiveOnly}` for: rediscovery recall strict/lenient (all,
 first-occurrence, labeller-miss subset, per severity, per defect class); stale-flag rate on post-fix negatives;
 precision over human-adjudicated findings plus the unadjudicated count; k-run stability; invalid-output rate;

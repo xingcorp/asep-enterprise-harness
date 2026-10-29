@@ -1,4 +1,4 @@
-# Phase 4 — Risk Register (LOCKED v2 (pending controller confirmation))
+# Phase 4 — Risk Register (LOCKED v2)
 
 > Delivery, design and measurement risks for independent assurance. Base `00a6889`; v1 reviewed at `a2a7b8a`.
 > Severity = impact × likelihood. v2 adds the risks surfaced by the Codex plan review and the reconciliation, and
@@ -6,7 +6,7 @@
 
 | ID | Risk | Sev | Mitigation | Trigger / owner action |
 |----|------|-----|-----------|------------------------|
-| PR4-01 | **Circular measurement**: labels come from `gpt-5.6-sol`, the primary reviewer, so its recall is inflated and other reviewers are penalised for different-but-real findings | HIGH | Mandatory different-family comparator; labeller-miss subset; non-model baselines; circularity statement required; `eligibleForPromotion: false`; no generalisation beyond `scope` | Scorecard missing any of these → scorer test fails (exit I3, I6) |
+| PR4-01 | **Circular measurement**: labels come from `gpt-5.6-sol`; the primary candidate reviewer `gpt-6.1-sol` is a different model of the same vendor, so circularity is reduced, not removed — its recall is likely inflated and other reviewers are penalised for different-but-real findings | HIGH | Mandatory different-family comparator; labeller-miss subset; non-model baselines; circularity statement required; `eligibleForPromotion: false`; no generalisation beyond `scope` | Scorecard missing any of these → scorer test fails (exit I3, I6) |
 | PR4-02 | **Answer-key leakage** (packets at the parent of a fix, or containing review documents or commit messages; e.g. `3ea0293` adds the Phase 2 final review on top of reviewed tree `2e61f24`) | HIGH | Packets only at the reviewed SHA from excerpts; review artifacts and git metadata excluded by rule; leakage test | Exit I2 fails |
 | PR4-03 | **Not a blind holdout**: the prompt author saw every label | HIGH | Called `prompt-development`/`reporting`, never "test split"; `blindHoldout: false`; hashes frozen in a controller-approved preregistration before capture; the plan does not claim blindness | Report claims a holdout → controller review (exit I9) |
 | PR4-04 | **Small n** read as precise numbers | HIGH | n + Wilson 95% interval everywhere; n < 20 descriptive-only (D-7); no difference claimed on overlapping intervals | Exit I6 |
@@ -35,7 +35,7 @@
 | PR4-27 | **Real coder unavailable**: the agent runs `--network none` without a model credential (`pilot-main.ts:156`, `claude-provider.ts:131-142`) | HIGH | Full-loop MUST N1 separated and blocked on the Phase 2 agent-runtime repair; verdict carries `ASSURANCE_ONLY_LOOP` until then | S22 stays blocked |
 | PR4-28 | **Late human dispositions ignored by metrics** (P4-PLAN-HIGH-004) | MED | `review.finding_dispositioned` + `dedupeLatestBy`; snapshot recompute; test that accept-then-reject changes snapshots | Exit H6 |
 | PR4-29 | **Mutation proofs flaky or slow** (temporary tree copies, symlinked `node_modules`) | LOW | ≤ 12 mutations, each running one test file; exact-match search text; control run; failure messages name the mutation | Suite runtime tracked in the gate log |
-| PR4-30 | **Gateway alters prompts in transit** (controller notes suggest a style instruction is injected; not verified by Lane B) | MED | Recorded request bytes are what the harness sent; measurement claims bounded to "via this gateway"; gateway host recorded in scorecards; S10 probe records any visible effect | Report wording checked (exit I9) |
+| PR4-30 | **Gateway alters prompts in transit — verified by the controller**: the kiro-proxy gateway appends ~330 tokens of terse-style instructions and attributes ~300 tokens of tools to every request, on both endpoints, so what the model is served is not what the harness sent | HIGH | Recorded request bytes are only what the harness sent; per-call detection (returned `instructions` vs sent, `usage` attribution) recorded as `gatewayAlteration` with the appended block as an artifact; replay and independence claims bounded to "via this gateway"; scorecards carry the gateway block; every verdict carries `MEASURED_VIA` | Probe or call shows an unrecorded alteration, or a report omits `MEASURED_VIA` → exit G10 / I9 fails |
 | PR4-31 | **Drill-only repair loop rots** because production never exercises it | LOW | Conformance kit and drill itest run in every gate; residual-instance corpus items exercise re-review packets | Exit E10, E12 |
 
 Retired from v1: promotion forgery/expiry risks (promotion deferred, DF-2); per-major compat-gate gap (D-1 = b,
