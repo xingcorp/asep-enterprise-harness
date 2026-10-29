@@ -12,6 +12,9 @@
 > v4: the review of v3, the slot block and the pre-S0 code (`phase-04-review-codex-v3.md`, Codex `gpt-6.1-sol`,
 > snapshot `9e3a1c3`, REQUEST_CHANGES 0.99) and controller decisions R22 and R23 are dispositioned in "Review v3"
 > below.
+> v5: the re-check of v4, the slot block and the code fixes (`phase-04-review-codex-v4.md`, Codex `gpt-6.1-sol`,
+> snapshot `7cc20f4`, REQUEST_CHANGES 0.99) and controller decisions R26 and R28 are dispositioned in "Review v4"
+> below.
 >
 > Each finding is dispositioned `ACCEPTED` / `PARTIALLY_ACCEPTED` / `REJECTED_WITH_EVIDENCE`. Nothing was
 > auto-accepted: each finding's cited code was re-read before deciding. An accepted finding names its design
@@ -764,6 +767,264 @@ Every numbered finding of the review is dispositioned (16 accepted, 0 rejected) 
 documents. Remaining before the corpus freeze and before Lane A receives the block: the controller's focused check of
 the slot block and of the code fixes at the lane head, and confirmation of v4.
 
+## Review v4 (Codex `gpt-6.1-sol`, snapshot `7cc20f4`)
+
+> Raw review: `phase-04-review-codex-v4.md` (verbatim copy with provenance). Verdict: REQUEST_CHANGES, confidence
+> 0.99, `HAND-OFF: NOT_READY`. Controller decisions applied alongside: `reconciliation-v1.md` R26 (root cause of the
+> V8 gate crash; the Phase 2 lane owns the workaround) and R28 (final decisions for this re-check, including two slot
+> rules that bind both lanes; applied as written). Each finding's cited text was re-read at `7cc20f4` before deciding;
+> line numbers below refer to `7cc20f4`. The controller's gate at that snapshot, on a clean detached worktree:
+> `pnpm verify:all` twice, each exit 0, 613 pass, 0 fail, 0 skipped, 60 files, 37 required suites.
+
+### Summary
+
+| Severity | Count | ACCEPTED | PARTIAL | REJECTED |
+|---|---|---|---|---|
+| HIGH — plan (P4-PLAN4) | 1 | 1 | 0 | 0 |
+| MEDIUM — plan (P4-PLAN4) | 2 | 2 | 0 | 0 |
+| MEDIUM — slot block (P4-SLOT4) | 2 | 2 | 0 | 0 |
+| HIGH — code (P4-CODE4) | 3 | 3 | 0 | 0 |
+| MEDIUM — code (P4-CODE4) | 2 | 2 | 0 | 0 |
+| **Total numbered** | **10** | **10** | **0** | **0** |
+| Unnumbered: telemetry contradiction; types that allow invalid combinations; surviving mutation at the re-raise branch; budget oracle that mirrored the zeroed rule; collector versus the full publication gate | 5 | 5 | 0 | 0 |
+
+The re-check confirmed P4-PLAN3-MED-001…003 and P4-SLOT-MED-001…003 as FOLDED, and P4-CODE-HIGH-001, -002, -004,
+-006, P4-CODE-MED-003, P4-CODE-LOW-001 and the v3 status/output mutation as RESOLVED. The four v3 items it found
+PARTIAL continue as new findings: P4-CODE-HIGH-003 → P4-CODE4-HIGH-003; P4-CODE-HIGH-005 → P4-CODE4-HIGH-002 and
+P4-PLAN4-HIGH-001; P4-CODE-MED-001 → P4-CODE4-HIGH-001; P4-CODE-MED-002 → P4-CODE4-MED-001 and P4-PLAN4-MED-001.
+
+The plan and slot-block fixes land in the docs-only commit that carries this section; each code finding lands in its
+own commit with a failing-first test and a mutation check (revert the fix, show the new test fails, restore),
+reported in the lane report.
+
+### P4-PLAN4-HIGH-001 — A declared SARIF rule counted as proof that it ran — ACCEPTED
+**Concern:** plan §13 and architecture §11 accepted a recheck from a run that declares the finding's rule; a disabled
+rule satisfied the predicate (`phase-04-plan.md:874`; `phase-04-architecture.md:435`).
+**Disposition:** Correct. Both lines re-read; in the code `checks.ts:502-506` records every declared rule id and `:507`
+only the invocations' success, and nothing reads the rule configuration, notifications or artifacts. R28 defines the
+proof.
+**Locked change:** plan §13 (effective execution and coverage: same scanner and version, the rule enabled in the
+effective configuration, no notification associated with it, every invocation successful, the finding's file among the
+scanned artifacts, no result for its fingerprint; anything unproven is not proven), §14 item 6; architecture §11
+(`scannerRecheck(F)` with `effectiveRules` and `scannedFiles`); data model §2.8 (scanner run `{checkId, tool,
+toolVersion, executionSuccessful, effectiveRules, scannedFiles}`); research register (SARIF 2.1.0 schema properties,
+retrieved 2026-10-30); exit E6; threat T4-28.
+**Validation:** exit E6, the four R28 cases; the code half is P4-CODE4-HIGH-002.
+
+### P4-PLAN4-MED-001 — The budget measured the packet with its own figures zeroed — ACCEPTED
+**Concern:** plan §8 and data model §2.3 measured the packet with `includedBytes = 0` and `overBudget = false`, not the
+canonical serialized packet R23 names (`phase-04-plan.md:648`; `phase-04-data-model.md:71`).
+**Disposition:** Correct: `packet.ts:295` builds the measured packet with both figures zeroed, `:303-304` measures it,
+and `:307` writes the real figures into the packet that `:309-310` hashes, so the hashed bytes are longer than the
+measured ones by the digits of `includedBytes` (the reviewer's probe: 2 261 measured, 2 264 actual, cap 2 261,
+accepted).
+**Locked change:** plan §8 (`includedBytes` is the UTF-8 length of the **final** canonical packet bytes plus every
+embedded part; it is recorded beside the packet — `BuildReviewPacketOutput.includedBytes`,
+`review_rounds.packet_included_bytes` — never inside it; `budget.overBudget` is a decision, and an accepted packet is
+measured with the `false` it carries; the invariant and its independent oracle); architecture §8; data model §2.3
+(`budget: {maxBytes, overBudget, omissions}`), §3.1 (`packet_included_bytes`, `review_rounds_packet_size_ck`, and the
+round guard keeps the packet hash, its size and the over-budget flag immutable once set); slot block
+`BuildReviewPacketOutput.includedBytes`; RLC-06; exit D7.
+**Validation:** exit D7 (`packet.test.ts` › "the budget is the final packet bytes, at the cap and one byte over", oracle
+`Buffer.byteLength` of the canonical JSON of the final packet object); the code half is P4-CODE4-MED-001.
+
+### P4-PLAN4-MED-002 — `prompt-over-budget` could not be persisted — ACCEPTED
+**Concern:** the plan records a refused prompt as `FAILED` with reason `prompt-over-budget`, which
+`review_records_failure_ck` does not allow (`phase-04-plan.md:655`; `phase-04-data-model.md:261`).
+**Disposition:** Correct: the enum at `phase-04-data-model.md:261-263` has no such value.
+**Locked change:** data model §3.1: `review_records_failure_ck` adds `'prompt-over-budget'`; v5 also requires
+`record_artifact_id` for a `COMPLETED` record (`review_records_completed_ck`) and a non-negative integer micro-USD cost
+with its price source (`review_records_cost_ck`); exit H3 adds the S8 persistence regression (R28).
+**Validation:** the DDL probe below (`FAILED with prompt-over-budget, no request: accepted`); exit H3
+(`assurance-persistence.itest.ts` › "every review failure reason is accepted by the database", in S8).
+
+### P4-SLOT4-MED-001 — Money at the seam was floating USD — ACCEPTED
+**Concern:** `budgetRemaining.costUsd`, `AssuranceUsage.reviewCostUsd`, `modelCostUsd` and `computeCostUsd` were USD
+`number`s with no unit, rounding, null or bounds contract against Phase 3's integer micro-USD ledger
+(`phase-04-plan.md:1209`, `:1321`, `:1417`); the R21 boundary `5.0000004` on a cap of `5` must stay an overrun.
+**Disposition:** Correct (the three lines re-read). R28: integer micro-USD at the seam.
+**Locked change:** slot block v5: `budgetRemaining.costMicroUsd`, `AssuranceUsage.reviewCostMicroUsd`,
+`cost.modelCostMicroUsd`, `cost.computeCostMicroUsd`; `null` means unknown; conversion from a provider's decimal USD
+happens once, in the adapter, with ceiling; the envelope helper rejects a `*MicroUsd` value that is not `null` or a
+non-negative safe integer, at any depth (`payload breaks the slot envelope: … is not integer micro-USD`). RLC-01 money
+fixtures (`5000000.4`, the boundary before ceiling, is rejected); SR-A13; data model §3.1
+`review_records.cost_micro_usd bigint` and "Money in events" (the run-event v1 USD fields are written as
+`microUsd / 1 000 000` and read back to the same decimal); risk PR4-40.
+**Validation:** RLC-01; the helper probe below (seven money negatives rejected, the money positives accepted); controls
+C14 and C15.
+
+### P4-SLOT4-MED-002 — A terminal before the lease was left out of the slot — ACCEPTED
+**Concern:** the v4 block did not record a terminal reached before a lease, while SR-A3 and exit H4 require every
+terminal; "Lane A audits it" had no contract with the same event semantics (`phase-04-plan.md:1427`, `:1796`;
+`phase-04-risk-register.md:47`).
+**Disposition:** Correct: `phase-04-plan.md:1427` says such an attempt "is not recorded here" and `:1796` (SR-A3)
+requires every terminal. R28 adopts the reviewer's conditions as eight obligations (its conditions 3 and 4 — never
+leased, read from durable history — are one obligation).
+**Locked change:** slot block v5: `AttemptOutcomeInput = LeasedAttemptOutcomeInput | PreLeaseAttemptOutcomeInput`;
+`fence: null` only on the pre-lease variant, whose terminal is in `PRE_LEASE_ATTEMPT_TERMINALS` (`cancelled`,
+`infrastructure-failed`), with obligations 1–8 written on it; `RepairContextInput.fence` stays required (obligation
+8). Plan §18.2: "every terminal is recorded", the obligations table, RLC-16 (pre-lease terminal; redelivery;
+allowlist; scope; atomicity; the race with lease acquisition over 20 fresh subjects, exactly one wins) and RLC-17
+(`fence: null` refused while leased, after `rotateFence()`, after `endLease()`, and after a pre-lease attempt's own
+lease; a null fence on the repair helper → `invalid-input`); fixture fields `preLeaseAttempt` and `failNextCommit`.
+§18.3: SR-A3 back to "every terminal is recorded"; SR-A11 (composition obligations 1, 2, 5); SR-A12 (Lane A lists
+every never-leased path and its terminal; anything outside the allowlist goes back to the controller). Exit E12, H4;
+risk PR4-37 resolved, PR4-39; threat T4-30.
+**Validation:** RLC-16, RLC-17; controls C1, C3 and C7.
+
+### P4-CODE4-HIGH-001 — A lower-severity re-raise hid an open prior — ACCEPTED
+**Concern:** a grounded `OPEN` HIGH prior re-raised at LOW by the same raiser was linked, left the blocking set, and
+the round became PROCEED in gating and shadow alike (`adjudication.ts:487`, `:499`, `:510`).
+**Disposition:** Correct: `:487` marks every matched prior linked, `:499` takes only the current finding's severity,
+and `:510` drops every linked prior from `B`.
+**Locked change:** plan §12 "A re-raise never downgrades"; data model §2.1; architecture reconciliation paragraph;
+exit E4; threat T4-28. Code: a re-raise linked to a prior it does not shield carries the highest severity of itself
+and every such prior; the pair counts once in `B`.
+**Validation:** exit E4 (`adjudication.test.ts` › "a re-raise never downgrades a prior that still blocks":
+HIGH→LOW, CRITICAL→LOW, CRITICAL→CRITICAL, each asserting outcome, blocking severity and the prior's lifecycle);
+the reviewer's surviving mutation is re-run in the commit report.
+
+### P4-CODE4-HIGH-002 — A disabled SARIF rule closed a finding — ACCEPTED
+**Concern:** a log that declares the rule with `defaultConfiguration.enabled: false` and an override disabling it,
+with `executionSuccessful: true`, produced the proof and closed a SARIF HIGH as `VERIFIED` (`checks.ts:488`;
+`adjudication.ts:253`).
+**Disposition:** Correct (`checks.ts:488-508` re-read; see P4-PLAN4-HIGH-001).
+**Locked change:** as P4-PLAN4-HIGH-001. Code: the scanner run records `effectiveRules` (declared, enabled by its
+default configuration and by every override, no notification associated with it) and `scannedFiles` (artifacts whose
+roles, when present, include `analysisTarget`); a structural error is malformed and proves nothing; the recheck needs
+the rule in `effectiveRules` and the file in `scannedFiles`.
+**Validation:** exit E6 (`checks.test.ts` › "a scanner run records the rules it effectively ran and the files it
+scanned"; `adjudication.test.ts` › "a SARIF recheck needs effective execution and coverage": disabled by default
+configuration, disabled by override, rule-failure notification, file not scanned); mutation check in the commit report.
+
+### P4-CODE4-HIGH-003 — Joined-string identities collided — ACCEPTED
+**Concern:** `(requirementId "REQ\nf1", key "x")` and `("REQ", "f1\nx")` produce the same identity at
+`adjudication.ts:424`; with a live waiver on one, the unwaived HIGH disappeared in the merge and the round became
+PROCEED. The WorkOrder and reviewer-output schemas allow both strings.
+**Disposition:** Correct: `:424` joins with `'\n'` and maps `null` to `''`. The same class elsewhere at `7cc20f4`:
+the fingerprint (`findings.ts:101`), the check merge and dedupe keys (`findings.ts:171`, `:206`), the adjudication id
+(`adjudication.ts:586`, `|` and `,`), the reviewer-list comparison (`:195`), the blocking order key (`:519`), the
+repair-order id (`repair.ts:121`) and the diff-path comparison (`checks.ts:125`). R28: every identity, fingerprint and
+dedupe key, not only the cited one.
+**Locked change:** plan §12 "Identity encoding"; data model §2.1, §2.4; architecture reconciliation paragraph; exit
+E4; threat T4-28. Code: one canonical-JSON tuple helper used for each key above; `null` and `""` stay distinct.
+**Validation:** exit E4 (`adjudication.test.ts` › "identity keys are canonical tuples and never collide";
+`checks.test.ts` › "check identity keys are canonical tuples and never collide"), collision fixtures with separators
+inside fields and `null` against `""`; mutation check in the commit report.
+
+### P4-CODE4-MED-001 — The budget boundary was wrong on the final bytes — ACCEPTED
+**Concern:** with an empty diff and file list, cap 2 261, `includedBytes` 2 261 and actual bytes 2 264, the packet was
+accepted; the test oracle zeroed the same two fields and so mirrored the bug (`packet.ts:295`, `:303`;
+`packet.test.ts:121`).
+**Disposition:** Correct (see P4-PLAN4-MED-001).
+**Locked change:** as P4-PLAN4-MED-001. Code: the packet carries `{maxBytes, overBudget, omissions}`; the builder
+measures the final canonical bytes (with the `overBudget` value they carry) plus the embedded parts and returns
+`includedBytes` beside the packet.
+**Validation:** exit D7 (`packet.test.ts` › "the budget is the final packet bytes, at the cap and one byte over": the
+oracle serializes the returned packet object independently; at the cap accepted, at cap + 1 flagged); mutation check
+in the commit report.
+
+### P4-CODE4-MED-002 — The collector could run a stale copy of the leak patterns — ACCEPTED
+**Concern:** `leakPatterns` parsed only the first `LEAK_PATTERNS=(` block, so a valid `LEAK_PATTERNS+=(…)` after it was
+silently ignored (`collect.ts:625`, `:678`; `collect.test.ts:324`).
+**Disposition:** Correct: `collect.ts:626` matches the first block only, and `scripts/check-publication.sh:26-31` is the
+second copy of the source of truth.
+**Locked change:** plan §7.5 "One source for the path-leak patterns": `scripts/lib/publication-leak-patterns.txt`, one
+ERE per line, read by both `scripts/check-publication.sh` (the minimal change R28 allows) and the collector; the
+collector never replaces the full publication gate, which still runs before any public push; exit I13; threat T4-29.
+**Validation:** exit I13 (`collect.test.ts` › "the collector and the publication gate read one list of leak
+patterns": the real script's path scanner and the collector run on the same fixtures and agree, and a pattern
+appended to the file is seen by both).
+
+### Telemetry contradiction (unnumbered) — ACCEPTED
+**Concern:** the block excluded pre-lease terminals while SR-A3 and exit H4 required every terminal
+(`phase-04-plan.md:1427`, `:1796`; `phase-04-exit-criteria.md:132`).
+**Disposition:** Correct; resolved with P4-SLOT4-MED-002. SR-A3 and H4 now read "every terminal is recorded".
+
+### Types that allowed invalid combinations (unnumbered) — ACCEPTED
+**Concern:** `RunReviewerOutput` allowed `COMPLETED_VALID` with `reviewRecordRef: null`, and the outcome types allowed
+mode and shadow to disagree (`phase-04-plan.md:1293`, `:1331`).
+**Disposition:** Correct. R28: discriminated unions with negative fixtures; envelope validation stays JSON-only.
+**Locked change:** `RunReviewerOutput = CompletedReviewerOutput | FailedReviewerOutput | NotSentReviewerOutput`;
+`ProceedOutcome = ShadowProceedOutcome | DecidedProceedOutcome`; REPAIR and ESCALATE carry `mode: 'gating'`; RLC-06
+checks the same invariants at runtime on every output.
+**Validation:** controls C8–C13; RLC-06 negative fixtures (the scripted slot returning each violating shape fails).
+
+### Surviving mutation at the re-raise branch (unnumbered) — ACCEPTED
+**Concern:** `blocking: blockingSeverity.has(f.severity) && f.severity !== 'CRITICAL'` at `adjudication.ts:499` left
+all 61 pure-core tests green; a CRITICAL re-raise of an open CRITICAL prior then gave PROCEED.
+**Disposition:** Correct: the re-raise cases use HIGH only.
+**Validation:** the CRITICAL→CRITICAL case of P4-CODE4-HIGH-001's test; the mutation is re-run in the commit report.
+
+### Budget oracle that mirrored the zeroed rule (unnumbered) — ACCEPTED
+Replaced in P4-CODE4-MED-001's commit by an oracle that serializes the final packet object independently.
+
+### Collector versus the full publication gate (unnumbered) — ACCEPTED
+The collector scans excerpts only; LICENSE, history and dependency-license checks stay with the full gate
+(`scripts/check-publication.sh`), which still runs before any public push. Plan §7.5 states it.
+
+### R26 and R28 applied
+
+| Item | Applied as | Where |
+|---|---|---|
+| R26 V8 gate crash | not Lane B's change; the Phase 2 lane adds the workaround; any crash in a Lane B gate run is recorded (suite, run number, load) as R24 requires | lane report |
+| R28 money | integer micro-USD at the seam, conversion once with ceiling in the adapter, envelope negatives | plan §18 block, §18.2 RLC-01, §18.3 SR-A13; data model §3.1, money in events; risk PR4-40 |
+| R28 terminal before lease | nullable fence only for a never-leased attempt, eight obligations, allowlist, RLC-16, RLC-17; SR-A3 and H4 back to every terminal | plan §18 block, §18.2, §18.3; exit E12, H4; risk PR4-37, PR4-39; threat T4-30 |
+| R28 discriminated unions | reviewer output and outcome types; controls C8–C13 | plan §18 block, RLC-06 |
+| R28 no downgrade | highest severity of the linked pair; counted once | plan §12; data model §2.1; architecture; exit E4 |
+| R28 scanner proof | effective execution and coverage; four cases | plan §13, §14; architecture §11; data model §2.8; research register; exit E6 |
+| R28 identity encoding | canonical JSON tuples for every key | plan §12; data model §2.1, §2.4; exit E4 |
+| R28 final-byte budget | final bytes; size beside the packet; oracle at cap and cap + 1 | plan §8; architecture §8; data model §2.3, §3.1; exit D7 |
+| R28 `prompt-over-budget` | in `review_records_failure_ck`; S8 regression | data model §3.1; exit H3 |
+| R28 one leak-pattern source | `scripts/lib/publication-leak-patterns.txt`; parity test; the gate is not replaced | plan §7.5; exit I13; threat T4-29 |
+| R28 MED-001 interpretation | confirmed: a harness refutation does not shield a grounded re-raise | plan §12 |
+
+### Slot block type-check and helper execution (v5)
+
+The block was extracted from plan §18 with
+`awk '/^### Review-loop slot contract \(verbatim for S0\)/{f=1} f&&/^```typescript$/{inb=1;next} inb&&/^```$/{exit} inb{print}'`
+into a scratch directory outside the repository (839 lines, sha256
+`a772194f34bc6efb84a2bc48b68b452a1958cf8c20ba9812d3062272c7340df3`; `cmp` against a second extraction: identical) and
+compiled as one module with TypeScript 7.0.2 and the v4 options (`strict`, `noUncheckedIndexedAccess`,
+`exactOptionalPropertyTypes`, declaration emit, `types: ["node"]`, `NodeNext`), with `@asep/contracts` and `@asep/ports`
+mapped to this branch's built declarations and `AdmissionResult` re-exported from
+`packages/application/dist/risk-admission.js`. `tsc -p tsconfig.json`: exit 0. Fifteen controls in a second project
+over the same block, each expected to fail with exactly one error: C1 a leased outcome without `fence` (TS2741), C2 a
+repair request without `fence` (TS2741), C3 a repair request with `fence: null` (TS2322), C4 a `Promise<void>`
+`recordAttemptOutcome` (TS2322), C5 an error without a code (TS2554), C6 an unknown code (TS2345), C7 `fence: null`
+with terminal `proceeded` (TS2322), C8 `COMPLETED_VALID` with a null record (TS2322), C9 `FAILED` with a record
+(TS2322), C10 a never-sent review with one provider call (TS2322), C11 shadow PROCEED without a shadow verdict
+(TS2322), C12 gating PROCEED with one (TS2322), C13 REPAIR in shadow mode (TS2322), C14 `budgetRemaining.costUsd`
+(TS2353), C15 `cost.modelCostUsd` (TS2353). `tsc -p tsconfig.control.json`: exit 1 with exactly those 15 errors, one per
+control line.
+
+The envelope helper was executed from the block text with Node 24.6.0's type stripping
+(`node --disable-warning=ExperimentalWarning probe.mjs ./src/review-loop/slot-block.ts`) and again from the `tsc` emit
+(`node probe.mjs ./dist/review-loop/slot-block.js`); both printed the same lines and exited 0. The v4 probe's 20
+negative fixtures and six positive controls behave as in v4; the seven money negatives — a fractional
+`budgetRemaining.costMicroUsd` (`5000000.4`), a negative `usage.reviewCostMicroUsd`, `2 ** 53` as
+`cost.modelCostMicroUsd`, a string, a boolean and an object as `cost.computeCostMicroUsd`, and a fraction inside an array
+element — each threw `ReviewLoopContractError` `invalid-payload`; `*MicroUsd` values `null`, `0` and
+`Number.MAX_SAFE_INTEGER` and a fraction under a key that is not `*MicroUsd` were accepted and round-trip; 65 536 bytes
+accepted, 65 537 rejected with `invalid-payload`; `'é'` measured 4 bytes. Control: the same probe against the v4 block
+exited 1 with seven unexpected results (the money negatives). The reviewer's own one-line probe
+(`stripTypeScriptTypes` over the plan text, run from the repository root) extended with the seven money negatives and
+three money positives printed `negative 25/25 positive 9/9`, `65536 ACCEPT`, `65537 ReviewLoopContractError
+invalid-payload`, exit 0. Not verified: compilation as three separate files inside `packages/application` (they do not
+exist until S0).
+
+### DDL re-validation (v5)
+
+See data model §3.5: the §3.1–§3.3 blocks and the §3.6 rollback applied on PGlite `0.5.4` after the twelve Phase 2
+migrations, and the constraint probe passed 29 of 29, including the round's packet size, `prompt-over-budget`, a
+completed record without its artifact and the micro-USD cost.
+
+### Freeze gate (v5)
+
+Every numbered finding of the review is dispositioned (10 accepted, 0 rejected) and R26 and R28 are applied in the
+documents. Remaining before the corpus freeze and before Lane A receives the block: the controller's re-check of the
+v5 block and of the code fixes at the lane head, and confirmation of v5.
+
 ---
 
 ## Disposition template
@@ -786,4 +1047,6 @@ v2 record: **LOCKED v2** (confirmed for pre-S0 slices S3–S7 on 2026-10-29; con
 
 v3 record: **LOCKED v3 (pending controller confirmation)**, superseded by v4 before confirmation.
 
-**PLAN_STATUS: LOCKED v4 (pending controller confirmation)**
+v4 record: **LOCKED v4 (pending controller confirmation)**, superseded by v5 before confirmation.
+
+**PLAN_STATUS: LOCKED v5 (pending controller confirmation)**

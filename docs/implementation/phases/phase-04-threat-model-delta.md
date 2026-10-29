@@ -1,4 +1,4 @@
-# Phase 4 — Threat Model Delta (LOCKED v4, pending controller confirmation)
+# Phase 4 — Threat Model Delta (LOCKED v5, pending controller confirmation)
 
 > Delta over `docs/operations/security-threat-model.md` and `phase-02-threat-model-delta.md`. Phase 4 adds the
 > first **external model call made by the trusted harness about untrusted content**, a second credential class,
@@ -7,7 +7,9 @@
 > and closure-authority threats, and retires promotion threats with the deferral of promotion. v3 (lock-check of
 > `3201335`) adds the workspace seam (T4-24) and corpus answer-key leakage through history (T4-25). v4 (review of `9e3a1c3`)
 > adds path smuggling (T4-26), sensitive paths only the repair delta names (T4-27), hidden blocking findings
-> (T4-28) and a corpus gate that fails open (T4-29).
+> (T4-28) and a corpus gate that fails open (T4-29). v5 (re-check of `7cc20f4`, R28) extends T4-28 with severity
+> downgrade by re-raise, identity collisions and a scanner run that proves nothing, extends T4-29 with pattern drift
+> between the gate and the collector, and adds a zombie caller dropping its fence (T4-30).
 
 ## 1. Trust boundaries
 
@@ -65,8 +67,9 @@ and excerpts, recorded responses and scorecards, metric snapshots, human reviewe
 | T4-25 | Historical trees leak the answer key into corpus packets (finding ids in code comments, review documents, per-item packets that point at the defect) | Packets per cycle in label-independent chunks; leakage path filter; finding-id tokens masked to the same length; commit messages have no packet field; leakage test | EC I2, I12 |
 | T4-26 | **Path smuggling**: a changed path with LF, CR, U+2028/U+2029 or another control character, or an unresolved Git C-quoted form, slips past the deny-path globs and the allowed-path check, and its content reaches the gateway (reproduced by the v3 review with a fake sender) | Such a path is not normalizable: always sensitive, push guard `BLOCK` (`forbidden-path`), egress `STOP_CLASSIFIED`, never read; the packet builder keeps it (`unsafe-path`) instead of failing the round; globs match every code point as defence in depth; zero-request tests | EC D1 |
 | T4-27 | A sensitive pre-image path that only the repair delta names (a rename out of `secrets/`, a copy, a deletion) leaves in a re-review packet | Egress classifies both sides of every entry of the cumulative diff and the repair delta; an unparseable delta stops as unscannable; zero-request tests for rename, copy, delete and delta-only files | EC D1 |
-| T4-28 | A blocking finding is hidden: by its position in the reviewer's list, by an ungrounded or lower-severity duplicate, by a resolution citing unchanged context, by a re-raise under a live waiver, or by a SARIF result simply no longer being reported | Ground before merge; identity keeps requirement ids and keys apart; conservative merge; permutation test; changed-line predicate for closure; reconciliation with prior dispositions; SARIF closure only by a proven scanner recheck or a human, and a DB constraint against reviewer verification of non-model findings | EC E4, E6 |
-| T4-29 | The corpus publication gate fails open: a scanner that crashes, cannot start or errors without naming an excerpt lets unscanned excerpts into the committed corpus | Documented exit codes per gate; anything else, or a findings code without a named excerpt, aborts collection before anything is written | EC I13 |
+| T4-28 | A blocking finding is hidden: by its position in the reviewer's list, by an ungrounded or lower-severity duplicate, by a resolution citing unchanged context, by a re-raise under a live waiver, by a lower-severity re-raise of an open prior, by two identities made equal through a separator inside a field, or by a SARIF result simply no longer being reported (a disabled rule, a failed rule or an unscanned file reports nothing) | Ground before merge; identity keeps requirement ids and keys apart; every identity is a canonical JSON tuple with collision fixtures; conservative merge; permutation test; changed-line predicate for closure; reconciliation with prior dispositions, and a re-raise never downgrades (the pair blocks at the highest severity); SARIF closure only by a recheck that proves effective execution and coverage, or a human, and a DB constraint against reviewer verification of non-model findings | EC E4, E6 |
+| T4-29 | The corpus publication gate fails open: a scanner that crashes, cannot start or errors without naming an excerpt lets unscanned excerpts into the committed corpus; or the collector's copy of the path-leak patterns drifts from the gate's | Documented exit codes per gate; anything else, or a findings code without a named excerpt, aborts collection before anything is written; one pattern file, `scripts/lib/publication-leak-patterns.txt`, read by both, with an executable parity test that catches an appended pattern; the collector never replaces the full publication gate, which still runs before any public push | EC I13 |
+| T4-30 | A zombie caller whose lease was taken over or ended drops its fence and records a terminal with `fence: null`, or a pre-lease terminal and a lease acquisition race so both succeed | `fence: null` only for an attempt whose durable history shows no lease (R28 obligations 3, 7); the terminal write and lease acquisition take the same attempt-row lock and each refuses after the other (obligations 2, 5); conformance RLC-16 (race) and RLC-17 (refusal after a lease) | EC E12, H4 |
 
 ## 4. Non-issues (documented, not fixed in Phase 4)
 

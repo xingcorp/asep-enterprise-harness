@@ -1,8 +1,8 @@
-# Phase 4 — Risk Register (LOCKED v4, pending controller confirmation)
+# Phase 4 — Risk Register (LOCKED v5, pending controller confirmation)
 
 > Delivery, design and measurement risks for independent assurance. Base `00a6889`; v1 reviewed at `a2a7b8a`; v2
 > lock-checked at `3201335` (v3 adds PR4-32…PR4-36 and amends PR4-07, PR4-28); v3 reviewed at `9e3a1c3` (v4 adds
-> PR4-37 and PR4-38).
+> PR4-37 and PR4-38); v4 re-checked at `7cc20f4` (v5 resolves PR4-37 under R28 and adds PR4-39 and PR4-40).
 > Severity = impact × likelihood. v2 adds the risks surfaced by the Codex plan review and the reconciliation, and
 > retires the promotion risks with the deferral of promotion.
 
@@ -44,7 +44,9 @@
 | PR4-34 | **A step reads content through a foreign or superseded workspace** (wrong tenant, taken-over lease, stale epoch) | MED | `AssuranceWorkspaceResolver` in the S0 block checks tenant, `ACTIVE`, holder and epoch; every refusal stops the step before any read; no workspace from activity-local memory; resolver kit on both lanes | Exit E13 |
 | PR4-35 | **Snapshot versions grow without bound** under frequent recompute | LOW | An unchanged recompute writes nothing (the version trigger rejects a repeat); versions are added only when a value changes | Version count per key in the evaluator log |
 | PR4-36 | **Integration lines landed early** (policy/domain exports, `readPolicyFile`, nine suite ids) conflict at merge | LOW | Append-only lines in files the reconciliation unions at merge (R10); recorded in the review log | Merge conflict on those lines |
-| PR4-37 | **An attempt that ends before it holds a workspace lease has no fence** to present, so `recordAttemptOutcome` (fenced since v4, R23) cannot record its terminal and telemetry completeness shows a gap | MED | The block states that such an attempt is not recorded here; Lane A audits it through its own path; exit J6 exposes any gap; raised with the controller for the focused check before hand-off | J6 gap, or Lane A reports an attempt terminal without a lease |
+| PR4-37 | **An attempt that ends before it holds a workspace lease has no fence** to present, so `recordAttemptOutcome` (fenced since v4, R23) cannot record its terminal and telemetry completeness shows a gap | MED → resolved (R28) | v5: every terminal is recorded. A never-leased attempt is recorded with `fence: null` and a terminal in `PRE_LEASE_ATTEMPT_TERMINALS` (`cancelled`, `infrastructure-failed`) under the eight obligations on `PreLeaseAttemptOutcomeInput`; RLC-16 and RLC-17 prove them on every implementation; SR-A11 and SR-A12 bind the composition | J6 gap, or Lane A reports a never-leased terminal outside the allowlist (SR-A12) |
+| PR4-39 | **The null-fence path becomes a fencing bypass**: a superseded caller drops its fence and presents `fence: null` to record a terminal after a takeover | HIGH | Obligations 3 and 7: the write reads the attempt's durable lease history under the attempt-row lock and refuses `fence: null` once any lease ever existed, whatever the current lease state; obligation 5 refuses lease acquisition after a terminal under the same lock; RLC-16 (race over 20 fresh subjects) and RLC-17 (after `rotateFence`, after `endLease`) | RLC-16 or RLC-17 fails on any implementation; an attempt with both a lease and a pre-lease terminal in its history |
+| PR4-40 | **Integer micro-USD at the seam breaks a consumer that read floating USD** (R28) | LOW | Conversion once, in the adapter, with ceiling; the envelope rejects a fractional, negative or unsafe `*MicroUsd` value; the existing run-event v1 USD fields are derived by exact division (data model, money in events) | A `*MicroUsd` envelope rejection in a live run; a USD event value that does not read back to its micro-USD source |
 | PR4-38 | **Stricter path, budget and false-green rules raise more shadow would-blocks** (non-normalizable paths block; packet bytes now count the objective and every packet field; executed-zero runs flag whatever the exit code) | LOW | Shadow mode changes no workflow decision except the push guard; the would-block rate is a dashboard metric; a path block is a real fail-closed stop | Shadow would-block rate jumps after the v4 code lands |
 
 Retired from v1: promotion forgery/expiry risks (promotion deferred, DF-2); per-major compat-gate gap (D-1 = b,

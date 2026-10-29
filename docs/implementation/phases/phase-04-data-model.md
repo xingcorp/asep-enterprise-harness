@@ -1,8 +1,11 @@
-# Phase 4 — Data Model (LOCKED v4, pending controller confirmation)
+# Phase 4 — Data Model (LOCKED v5, pending controller confirmation)
 
 > Companion to `phase-04-plan.md`. PostgreSQL 17 (digest-pinned in `compose.yaml`). Base `00a6889`; v1 reviewed at
 > `a2a7b8a`; v2 lock-checked at `3201335`; v3 reviewed at `9e3a1c3` (v4: §2.1 identity, §2.3 budget, §2.4 closure
-> rules, §2.8 scanner runs, `review_findings` identity, disposition actor rules, §7.1 vocabulary). Conventions inherited from `phase-02-data-model.md` §1: ULID `char(26)` ids, `timestamptz` UTC,
+> rules, §2.8 scanner runs, `review_findings` identity, disposition actor rules, §7.1 vocabulary); v4 re-checked at
+`7cc20f4` (v5: §2.1 identity encoding, §2.3 budget outside the hashed packet, §2.4 adjudication id, §2.8 effective
+scanner runs, `review_rounds.packet_included_bytes`, `prompt-over-budget` and integer micro-USD cost in
+`review_records`, money in events). Conventions inherited from `phase-02-data-model.md` §1: ULID `char(26)` ids, `timestamptz` UTC,
 > optimistic `version` columns on mutable aggregates, `TenantScope` first on every repository method, composite
 > foreign keys onto `(id, organization_id, project_id)`, append-only checksummed migrations
 > (`adapters/persistence/src/migrator.ts`: strictly ascending ids, checksum per applied id). v2 writes the full DDL
@@ -44,7 +47,11 @@ Lane B adds five schema files; the compat-gate count and `COMPATIBILITY.md` are 
 
 Identity within a round (plan §12): `(raisedBy, fingerprint, requirementId, finding key)`; findings are never merged
 across requirement ids or keys, and a merge keeps grounded and the highest severity. Identity across rounds, for
-reconciliation with prior findings: `(raisedBy, fingerprint, requirementId)`.
+reconciliation with prior findings: `(raisedBy, fingerprint, requirementId)`. Every such tuple, and the fingerprint
+itself (`[category, file|null, lineBucket|null, ruleId|null]`), is encoded as a canonical JSON array before it is
+hashed or compared, never as a joined string, so `null` and `""` differ and a separator inside a field cannot make
+two tuples equal (R28). A re-raise linked to a prior it does not shield blocks at the highest severity of the pair
+(plan §12).
 
 ### 2.2 `review-record/v1`
 
@@ -68,7 +75,7 @@ outputTokens, reasoningTokens, wallClockMs, transportAttempts}`), `providerCalls
 | `change` | `{taskBaseSha, resultSha, repairBaseSha|null, cumulativeDiff: ArtifactRef, repairDelta: ArtifactRef|null, files: [{path, status, binary, postImage: ArtifactRef|null, lineCount, omittedReason|null}]}`; `omittedReason` ∈ `binary, too-large, deleted, submodule, non-utf8, unsafe-path` (`unsafe-path`: a path that is not normalizable, kept so the push guard blocks on it, never read) |
 | `execution` | `{verdict: PASS|FAIL|ERROR|NOT_RECORDED, environment: {imageDigest, lockfileHash, nodeVersion|null}|null, checks: [{id, category, command, exitCode, durationMs, stdout: {artifactId, sha256, bytes, excerptTail}|null, stderr: (same)|null, testSummary: {runner, tests, pass, fail, skipped, todo}|null}]}`; `NOT_RECORDED` (with `environment: null`, `checks: []`) is used only by corpus packets (plan §7.8), never at runtime |
 | `priorFindings` | `review-finding/v1[]` (re-review only, adjudicated, with ids and lifecycle state) |
-| `budget` | `{maxBytes, includedBytes, overBudget, omissions: [{path, reason}]}`; `includedBytes` = UTF-8 length of the canonical packet with `includedBytes = 0` and `overBudget = false`, plus the bytes of the cumulative diff, the repair delta and every post-image the prompt embeds; `overBudget` = `includedBytes > maxBytes` or a diff over its reader limit; the rendered prompt is measured separately against `maxBytes` (plan §8); the slot step returns only the omission count (`omittedFiles`), the list stays here |
+| `budget` | `{maxBytes, overBudget, omissions: [{path, reason}]}`. The packet does not carry its own measured size (R28): `includedBytes` = UTF-8 length of the final canonical packet bytes plus the bytes of the cumulative diff, the repair delta and every post-image the prompt embeds, recorded alongside (`BuildReviewPacketOutput.includedBytes`, `review_rounds.packet_included_bytes`); `overBudget` = `includedBytes > maxBytes` or a diff over its reader limit, so an accepted packet carries `false` and is measured with it; the rendered prompt is measured separately against `maxBytes` (plan §8); the slot step returns only the omission count (`omittedFiles`), the list stays here |
 
 No field exists for coder self-report, ContextPack, events, commit messages or other reviewers' output.
 
@@ -83,7 +90,8 @@ raisedBy, claims: [{by, status}], effectiveState, rule: deterministic-recheck|sc
 `regression` names a prior that a finding of this round re-raised after it was verified or closed, `scanner-recheck` a SARIF
 finding the harness verified with the proof of plan §13),
 `policyVersion`, `inputs` (`{packetSha256, checkReportSha256, reviewRecordSha256s[]}`), `fence` (`{leaseId,
-fencingEpoch}`). No timestamp field: the decision time lives in the `adjudications.decided_at` column only (plan §11).
+fencingEpoch}`). `adjudicationId` = sha256 of the canonical JSON array `[roundKey, policyVersion, packetSha256,
+checkReportSha256, sorted reviewRecordSha256s]` (R28). No timestamp field: the decision time lives in the `adjudications.decided_at` column only (plan §11).
 
 ### 2.5 `repair-order/v1`
 
@@ -106,8 +114,10 @@ Plan §18.4 lists the one new `eventType` (`review.finding_dispositioned`) and t
 `check-report` (canonical JSON, `check-report/v1`, built and parsed by `packages/application/src/assurance/check-report.ts`,
 S6): the packet sha256, push-guard decision, egress decision with its hits (`{kind, part, detail}`, where `detail` is
 a path, a pattern label or a fixed reason — never the matched text), every deterministic and SARIF finding, the
-scanner runs the SARIF logs describe (`[{checkId, tool, toolVersion|null, rules[], executionSuccessful}]`, the evidence a
-scanner recheck needs, plan §13), and the sha256 and size of each SARIF log the checks read (the raw outputs themselves are artifacts the check step stores,
+scanner runs the SARIF logs describe (`[{checkId, tool, toolVersion|null, executionSuccessful, effectiveRules[],
+scannedFiles[]}]`, the evidence a scanner recheck needs, plan §13: `effectiveRules` are the declared rules the run's
+effective configuration enabled and no notification reported on, `scannedFiles` the normalized repository paths of
+the run's analysis-target artifacts; every run names a SARIF log the report lists), and the sha256 and size of each SARIF log the checks read (the raw outputs themselves are artifacts the check step stores,
 S12). There is no timestamp in it. There is no JSON Schema file: the harness writes it and re-reads it by content
 address, and a strict structural parser guards every read (v3; replaces the v2 schema file, which would have needed
 a new `ajv` dependency in `@asep/application`). Unknown or missing keys, wrong types, a sha256 mismatch, an egress
@@ -149,6 +159,7 @@ create table review_rounds (
   policy_version           text        not null,
   packet_artifact_id       char(26),
   packet_sha256            text,
+  packet_included_bytes    integer,
   over_budget              boolean     not null default false,
   check_report_artifact_id char(26),
   push_guard               text,
@@ -166,6 +177,9 @@ create table review_rounds (
   constraint review_rounds_egress_ck      check (egress_decision is null or egress_decision in
                                             ('CLEAR','STOP_SECRET','STOP_CLASSIFIED','STOP_UNSCANNABLE')),
   constraint review_rounds_packet_sha_ck  check (packet_sha256 is null or packet_sha256 ~ '^[0-9a-f]{64}$'),
+  -- the packet's measured size lives beside it, never inside the hashed packet
+  constraint review_rounds_packet_size_ck check ((packet_sha256 is null) = (packet_included_bytes is null)
+                                            and (packet_included_bytes is null or packet_included_bytes >= 0)),
   constraint review_rounds_first_ck       check ((round = 1) = (prior_round_id is null)),
   constraint review_rounds_kind_round_ck  check ((review_kind = 'fresh') = (round = 1)),
   constraint review_rounds_adjudicated_ck check ((state = 'OPEN') = (adjudicated_at is null)),
@@ -201,7 +215,8 @@ begin
       old.opened_at) then
     raise exception 'review round % identity is immutable', old.id using errcode = '55000';
   end if;
-  if old.packet_sha256 is not null and new.packet_sha256 is distinct from old.packet_sha256 then
+  if old.packet_sha256 is not null and (new.packet_sha256, new.packet_included_bytes, new.over_budget)
+                                         is distinct from (old.packet_sha256, old.packet_included_bytes, old.over_budget) then
     raise exception 'review round % packet is immutable once set', old.id using errcode = '55000';
   end if;
   if old.state = 'SUPERSEDED'
@@ -247,7 +262,7 @@ create table review_records (
   transport_attempts       integer,
   provider_calls           integer     not null,
   call_generation          integer     not null default 1,
-  cost_usd                 numeric(12,6),
+  cost_micro_usd           bigint,
   price_source             text,
   claim_semantic_key       text        not null,   -- the Phase 2 fenced claim that authorized the call
   fence_lease_id           text        not null,
@@ -262,7 +277,7 @@ create table review_records (
                                             ('served-model-drift','refused','incomplete','malformed','rate-limited',
                                              'provider-error','auth-error','context-overflow','budget-exhausted',
                                              'cancelled','egress-secret','egress-classified','egress-unscannable',
-                                             'egress-request-rescan','push-guard')),
+                                             'egress-request-rescan','push-guard','prompt-over-budget')),
   constraint review_records_failure_state_ck check ((terminal_state = 'COMPLETED') = (failure_reason is null)),
   constraint review_records_observation_ck check (observation_status is null or observation_status in
                                             ('COMPLETED','REFUSED','INCOMPLETE','MALFORMED','RATE_LIMITED',
@@ -272,14 +287,16 @@ create table review_records (
   constraint review_records_verdict_ck    check (verdict is null or verdict in ('APPROVE','REQUEST_CHANGES','ESCALATE')),
   constraint review_records_completed_ck  check (terminal_state <> 'COMPLETED'
                                             or (raw_response_artifact_id is not null and validity is not null
-                                                and provider_calls >= 1)),
+                                                and record_artifact_id is not null and provider_calls >= 1)),
   constraint review_records_valid_ck      check (validity is distinct from 'VALID'
                                             or (record_artifact_id is not null and verdict is not null)),
   constraint review_records_no_request_ck check (terminal_state not in ('EGRESS_STOPPED','SKIPPED_PUSH_GUARD')
                                             or (provider_calls = 0 and raw_request_artifact_id is null
                                                 and raw_response_artifact_id is null)),
   constraint review_records_counts_ck     check (provider_calls >= 0 and call_generation >= 1 and fence_lease_epoch >= 1),
-  constraint review_records_cost_ck       check ((cost_usd is null) = (price_source is null)),
+  -- money is integer micro-USD, as at the slot seam (R28)
+  constraint review_records_cost_ck       check ((cost_micro_usd is null) = (price_source is null)
+                                            and (cost_micro_usd is null or cost_micro_usd >= 0)),
   constraint review_records_gateway_ck    check (gateway_alteration is null or gateway_alteration in
                                             ('altered','unaltered','unknown')),
   constraint review_records_gateway_presence_ck check ((provider_calls = 0) = (gateway_alteration is null)),
@@ -668,6 +685,14 @@ with LF, U+2028, U+0085, a backslash or a leading `"` is rejected and `src/café
 `RESOLUTION_VERIFIED` is accepted only as `harness-rule:scanner-recheck` on a `sarif:` finding or
 `harness-rule:deterministic-recheck` on a `deterministic:` finding; a reviewer's `RESOLUTION_VERIFIED` on a `sarif:` or
 `deterministic:` finding is rejected and on another raiser's model finding accepted.
+For v5 the blocks were extracted and applied again in the same way (fresh scratch directory outside the repository,
+PGlite `0.5.4`, the twelve Phase 2 migrations first; all applied, and the §3.6 rollback applied), and the v4 probe was
+re-run with these additions, all as expected (29 of 29): a round with a packet digest but no
+`packet_included_bytes`, with a size but no packet, or with a negative size is rejected by
+`review_rounds_packet_size_ck`, and a round with both or neither is accepted; a `FAILED` record with reason
+`prompt-over-budget` and no request is accepted and an unknown reason rejected; a `COMPLETED` record without a review
+record artifact is rejected by `review_records_completed_ck`; an integer `cost_micro_usd` with a price source is
+accepted, and a negative one or one without a price source rejected by `review_records_cost_ck`.
 
 ### 3.6 Rollback (forward compensating migrations; applied only by operator decision, never by editing `02xx`)
 
@@ -778,6 +803,12 @@ mapping exists), `cost_per_accepted_task`, `workflow_recovery_rate`, `repair_cyc
 | `review.completed` | `adjudicateRound`, one per review source (each model reviewer record + one `deterministic`) | `reviewerConfigId`, `reviewerRole`, `reviewRound`, `reviewMode`, `reviewFindingsTotal`, `reviewFindingsUngrounded`, `reviewFindingsBlocking`, `reviewerFailed`, `egressStopped`, `reviewCostUsd`/`reviewCostPriced`, tokens, `durationMs` |
 | `review.finding_dispositioned` | disposition use case (human) | `findingId`, `findingValid`, `findingDisposition`, `dispositionActorKind=human`, `findingSource`, `findingSeverity`, `reviewerConfigId` (raiser), `reviewRound`, `reviewRoundCompletedAt` (cohort key), `dispositionLatencyMs` |
 | `repair.started` | `adjudicateRound` on REPAIR (drill only) | `reviewRound` = next round |
+
+**Money in events (R28).** The slot carries money only as integer micro-USD. The existing `run-event` v1 fields
+`modelCostUsd`, `computeCostUsd` and `reviewCostUsd` are written from those integers once, as `microUsd / 1 000 000`
+(the JSON number then reads back as the same decimal for every amount below 10^15 micro-USD, a billion USD, which is
+above R24's `MAX_USD`, because a double round-trips 15 significant digits), for telemetry and display only; nothing reads them back
+into budget arithmetic, and `mean_review_cost_usd` is a reporting value. No event field is added for this.
 
 Event ids are input-derived (architecture §7), so a retried emission is a no-op through `RunEventSink`.
 

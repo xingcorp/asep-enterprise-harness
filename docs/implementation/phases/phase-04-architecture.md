@@ -1,6 +1,6 @@
-# Phase 4 — Architecture (LOCKED v4, pending controller confirmation)
+# Phase 4 — Architecture (LOCKED v5, pending controller confirmation)
 
-> Companion to `phase-04-plan.md`. Base `00a6889`; v1 reviewed at `a2a7b8a`; v2 lock-checked at `3201335`; v3 reviewed at `9e3a1c3` (v4: budget and unsafe paths §8, egress paths §9, finding identity, changed-line predicate and scanner recheck §11). Thesis unchanged from the ADRs: an
+> Companion to `phase-04-plan.md`. Base `00a6889`; v1 reviewed at `a2a7b8a`; v2 lock-checked at `3201335`; v3 reviewed at `9e3a1c3` (v4: budget and unsafe paths §8, egress paths §9, finding identity, changed-line predicate and scanner recheck §11); v4 re-checked at `7cc20f4` (v5: final-byte budget §8, identity encoding, no-downgrade reconciliation and effective scanner recheck §11). Thesis unchanged from the ADRs: an
 > agent cannot approve its own work (README thesis 3), every framework sits behind a port (ADR 0005),
 > deterministic evidence is stronger than model review (ADR 0010), raw evidence is captured before any reduction
 > (ADR 0009), humans own high-risk decisions (ADR 0014). v2 changes are driven by the Codex plan review and the
@@ -302,10 +302,13 @@ loader, which rejects `gating` (exit K3). The drill factory `createAssuranceDril
 | prior adjudicated findings with ids and lifecycle state (re-review) | `FindingStore` |
 | byte budget, included bytes, omissions with reason | builder |
 
-**Byte budget** (plan §8, R23). `budget.includedBytes` is the UTF-8 length of the canonical packet measured with
-`budget.includedBytes = 0` and `budget.overBudget = false`, plus the bytes of every content part the prompt embeds
-(cumulative diff, repair delta, post-images); `overBudget` is `includedBytes > maxBytes` or a diff over its reader
-limit, and the renderer refuses such a packet. The renderer then measures the canonical prompt bytes against the same
+**Byte budget** (plan §8, R23, R28). `includedBytes` is the UTF-8 length of the **final** canonical packet bytes plus
+the bytes of every content part the prompt embeds (cumulative diff, repair delta, post-images). It is recorded
+alongside the packet (the builder's result, the slot output, `review_rounds.packet_included_bytes`) and never inside the
+hashed packet, which carries only `budget.maxBytes`, `budget.overBudget` and the omissions; `overBudget` is
+`includedBytes > maxBytes` or a diff over its reader limit, and the renderer refuses such a packet. Invariant, checked
+by an independent oracle at the cap and at cap + 1: an accepted packet's final canonical bytes plus its embedded parts
+are at most `maxBytes`. The renderer then measures the canonical prompt bytes against the same
 `maxBytes` and refuses a larger prompt with `PromptOverBudgetError` (recorded `FAILED`, reason `prompt-over-budget`,
 rule A3). Nothing is truncated.
 
@@ -403,7 +406,10 @@ deleted lines) except for `SPEC`/`EVIDENCE_INTEGRITY`, which may cite a packet `
 non-empty `evidence`/`requiredFix` above minimum lengths. Failure → `grounded: false`, disposition
 `REJECTED_WITH_EVIDENCE` by `harness-rule:citation-unresolvable` (excluded from yield metrics). Every finding is
 grounded before any merge; identity and the conservative merge are plan §12, and reconciliation with prior findings
-(waived, refuted, regression) runs before blocking is computed.
+(waived, refuted, regression) runs before blocking is computed. A current finding linked to a prior it does not
+shield takes the highest severity of the pair, and a prior that is still blocking keeps its authority until an
+authorized closure: a re-raise never downgrades (R28). Every identity, fingerprint and dedupe key is hashed or compared
+as a canonical JSON array, never a joined string (R28).
 
 Waiver expiry is evaluated at the round's opening time, never at the adjudicating execution's `now()` (plan §11).
 
@@ -432,11 +438,23 @@ changedLine(c, F) = E exists ∧ ( c.resolutionLine ∈ E.added.lines           
 
 Context lines of a hunk, even next to an edit, are in neither set and never close a finding.
 
-**Scanner recheck** for a SARIF prior `F` (raised by `sarif:<tool>`, rule `r`, fingerprint `fp`, scanner version `v`
-recorded with `F`): this round's check report has a scanner run with the same tool and version `v` that declares `r`
-among its rules and whose every invocation reports `executionSuccessful: true`, and no SARIF finding of that tool
-has fingerprint `fp`. Then the harness records `RESOLUTION_VERIFIED` by `harness-rule:scanner-recheck`; otherwise
-only a named human closes `F`. Model output never closes a deterministic or SARIF finding.
+**Scanner recheck** for a SARIF prior `F` (raised by `sarif:<tool>`, rule `r`, fingerprint `fp`, file `f`, scanner
+version `v` recorded with `F`), identical to plan §13 (R23, R28):
+
+```text
+scannerRecheck(F) = runs(tool) ≠ ∅ ∧ ∀ run ∈ runs(tool): run.executionSuccessful
+                  ∧ ∃ run ∈ runs(tool): run.toolVersion = v ∧ r ∈ run.effectiveRules ∧ f ∈ run.scannedFiles
+                  ∧ no SARIF finding of the tool this round has fingerprint fp
+effectiveRules    = declared rules whose defaultConfiguration.enabled ≠ false, that no invocation's
+                    ruleConfigurationOverrides disables, and that no execution or configuration notification is
+                    associated with; empty when an error notification names no rule or a reference points into
+                    another tool component
+scannedFiles      = normalized paths of run.artifacts whose roles, when present, include analysisTarget
+```
+
+A declared rule is not proof that it ran. Then the harness records `RESOLUTION_VERIFIED` by
+`harness-rule:scanner-recheck`; otherwise only a named human closes `F`. Model output never closes a deterministic or
+SARIF finding.
 
 ## 12. Measurement architecture (reviewer benchmark)
 
