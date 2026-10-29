@@ -134,9 +134,13 @@ function buildFiles(change: PacketSources['change']): PacketFile[] {
   }
   const seen = new Set<string>();
   const files = [...change.cumulativeDiff.changedFiles].sort(byPath).map((file): PacketFile => {
-    if (!isNormalizedRepoPath(file.path)) fail(`changed path ${JSON.stringify(file.path)} is not a normalized repo path`);
     if (seen.has(file.path)) fail(`duplicate changed path ${file.path}`);
     seen.add(file.path);
+    // A path that is not normalizable is kept, so the push guard can block the round on
+    // it, but its content is never taken, whatever the reader returned for it.
+    if (!isNormalizedRepoPath(file.path)) {
+      return { path: file.path, status: file.status, binary: file.binary, postImage: null, lineCount: 0, omittedReason: 'unsafe-path' };
+    }
     const blob = blobs.get(file.path);
     if (blob === undefined) fail(`no post-image result for changed file ${file.path}`);
     if ((blob.blob === null) === (blob.omittedReason === null)) {

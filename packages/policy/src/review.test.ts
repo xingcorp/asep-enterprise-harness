@@ -11,6 +11,7 @@ import {
   ReviewPolicyError,
   independentReviewRequirement,
   isEgressEnabled,
+  isNormalizedRepoPath,
   isSensitivePath,
   loadReviewPolicy,
   matchesPathGlob,
@@ -277,6 +278,45 @@ test('egress classification is policy data and fails closed', () => {
   assert.equal(matchesPathGlob('src/**', 'SRC/a.ts'), true);
   assert.equal(matchesPathGlob('src/**', 'SRC/a.ts', { caseSensitive: true }), false);
   assert.equal(matchesPathGlob('src/**', 'src/a.ts', { caseSensitive: true }), true);
+});
+
+test('control and line-separator paths are not normalizable and globs match every code point', () => {
+  const policy = loadReviewPolicy();
+  // Every C0 control, DEL, every C1 control, the two Unicode line separators, and a path
+  // still in Git's C-quoted form. Built from code points so the list is independent of
+  // how the implementation spells its character class.
+  const controls = [
+    ...Array.from({ length: 0x20 }, (_, i) => i),
+    0x7f,
+    ...Array.from({ length: 0x20 }, (_, i) => 0x80 + i),
+    0x2028,
+    0x2029,
+  ];
+  assert.equal(controls.length, 67);
+  for (const point of controls) {
+    const path = `src/line${String.fromCodePoint(point)}break/customer.txt`;
+    const label = `U+${point.toString(16).toUpperCase().padStart(4, '0')}`;
+    assert.equal(isNormalizedRepoPath(path), false, label);
+    assert.equal(isSensitivePath(policy, path), true, label);
+  }
+  for (const quoted of ['"src/caf\\303\\251.ts"', '"src/a b.ts"', '"README']) {
+    assert.equal(isNormalizedRepoPath(quoted), false, quoted);
+    assert.equal(isSensitivePath(policy, quoted), true, quoted);
+  }
+  // Ordinary non-ASCII, spaces and astral characters stay normal paths.
+  for (const ordinary of ['src/café.ts', 'src/a b.ts', 'src/🙂.ts', 'docs/a"b.md']) {
+    assert.equal(isNormalizedRepoPath(ordinary), true, ordinary);
+  }
+
+  // The review's probe: a line feed inside a directory name must not escape `**/secrets/**`.
+  assert.equal(matchesPathGlob('**/secrets/**', 'src/line\nbreak/secrets/customer.txt'), true);
+  for (const separator of ['\n', '\r', '\u2028', '\u2029']) {
+    assert.equal(matchesPathGlob('**', `a${separator}b`), true, JSON.stringify(separator));
+    assert.equal(matchesPathGlob('src/*.ts', `src/a${separator}b.ts`), true, JSON.stringify(separator));
+  }
+  // `?` is one code point, so an astral character is one `?`, not two.
+  assert.equal(matchesPathGlob('src/?.ts', 'src/🙂.ts'), true);
+  assert.equal(matchesPathGlob('src/??.ts', 'src/🙂.ts'), false);
 });
 
 test('malformed review policy fails closed', () => {

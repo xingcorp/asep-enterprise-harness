@@ -6,7 +6,7 @@ import { renderReviewPrompt } from './prompt.js';
 import { runDeterministicCheckRules } from './checks.js';
 import { EgressClearanceError, decideEgress, rescanRequestBytes, sendIfCleared } from './egress.js';
 import { sha256Hex } from './canonical-json.js';
-import { fixtureWorld, utf8, worldFromDiff, type FixtureWorld } from './test-support.js';
+import { fixtureWorld, gitDiff, utf8, worldFromDiff, type FixtureWorld } from './test-support.js';
 
 console.log('SUITE-ID: asep-suite:assurance-egress');
 
@@ -133,6 +133,77 @@ test('no reviewer request leaves the harness unless egress is clear', async () =
     ),
     { sent: true, result: { status: 'COMPLETED' } },
   );
+  assert.equal(provider.calls, 1);
+});
+
+/** Send through the choke point with the round's own clearance, and also with the push guard ignored. */
+async function sendsUnder(checks: ReturnType<typeof prepare>['checks'], built: ReturnType<typeof prepare>['built'], requestBytes: Uint8Array) {
+  const provider = fakeProvider();
+  const egress = { decision: checks.egress.decision, packetSha256: checks.egress.packetSha256 };
+  const outcomes = [];
+  for (const pushGuard of [checks.pushGuard, { decision: 'PASS' } as const]) {
+    outcomes.push(await sendIfCleared({ pushGuard, egress }, { packetSha256: built.sha256, requestBytes }, provider.send));
+  }
+  return { outcomes, calls: provider.calls };
+}
+
+test('a path that is not normalizable is refused before the gateway', async () => {
+  // Line breaks, other control characters and a path still in Git's quoted form. The diff
+  // quotes each path the way git does, so the parser sees the real name.
+  const unsafe = [
+    'src/line\nbreak/secrets/customer.txt',
+    'src/line\nbreak/customer.txt',
+    'src/carriage\rreturn.ts',
+    'src/line\u2028separator.ts',
+    'src/paragraph\u2029separator.ts',
+    'src/tab\tname.ts',
+    'src/delete\u007fname.ts',
+    'src/next\u0085line.ts',
+    '"src/caf\\303\\251.ts"',
+  ];
+  const content = ['export const customer = "first record";'];
+  for (const path of unsafe) {
+    const label = JSON.stringify(path);
+    const { built, checks, requestBytes } = prepare(worldFromDiff([{ path, status: 'A', added: content }], { allowedPaths: ['**'] }));
+    // The packet keeps the path so the guard can block on it, and never takes its content.
+    const file = built.packet.change.files.find((f) => f.path === path);
+    assert.deepEqual([file?.postImage, file?.omittedReason], [null, 'unsafe-path'], label);
+    assert.deepEqual(checks.pushGuard, { decision: 'BLOCK', reason: 'forbidden-path' }, label);
+    assert.equal(checks.egress.decision, 'STOP_CLASSIFIED', label);
+    assert.ok(checks.egress.hits.some((h) => h.kind === 'deny-path' && h.detail === path), label);
+    // A finding never records such a path as its file.
+    for (const finding of checks.findings) assert.notEqual(finding.file, path, label);
+    const sent = await sendsUnder(checks, built, requestBytes);
+    assert.deepEqual(sent.outcomes.map((o) => o.sent), [false, false], label);
+    assert.equal(sent.calls, 0, label);
+  }
+
+  // The same name only as a rename's source, and only in a repair delta, blocks the same way.
+  const renamed = prepare(
+    worldFromDiff([{ path: 'src/plain.ts', oldPath: 'src/line\nbreak.ts', status: 'R', context: ['export const a = 1;'] }], {
+      allowedPaths: ['**'],
+    }),
+  );
+  assert.deepEqual(renamed.checks.pushGuard, { decision: 'BLOCK', reason: 'forbidden-path' });
+  assert.equal(renamed.checks.egress.decision, 'STOP_CLASSIFIED');
+  assert.equal((await sendsUnder(renamed.checks, renamed.built, renamed.requestBytes)).calls, 0);
+  const delta = gitDiff([{ path: 'src/plain.ts', oldPath: 'src/line\u2028break.ts', status: 'R', context: ['export const a = 1;'] }]);
+  const inDelta = prepare(
+    worldFromDiff([{ path: 'src/plain.ts', status: 'A', added: ['export const a = 1;'] }], { allowedPaths: ['**'], round: 2, repairDelta: delta }),
+  );
+  assert.deepEqual(inDelta.checks.pushGuard, { decision: 'BLOCK', reason: 'forbidden-path' });
+
+  // Positive control: the same change at a plain path is clear and sends exactly once.
+  const plain = prepare(worldFromDiff([{ path: 'src/line/customer.txt', status: 'A', added: content }], { allowedPaths: ['**'] }));
+  assert.deepEqual(plain.checks.pushGuard, { decision: 'PASS' });
+  assert.equal(plain.checks.egress.decision, 'CLEAR');
+  const provider = fakeProvider();
+  const outcome = await sendIfCleared(
+    { pushGuard: plain.checks.pushGuard, egress: plain.checks.egress },
+    { packetSha256: plain.built.sha256, requestBytes: plain.requestBytes },
+    provider.send,
+  );
+  assert.equal(outcome.sent, true);
   assert.equal(provider.calls, 1);
 });
 

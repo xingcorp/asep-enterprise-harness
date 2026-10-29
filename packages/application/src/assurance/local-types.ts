@@ -8,7 +8,8 @@ import type { FindingLifecycleState, FindingSeverity, FindingSource } from '@ase
 // --- review-loop slot contract (packages/application/src/review-loop/slot.ts) ----------
 
 export type ReviewKind = 'fresh' | 're-review';
-export type PacketOmissionReason = 'binary' | 'too-large' | 'deleted' | 'submodule' | 'non-utf8';
+/** `unsafe-path`: the path is not normalizable; it is never read, and the push guard blocks the round. */
+export type PacketOmissionReason = 'binary' | 'too-large' | 'deleted' | 'submodule' | 'non-utf8' | 'unsafe-path';
 export type BlockReason = 'secret-in-diff' | 'forbidden-path' | 'unscannable-sensitive-change';
 export type EgressDecision = 'CLEAR' | 'STOP_SECRET' | 'STOP_CLASSIFIED' | 'STOP_UNSCANNABLE';
 export type ReviewMode = 'not-required' | 'shadow' | 'gating';
@@ -35,7 +36,7 @@ export interface ShadowVerdict {
 // --- trusted review source port (@asep/ports: ReviewSourceReader) ----------------------
 
 export interface ChangedFile {
-  /** Repo-relative, normalized; never absolute, never '..'. */
+  /** As git reports it. A path that is not normalizable is never read (omission `unsafe-path`). */
   readonly path: string;
   readonly status: 'A' | 'M' | 'D' | 'R';
   readonly binary: boolean;

@@ -6,6 +6,7 @@
 // Pure: callers resolve artifacts and pass bytes in. A diff that cannot be read never
 // passes the push guard. Finding text never repeats a secret value.
 
+import type { ArtifactRef } from '@asep/contracts';
 import { isNormalizedRepoPath, isSensitivePath, matchesPathGlob, type ReviewPolicy } from '@asep/policy';
 import type { FindingSeverity } from '@asep/domain';
 import { sha256Hex } from './canonical-json.js';
@@ -14,6 +15,7 @@ import { decideEgress, type EgressResult } from './egress.js';
 import {
   CHECK_RULES,
   dedupeFindings,
+  displayPath,
   findingFingerprint,
   mergeRuleHits,
   ruleFinding,
@@ -100,14 +102,19 @@ function basename(path: string): string {
 /** The parsed cumulative diff, or null when it cannot be read, verified, decoded or parsed. */
 function readDiff(packet: ReviewPacket, contents: ReadonlyMap<string, Uint8Array>): DiffFileChange[] | null {
   const ref = packet.change.cumulativeDiff;
+  const files = parseArtifact(ref, contents);
+  if (files === null) return null;
+  const diffPaths = files.map((f) => f.path).sort();
+  const packetPaths = packet.change.files.map((f) => f.path).sort();
+  return diffPaths.join('\n') === packetPaths.join('\n') ? files : null;
+}
+
+/** A diff artifact parsed, or null when it is unavailable, off its digest, not UTF-8 or unparseable. */
+function parseArtifact(ref: ArtifactRef, contents: ReadonlyMap<string, Uint8Array>): DiffFileChange[] | null {
   const bytes = contents.get(ref.artifactId);
   if (bytes === undefined || sha256Hex(bytes) !== ref.sha256) return null;
   try {
-    const files = parseUnifiedDiff(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
-    const diffPaths = files.map((f) => f.path).sort();
-    const packetPaths = packet.change.files.map((f) => f.path).sort();
-    if (diffPaths.join('\n') !== packetPaths.join('\n')) return null;
-    return files;
+    return parseUnifiedDiff(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
   } catch {
     return null;
   }
@@ -117,9 +124,38 @@ function readDiff(packet: ReviewPacket, contents: ReadonlyMap<string, Uint8Array
 
 const UNSCANNABLE_OMISSIONS = new Set(['binary', 'too-large', 'non-utf8', 'submodule']);
 
-function pushGuardFindings(packet: ReviewPacket, diff: DiffFileChange[] | null, policy: ReviewPolicy): CheckFinding[] {
+/** Every path the packet and its diffs name, each side of each entry, sorted and distinct. */
+function namedPaths(packet: ReviewPacket, diffs: readonly (readonly DiffFileChange[] | null)[]): string[] {
+  const paths = new Set(packet.change.files.map((f) => f.path));
+  for (const diff of diffs) {
+    for (const file of diff ?? []) {
+      paths.add(file.path);
+      if (file.oldPath !== null) paths.add(file.oldPath);
+    }
+  }
+  return [...paths].sort();
+}
+
+function pushGuardFindings(
+  packet: ReviewPacket,
+  diff: DiffFileChange[] | null,
+  repairDelta: DiffFileChange[] | null,
+  policy: ReviewPolicy,
+): CheckFinding[] {
+  // A path that is not normalizable blocks wherever it appears: it can hide from the
+  // path globs below, so no glob is asked about it.
+  const unsafe = namedPaths(packet, [diff, repairDelta]).filter((path) => !isNormalizedRepoPath(path));
+  const unsafeFindings = unsafe.map((path) =>
+    ruleFinding(
+      'forbidden-path',
+      { file: null, lineStart: null, subject: `path:${JSON.stringify(path)}` },
+      `the changed path ${JSON.stringify(path)} is not a normalized repository path (a control or line-separator character, or an unresolved quoted form)`,
+      'Rename the file to a plain repository path',
+    ),
+  );
   if (diff === null) {
     return [
+      ...unsafeFindings,
       ruleFinding(
         'unscannable-sensitive-change',
         { file: null, lineStart: null, subject: 'diff' },
@@ -128,7 +164,7 @@ function pushGuardFindings(packet: ReviewPacket, diff: DiffFileChange[] | null, 
       ),
     ];
   }
-  const findings: CheckFinding[] = [];
+  const findings: CheckFinding[] = [...unsafeFindings];
 
   const secretHits: RuleHit[] = [];
   for (const file of diff) {
@@ -143,6 +179,7 @@ function pushGuardFindings(packet: ReviewPacket, diff: DiffFileChange[] | null, 
   const touched = new Set(packet.change.files.map((f) => f.path));
   for (const file of diff) if (file.oldPath !== null) touched.add(file.oldPath);
   for (const path of [...touched].sort()) {
+    if (!isNormalizedRepoPath(path)) continue;
     const forbiddenBy = forbiddenChanges.find((glob) => matchesPathGlob(glob, path));
     const allowed = allowedPaths.some((glob) => matchesPathGlob(glob, path, { caseSensitive: true }));
     if (forbiddenBy !== undefined || !allowed) {
@@ -165,7 +202,7 @@ function pushGuardFindings(packet: ReviewPacket, diff: DiffFileChange[] | null, 
         ruleFinding(
           'unscannable-sensitive-change',
           { file: file.path, lineStart: null },
-          `${file.path} changed at a sensitive path and its content cannot be scanned (${file.omittedReason})`,
+          `${displayPath(file.path)} changed at a sensitive path and its content cannot be scanned (${file.omittedReason})`,
           'Remove the file from the change or replace it with scannable content',
         ),
       );
@@ -265,7 +302,7 @@ function falseGreenFindings(
         ruleFinding(
           'test-file-deleted',
           { file: file.path, lineStart: null },
-          `test file ${file.path} is deleted by the change`,
+          `test file ${displayPath(file.path)} is deleted by the change`,
           'Keep the test or show which test now covers its behaviour',
         ),
       );
@@ -307,14 +344,14 @@ function dependencyFindings(packet: ReviewPacket): CheckFinding[] {
         ruleFinding(
           'dependency-manifest-changed',
           { file: file.path, lineStart: null },
-          `dependency manifest ${file.path} changed`,
+          `dependency manifest ${displayPath(file.path)} changed`,
           'Review the dependency change',
         ),
       );
     }
     if (LOCKFILES.has(name)) {
       findings.push(
-        ruleFinding('lockfile-changed', { file: file.path, lineStart: null }, `lockfile ${file.path} changed`, 'Review the resolved versions'),
+        ruleFinding('lockfile-changed', { file: file.path, lineStart: null }, `lockfile ${displayPath(file.path)} changed`, 'Review the resolved versions'),
       );
     }
   }
@@ -492,7 +529,8 @@ export function sarifFindings(input: SarifInput): CheckFinding[] {
 export function runDeterministicCheckRules(sources: DeterministicCheckSources): DeterministicCheckResult {
   const { packet } = sources.built;
   const diff = readDiff(packet, sources.contents);
-  const guard = pushGuardFindings(packet, diff, sources.policy);
+  const repairDelta = packet.change.repairDelta === null ? null : parseArtifact(packet.change.repairDelta, sources.contents);
+  const guard = pushGuardFindings(packet, diff, repairDelta, sources.policy);
   const findings = dedupeFindings([
     ...guard,
     ...falseGreenFindings(packet, sources.recordedVerdicts, diff),

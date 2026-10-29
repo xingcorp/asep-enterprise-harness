@@ -512,9 +512,19 @@ export function isEgressEnabled(policy: ReviewPolicy, projectId: string): boolea
   return policy.egress.enabledProjects.includes(projectId);
 }
 
-/** A repo-relative POSIX path with no empty, `.` or `..` segment, no backslash and no NUL. */
+// Characters no normalized path may contain: every C0 control, DEL, every C1 control and
+// the two Unicode line separators. A path holding one can split a line in a log, a prompt
+// or a diff header, and can slip past a glob that was written for ordinary paths.
+const UNSAFE_PATH_CHARACTER = /[\u0000-\u001F\u007F-\u009F\u2028\u2029]/u;
+
+/**
+ * A repo-relative POSIX path with no empty, `.` or `..` segment, no backslash, no control
+ * or line-separator character, and not starting with `"` (a path still in Git's C-quoted
+ * form). Anything else is not normalizable and is treated as sensitive everywhere.
+ */
 export function isNormalizedRepoPath(path: string): boolean {
-  if (path.length === 0 || path.startsWith('/') || path.includes('\\') || path.includes('\0')) return false;
+  if (path.length === 0 || path.startsWith('/') || path.startsWith('"') || path.includes('\\')) return false;
+  if (UNSAFE_PATH_CHARACTER.test(path)) return false;
   return path.split('/').every((segment) => segment !== '' && segment !== '.' && segment !== '..');
 }
 
@@ -535,7 +545,8 @@ function globToRegExp(glob: string, caseSensitive: boolean): RegExp {
       i += 1;
     }
   }
-  return new RegExp(`^${source}$`, caseSensitive ? '' : 'i');
+  // `s`: `**` spans line terminators too; `u`: `?` and `*` count code points, not UTF-16 units.
+  return new RegExp(`^${source}$`, caseSensitive ? 'su' : 'siu');
 }
 
 /**

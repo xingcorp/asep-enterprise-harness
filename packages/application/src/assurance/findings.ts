@@ -2,6 +2,7 @@
 // the fingerprint used to de-duplicate findings per raiser.
 
 import type { FindingSeverity } from '@asep/domain';
+import { isNormalizedRepoPath } from '@asep/policy';
 import { sha256Hex } from './canonical-json.js';
 import type { FindingCategory } from './local-types.js';
 
@@ -90,10 +91,16 @@ export function findingFingerprint(input: {
   return sha256Hex([input.category, input.file ?? '', bucket, input.ruleId ?? ''].join('\n'));
 }
 
+/** A path as finding text shows it: verbatim when normalized, JSON-quoted otherwise. */
+export function displayPath(path: string): string {
+  return isNormalizedRepoPath(path) ? path : JSON.stringify(path);
+}
+
 /**
  * A finding of a deterministic rule, fingerprinted. A finding without a file (for
  * example a missing check) passes `subject`, which stands in for the path in its
- * fingerprint so distinct subjects stay distinct.
+ * fingerprint so distinct subjects stay distinct. A file that is not a normalized path
+ * is never recorded as the finding's file: it becomes the quoted subject instead.
  */
 export function ruleFinding(
   ruleId: CheckRuleId,
@@ -109,21 +116,24 @@ export function ruleFinding(
 ): CheckFinding {
   const rule = CHECK_RULES[ruleId];
   const qualified = qualifier === undefined ? ruleId : `${ruleId}:${qualifier}`;
+  const unsafe = at.file !== null && !isNormalizedRepoPath(at.file);
+  const file = unsafe ? null : at.file;
+  const lineStart = unsafe ? null : at.lineStart;
   return {
     source: 'deterministic',
     raisedBy: `deterministic:${qualified}`,
     ruleId: qualified,
     severity: rule.severity,
     category: rule.category,
-    file: at.file,
-    lineStart: at.lineStart,
-    lineEnd: at.lineEnd ?? at.lineStart,
+    file,
+    lineStart,
+    lineEnd: unsafe ? null : (at.lineEnd ?? at.lineStart),
     evidence,
     requiredFix,
     fingerprint: findingFingerprint({
       category: rule.category,
-      file: at.file ?? at.subject ?? null,
-      lineStart: at.lineStart,
+      file: unsafe ? `path:${JSON.stringify(at.file)}` : (file ?? at.subject ?? null),
+      lineStart,
       ruleId: qualified,
     }),
   };
@@ -154,7 +164,7 @@ export function mergeRuleHits(
   return [...groups.values()].map((group) => {
     const first = group[0]!;
     const last = group[group.length - 1]!;
-    const evidence = `${CHECK_RULES[ruleId].summary}: ${first.file} ${group.map((h) => `line ${h.line} (${h.detail})`).join('; ')}`;
+    const evidence = `${CHECK_RULES[ruleId].summary}: ${displayPath(first.file)} ${group.map((h) => `line ${h.line} (${h.detail})`).join('; ')}`;
     return ruleFinding(ruleId, { file: first.file, lineStart: first.line, lineEnd: last.line }, evidence, requiredFix, qualifier);
   });
 }

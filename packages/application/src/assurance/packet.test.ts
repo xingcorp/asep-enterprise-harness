@@ -320,19 +320,6 @@ test('packet sources must agree with the attempt under review', () => {
     ['re-review in round one', { ...s, reviewKind: 're-review' }],
     ['malformed sha', { ...s, change: { ...s.change, resultSha: 'B'.repeat(40) } }],
     [
-      'unnormalized path',
-      {
-        ...s,
-        change: {
-          ...s.change,
-          cumulativeDiff: {
-            ...s.change.cumulativeDiff,
-            changedFiles: [...s.change.cumulativeDiff.changedFiles, { path: '../escape.ts', status: 'A', binary: false }],
-          },
-        },
-      },
-    ],
-    [
       'changed file without a blob',
       { ...s, change: { ...s.change, postImages: s.change.postImages.filter((b) => b.path !== 'src/util.ts') } },
     ],
@@ -353,6 +340,31 @@ test('packet sources must agree with the attempt under review', () => {
   for (const [label, sources] of cases) {
     assert.throws(() => buildReviewPacket(sources, world.limits), PacketBuildError, label);
   }
+
+  // A changed path that is not normalized is kept as an omission, never read, so the push
+  // guard can block the round instead of the build failing without a decision.
+  const escaping = buildReviewPacket(
+    {
+      ...s,
+      change: {
+        ...s.change,
+        cumulativeDiff: {
+          ...s.change.cumulativeDiff,
+          changedFiles: [...s.change.cumulativeDiff.changedFiles, { path: '../escape.ts', status: 'A', binary: false }],
+        },
+      },
+    },
+    world.limits,
+  );
+  assert.deepEqual(escaping.packet.change.files.find((f) => f.path === '../escape.ts'), {
+    path: '../escape.ts',
+    status: 'A',
+    binary: false,
+    postImage: null,
+    lineCount: 0,
+    omittedReason: 'unsafe-path',
+  });
+  assert.ok(escaping.omissions.some((o) => o.path === '../escape.ts' && o.reason === 'unsafe-path'));
 
   // A re-review needs its repair base and repair delta.
   const repair = fixtureWorld({ round: 2 });

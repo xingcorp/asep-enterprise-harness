@@ -110,6 +110,8 @@ export interface FixtureOptions {
   readonly unitExitCode?: number;
   readonly round?: number;
   readonly objective?: string;
+  /** Repair-delta text of a re-review; the cumulative diff by default. */
+  readonly repairDelta?: string;
   readonly allowedPaths?: readonly string[];
   readonly forbiddenChanges?: readonly string[];
   readonly acceptanceCheckIds?: readonly string[];
@@ -128,7 +130,8 @@ export function fixtureWorld(options: FixtureOptions = {}): FixtureWorld {
   const reReview = round > 1;
   const diffText = options.diff ?? DIFF;
   const diffRef = store('review-diff', 'art-diff', diffText);
-  const deltaRef = reReview ? store('review-diff', 'art-delta', diffText) : null;
+  const deltaText = options.repairDelta ?? diffText;
+  const deltaRef = reReview ? store('review-diff', 'art-delta', deltaText) : null;
   const changedFiles: ChangedFile[] = [];
   const postImages: ReviewBlob[] = [];
   (options.files ?? DEFAULT_FILES).forEach((file, i) => {
@@ -200,7 +203,7 @@ export function fixtureWorld(options: FixtureOptions = {}): FixtureWorld {
       repairDelta:
         deltaRef === null
           ? null
-          : { ref: deltaRef, bytes: utf8(diffText).byteLength, overLimit: false, changedFiles: [] },
+          : { ref: deltaRef, bytes: utf8(deltaText).byteLength, overLimit: false, changedFiles: [] },
       postImages,
     },
     execution: {
@@ -252,25 +255,35 @@ export interface DiffEntry {
   readonly added?: readonly string[];
 }
 
+const C_ESCAPES: Readonly<Record<number, string>> = { 7: '\\a', 8: '\\b', 9: '\\t', 10: '\\n', 11: '\\v', 12: '\\f', 13: '\\r', 0x22: '\\"', 0x5c: '\\\\' };
+
+/** A path as git writes it in a diff: verbatim, or C-quoted (octal for other bytes) when it needs escaping. */
+export function gitPath(prefix: '' | 'a/' | 'b/', path: string): string {
+  const bytes = [...utf8(`${prefix}${path}`)];
+  if (!bytes.some((b) => b < 0x20 || b >= 0x7f || b === 0x22 || b === 0x5c)) return `${prefix}${path}`;
+  const body = bytes.map((b) => C_ESCAPES[b] ?? (b < 0x20 || b >= 0x7f ? `\\${b.toString(8).padStart(3, '0')}` : String.fromCharCode(b)));
+  return `"${body.join('')}"`;
+}
+
 /** A git-style unified diff for the given entries. */
 export function gitDiff(entries: readonly DiffEntry[]): string {
   const out: string[] = [];
   for (const e of entries) {
     const oldPath = e.oldPath ?? e.path;
-    out.push(`diff --git a/${oldPath} b/${e.path}`);
+    out.push(`diff --git ${gitPath('a/', oldPath)} ${gitPath('b/', e.path)}`);
     if (e.status === 'A') out.push('new file mode 100644');
     if (e.status === 'D') out.push('deleted file mode 100644');
-    if (e.status === 'R') out.push('similarity index 90%', `rename from ${oldPath}`, `rename to ${e.path}`);
+    if (e.status === 'R') out.push('similarity index 90%', `rename from ${gitPath('', oldPath)}`, `rename to ${gitPath('', e.path)}`);
     if (e.binary) {
-      out.push(`Binary files ${e.status === 'A' ? '/dev/null' : `a/${oldPath}`} and ${e.status === 'D' ? '/dev/null' : `b/${e.path}`} differ`);
+      out.push(`Binary files ${e.status === 'A' ? '/dev/null' : gitPath('a/', oldPath)} and ${e.status === 'D' ? '/dev/null' : gitPath('b/', e.path)} differ`);
       continue;
     }
     const context = e.context ?? [];
     const removed = e.removed ?? [];
     const added = e.added ?? [];
     if (context.length + removed.length + added.length === 0) continue;
-    out.push(e.status === 'A' ? '--- /dev/null' : `--- a/${oldPath}`);
-    out.push(e.status === 'D' ? '+++ /dev/null' : `+++ b/${e.path}`);
+    out.push(e.status === 'A' ? '--- /dev/null' : `--- ${gitPath('a/', oldPath)}`);
+    out.push(e.status === 'D' ? '+++ /dev/null' : `+++ ${gitPath('b/', e.path)}`);
     const oldCount = context.length + removed.length;
     const newCount = context.length + added.length;
     out.push(`@@ -${oldCount === 0 ? 0 : 1},${oldCount} +${newCount === 0 ? 0 : 1},${newCount} @@`);
