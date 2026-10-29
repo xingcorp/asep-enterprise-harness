@@ -16,6 +16,7 @@ import {
   fixtureWorld,
   modelFinding,
   reviewOutput,
+  worldFromDiff,
 } from './test-support.js';
 
 console.log('SUITE-ID: asep-suite:adjudication');
@@ -466,4 +467,27 @@ test("waiver expiry is judged at the round's opening time", () => {
   // The decision record carries no timestamp, so its bytes depend only on the round's inputs.
   assert.equal(JSON.stringify(held).includes('2026-10-29'), false);
   assert.deepEqual(waived('2026-10-29T09:30:00.000Z'), held);
+});
+
+test('a shadow round blocked by the push guard carries no shadow verdict', () => {
+  // A credential-shaped line, assembled at runtime so no literal secret is committed.
+  const key = 'AKIA' + 'Z'.repeat(16);
+  const world = worldFromDiff([{ path: 'src/k.ts', status: 'A', added: [`const k = '${key}';`] }]);
+  const base = adjudicationBase({ world });
+  assert.deepEqual(base.checks.pushGuard, { decision: 'BLOCK', reason: 'secret-in-diff' });
+  const skipped: ReviewInput = { reviewerConfigId: PRIMARY, status: 'SKIPPED_PUSH_GUARD', failureReason: 'push-guard', recordSha256: null, output: null };
+
+  // The push guard decides the round in every mode; the block is the outcome, not a verdict a
+  // shadow round would only record, so no mode attaches a shadow verdict to it.
+  for (const mode of ['shadow', 'gating', 'not-required'] as const) {
+    const input = mode === 'not-required' ? { ...base, mode, reviewers: [], reviews: [] } : { ...base, mode, reviews: [skipped] };
+    const record = adjudicate(input).record;
+    assert.deepEqual([record.ruleFired, record.outcome, record.reason, record.shadow], ['A1', 'BLOCK', 'secret-in-diff', null], mode);
+    assert.deepEqual(record.pushGuard, base.checks.pushGuard, mode);
+  }
+
+  // A shadow round that is not blocked records the verdict gating would have reached.
+  const clean = adjudicate({ ...adjudicationBase(), mode: 'shadow' }).record;
+  assert.equal(clean.outcome, 'PROCEED');
+  assert.deepEqual(clean.shadow, { wouldBe: 'PROCEED', reason: null, blockingFindings: 0 });
 });
