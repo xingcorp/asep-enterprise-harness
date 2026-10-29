@@ -1,11 +1,12 @@
-# Phase 3 — Data Model (LOCKED v6, pending controller confirmation)
+# Phase 3 — Data Model (LOCKED v7, pending controller confirmation)
 
 > Companion to `phase-03-plan.md`. PostgreSQL 17 (same digest-pinned image as Phase 2). Base `00a6889`; v1 of
 > this document is at `80bb76a`, v2 at `98e92cf`, v3 at `7cbf5d3`. v2 folded in the Codex plan review; v3 folds in
 > the Codex lock-check of v2 and the controller's reconciliation R15–R19; v4 folds in the Codex review of v3 and
 > reconciliation R21 (`phase-03-review-log.md`, section "Review v3"); v5 folds in the Codex re-audit of v4 and
 > reconciliation R24 (section "Review v4"); v6 folds in the Codex re-audit of v5 and reconciliation R25–R28
-> (section "Review v5"). The reconciliation wins
+> (section "Review v5"); v7 folds in the Codex re-audit of v6 and reconciliation R29 and R31 (section "Review v6").
+> The reconciliation wins
 > where it and this document disagree.
 > Lane A migration range: **`0100`–`0199`** (lane contract). Migrations are append-only, checksummed and applied
 > in strictly ascending id order by the Phase 2 migrator, which allows gaps (`adapters/persistence/src/migrator.ts:45-51`).
@@ -369,9 +370,16 @@ schemaVersion: "1.0.0"
 organizationId, projectId, repositoryBindingId, runId, taskId     (ULID pattern)
 risk: R0..R4
 baseSha: 40-hex
-baseBranch: Git ref name               (the branch the task's PR targets, from the repository binding; the PR
+repository: { owner, name }            (the repository binding's forge repository, normalized to lower case:
+                                       owner ^[a-z0-9](-?[a-z0-9]){0,38}$, name ^[a-z0-9._-]{1,100}$ and not "." or
+                                       ".."; every publication of the task goes there, and a publication
+                                       reconciliation checks the branch's and each PR's repositories against it, R31)
+baseBranch: Git branch name            (the branch the task's PR targets, from the repository binding; the PR
                                        upsert uses it and the publication reconciliation checks the PR's base
-                                       against it, R27)
+                                       against it, R27. Validated with Git's ref-name rules (R31): non-empty, at
+                                       most 255 characters, no "..", no leading "-", no control or space character,
+                                       none of ~ ^ : ? * [ \, no "@{", no "//", and not ending in "/", "." or
+                                       ".lock")
 workOrderRef: ArtifactRef            (WorkOrder already stored and validated)
 contextPackRef: ArtifactRef
 attemptBudget: Budget                (must equal WorkOrder.budget; checked by the first activity)
@@ -395,7 +403,9 @@ Every money amount (`attemptBudget.maxCostUsd`, `taskBudget.maxCostUsd`, `taskBu
 `verificationReserve.costUsd`, `runRemaining.costUsd`, `policy.maxBudgetExtensionUsd`) must be exactly representable
 in micro-USD and at most `100 000 000` USD. JSON Schema `multipleOf` is not used for this, because binary floating
 point makes it unreliable; the S7 input mapping applies the core's exactness rule and rejects the input otherwise
-(R21, architecture §10, exit H12).
+(R21, architecture §10, exit H12). The same input rules (`taskInputErrors`) reject a `repository` that is not in its
+normalized form and a `baseBranch` that breaks the ref-name rules above, including `undefined`, `null`, `""` and
+`main..evil` (R31, exit D16); the schema's `pattern` mirrors them.
 
 `maxRepairCycles` from v1 is removed: the round limit belongs to Phase 4's review policy (`maxRounds`). Lane A
 enforces only `taskBudget.maxAttempts` as a hard ceiling across retries and repairs.
@@ -451,32 +461,59 @@ referential-integrity check is updated in lockstep (CR-19).
 | `unknown` | either is possible | anything else: a fencing error after the forge call, a timeout, any error after the call started, whatever its retryability; also the interpreter's reading of a failure that carries no effect |
 
 A result carries `effect: 'applied'` (and the PR number for the upsert). A failure carries the effect in its
-details. `unknown` leads to `reconcilePublication` before any terminal state. The read reports what it observed,
-and the core decides (R27):
+details. `unknown` leads to `reconcilePublication` before any terminal state. The read reports the full observation,
+and the core decides (R27, R31):
 
 ```text
-reconcilePublication request: { attemptNumber, remoteBranch, expectedHeadSha, expectedBaseBranch }
-reconcilePublication result:  { branchHeadSha: 40-hex | null,                     (null: the branch does not exist)
-                                pullRequest: { number, headBranch, headSha, baseBranch } | null }
-                                                                    (the open PR whose head is the remote branch)
+reconcilePublication request: { attemptNumber, repository: { owner, name }, remoteBranch, expectedHeadSha,
+                                expectedBaseBranch }
+reconcilePublication result:  { branch: { repository: { owner, name }, headSha: 40-hex } | null,
+                                                                   (null: the branch does not exist)
+                                pullRequests: [ { number, headRepository: { owner, name }, headBranch, headSha,
+                                                  baseRepository: { owner, name }, baseBranch,
+                                                  state: open | closed, merged: boolean } ] }
+                                (every PR the forge lists with the attempt branch as head branch, in any state and
+                                 from any head repository; the core does not rely on the read's filter)
 ```
 
-The identity predicate, the same after a push and after a PR upsert: `branchHeadSha` equals the attempt's verified
-commit, and a reported PR has `headBranch` = the attempt's branch, `headSha` = that commit and `baseBranch` = the
-task input's `baseBranch`. After the push the predicate continues to the PR upsert, a branch absent with no PR is
-`none` (`FAILED / publication-failed`), and anything else is unreconciled. After the PR upsert the predicate with a
-PR present continues as a successful upsert with that PR, and anything else is unreconciled. An unreconciled
-publication, or a failed read, ends the task `FAILED / publication-incomplete` whatever cancel is pending, with
-the audit row `publication.incomplete` (attempt, remote branch, whether the push was confirmed, whether a cancel
-was pending). Retryability stays the engine's concern and never reaches the core (architecture §4.1, §5). The
-overrun ledger entry records `usage_out_of_bound` when the reported cost, tool calls or measured wall-clock was not
-a valid amount within its bound (§3.6, architecture §10).
+The identity predicate, the same after a push and after a PR upsert: `branch` is in the task input's `repository`
+(compared case-insensitively, as the forge does) with `headSha` = the attempt's verified commit, and `pullRequests`
+is empty or holds exactly one PR that is `open`, not merged, has the input's repository as head and base repository,
+the attempt's branch as head branch, that commit as head SHA and the input's `baseBranch` as base branch. After the
+push the predicate continues to the PR upsert, a branch absent with no PR is `none` (`FAILED / publication-failed`),
+and anything else is unreconciled. After the PR upsert the predicate with exactly one PR continues as a successful
+upsert with that PR; zero PRs is "no PR" and unreconciled, like anything else that fails the predicate. An
+unreconciled publication, or a failed read, ends the task `FAILED / publication-incomplete` whatever cancel is
+pending, with the audit row `publication.incomplete` (attempt, remote branch, whether the push was confirmed,
+whether a cancel was pending, what was found: `branch-missing`, `branch-moved`, `branch-other-repository`,
+`pull-request-missing`, `pull-requests-multiple`, `pull-request-closed`, `pull-request-merged`,
+`pull-request-fork-head`, `pull-request-other-head`, `pull-request-other-base`, `upsert-not-applied` or
+`remote-unreadable`, and the observation as read). Retryability stays the engine's concern and never reaches the
+core (architecture §4.1, §5). The overrun ledger entry records `usage_out_of_bound` when the reported cost, tool
+calls or measured wall-clock was not a valid amount within its bound (§3.6, architecture §10).
+
+### 4.5 Lease settlement and attempt state (R29; core DTOs, no schema change)
+
+```text
+acquireLease result:          { fence }                 (the caller's fence: the lease identity the Phase 2 primitive
+                                                         returns, opaque to the core)
+findLease request / result:   { attemptNumber } / { fence | null }   (null: durable history shows no lease)
+recordPreLeaseOutcome request: { attemptNumber, terminal, declaredComplete, verificationVerdict, adjudicationId }
+                               (written with fence: null)
+recordPreLeaseOutcome result:  { recorded: boolean }   (false: refused, durable history now shows a lease)
+recordAttemptOutcome effect:   { …, fence | null }      releaseLease effect: { attemptNumber, fence }
+task result (TaskSummary):     { …, unrecordedAttempts: [ { attemptNumber, idempotencyKey } ] }
+```
+
+`unrecordedAttempts` lists every attempt whose terminal was not recorded because its state could not be read
+(`attempt-state-unknown`); it is empty otherwise. The idempotency key is the rendering of the attempt row's natural
+key (§5).
 
 ## 5. Idempotency key catalog (every durable write Phase 3 adds or relies on)
 
 | Write | Key | Duplicate behavior |
 |---|---|---|
-| attempt row | `(task_id, attempt_number)` | return existing; conflicting identity → non-retryable error |
+| attempt row | `(task_id, attempt_number)`, rendered `<taskId>:attempt:<n>` in audits and the task result | return existing; conflicting identity → non-retryable error |
 | lease, fencing, side-effect record + result | the accepted Phase 2 primitive (R1, R2) | per the invariants in plan §30 CR-05 |
 | workspace | `workspaces.attempt_id` unique | adopt or quarantine (see §3.4) |
 | evidence | preallocated id in commit trailer (Phase 2) | adopt after identity check (`evidence-store.ts:101-135`) |

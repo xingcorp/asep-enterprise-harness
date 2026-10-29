@@ -3,8 +3,9 @@
 > Lane A adjudication of the independent Codex plan review (workflow step 3), of the Codex lock-check of the
 > v2 plan (section "Lock-check v2", which also records the v3 freeze gate), and of the Codex review of plan v3 and
 > audit of the S2 code (section "Review v3", which records the v4 freeze gate), of the Codex re-audit of plan v4
-> and the S2 fixes (section "Review v4", which records the v5 freeze gate), and of the Codex re-audit of plan v5 and
-> the S2 fixes (section "Review v5" at the end, which records the v6 freeze gate).
+> and the S2 fixes (section "Review v4", which records the v5 freeze gate), of the Codex re-audit of plan v5 and
+> the S2 fixes (section "Review v5", which records the v6 freeze gate), and of the Codex re-audit of plan v6 and the
+> S2 fixes (section "Review v6" at the end, which records the v7 freeze gate).
 > Planner: Lane A (Claude). Reviewer: Codex `gpt-5.6-sol` via the kiro-proxy gateway, read-only, run by the
 > controller on 2026-10-29. Raw review: `phase-03-plan-review-codex-v1.md`.
 > Reviewed base: `80bb76a` · Verdict: **REQUEST_CHANGES** · Confidence: 0.98.
@@ -1523,4 +1524,220 @@ it, and removing the fix again turned them red. `pnpm verify:all` passed after e
       controller.
 - [ ] CR-10 verbatim text pasted (open by design; G-LB, R18).
 
-**PLAN_STATUS:** LOCKED v6 (pending controller confirmation)
+**PLAN_STATUS (v6):** LOCKED v6, superseded by v7 below. The re-audit of v6 found the publication identity
+without repository, state and candidates, and the R29 protocol not yet in the plan or the code (section "Review v6").
+
+## Review v6
+
+> Lane A adjudication of the independent Codex re-audit of plan v6 and of the S2 fixes.
+> Reviewer: Codex `gpt-6.1-sol` via the kiro-proxy gateway, read-only, run by the controller on 2026-10-30 as a single
+> uninterrupted run of the Codex CLI 0.165.0; the gateway's own instructions apply (R16). Raw output:
+> `phase-03-review-codex-v6.md`.
+> Reviewed snapshot: `392f259` · Verdict: **REQUEST_CHANGES** · Confidence: 0.97.
+> Controller gate at `392f259`, clean detached worktree: `pnpm verify:all` exit 0, 836 pass, 0 fail, 0 skipped;
+> 53 test files, 31 required suites; no crash at load average 28.
+> Binding input: reconciliation R29 (the controller's answers to Lane A's turn-8 questions, written after the
+> snapshot) and R31 (decisions on this re-audit). Lane A applies them exactly as written. Code line numbers below are
+> at `392f259` (the code is unchanged between `392f259` and this docs commit).
+
+### Summary
+
+The re-audit confirms the three P3-PLAN5 findings FOLDED, P3-S2V5-HIGH-002 and P3-S2V5-MED-001 RESOLVED, and the
+rejection of P3-S2V5-LOW-001 (R27). P3-S2V5-HIGH-001 stays PARTIAL, and with it P3-S2R-HIGH-002 and v3's
+P3-S2-HIGH-003. P3-PLAN-HIGH-004 stays PARTIAL by design until G-LB (R18). It raises seven new findings, three of
+them the R29 work the re-audit already knew was under way, and reports two mutations that survived.
+
+| Group | Count | ACCEPTED | PARTIAL | REJECTED |
+|---|---|---|---|---|
+| Plan HIGH (P3-PLAN6-HIGH-001) | 1 | 1 | 0 | 0 |
+| Plan MEDIUM (P3-PLAN6-MED-001, 002) | 2 | 2 | 0 | 0 |
+| S2 HIGH (P3-S2V6-HIGH-001, 002, 003) | 3 | 3 | 0 | 0 |
+| S2 MEDIUM (P3-S2V6-MED-001) | 1 | 1 | 0 | 0 |
+| **Total** | **7** | **7** | **0** | **0** |
+
+Each earlier finding the review marks PARTIAL is closed through the new finding that names its remaining gap:
+
+| Earlier finding | Remaining gap | Closed through |
+|---|---|---|
+| P3-S2V5-HIGH-001 | the identity had no repository, PR state or candidate set, so a fork, closed, merged or duplicate PR projected onto a valid observation | P3-S2V6-HIGH-001, P3-PLAN6-MED-002 |
+| P3-S2R-HIGH-002 | the reconciliation could not tell a PR in another repository | P3-S2V6-HIGH-001 |
+| P3-S2-HIGH-003 | an observation without that metadata could still count as a reconciled publication, also with a cancel pending | P3-S2V6-HIGH-001 |
+
+The review's reconciliation table marks R17, R21, R24, R27 and R28 PARTIAL for the same identity gap or for the
+lease protocol, and R29 "PARTIAL, known, being fixed"; each is settled by the entries below. The two surviving
+mutations are taken up as tests: the base forced to `main` (P3-S2V6-MED-001) and the constructor reached through an
+asserted computed key (R31's purity hardening). The S2 code findings are fixed by the follow-up commits after this
+docs commit, one finding or tight group per commit, test first; the step report names each commit, the tests that
+prove it and the mutation check that shows them red without the fix.
+
+New: exit D16, D17, L6; risk PR3-47, PR3-48; threat T3-23, T3-24; data model §4.5. Amended: architecture §3, §4.1
+(flow, terminal before lease, pre-lease rule, lease settlement, attempt state unknown, the identity predicate), §5,
+§9, §12, §15; data model §4.2, §4.4, §5; exit B2, D13, G7, G13, J5; plan §11, §17, §26 (S0, S2, S6, S7), the
+step table and the output block; risk PR3-18, PR3-42, PR3-43, PR3-44; threat T3-19, T3-22; research Q11.
+
+### P3-PLAN6-MED-002 and P3-S2V6-HIGH-001 — The publication identity had no repository, state or candidate set — ACCEPTED (R31)
+
+**Finding.** The observation carried a PR's number, head branch, head SHA and base branch only (`types.ts:391-396`),
+and the core's predicate read just those (`task-core.ts:780-781`). A PR from a fork with the same branch name, a
+closed or merged PR, and a second matching PR all projected onto an observation the predicate accepted. The
+re-audit's `IDENTITY_MATRIX` added `headRepository: 'attacker/fork'`, `state: 'closed', merged: true` and
+`matchingPrCount: 2` to an otherwise matching observation, on both reconciliation paths, with and without a cancel:
+all twelve runs handed off the PR (or ended `CANCELLED` as a reconciled publication), and the oracle passed them,
+because it repeated the same lossy predicate (`invariants.test.ts:705-708`). The plan's contract had the same gap
+(`phase-03-data-model.md:460`) and said "open PR" only in a comment (`types.ts:386`).
+
+**Disposition.** ACCEPTED. R31 decides the observation and the rule.
+
+**Locked change.**
+
+- The task input carries the binding's repository (`repository: { owner, name }`, normalized to lower case), and
+  the reconciliation request carries it.
+- The observation is complete: the branch with its repository and tip SHA, or null; and every PR the forge lists
+  with the attempt branch as head branch, in any state and from any head repository, each with its number, head
+  repository, head branch, head SHA, base repository, base branch, state and merged flag.
+- The core decides: reconciled only if the branch is in the binding repository at the attempt's verified commit,
+  and the candidates are none or exactly one that is open, unmerged, with the binding repository as head and base
+  repository, the attempt's branch and commit as head and the input's base branch as base. Repositories compare
+  case-insensitively, as the forge does. Zero candidates after a confirmed push is "no PR". More than one candidate,
+  a closed or merged one, a fork head, or any other mismatch is not reconciled: `FAILED / publication-incomplete`,
+  whatever cancel is pending, with the audit naming what was found and carrying the observation.
+- The property oracle states the same predicate over the same full observation, independently of the core, and the
+  generator draws fork heads, closed and merged PRs, several candidates, a PR at another base repository and a
+  branch in another repository on both paths.
+
+Architecture §4.1, §5, §9; data model §4.2, §4.4; plan §11, §17, §26 (S2, S6, S7); risk PR3-18, PR3-44; threat T3-19.
+
+**Validation.** G13 amended: the `IDENTITY_MATRIX` cases (fork head, closed, merged, two candidates; both paths; with
+and without a cancel) are core tests, plus a PR at another base repository and a branch in another repository; the
+oracle above.
+
+### P3-PLAN6-HIGH-001, P3-S2V6-HIGH-002 and P3-S2V6-HIGH-003 — A failed or aborted lease acquisition, and a failed lookup — ACCEPTED (R29, R31)
+
+**Finding.** The plan left both pre-lease questions open (`phase-03-architecture.md:277`,
+`phase-03-exit-criteria.md:224` at `392f259`), and R29 answered them after the snapshot. In the code, a failed
+`acquireLease` is abandoned at once (`task-core.ts:699-706`) and a cancel that aborts it closes the task at once
+(`task-core.ts:1180-1184`), so no lookup settles whether the grant committed: the re-audit's `R29_acquire-failure`
+and `R29_acquire-cancel` issue no `findLease` and record the terminal without a fence. A failed `findAttempt` ends
+`attempt-registration-failed` (`task-core.ts:694-698`), and a pending cancel turns it into `CANCELLED`
+(`task-core.ts:1218-1222`); the audit carries no idempotency key, and the summary reports zero attempts
+(`R29_lookup-failure`, `R29_lookup-failure-cancel`). R29 also asks for a telemetry criterion that Phase 3's exits did
+not have (J6 is the slot-plug criterion, `phase-03-exit-criteria.md:574`).
+
+**Disposition.** ACCEPTED. R29 decides the protocol; R31 asks for it in the plan and the code.
+
+**Locked change.**
+
+- `acquireLease` returns the caller's fence, and the core carries it (opaque) to the terminal write and the release.
+- After a failed or aborted `acquireLease`, the core issues the non-cancellable `findLease`. Found: the terminal is
+  recorded with that lease's fence, then the lease is released with it. Absent: the terminal is written through the
+  new `recordPreLeaseOutcome` request with `fence: null`; its result says whether the slot recorded it or refused it
+  because durable history now shows a lease (a late grant). A refusal leads to one more `findLease` and the fenced
+  write. A second lookup that finds nothing contradicts R29's "a lease in history never disappears" and is treated
+  as a failed lookup. So at most two lookups happen. Then the attempt is abandoned as before (replaced only for a
+  replaceable class), or the task ends `CANCELLED` after an abort.
+- A lookup (`findAttempt`, `findLease`) that fails after its retries ends the task `FAILED / attempt-state-unknown`,
+  also over a pending cancel. No usage, outcome or release is emitted for that attempt. The audit row
+  `attempt.state-unknown` carries the attempt number, the lookup and the idempotency key `<taskId>:attempt:<n>` (the
+  natural key `(task_id, attempt_number)`), and the task result lists the attempt in `unrecordedAttempts`. A
+  `recordPreLeaseOutcome` that fails after its retries ends the same way, because whether the terminal committed is
+  then unknown too; this is Lane A's reading of R29's "only when the store cannot be read", stated so the controller
+  can correct it.
+- The core refuses to record a terminal for an attempt whose lease request is unsettled, as it refuses a release
+  before the outcome.
+- Exit L6 is the telemetry criterion: the attempt is reported as a gap with its idempotency key, never hidden and
+  never counted as an attempt with zero usage.
+
+Architecture §4.1, §5, §9, §12, §15; data model §4.5, §5; plan §11, §17, §26 (S0, S2, S6, S7); exit D13, D17, J5,
+L6; risk PR3-43, PR3-47; threat T3-24.
+
+**Validation.** D13 and D17: the four `R29_*` probes are core tests; found, absent, a late grant refusing the
+pre-lease write, a second lookup, a failed lookup and a failed pre-lease write, each with and without a cancel
+pending; the property oracle checks the fence of every terminal write and release against the lease the attempt was
+granted, at most two lookups per attempt, and `attempt-state-unknown` over any pending cancel.
+
+**Pre-lease allowlist after R29.** The table of Review v5 stands, with its two open rows settled:
+
+| Path | Terminal | Slot terminal |
+|---|---|---|
+| `acquireLease` failed or aborted, `findLease` found no lease and the pre-lease write was recorded | `failed`; `cancelled` after an abort or with a cancel pending | `infrastructure-failed`; `cancelled` |
+| `acquireLease` failed or aborted, `findLease` found a lease | as for a leased attempt, with the found fence | (leased, not pre-lease) |
+| a lookup failed (`findAttempt` or `findLease`), or a second `findLease` found nothing | none (`attempt-state-unknown`, reported as a gap) | none: R29's single exception |
+
+No path emits a pre-lease terminal outside the allowlist.
+
+### P3-PLAN6-MED-001 — §17 and the cancel table still made every failed PR upsert `publication-incomplete` — ACCEPTED (R31)
+
+**Finding.** Plan §17 and the cancel row of architecture §9 said a PR upsert that fails after its retries ends
+`FAILED / publication-incomplete` (`phase-03-plan.md:418`, `phase-03-architecture.md:616` at `392f259`), while G13
+continues when the reconciliation confirms the PR (`phase-03-exit-criteria.md:406`).
+
+**Disposition.** ACCEPTED.
+
+**Locked change.** §17, the cancel row, the cancel line of the §4.1 flow and G7 say `publication-incomplete` only for
+a publication that cannot be reconciled under the identity predicate: a PR upsert that fails with effect `none`, a
+remote that is not exactly the attempt's, or a failed read. A PR upsert that fails with an `unknown` or `applied`
+effect and reconciles is a completed upsert, so a pending cancel then ends `CANCELLED` with the PR left open.
+
+**Validation.** Documentation only; G13 is the executable criterion.
+
+### P3-S2V6-MED-001 — `baseBranch` was not validated, and no test held it — ACCEPTED (R31)
+
+**Finding.** `taskInputErrors` does not look at `baseBranch` (`validation.ts:43-52`): the re-audit's `undefined`,
+`null`, `""` and `main..evil` all gave `errors: []`, and with a fixture that echoes the expected base they reached a
+handoff. Every fixture and the generator use `main` (`test-support/fixtures.ts:24`, `invariants.test.ts:102`), and the
+publication oracle never compares the upsert request's base with the input, so forcing the upsert base to `main`
+(`task-core.ts:797`) left all 288 package tests green (`HARDCODE_MAIN_COUNTEREXAMPLE`).
+
+**Disposition.** ACCEPTED. R31 gives the rules.
+
+**Locked change.**
+
+- The input rules validate `baseBranch` with Git's ref-name rules as R31 lists them: non-empty, at most 255
+  characters, no `..`, no leading `-`, no control or space character, none of `~^:?*[\`, no `@{`, not ending in `/`,
+  `.` or `.lock`, and no `//`. They validate `repository` in its normalized form too.
+- The fixtures and the generator use bases other than `main`, and the oracle checks every PR upsert and
+  reconciliation request against the input's base and repository, not against another request.
+
+Data model §4.2; plan §26 (S2, S7); exit D16; risk PR3-48; threat T3-23.
+
+**Validation.** D16: the four invalid bases and the other rule cases are negative tests, a non-`main` base passes, and
+the reviewer's mutation (the base forced to `main`) turns tests red.
+
+### Observation E12 — A constructor through an asserted computed key passed the purity check — taken up (R31)
+
+The re-audit appended `((() => {})[("constr" + "uctor") as "name"] as unknown as (body: string) => () => number)("return
+Date.now()")()` to `task-core.ts` in memory: the checker reports the key's type as the asserted literal `"name"`, so
+the scan found nothing and the 288 package tests stayed green. The review files it within the detector's declared
+limits (`phase-03-architecture.md:140`), not as a finding. R31 hardens the detector anyway: in production core a
+type assertion inside a computed member key or computed property name, and a double cast through `unknown` (or
+`any`), are violations. The expression is a seed, and the same expression appended to the production core must turn
+the production check red. Architecture §3; exit B2; risk PR3-42; threat T3-22; research Q11.
+
+### Observations settled by the re-audit
+
+- **The S2 interpreter proves command order, not completion.** The sequential interpreter collects effects and does
+  not run them (`sequential-interpreter.ts:81`), so S2 proves that the outcome command precedes the release, not that
+  the outcome activity completed first. The S7 obligation stands: the Temporal interpreter awaits each effect before
+  the next (plan §26 S7, R27), and the integration tests prove a failed outcome write leaves the lease to the janitor.
+- **The release guard throws.** If the guard fired, the reducer would return no decision, and a retry of the same
+  state and event would throw again (E6). In the Temporal workflow that fails the workflow task, so the workflow stays
+  visibly stuck rather than releasing a lease before its outcome. No valid path reaches the guard: the per-path tests,
+  E11 and the property generator never fire it. The new lease-settlement guard behaves the same way.
+- **Missing branch on the push path (R29).** The controller confirms Lane A's narrow reading: after an unknown push, a
+  read that finds no branch and no PR proves the push absent, so `publication-failed` stands.
+- **`baseBranch` in the task input, and the extra purity rules** (local `declare`, `import.meta`, the error `stack`
+  members) are accepted (R29).
+
+### Freeze gate (v7)
+
+- [x] Every finding of the re-audit dispositioned: 7/7 new ACCEPTED; the three PARTIAL findings closed through
+      P3-S2V6-HIGH-001; the FOLDED and RESOLVED statuses, the LOW-001 rejection and P3-PLAN-HIGH-004 (PARTIAL by
+      design) confirmed; both surviving mutations taken up as tests.
+- [x] 0 unresolved CRITICAL/HIGH in the plan, **except** the verbatim-text part of P3-PLAN-HIGH-004, which is open by
+      design until G-LB and blocks S0. The S2 code HIGHs are folded here and fixed by the follow-up commits.
+- [x] Canonical docs updated: plan, architecture, data model, exit criteria, risk register, research register,
+      threat model delta.
+- [x] Reconciliation R29 and R31 applied; the pre-lease paths settled above.
+- [ ] CR-10 verbatim text pasted (open by design; G-LB, R18).
+
+**PLAN_STATUS:** LOCKED v7 (pending controller confirmation)

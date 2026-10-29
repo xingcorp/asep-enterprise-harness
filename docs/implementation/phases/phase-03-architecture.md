@@ -1,4 +1,4 @@
-# Phase 3 — Durable Orchestration — Architecture (LOCKED v6, pending controller confirmation)
+# Phase 3 — Durable Orchestration — Architecture (LOCKED v7, pending controller confirmation)
 
 > Companion to `phase-03-plan.md`. Base `00a6889` (head of `phase/02-single-agent-vertical-slice`, not yet
 > accepted); v1 of this document is at `80bb76a`, v2 at `98e92cf`, v3 at `7cbf5d3` (R20 at `e4fd343`). v2 folded in
@@ -7,8 +7,9 @@
 > review of v3 and audit of S2 (`phase-03-review-codex-v3.md`) and reconciliation R21 (review log, section
 > "Review v3"); v5 folds in the Codex re-audit of v4 and of the S2 fixes (`phase-03-review-codex-v4.md`) and
 > reconciliation R24 (section "Review v4"); v6 folds in the Codex re-audit of v5 and of the S2 fixes
-> (`phase-03-review-codex-v5.md`) and reconciliation R25–R28 (section "Review v5"). Port signatures in §17 are
-> design intent. The binding text
+> (`phase-03-review-codex-v5.md`) and reconciliation R25–R28 (section "Review v5"); v7 folds in the Codex re-audit of
+> v6 and of the S2 fixes (`phase-03-review-codex-v6.md`) and reconciliation R29 and R31 (section "Review v6"). Port
+> signatures in §17 are design intent. The binding text
 > is plan §30 (shared-surface change requests) and, for the review-loop slot, the block
 > `Review-loop slot contract (verbatim for S0)` that Lane B locks and the controller hands over (plan §30, CR-10).
 
@@ -117,7 +118,7 @@ Forbidden-import rules added (CR-12). They are written against the rule framewor
 |---|---|---|
 | `@temporalio/*` confined | every package except `adapters/temporal` (its `src/test-support/**` included) | any import or require of `@temporalio/` |
 | workflow purity | `adapters/temporal/src/workflows/**` | any non-type import except `@temporalio/workflow`, `@asep/orchestration` and relative workflow modules |
-| core purity | production source of `packages/orchestration` (`src/**/*.ts` except `*.test.ts` and `src/test-support/**`) | checked with the TypeScript checker (R24, R27): a non-relative import or re-export that is not `import type`/`export type` from `@asep/contracts` or `@asep/ports` (import-equals and import types included); a relative import, re-export or import type whose specifier holds a percent-encoded character, a query or a fragment, does not end in `.js`, or does not resolve, through the compiler's module resolution, to a `.ts` file of the scanned production set (so no target outside `src/`, in `src/test-support/**`, in a test file or in a non-`.ts` module); dynamic `import()`; a reference to a global that is not on the **allowlist of deterministic globals** (R27): every identifier in a value position that the checker resolves to a declaration outside the file (a lib or ambient declaration file, `@types/node` included), or to nothing, must be one of `Object`, `Array`, `Number`, `String`, `Boolean`, `BigInt`, `Map`, `Set`, `JSON`, `Error`, `RangeError`, `TypeError`, `Symbol`, `Math`, `undefined`, `NaN`, `Infinity`; `import.meta`; any `declare` (an ambient declaration in the core would read a host global under a local name); by name, wherever they appear: the identifiers `Date`, `setTimeout`, `setInterval`, `setImmediate`, `queueMicrotask`, `performance`, `process`, `crypto`, `require`, `globalThis`, `WeakRef`, `FinalizationRegistry`, `eval`, `Function`, `Reflect`, `Proxy`, `fetch`, `Intl` (it formats the current time when given no date), `Temporal` (`Temporal.Now`); any `constructor`, `prototype` or `__proto__` member, or the `getPrototypeOf`, `setPrototypeOf`, `getOwnPropertyDescriptor` and `getOwnPropertyDescriptors` members that reach a prototype without naming it, as an identifier or a literal key (a string holding one of these names is a literal key wherever it appears); the locale-dependent members `toLocaleString`, `toLocaleDateString`, `toLocaleTimeString`, `toLocaleUpperCase`, `toLocaleLowerCase` and `localeCompare` (R27), and the host-dependent error members `stack`, `captureStackTrace`, `prepareStackTrace` and `stackTraceLimit`, as an identifier or a literal key; a computed member access whose key type is not a finite union of literals, or whose literal key names a denied identifier, a denied member or `Math`; `Math` other than `Math.<member>` for `abs`, `ceil`, `floor`, `imul`, `max`, `min`, `round`, `sign`, `trunc`; `Symbol` other than a call or a member other than the registry reads `Symbol.for` and `Symbol.keyFor` |
+| core purity | production source of `packages/orchestration` (`src/**/*.ts` except `*.test.ts` and `src/test-support/**`) | checked with the TypeScript checker (R24, R27): a non-relative import or re-export that is not `import type`/`export type` from `@asep/contracts` or `@asep/ports` (import-equals and import types included); a relative import, re-export or import type whose specifier holds a percent-encoded character, a query or a fragment, does not end in `.js`, or does not resolve, through the compiler's module resolution, to a `.ts` file of the scanned production set (so no target outside `src/`, in `src/test-support/**`, in a test file or in a non-`.ts` module); dynamic `import()`; a reference to a global that is not on the **allowlist of deterministic globals** (R27): every identifier in a value position that the checker resolves to a declaration outside the file (a lib or ambient declaration file, `@types/node` included), or to nothing, must be one of `Object`, `Array`, `Number`, `String`, `Boolean`, `BigInt`, `Map`, `Set`, `JSON`, `Error`, `RangeError`, `TypeError`, `Symbol`, `Math`, `undefined`, `NaN`, `Infinity`; `import.meta`; any `declare` (an ambient declaration in the core would read a host global under a local name); by name, wherever they appear: the identifiers `Date`, `setTimeout`, `setInterval`, `setImmediate`, `queueMicrotask`, `performance`, `process`, `crypto`, `require`, `globalThis`, `WeakRef`, `FinalizationRegistry`, `eval`, `Function`, `Reflect`, `Proxy`, `fetch`, `Intl` (it formats the current time when given no date), `Temporal` (`Temporal.Now`); any `constructor`, `prototype` or `__proto__` member, or the `getPrototypeOf`, `setPrototypeOf`, `getOwnPropertyDescriptor` and `getOwnPropertyDescriptors` members that reach a prototype without naming it, as an identifier or a literal key (a string holding one of these names is a literal key wherever it appears); the locale-dependent members `toLocaleString`, `toLocaleDateString`, `toLocaleTimeString`, `toLocaleUpperCase`, `toLocaleLowerCase` and `localeCompare` (R27), and the host-dependent error members `stack`, `captureStackTrace`, `prepareStackTrace` and `stackTraceLimit`, as an identifier or a literal key; a computed member access whose key type is not a finite union of literals, or whose literal key names a denied identifier, a denied member or `Math`; a type assertion (`as` or angle-bracket) anywhere inside a computed member key or computed property name, because it can give a key built at run time a literal type it does not have, and a double cast through `unknown` or `any` (`x as unknown as T`) (R31); `Math` other than `Math.<member>` for `abs`, `ceil`, `floor`, `imul`, `max`, `min`, `round`, `sign`, `trunc`; `Symbol` other than a call or a member other than the registry reads `Symbol.for` and `Symbol.keyFor` |
 | bundler truth | `adapters/temporal` | real `bundleWorkflowCode()` with no `ignoreModules` succeeds. A seeded `node:fs` workflow fixture fails. |
 | no second driver | production entrypoints (`server-main`, `pilot-main`, `cli-main`, `workers/temporal-worker/src/main.ts`) | the import graph reaches `runVerticalSliceWorkflow`, `runVerticalSlice`, `governedExecution`, `completeToReview` or `executeTask` |
 | activity options explicit | `adapters/temporal/src/workflows/**` | a `proxyActivities` option set without `retry.maximumAttempts`, `startToCloseTimeout` or (for long activities) `heartbeatTimeout` (unit test over the exported option table) |
@@ -135,9 +136,10 @@ The core-purity rule has two acceptance checkpoints (P3-PLAN2-MED-001, MED-002):
    memory. It reads type-only status from each import clause and specifier, resolves every relative import with the
    compiler's module resolution and requires the target to be a production file of the scan, resolves every
    identifier in a value position and requires a global it reaches to be on the allowlist (R27), reads the type of
-   every computed member key, and matches denied names on the decoded identifier, so comments, string text,
-   aliases, escapes, reflection, computed keys and host globals the deny list never named neither hide nor fake a
-   use. It asserts that every production file parsed. **The detector is a defence layer, not a proof:** a value
+   every computed member key and refuses a type assertion inside one, and matches denied names on the decoded
+   identifier, so comments, string text, aliases, escapes, reflection, computed keys, asserted key types and host
+   globals the deny list never named neither hide nor fake a use. It asserts that every production file parsed.
+   **The detector is a defence layer, not a proof:** a value
    built at run time from arbitrary computation can still evade a static check. It closes the shapes that are cheap
    to write by accident or on purpose; the bundler-truth rule above and the replay corpus (§6.5) stay the checks of
    what the workflow really loads and does. Known limits it does not close: a member of an allowed global or value
@@ -173,10 +175,21 @@ BUDGET_CHECK (reservation for the planned attempt; table "Reservation failure" i
 ATTEMPT_STARTING  (ensureAttempt → acquireLease → prepareWorkspace(base = task baseSha, or the lineage's
                    repairBaseSha) → storeAttemptInputs (repair lineage: ContextPack = buildRepairContextPack(...)))
                    ensureAttempt fails ──▶ findAttempt (lookup by (task_id, attempt_number); R21):
-                     found  → the attempt ends `failed` with zero usage
-                     absent → no attempt-bound effect (usage, outcome) at all
-                     lookup fails → no attempt-bound effect; audited attempt.registration-unreconciled
-                   ──▶ FAILED (attempt-registration-failed; never replaced, numbering stays contiguous)
+                     found  → the attempt ends `failed` with zero usage ──▶ FAILED (attempt-registration-failed)
+                     absent → no attempt-bound effect (usage, outcome) ──▶ FAILED (attempt-registration-failed)
+                     lookup fails → FAILED (attempt-state-unknown), below
+                   (never replaced, so numbering stays contiguous)
+                   acquireLease fails after its retries, or a cancel aborts it ──▶ findLease (non-cancellable
+                     lookup of the attempt's durable lease history; R29):
+                     found  → the terminal is recorded with that lease's fence, then the lease is released
+                     absent → the terminal is recorded with fence null (recordPreLeaseOutcome); if that write is
+                              refused because a late grant committed after the lookup, findLease runs once more and
+                              the terminal is recorded with the fence it finds (at most two lookups)
+                     then the attempt is abandoned (below), or the task ends CANCELLED after an abort
+                   a lookup (findAttempt, findLease) fails after its retries, or the second findLease finds no
+                     lease ──▶ FAILED (attempt-state-unknown), also with a cancel pending; the attempt's terminal is
+                     not recorded, the audit row attempt.state-unknown carries its idempotency key, and the task
+                     result lists it as unrecorded (R29)
    ▼
 AGENT_RUNNING  (runAgent: engine maximumAttempts = 1; heartbeats; lease renewed on each tick)
    │ outcome table "Agent outcome" in §10 (the first matching row wins):
@@ -222,18 +235,23 @@ PUBLISHING  (publishBranch [critical unit 2] → upsertPullRequest [critical uni
    │     identity holds → upsertPullRequest; branch absent and no PR → FAILED (publication-failed);
    │     anything else, or the read fails                       → FAILED (publication-incomplete)
    │ PR upsert fails with effect none                           ──▶ FAILED (publication-incomplete)
-   │ PR upsert fails with effect unknown or applied             ──▶ reconcilePublication: identity holds and a PR
-   │                                                              is found → as a successful upsert with that PR;
-   │                                                              anything else, or the read fails → FAILED
-   │                                                              (publication-incomplete)
-   │ The identity predicate (R27), the same on both paths: the remote branch tip equals the attempt's verified
-   │ commit, and the PR, if any, has that branch as head, that commit as head SHA and the task's base branch as
-   │ base. The read reports what it observed (branch tip, and the PR's number, head branch, head SHA and base);
-   │ the core decides. A PR at another head, a moved or missing branch after a confirmed push, or an unreadable
-   │ remote is not reconciled. On the push path an absent branch with no PR is the read showing the push absent,
-   │ effect none (R24). publication-incomplete is audited publication.incomplete with the remote branch and
-   │ whether the push was confirmed, and is never CANCELLED; publication-failed means nothing was pushed, so a
-   │ pending cancel ends the task CANCELLED instead.
+   │ PR upsert fails with effect unknown or applied             ──▶ reconcilePublication: identity holds with
+   │                                                              exactly one PR → as a successful upsert with
+   │                                                              that PR; anything else, or the read fails →
+   │                                                              FAILED (publication-incomplete)
+   │ The identity predicate (R27, R31) is the same on both paths and runs over the full observation the read
+   │ reports: the attempt branch, with its repository and tip; and every PR whose head branch is the attempt's
+   │ branch, with its number, head repository, head branch, head SHA, base repository, base branch, state and merged
+   │ flag. The publication is the attempt's only when the branch is in the binding repository (task input
+   │ `repository`) at the attempt's verified commit, and the PR candidates are either none or exactly one that is
+   │ open, unmerged, has the binding repository as head and base repository, the attempt's branch and commit as head,
+   │ and the task's base branch as base. Zero candidates after a confirmed push is "no PR". More than one candidate,
+   │ a closed or merged one, a fork head, a PR at another head or base, a branch moved, missing or in another
+   │ repository after a confirmed push, and an unreadable remote are not reconciled. The read only reports; the core
+   │ decides and does not rely on the read's filter. On the push path an absent branch with no candidate is the read
+   │ showing the push absent, effect none (R24, R29). publication-incomplete is audited publication.incomplete with
+   │ the remote branch, whether the push was confirmed, what was found and the observation itself, and is never
+   │ CANCELLED; publication-failed means nothing was pushed, so a pending cancel ends the task CANCELLED instead.
    ▼
 REVIEW_HANDOFF (projectTaskState WAITING_FOR_HUMAN_REVIEW) ─▶ CLEANUP ─▶ done
 
@@ -252,8 +270,10 @@ Any phase + cancel → CANCELLING (finish an open critical unit, and once a push
    reap, quarantine, recordAttemptOutcome('cancelled'), releaseLease) → CANCELLED. Assurance, repair planning and
    approval waits are interrupted at once. A cancel never finalizes while a publication unit is unreconciled: an
    effect reported unknown is reconciled against the remote first, and if the publication cannot reconcile under
-   the identity predicate (the PR upsert failed, the remote does not match the attempt, or the reconciliation read
-   failed) the task ends FAILED (publication-incomplete), not CANCELLED (R21, R24, R27).
+   the identity predicate (the PR upsert failed with effect none, the remote is not exactly the attempt's, or the
+   reconciliation read failed) the task ends FAILED (publication-incomplete), not CANCELLED (R21, R24, R27, R31). A
+   PR upsert that fails with an unknown effect and reconciles under the predicate continues as a successful upsert,
+   so the cancel then ends the task CANCELLED with the PR left open and audited.
 Any phase boundary + pause → PAUSED (lease renewed by timer; pause timeout → reap → quarantine →
    recordAttemptOutcome('cancelled') → releaseLease → BLOCKED). A pause never splits a critical unit, nor push
    from its PR upsert. While the task waits for an approval no request is in flight, so a pause applies at once:
@@ -266,17 +286,43 @@ abandon, exhaustion, verification stop, assurance `BLOCK`, review handoff, any c
 interpreter runs effects in order, each to completion before the next starts (`types.ts` effects), so the outcome
 activity's result is received before the release starts; if the outcome write fails, the release never runs and the
 lease expires to the janitor (§4.3). The outcome write presents the caller's fence, the lease identity the workflow
-got from `acquireLease`, never the current epoch read from the database (R23). The core refuses to emit a release
-for an attempt whose outcome is not recorded, and the property test checks the order per attempt.
+got from `acquireLease` (or from `findLease`, below), never the current epoch read from the database (R23). The core
+carries the fence as opaque data: `acquireLease` and `findLease` return it, and `recordAttemptOutcome` and
+`releaseLease` carry it. The core refuses to emit a release for an attempt whose outcome is not recorded, and refuses
+to record a terminal for an attempt whose lease acquisition was requested but not settled; the property test checks
+the order and the fence per attempt.
 
 **Attempts that never held a lease (R28 pre-lease rule).** An attempt that is registered and never leased records
 its terminal with `fence: null`, and that terminal must be in the pre-lease allowlist `cancelled`,
-`infrastructure-failed`. The core's pre-lease paths today: a cancel accepted while `ensureAttempt` ran (`cancelled`);
-a pause that withheld `acquireLease`, ended by its timeout or a cancel (`cancelled`); `ensureAttempt` failed and
-`findAttempt` found the row (core-local `failed`, which S0 maps to `infrastructure-failed`; `cancelled` with a
-cancel pending). Two paths are not settled by the core alone and are open with the controller (review log, Review
-v5): `acquireLease` that fails or is aborted by a cancel, where the grant may have committed without the workflow
-receiving its fence; and a failed `findAttempt`, where a registered attempt gets no terminal at all.
+`infrastructure-failed`. The core's pre-lease paths: a cancel accepted while `ensureAttempt` ran (`cancelled`); a
+pause that withheld `acquireLease`, ended by its timeout or a cancel (`cancelled`); `ensureAttempt` failed and
+`findAttempt` found the row (core-local `failed`, which S0 maps to `infrastructure-failed`; `cancelled` with a cancel
+pending); and an `acquireLease` that failed or was aborted where `findLease` finds no lease (`failed`, or `cancelled`
+after an abort or with a cancel pending). No lease was ever requested on the first three, so no grant can exist.
+
+**Settling a failed or aborted lease acquisition (R29).** The grant may have committed although the activity failed
+or the cancel aborted it, and then the workflow never received the fence. So the core issues `findLease`, a
+non-cancellable read of the attempt's durable lease history, before any terminal:
+
+- **found:** the terminal is recorded with that lease's fence, the lease is released, and the attempt then ends as
+  an abandoned attempt (replaced only for a replaceable class) or, after an abort, the task ends `CANCELLED`;
+- **absent:** the terminal is written through `recordPreLeaseOutcome` with `fence: null`. That write is a request,
+  not an effect, because the slot may refuse it: R28 rule (3) accepts `fence: null` only while durable history shows
+  no lease. A refusal means a late grant committed between the lookup and the write, so `findLease` runs once more
+  and the terminal is recorded with the fence it finds, then the lease is released. This is bounded: once a terminal
+  is recorded, R28 rule (5) refuses every later grant, and a lease in history never disappears, so at most two
+  lookups happen. A second lookup that finds no lease contradicts that history and is treated as a failed lookup.
+
+**Attempt state unknown (R29).** When a lookup (`findAttempt` or `findLease`) fails after its retry policy, the store
+cannot be read, so the core cannot tell whether the attempt exists or whether it holds a lease. The task ends
+`FAILED / attempt-state-unknown`, also with a cancel pending, and emits no usage, outcome or release for that
+attempt. The audit row `attempt.state-unknown` carries the attempt number, the lookup that failed and the attempt's
+idempotency key, `<taskId>:attempt:<n>` (the natural key `(task_id, attempt_number)`, data model §5), for an operator
+to reconcile. The task result lists the attempt under `unrecordedAttempts` with the same key, and telemetry
+completeness reports it as a gap (exit L6). This is the single exception to "every terminal is recorded", and it
+exists only when the store cannot be read. A `recordPreLeaseOutcome` write that fails after its retries ends the same
+way: whether the terminal committed is then unknown too. The lease, if one was granted, is not released by the
+workflow; it expires, and the janitor sweeps it because the workflow is closed (§4.3).
 
 **Verification stops end the task.** A failed or errored mandatory verification is a deterministic result, and
 Phase 3 does not retry it with a new agent attempt or route it to an assurance round (R3). Infrastructure
@@ -349,8 +395,10 @@ sets an explicit `retry`, `startToCloseTimeout` and, where marked, `heartbeatTim
 |---|---|---|---|---|---|---|
 | `admitTask` | injected `admit(risk)`; default `admitRisk` (`risk-admission.ts:82`) | 30 s | — | 3 | pure | yes |
 | `ensureAttempt` | attempts repo (new natural key); returns the attempt id and its remote branch name (the Git adapter's attempt branch rule, `vertical-slice-workflow.ts:27`) | 30 s | — | 10 | `(task_id, attempt_number)` unique | **no**: a short registration write; a cancel waits for it (R21) |
-| `findAttempt` | attempts repo, read-only lookup after a failed `ensureAttempt` (R21, §4.1) | 30 s | — | 10 | `(task_id, attempt_number)` | no |
-| `acquireLease` | Phase 2 lease primitive (accepted shape, R1) | 30 s | — | 10 | per the primitive; invariants §7 | yes |
+| `findAttempt` | attempts repo, read-only lookup after a failed `ensureAttempt` (R21, §4.1); a failure after its retries ends the task `attempt-state-unknown` (R29) | 30 s | — | 10 | `(task_id, attempt_number)` | no |
+| `acquireLease` | Phase 2 lease primitive (accepted shape, R1); returns the caller's fence, which the core carries to the attempt's terminal write and release; a failure after its retries, or an abort by a cancel, leads to `findLease` (R29) | 30 s | — | 10 | per the primitive; invariants §7 | yes |
+| `findLease` | read-only lookup of the attempt's durable lease history after a failed or aborted `acquireLease`: the fence of the lease it holds or held, or none (R29, §4.1); at most two per attempt; a failure after its retries ends the task `attempt-state-unknown` | 30 s | — | 10 | the attempt's lease rows | **no**: it settles whether the attempt holds a lease before any terminal |
+| `recordPreLeaseOutcome` | Lane B `recordAttemptOutcome` with `fence: null`, for an attempt whose `findLease` found no lease (R28, R29); the result says whether the slot recorded it or refused it because durable history now shows a lease | 30 s | — | 10 | as `recordAttemptOutcome` | no |
 | `prepareWorkspace` | `WorkspaceManager.create` (create-or-adopt, CR-07) | 5 min | 30 s | 3 | `workspaces.attempt_id` unique | yes |
 | `storeAttemptInputs` | `ArtifactStore.put`; repair: `buildRepairContextPack(original, repairOrder)` (Lane B, pure) | 2 min | — | 5 | content address | yes |
 | `runAgent` | `agentStep` (`execute-task.ts:94`) with per-request caps (CR-25) | agent wall-clock + 5 min | 60 s | **1** | container `asep-agent-<attemptId>` (single run) | yes (aborts the provider; container reaped) |
@@ -359,18 +407,18 @@ sets an explicit `retry`, `startToCloseTimeout` and, where marked, `heartbeatTim
 | `commitAttempt` | `commitStep` (`pipeline-steps.ts:342`) + Phase 2 fence + HEAD CAS | 5 min | 30 s | 10 | side-effect `attemptId:commit` | **no**: critical unit 1 (commit + evidence binding) |
 | `persistEvidence` | `evidenceStep` (`pipeline-steps.ts:475`) | 5 min | 30 s | 10 | preallocated evidence id (adopt) | **no**: critical unit 1 |
 | `assuranceRound` | Lane B `runAssuranceRound(deps, input, ctx)` via the context adapter (§12) | 30 min | 60 s | 3 | Lane B hash-derived ids + `review_records` claim on the Phase 2 primitive (R1) | yes |
-| `recordAttemptOutcome` | Lane B `recordAttemptOutcome({events}, input, ctx)` (Lane A default until integration, §12); presents the caller's fence from `acquireLease`, `null` only for an attempt that never held a lease (R28); always before `releaseLease` (§4.1) | 30 s | — | 10 | deterministic event ids; `RunEventSink` conflict-by-bytes; identical redelivery is a no-op, a conflicting one fails non-retryably (R23) | no |
+| `recordAttemptOutcome` | Lane B `recordAttemptOutcome({events}, input, ctx)` (Lane A default until integration, §12); presents the caller's fence from `acquireLease` or `findLease`, `null` only for an attempt that never held a lease (R28, R29); always before `releaseLease` (§4.1) | 30 s | — | 10 | deterministic event ids; `RunEventSink` conflict-by-bytes; identical redelivery is a no-op, a conflicting one fails non-retryably (R23) | no |
 | `publishBranch` | `pushStep` (`pipeline-steps.ts:609`) + Phase 2 fence; result and failure report the publication effect (R24) | 5 min | 30 s | 20, backoff to 5 min | side-effect `attemptId:push`; remote ref | **no**: critical unit 2; once started, unit 3 also runs |
 | `upsertPullRequest` | `upsertPrStep` (`pipeline-steps.ts:692`) + Phase 2 fence; the PR's base is the task input's `baseBranch`, carried in the request; adapter create-conflict reconcile (CR-27); result and failure report the publication effect (R24) | 5 min | 30 s | 20, backoff to 5 min | side-effect `attemptId:pr-upsert`; PR head | **no**: critical unit 3 |
-| `reconcilePublication` | read-only remote read after an `unknown` publication effect: it reports what it observed, the attempt branch tip and the open PR for that head branch with its number, head branch, head SHA and base; the core applies the identity predicate (§4.1; the Phase 2 fenced forge of cycle 8, after the rebase; R24, R27) | 60 s | — | 20, backoff to 5 min | read-only | **no**: part of critical units 2 and 3 |
+| `reconcilePublication` | read-only remote read after an `unknown` publication effect: it reports what it observed, the attempt branch with its repository and tip, and every PR whose head branch is the attempt's branch with its number, head repository, head branch, head SHA, base repository, base branch, state and merged flag; the core applies the identity predicate (§4.1; the Phase 2 fenced forge of cycle 8, after the rebase; R24, R27, R31) | 60 s | — | 20, backoff to 5 min | read-only | **no**: part of critical units 2 and 3 |
 | `projectTaskState` / `projectAttemptState` | projection writer (§13) | 30 s | — | 50, backoff to 1 min | monotonic `projection_seq` | no |
 | `recordUsage` | budget ledger: attempt usage, recorded overrun, granted extension | 30 s | — | 10 | `(attempt_id, entry_kind)` / `<approvalRequestId>:extension` key | no |
 | `openApprovalRequest` / `verifyApprovalDecision` / `expireApprovalRequest` / `cancelApprovalRequest` | approvals repo; `cancelApprovalRequest` closes an opened gate when the task ends without a decision, so a late decision gets 409 | 30 s | — | 10 | `approval_requests.id` deterministic from workflow (§11) | no (short gate writes; the wait between them is cancellable) |
 | `recordControl` | audit + `human.intervention` run event for an accepted control, including a run `seal` (§9) | 30 s | — | 10 | `requestId` | no |
-| `recordAudit` | audit row for a workflow-detected event: slot contract violation, assurance unavailable, unverified decision, soft threshold, overrun incident, pause timeout, cancel after publication, incomplete publication, unreconciled attempt registration | 30 s | — | 10 | `<workflowId>:<seq>` | no |
+| `recordAudit` | audit row for a workflow-detected event: slot contract violation, assurance unavailable, unverified decision, soft threshold, overrun incident, pause timeout, cancel after publication, incomplete publication, attempt state unknown | 30 s | — | 10 | `<workflowId>:<seq>` | no |
 | `renewLease` | Phase 2 lease primitive renewal (invariant L2, §7) | 30 s | — | 5 | lease identity | yes |
 | `reapContainers` | `ExecutionReaper.reap` (CR-08) | 2 min | — | 10 | label `asep.attempt` | no |
-| `quarantineWorkspace` / `cleanupWorkspace` / `releaseLease` | Phase 2 ports via registry | 2 min | — | 10 | idempotent by id | no |
+| `quarantineWorkspace` / `cleanupWorkspace` / `releaseLease` | Phase 2 ports via registry; `releaseLease` presents the caller's fence | 2 min | — | 10 | idempotent by id | no |
 | `emitRunEvent` | `RunEventSink.append` (S0) | 30 s | — | 10 | `eventId = <workflowId>:<seq>` | no |
 
 **Error mapping.** The activity bridge converts these errors into `ApplicationFailure.nonRetryable` with
@@ -613,7 +661,7 @@ boundaries. Inbound forge webhooks do not exist; they were deferred in Phase 2 (
 | pause | Update `control` (`kind: pause`, `requestId`) via API | Takes effect at the next phase boundary. An in-flight activity is not interrupted. The workflow waits on `condition(() => !paused \|\| cancelRequested, pauseTimeout)` and runs a `renewLease` timer loop meanwhile. Projection becomes `PAUSED`. Repeating the same `requestId` is a no-op. Pausing a paused workflow returns `accepted: false` with reason `already-paused`. While the task waits for an approval no request is in flight, so the pause applies at once: projection `PAUSED`, pause timer started; a pause that arrives while the approval request is being opened or a decision verified applies when that request returns. The approval expiry timer is not suspended (R21, exit G14). |
 | resume | Update `control` (`kind: resume`) | Clears the flag and continues from the recorded phase. Projection returns to the phase's status, or to `WAITING_FOR_APPROVAL` while an approval request is still open. |
 | pause timeout | durable timer (policy `maxPauseHours`, default 72) | → reap, quarantine, `recordAttemptOutcome('cancelled')`, release, `BLOCKED` (`reason: pause-timeout`), audit; an open approval request is closed with `cancelApprovalRequest`. |
-| cancel | Temporal workflow cancellation through the API | Each operation that needs reconciliation is its own **critical unit** (R17, P3-PLAN2-HIGH-003): (1) commit plus evidence binding, (2) push, (3) PR upsert. A cancel that arrives inside a unit is processed when that unit has reconciled and its records are complete, so cancellation never leaves `PENDING` records. A cancel before push starts ends the task with nothing published. A cancel after push has started completes push and then PR upsert, so the remote ends either with no ASEP branch or with the branch and its PR. A publication effect reported `unknown` is reconciled against the remote first, under the identity predicate of §4.1 (R24, R27). If the PR upsert fails after its retry policy, or the publication cannot reconcile, the cancel does not finalize: the task ends `FAILED / publication-incomplete`, and the audit row names the remote branch left without a PR for a human to reconcile (R21, exit G13). Assurance rounds, repair planning and approval waits are not critical: a cancel interrupts them at once (the assurance activity receives it on its `AbortSignal`; an open approval request is closed with `cancelApprovalRequest`). During `runAgent` or `runVerification` the cancellation reaches the activity's `AbortSignal`. The provider or runner then kills its process group, and the cleanup scope reaps the attempt's containers by label. Then the cleanup scope quarantines the workspace, records the `cancelled` outcome, releases the lease and projects `CANCELLED` (§4.1: outcome before release). A published PR is **left open** for a human (the harness never deletes remote refs; Phase 2 RefSafetyPolicy forbids deletion). Cancellation after publication is audited with the PR reference. |
+| cancel | Temporal workflow cancellation through the API | Each operation that needs reconciliation is its own **critical unit** (R17, P3-PLAN2-HIGH-003): (1) commit plus evidence binding, (2) push, (3) PR upsert. A cancel that arrives inside a unit is processed when that unit has reconciled and its records are complete, so cancellation never leaves `PENDING` records. A cancel before push starts ends the task with nothing published. A cancel after push has started completes push and then PR upsert, so the remote ends either with no ASEP branch or with the branch and its PR. A publication effect reported `unknown` is reconciled against the remote first, under the identity predicate of §4.1 (R24, R27, R31). Only a publication that cannot be reconciled under that predicate keeps the cancel from finalizing: a PR upsert that fails with effect `none`, a remote that is not exactly the attempt's (no PR after a confirmed push, several candidates, a closed, merged, fork-head or otherwise different PR, a moved or missing branch), or a failed reconciliation read. Then the task ends `FAILED / publication-incomplete`, and the audit row names the remote branch and what was found for a human to reconcile (R21, exit G13). A PR upsert that fails with an `unknown` or `applied` effect and reconciles under the predicate is a completed upsert, so the cancel finalizes `CANCELLED` with the PR left open. A cancel that aborts `acquireLease` first settles the lease with the non-cancellable `findLease` (§4.1, R29); a lookup that fails ends the task `FAILED / attempt-state-unknown`, never `CANCELLED`. Assurance rounds, repair planning and approval waits are not critical: a cancel interrupts them at once (the assurance activity receives it on its `AbortSignal`; an open approval request is closed with `cancelApprovalRequest`). During `runAgent` or `runVerification` the cancellation reaches the activity's `AbortSignal`. The provider or runner then kills its process group, and the cleanup scope reaps the attempt's containers by label. Then the cleanup scope quarantines the workspace, records the `cancelled` outcome, releases the lease and projects `CANCELLED` (§4.1: outcome before release). A published PR is **left open** for a human (the harness never deletes remote refs; Phase 2 RefSafetyPolicy forbids deletion). Cancellation after publication is audited with the PR reference. |
 | run-level pause/resume/cancel | Update on `runWorkflow` | Forwarded to the active child (signal for pause/resume, scope cancellation for cancel). No new child starts while the run is paused. |
 | run seal | Update `control` (`kind: seal`, target run) via API | No new task submission afterwards. The run completes once no task is open, whatever `maxTasks` says (§4.2). Seal does not resume a paused task. Drain seals every open run and reports the runs a paused task holds open as blocking items for an operator (§6.6, R24). |
 
@@ -877,12 +925,15 @@ What the fixed block is known to bring (R18), and what Lane A does with it:
   | budget exhaustion: the adapter stopped the agent at a cap, or usage overran a cap (§10) | `budget-exhausted` |
   | abandonment (agent failure, overstep, worker death), an incomplete publication, and any other non-review stop | `failed` |
   | an attempt found registered after a failed `ensureAttempt` (never leased) | `failed` (S0: `infrastructure-failed`) |
+  | an attempt whose `acquireLease` failed and `findLease` found no lease (never leased) | `failed` (S0: `infrastructure-failed`); `cancelled` after an abort or with a cancel pending |
   | cancel and pause timeout | `cancelled` |
 
   Every terminal of an attempt that held a lease is recorded with the caller's fence before the lease is released
   (§4.1). An attempt that never held a lease records `fence: null`, and only with a terminal of the pre-lease
   allowlist `cancelled` or `infrastructure-failed` (R28); S0 maps the core's local names onto the block's, and the
-  pre-lease row above onto `infrastructure-failed`.
+  pre-lease rows above onto `infrastructure-failed`. The one attempt that gets no terminal is one whose state the
+  store could not tell (`attempt-state-unknown`, §4.1, R29): it is reported as a telemetry gap with its idempotency
+  key, never hidden.
 
   It is the only emitter of `attempt.declared_complete` and `attempt.completed`. So the false-completion metric
   covers every attempt, and no event is counted twice when Lane B's implementation replaces the default.
@@ -937,7 +988,7 @@ no push record exists; it never proceeds on a missing worktree. A test runs two 
   `workflow.seal`, `approval.request`, `approval.decide`, `approval.deliver`, `approval.expire`, `budget.threshold`,
   `budget.extend`, `budget.overrun`, `side-effect.takeover`, `workspace.quarantine`, `review-slot.contract-violation`,
   `assurance-unavailable`, `approval.unverified`, `workflow.pause-timeout`, `workflow.cancel.after-publication`,
-  `publication.incomplete`, `attempt.registration-unreconciled`.
+  `publication.incomplete`, `attempt.state-unknown`.
   Workflow-detected events are written by the `recordAudit` activity (§5).
 - **RunEvents** (persisted through `RunEventSink` into `run_events`, validated against `run-event` 1.2.0, S0).
   - Lane A emits: `run.started`, `task.started`, `attempt.started`, `verification.completed`, `task.completed`,
