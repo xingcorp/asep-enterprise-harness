@@ -1177,3 +1177,244 @@ guarantee as above, names its residuals, and records the pilot risk as R0.
   Each bound is now named and sized from the measurements; the production
   bounds (`claude-provider.ts:110`, `container-teardown.ts:42`) never fired.
 
+---
+
+## Final review cycle 9 dispositions
+
+> Reviewer: Codex `gpt-6.1-sol`, re-review cycle 9 at `a447983`
+> (`phase-02-final-rereview-codex-v9.md`), verdict **REQUEST_CHANGES** @ 0.99.
+> The controller's decisions on it (reconciliation R35) were applied as
+> stated. Repairs: repair cycle 10, on `phase/02-single-agent-vertical-slice`
+> from `a447983`. Every disposition, repair, test and mutation check below
+> was made and verified by the implementer only; none has been independently
+> reviewed. A mutation check applies each mutant to the source, rebuilds,
+> runs the named suites and reverts the mutant; "killed" means at least one
+> named test failed (a mutant that does not compile is not counted).
+
+### What the review accepted, and what it did not
+
+The review marked **RESOLVED**: HIGH-001, HIGH-002, HIGH-003, HIGH-004,
+HIGH-005, HIGH-007, HIGH-008, HIGH-009, MED-001, MED-002, MED-003, MED-004,
+MED-006, MED-NEW-001..004, CYCLE5-PROVENANCE, CYCLE5-PILOT-TEST,
+CYCLE7-HIGH-001, CYCLE7-HIGH-002, CYCLE7-HIGH-004..007, CYCLE7-MED-001..004,
+CYCLE8-HIGH-001, CYCLE8-HIGH-002, CYCLE8-HIGH-004, the `--net` alias and R26.
+
+It found **PARTIAL**: HIGH-006, MED-005, CYCLE7-HIGH-003, CYCLE8-HIGH-003 and
+the timeout work, and raised CYCLE9-HIGH-001 (a closed or merged PR was
+completed and recorded `OPEN`), CYCLE9-HIGH-002 (the integration gate was red
+at the reviewed head), CYCLE9-MED-001 (timing assertions no longer proved a
+prompt stop), CYCLE9-MED-002 (the documents gave the push compare-and-set a
+guarantee that comes from harness pinning) and CYCLE9-LOW-001 (a blank line
+at the end of this file). Of the declared limitations it accepted the R30
+model for (a) but not the reconciliation guarantee as stated, accepted (b)
+fail-closed for Phase 2, and (c) for a pilot-pending verdict. It also showed
+that the resume fixtures could not tell the attempt's base from `main`, that
+a reference column outside the naming convention, the registry and the
+foreign keys escapes the three-way test, and that the crash-takeover executor
+child does not carry the wasm flag.
+
+### Summary
+
+| ID | Disposition | Commits |
+|---|---|---|
+| CYCLE9-HIGH-001 | ACCEPTED — fixed; the reviewer's probes are tests | `a9da83f` |
+| Resume base | ACCEPTED — fixtures on `release/2`; the resume reads the base from the binding row | `a9da83f` |
+| CYCLE9-HIGH-002 | ACCEPTED — the hung-agent test measures the interval the product bounds; the 80.8 s run explained as far as its log allows (below) | `9fc9a30` |
+| CYCLE9-MED-001 | ACCEPTED — interval assertions against named product bounds, no 5-minute allowances | `9fc9a30` |
+| CYCLE9-MED-002 | ACCEPTED — data model, threat model and runbook restated; report in the docs commit | `d45794c` |
+| Schema reference detection | accepted limitation (R35); convention documented | `bcbafc1` |
+| R26 scope | accepted (R35); note where `nodeTestArgs()` is defined | `bcbafc1` |
+| CYCLE9-LOW-001 | fixed | docs commit |
+| MED-005 | report updated | docs commit + sentinel |
+
+Also: `0554860` adds the cycle-9 transcript with its provenance note.
+
+### CYCLE9-HIGH-001 — a closed or merged PR completed to review and was recorded OPEN — ACCEPTED
+
+**Invariant:** only an open, unmerged PR on the attempt's base is a
+publication under review. Nothing completes to `WAITING_FOR_HUMAN_REVIEW` or
+writes a `pull_requests` row for any other PR, the harness never reopens,
+retargets or edits it, and the task fails on record with what was found.
+**Change (`a9da83f`):**
+- *Port.* `PullRequestRef` gains `state?: 'open' | 'closed'` and `merged?`.
+  `upsertPullRequest` opens the PR on the base given, or updates the title
+  and body of the open PR on that base; a PR for the head that is closed,
+  merged or on another base is returned as found. `findPullRequest` returns
+  the PR open, closed or merged, with its state.
+- *GitHub adapter.* State and merged come from the pulls API (a listed PR
+  reports a merge by `merged_at`, create and update responses by `merged`).
+  The open PR for a head wins over an older closed one. The upsert returns a
+  closed, merged or other-base PR untouched and no longer sends a base on
+  update. The port passes state and merged through. The local double holds
+  PRs the same way and gains `closePullRequest` and `retargetPullRequest`.
+- *Application.* `pullRequestGap(pr, facts)` names what makes a PR
+  unreviewable: merged, closed, a state or merged flag the forge did not
+  report (fail closed), or another base. `reconcilePullRequestStep` writes
+  nothing to such a PR and reports the gap; the base is no longer repaired.
+  `completeToReview` asks the forge for an adopted PR's state and stops with
+  the gap. The fresh workflow and `resumeAttemptToReview` fail the task on a
+  gap: one `task.status.transition` audit entry with detail `{to: 'FAILED',
+  outcome: 'publication-incomplete', reason, found: {number, url, headBranch,
+  baseBranch, state, merged}, expectedBase, commitSha}`, the attempt's commit
+  and evidence recorded, no PR row. A resumed task already under review is
+  left there. The resume reads the attempt's base from the binding row
+  (`ResumeAttemptRepositories.bindings`) instead of `ResumeAttemptInput.base`,
+  which the composition root had defaulted to `main`.
+- *Verifier.* A PR row whose state is not `OPEN` is refused; so is a live PR
+  that is merged, closed, of unreported state or merged flag, or whose base is
+  not the recorded base. The resolver returns the row's base and state and
+  the live PR's base, state and merged flag.
+**Tests:**
+- The reviewer's `CYCLE9_CLOSED_PR`, through the GitHub adapter, its port and
+  the real resume (`crash-recovery.test.ts`, "through the GitHub adapter and
+  port, a successor over a PR a human closed|merged fails the task and writes
+  nothing"): merged false and true, the PR found by its head after the crash;
+  `publication-incomplete`, task `FAILED`, no GitHub write, the PR exactly as
+  the human left it, no PR row, one audit row naming the PR found.
+- The same over the local forge for a closed, a merged and a retargeted PR,
+  with the exact audit detail, and a second resume `not-resumable`; "a run
+  whose head branch already has a closed PR fails the task on record and
+  opens nothing" for the fresh path; the local forge never reopens, retargets
+  or edits such a PR.
+- `CYCLE9_VERIFIER_CLOSED_PR` (`verify-pilot-manifest.test.ts`, "a live PR
+  that is closed, merged or on another base is rejected"): closed, merged,
+  `release/2`, state unreported, merged unreported, and a `CLOSED` row. The
+  resolver reports the live state and the row's base and state
+  (`authority-resolver-sql.test.ts`).
+- `resume-attempt.test.ts`: fixtures on base `release/2`; closed, merged and
+  other-base PRs fail the task with the exact audit detail, no PR row and no
+  forge write; a stateless PR fails closed; a task under review stays there;
+  the PR is opened on the attempt's base. `pipeline-steps.test.ts`: the gap
+  cases, reconcile writes nothing to an unreviewable PR, `completeToReview`
+  stops on one and asks the forge for an adopted PR's state.
+  `github-app.test.ts`: lookups report state and merged; an upsert never
+  reopens, edits or duplicates a closed or merged PR and never retargets or
+  edits one on another base; the open PR wins over an older closed one.
+**Mutation check:** 26 mutants, all killed: gap ignores merged; gap ignores
+state; gap ignores base; reconcile writes to an unreviewable PR; completion
+ignores the gap; fresh run does not fail the task; resume ignores the gap
+(persists `OPEN`); resume fails a task already under review; resume facts
+hard-code base `main` (the reviewer's mutant); resume base hard-coded `main`;
+adapter upsert writes a closed PR; adapter upsert edits a PR on another base;
+adapter drops state; adapter ignores `merged_at`; adapter picks the newest
+over the open PR; port lookup drops state; port upsert drops state; local
+double edits a closed PR; verifier accepts a merged, a closed, an
+unreported-merged and an other-base live PR (4); verifier accepts a non-`OPEN`
+row; resolver drops the live state; resolver drops the row's base; resolver
+drops the row's state.
+**Note:** the domain allows `VERIFYING → FAILED`, but the persisted task row is
+`PENDING` until the workflow writes its terminal state (the success path
+writes `WAITING_FOR_HUMAN_REVIEW` over it the same way), so the failure is
+written from the persisted status without a domain transition check.
+`policies/failure-taxonomy.yaml` has no publication class and is unchanged;
+the outcome is the audit detail.
+
+### CYCLE9-HIGH-002, CYCLE9-MED-001 — elapsed time instead of the bounded interval — ACCEPTED
+
+**Invariant:** a timing assertion measures an interval the product bounds,
+from the product's own signal, against a bound named from the product's
+timers plus a stated scheduling allowance; setup is never part of it.
+**Change (`9fc9a30`):**
+- `ClaudeProviderConfig.observeLifecycle` receives each moment of an attempt:
+  `started` (with its deadline), `network-ready`, `proxy-ready`,
+  `agent-started`, `stop` (reason `timeout`, `aborted` or `violation`),
+  `agent-killed`, `agent-exited`, `agent-removed`, `torn-down`. It is called
+  synchronously; what it does or throws changes nothing.
+- `DOCKER_CALL_TIMEOUT_MS = 30_000` names the docker-caller bound
+  (`container-teardown.ts`); the provider's own docker calls, 60 s before,
+  use it too. `AGENT_STOP_BOUND_MS = 2 × DOCKER_CALL_TIMEOUT_MS`: from the
+  stop, the agent container is killed by name and removed by name.
+- The command runner gets an optional observer (`spawned`, `stop`, `killed`,
+  `exited`, `removed`) and `COMMAND_STOP_BOUND_MS = DOCKER_CALL_TIMEOUT_MS`.
+**Tests:** a shared assertion in `agent-claude.test.ts` and
+`agent-sandbox.itest.ts`: the stop has the expected reason; it came no
+earlier than it was due and at most `SCHEDULING_ALLOWANCE_MS` (2 s) after —
+due is the deadline (or agent start when setup outlasted it) for the wall
+clock, the moment the test delivered the cancellation for an abort; and the
+agent was removed at most `AGENT_STOP_BOUND_MS` + 2 s after the stop. The
+wall-clock, cancellation and hung-agent tests use it; violation stops assert
+the reason and the removal bound; agents that end on their own assert no stop
+and removal within one docker call; the killed-client integration test
+asserts no stop, the client's end within the allowance of the kill and
+removal within one docker call. New: "a docker kill that never answers is cut
+at its bound, and the agent is still removed in time" (the kill cut between
+30 s and 30 s + 2 s after the stop); "the lifecycle observer sees each moment
+of an attempt in order, and one that throws changes nothing"; the runner's
+equivalent. The command runner's in-container timeout test asserts its timer
+fired when due and the command stopped within one docker call, instead of a
+60 s total. The 2 s allowance: every wall-clock stop below came at most 4 ms
+after its deadline. The hung-agent integration budget is 45 s (setup took
+up to 19.1 s under the heaviest load below); each integration test prints its
+timeline to the gate log.
+**Mutation check:** 8 mutants, all killed: wall-clock stop 5 s late;
+wall-clock stop early (half the remaining budget); cancellation acted on 5 s
+late; stop delayed past the product bound (by `AGENT_STOP_BOUND_MS` + 5 s);
+docker calls bounded at 120 s instead of 30 s; agent container not removed by
+name; a stop that never kills the container; the runner's timeout 5 s late.
+
+**Where the 80.8 s went.** At `a447983` the test measured from just before
+`execute()` to its assertion, with a 9 s budget whose deadline counts from
+the start of `execute()`, setup included. Run 1's log records only the total
+(80.8 s) and that the status (`BUDGET_EXHAUSTED`) and the wall-clock note
+passed, so setup finished before the deadline (otherwise the proxy's start
+timer fails the attempt `FAILED` in setup) and the deadline stopped the agent;
+about 72 s therefore went to the stop and teardown. That path was bounded only
+by docker-call timeouts: `docker kill` of the agent (60 s), its `rm -f`
+(60 s), the proxy's kill (30 s) and up to 5 s for its client, the proxy's
+`rm -f` (60 s), a container sweep of up to 20 tries, `network rm` (60 s) and
+a network sweep of up to 5 tries — far above 72 s. The 60 s total the test
+asserted was below the product's own bound. Run 1 has no per-phase
+timestamps, so which call took the time is not recorded. Reproductions here,
+with the new timeline (times after the stop):
+
+| Load | Setup | Stop after due | Agent removed | Torn down |
+|---|---|---|---|---|
+| idle, load average 3 | 0.35 s | 3 ms | 0.18 s | 0.61 s |
+| 24 host and 4 VM CPU burners, 2 container-churn loops, load average 37–79 (2 runs) | 3.0–3.5 s | 1–4 ms | 0.92–1.28 s | 3.6–4.0 s |
+| the same plus 6 container-churn and 6 network-churn loops, load average 60–106 (2 runs) | 13.4–19.1 s | 3 ms | 2.9–4.7 s | 11.4–12.3 s |
+| full integration gate under 24 host and 4 VM burners, 2 container- and 2 network-churn loops, load average 28–112 | 5.6 s | 3 ms | 1.5 s | 5.5 s |
+
+No reproduction came near 72 s after the deadline. The heaviest setup (19.1 s)
+would have outlasted the old 9 s budget and failed the attempt in setup. In
+the same run 1, the command runner's cancellation-and-normal-exit test took
+71.6 s, which fits
+a window in which daemon calls ran towards their client timeouts; that is an
+inference from the log, not an observation. With the new assertions a stop
+delayed within the product's bounds passes and its timeline shows where the
+time went; a stop delayed beyond them fails.
+
+### CYCLE9-MED-002 — the documents credited the compare-and-set with the pinning guarantee — ACCEPTED
+
+**Change (`d45794c`, and the report in the docs commit):** the data model,
+threat model (T2-01, T2-17, closing summary), runbook (§3.4) and report say:
+the lease conditions only on the branch's current value — expecting absence
+it accepts any SHA while the branch is absent, expecting the current value it
+accepts an update to any SHA; that only the attempt's commit lands comes from
+the harness always pushing the attempt's pinned commit; the compare-and-set
+makes a stale push of a different SHA fail once the branch exists. The
+reconciliation claims match CYCLE9-HIGH-001: only an open PR on the attempt's
+base is rewritten; a closed, merged or retargeted PR fails the task on record
+and is left as found; the runbook says what an operator sees and what the
+verifier requires. The cycle-8 dispositions above keep their original wording
+as the record of that cycle.
+
+### Schema reference detection — accepted limitation
+
+Per R35. The data model states the convention (`bcbafc1`): every artifact
+reference column is named `<name>_artifact_id` or listed in
+`artifact_reference_columns`; the three-way test enforces agreement for every
+column it can find by name, registry or foreign key, and cannot find a column
+with none of the three. No database constraint ties the registry to the
+schema.
+
+### R26 scope — accepted
+
+Per R35. `scripts/lib/node-test-flags.mjs` now says that a test's own child
+process decides its flags, that a child loading PGlite must carry the flag,
+and that none does: the crash-takeover executor runs against the integration
+gate's real PostgreSQL and registers no tests (`bcbafc1`).
+
+### CYCLE9-LOW-001 — trailing blank line — fixed
+
+The blank line at the end of this file is gone; `git diff --check` over the
+cycle exits 0.
