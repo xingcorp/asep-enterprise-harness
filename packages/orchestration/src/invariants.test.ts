@@ -443,10 +443,17 @@ function checkTrace(input: TaskCoreInput, trace: TaskTrace, label: string): void
   // One-PR-per-task.
   assert.ok(reqs.filter((r) => r.kind === 'publishBranch').length <= 1, `${label}: at most one push`);
 
-  // Every request that names the PR's base takes it from the task input, never from a default or another request.
+  // Every publication request takes the repository and the PR's base from the task input, never from a default or
+  // another request.
   for (const r of reqs) {
-    if (r.kind === 'upsertPullRequest') assert.equal(r.baseBranch, input.baseBranch, `${label}: the PR upsert targets the input's base`);
-    if (r.kind === 'reconcilePublication') assert.equal(r.expectedBaseBranch, input.baseBranch, `${label}: the reconciliation expects the input's base`);
+    if (r.kind === 'upsertPullRequest') {
+      assert.deepEqual(r.repository, input.repository, `${label}: the PR upsert writes to the input's repository`);
+      assert.equal(r.baseBranch, input.baseBranch, `${label}: the PR upsert targets the input's base`);
+    }
+    if (r.kind === 'reconcilePublication') {
+      assert.deepEqual(r.repository, input.repository, `${label}: the reconciliation reads the input's repository`);
+      assert.equal(r.expectedBaseBranch, input.baseBranch, `${label}: the reconciliation expects the input's base`);
+    }
   }
   assert.ok(reqs.filter((r) => r.kind === 'upsertPullRequest').length <= 1, `${label}: at most one PR upsert`);
 

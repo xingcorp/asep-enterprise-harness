@@ -981,6 +981,7 @@ function upsertPullRequest(step: Step): void {
   issue(step, {
     kind: 'upsertPullRequest',
     attemptNumber: plan.attemptNumber,
+    repository: step.s.input.repository,
     baseBranch: step.s.input.baseBranch,
     flagged: plan.flagged,
     prBodySectionRef: plan.prBodySectionRef,

@@ -260,6 +260,8 @@ export type TaskRequest =
   | {
       readonly kind: 'upsertPullRequest';
       readonly attemptNumber: number;
+      /** The binding repository the PR is opened in: the task input's repository. */
+      readonly repository: ForgeRepository;
       /** The PR's base: the task input's base branch. */
       readonly baseBranch: string;
       readonly flagged: boolean;

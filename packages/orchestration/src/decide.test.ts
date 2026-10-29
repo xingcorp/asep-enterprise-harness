@@ -2074,6 +2074,21 @@ test('publication: a task based on another branch publishes and reconciles again
   }
 });
 
+test('publication: every publication request names the input\'s repository, never a default', () => {
+  // The reviewer's NONDEFAULT_REPOSITORY: the PR upsert and both reconciliation reads take the repository from the
+  // task input; a request that named another repository would read or write somewhere else.
+  const repository: ForgeRepository = { id: 31337, owner: 'different-org', name: 'different-repo' };
+  for (const [failing, order] of [
+    ['publishBranch', ['reconcilePublication', 'upsertPullRequest']],
+    ['upsertPullRequest', ['upsertPullRequest', 'reconcilePublication']],
+  ] as const) {
+    const trace = runTaskSequentially(baseInput({ repository }), scripted({ [failing]: publicationFails('unknown') }));
+    const named = requests(trace.commands).flatMap((r) => (r.kind === 'upsertPullRequest' || r.kind === 'reconcilePublication' ? [[r.kind, r.repository]] : []));
+    assert.deepEqual(named, order.map((kind) => [kind, repository]), `after a failing ${failing}`);
+    assertPublished(trace, 7, false);
+  }
+});
+
 test('publication: the reconciliation continues the publication unit; a pause does not withhold it', () => {
   const trace = runTaskSequentially(baseInput(), scripted({ publishBranch: publicationFails('unknown') }, {
     eventsDuring: (request) => (request.kind === 'publishBranch' ? [pause()] : []),
