@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { AdjudicationInputError, adjudicate, type Adjudication, type AdjudicationInput, type ReviewInput } from './adjudication.js';
 import { sha256Hex } from './canonical-json.js';
 import { parseUnifiedDiff } from './diff.js';
-import type { ScannerRun } from './checks.js';
+import { readSarif, type ScannerRun } from './checks.js';
 import { findingFingerprint, type CheckFinding } from './findings.js';
 import type { ReviewFindingRecord } from './local-types.js';
 import type { PriorFindingClaimOutput } from './prompt.js';
@@ -575,7 +575,14 @@ test('a SARIF finding blocks until a scanner recheck proves it gone or a human c
     lineStart: 2,
     lineEnd: 2,
   };
-  const clean: ScannerRun = { checkId: 'semgrep', tool: 'semgrep', toolVersion: '1.90.0', rules: ['js.eval-use'], executionSuccessful: true };
+  const clean: ScannerRun = {
+    checkId: 'semgrep',
+    tool: 'semgrep',
+    toolVersion: '1.90.0',
+    executionSuccessful: true,
+    effectiveRules: ['js.eval-use'],
+    scannedFiles: ['src/feature.ts'],
+  };
   const base = reReview({ comparator: [{ ...RESOLVED, priorFindingId: 'prior-sarif' }] });
   const round = (
     scannerRuns: readonly ScannerRun[],
@@ -606,10 +613,12 @@ test('a SARIF finding blocks until a scanner recheck proves it gone or a human c
     ['another version', round([{ ...clean, toolVersion: '1.91.0' }])],
     ['a run with no version', round([{ ...clean, toolVersion: null }], { scannerVersion: null })],
     ['no version recorded with the finding', round([clean], { scannerVersion: null })],
-    ['the rule not declared', round([{ ...clean, rules: ['js.other'] }])],
+    ['the rule not run', round([{ ...clean, effectiveRules: ['js.other'] }])],
+    ['the file not scanned', round([{ ...clean, scannedFiles: ['src/util.ts'] }])],
+    ['the rule run and the file scanned by different runs', round([{ ...clean, scannedFiles: [] }, { ...clean, checkId: 'semgrep-2', effectiveRules: [] }])],
     ['a run that did not complete', round([{ ...clean, executionSuccessful: false }])],
     ['another scanner', round([{ ...clean, tool: 'codeql' }])],
-    ['another run of the scanner failed', round([clean, { ...clean, checkId: 'semgrep-2', rules: [], executionSuccessful: false }])],
+    ['another run of the scanner failed', round([clean, { ...clean, checkId: 'semgrep-2', effectiveRules: [], executionSuccessful: false }])],
   ];
   for (const [label, record] of failures) {
     assert.deepEqual(decided(record), ['OPEN', 'unchanged', 'REPAIR'], label);
@@ -633,15 +642,76 @@ test('a SARIF finding blocks until a scanner recheck proves it gone or a human c
   assert.deepEqual(decided(stillThere), ['OPEN', 'unchanged', 'REPAIR']);
   assert.deepEqual(stillThere.blocking.map((b) => b.findingRef), [`sarif:semgrep#${sarifRecord.fingerprint}`]);
 
-  // The proof: the same scanner at the recorded version declared the rule, every invocation
-  // completed, and the result is gone.
-  const proven = round([clean, { ...clean, checkId: 'semgrep-2', rules: [] }]);
+  // The proof: a run of the same scanner at the recorded version ran the rule over the file,
+  // every invocation completed, and the result is gone.
+  const proven = round([clean, { ...clean, checkId: 'semgrep-2', effectiveRules: [] }]);
   assert.deepEqual(decided(proven), ['VERIFIED', 'scanner-recheck', 'PROCEED']);
   assert.deepEqual(proven.blocking, []);
   // A finding a human already settled stays settled.
   for (const state of ['VERIFIED', 'CLOSED', 'REFUTED'] as const) {
     assert.deepEqual(decided(round([], { state })), [state, 'unchanged', 'PROCEED'], state);
   }
+});
+
+test('a SARIF recheck needs effective execution and coverage', () => {
+  // The scanner's own log is the only evidence: it is read by the real SARIF reader and the
+  // recheck decided from what it proves.
+  const prior: ReviewFindingRecord = {
+    id: 'prior-sarif',
+    source: 'sarif',
+    raisedBy: 'sarif:semgrep',
+    fingerprint: findingFingerprint({ category: 'SECURITY', file: 'src/feature.ts', lineStart: 2, ruleId: 'js.eval-use' }),
+    severity: 'HIGH',
+    category: 'SECURITY',
+    evidence: '[js.eval-use] eval() on user input',
+    requiredFix: 'Resolve the Semgrep result js.eval-use reported by check semgrep',
+    grounded: true,
+    lifecycleState: 'OPEN',
+    ruleId: 'js.eval-use',
+    file: 'src/feature.ts',
+    lineStart: 2,
+    lineEnd: 2,
+  };
+  const recheck = (over: { readonly rule?: Record<string, unknown>; readonly invocation?: Record<string, unknown>; readonly artifacts?: unknown } = {}) => {
+    const log = {
+      version: '2.1.0',
+      runs: [
+        {
+          tool: { driver: { name: 'semgrep', version: '1.90.0', rules: [{ id: 'js.eval-use', ...over.rule }] } },
+          invocations: [{ executionSuccessful: true, ...over.invocation }],
+          artifacts: over.artifacts ?? [{ location: { uri: 'src/feature.ts' }, roles: ['analysisTarget'] }],
+          results: [],
+        },
+      ],
+    };
+    const read = readSarif({ checkId: 'semgrep', content: new TextEncoder().encode(JSON.stringify(log)) });
+    const base = reReview({});
+    const record = adjudicate({
+      ...base,
+      checks: { ...base.checks, findings: [...base.checks.findings, ...read.findings], scannerRuns: read.runs },
+      priorFindings: [{ record: prior, waiverExpiresAt: null, scannerVersion: '1.90.0' }],
+    }).record;
+    return [record.closureDecisions[0]!.effectiveState, record.closureDecisions[0]!.rule, record.outcome, record.blocking.map((b) => b.findingRef)];
+  };
+  const unproven = ['OPEN', 'unchanged', 'REPAIR', ['prior:prior-sarif']];
+
+  // The positive control: the rule ran over the file and reported nothing.
+  assert.deepEqual(recheck(), ['VERIFIED', 'scanner-recheck', 'PROCEED', []]);
+  // The four ways the log fails to prove it (the review's probe is the second).
+  assert.deepEqual(recheck({ rule: { defaultConfiguration: { enabled: false } } }), unproven, 'disabled by default configuration');
+  assert.deepEqual(
+    recheck({ invocation: { ruleConfigurationOverrides: [{ descriptor: { id: 'js.eval-use' }, configuration: { enabled: false } }] } }),
+    unproven,
+    'disabled by override',
+  );
+  assert.deepEqual(
+    recheck({ invocation: { toolExecutionNotifications: [{ level: 'error', message: { text: 'rule crashed' }, associatedRule: { id: 'js.eval-use' } }] } }),
+    unproven,
+    'rule-failure notification',
+  );
+  assert.deepEqual(recheck({ artifacts: [{ location: { uri: 'src/util.ts' }, roles: ['analysisTarget'] }] }), unproven, 'file not scanned');
+  // A log that lists no artifacts proves no coverage either.
+  assert.deepEqual(recheck({ artifacts: [] }), unproven, 'no artifacts');
 });
 
 test('a re-raised finding is reconciled with its prior before it blocks', () => {

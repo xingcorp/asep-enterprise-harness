@@ -238,19 +238,21 @@ function optional<K extends string, V>(key: K, value: V | null | undefined): Par
 
 /**
  * Whether this round's checks prove a SARIF prior gone: a run of the same scanner at the
- * version recorded with the prior declared the prior's rule and completed, no run of that
- * scanner failed, and no result has the prior's fingerprint.
+ * version recorded with the prior effectively ran the prior's rule and scanned the prior's
+ * file, no run of that scanner failed, and no result has the prior's fingerprint. A declared
+ * rule is not proof that it ran.
  */
 function scannerRecheckProven(input: AdjudicationInput, prior: PriorFindingInput): boolean {
   const F = prior.record;
   const tool = F.raisedBy.slice('sarif:'.length);
   const version = prior.scannerVersion ?? null;
   const rule = F.ruleId ?? null;
-  if (version === null || rule === null) return false;
+  const file = F.file ?? null;
+  if (version === null || rule === null || file === null) return false;
   const runs = input.checks.scannerRuns.filter((r) => r.tool === tool);
   return (
     runs.every((r) => r.executionSuccessful) &&
-    runs.some((r) => r.toolVersion === version && r.rules.includes(rule)) &&
+    runs.some((r) => r.toolVersion === version && r.effectiveRules.includes(rule) && r.scannedFiles.includes(file)) &&
     !input.checks.findings.some((f) => f.raisedBy === F.raisedBy && f.fingerprint === F.fingerprint)
   );
 }

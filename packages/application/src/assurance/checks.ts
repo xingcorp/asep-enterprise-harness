@@ -50,7 +50,7 @@ export interface DeterministicCheckSources {
 
 export type PushGuardResult = { readonly decision: 'PASS' } | { readonly decision: 'BLOCK'; readonly reason: BlockReason };
 
-/** One run of a SARIF log: the scanner identity a scanner recheck is proven against. */
+/** One run of a SARIF log: what a scanner recheck is proven against. */
 export interface ScannerRun {
   /** The check whose SARIF log described the run. */
   readonly checkId: string;
@@ -58,10 +58,18 @@ export interface ScannerRun {
   readonly tool: string;
   /** `tool.driver.version`, else `tool.driver.semanticVersion`, else null. */
   readonly toolVersion: string | null;
-  /** The ids of `tool.driver.rules`, in log order. */
-  readonly rules: readonly string[];
   /** True only when the run lists invocations and every one reports `executionSuccessful: true`. */
   readonly executionSuccessful: boolean;
+  /**
+   * The declared rules the run's effective configuration ran, sorted: each `tool.driver.rules`
+   * id whose `defaultConfiguration.enabled` is not false, that no invocation's
+   * `ruleConfigurationOverrides` disables, and that no tool execution or configuration
+   * notification is associated with. Empty when an `error` notification names no rule, or a
+   * rule reference cannot be tied to a driver rule: the log then proves no rule ran.
+   */
+  readonly effectiveRules: readonly string[];
+  /** The repository paths of `run.artifacts` whose roles, when listed, include `analysisTarget`, sorted. */
+  readonly scannedFiles: readonly string[];
 }
 
 export interface DeterministicCheckResult {
@@ -485,26 +493,105 @@ function optionalText(value: unknown, what: string): string | null {
   return value;
 }
 
+function optionalList(value: unknown, what: string): unknown[] {
+  return value === undefined ? [] : arr(value, what);
+}
+
+function optionalFlag(value: unknown, what: string): boolean | null {
+  if (value === undefined) return null;
+  if (typeof value !== 'boolean') throw new SarifError(`${what} must be a boolean`);
+  return value;
+}
+
+const NOTIFICATION_LEVELS: ReadonlySet<string> = new Set(['none', 'note', 'warning', 'error']);
+
+/**
+ * The driver rule a `reportingDescriptorReference` names, by id or by index into
+ * `tool.driver.rules`; null when it cannot be tied to a driver rule (it points into a tool
+ * component, or names the rule by guid only). An index outside the rules, or an id and an index
+ * that name different rules, is malformed.
+ */
+function driverRule(value: unknown, ruleIds: readonly string[], what: string): string | null {
+  const ref = obj(value, what);
+  if (ref['toolComponent'] !== undefined) return null;
+  const id = optionalText(ref['id'], `${what}.id`);
+  const index = ref['index'] ?? -1;
+  if (typeof index !== 'number' || !Number.isInteger(index) || index < -1 || index >= ruleIds.length) {
+    throw new SarifError(`${what}.index does not name a rule of tool.driver.rules`);
+  }
+  const indexed = index === -1 ? null : ruleIds[index]!;
+  if (id !== null && indexed !== null && id !== indexed) throw new SarifError(`${what} names two different rules`);
+  return id ?? indexed;
+}
+
 function scannerRun(checkId: string, tool: string, run: Record<string, unknown>, driver: Record<string, unknown>, r: number): ScannerRun {
   const version = optionalText(driver['version'], `runs[${r}].tool.driver.version`);
   const semanticVersion = optionalText(driver['semanticVersion'], `runs[${r}].tool.driver.semanticVersion`);
-  const rules = driver['rules'] === undefined ? [] : arr(driver['rules'], `runs[${r}].tool.driver.rules`);
-  const invocations = run['invocations'] === undefined ? [] : arr(run['invocations'], `runs[${r}].invocations`);
-  const succeeded = invocations.map((value, i) => {
-    const flag = obj(value, `runs[${r}].invocations[${i}]`)['executionSuccessful'];
-    if (typeof flag !== 'boolean') throw new SarifError(`runs[${r}].invocations[${i}].executionSuccessful must be a boolean`);
+  const notRun = new Set<string>();
+  let provesNoRule = false;
+  const ruleIds = optionalList(driver['rules'], `runs[${r}].tool.driver.rules`).map((value, i) => {
+    const at = `runs[${r}].tool.driver.rules[${i}]`;
+    const rule = obj(value, at);
+    const id = rule['id'];
+    if (typeof id !== 'string' || id === '') throw new SarifError(`${at}.id is required`);
+    const defaults = rule['defaultConfiguration'];
+    if (defaults !== undefined && optionalFlag(obj(defaults, `${at}.defaultConfiguration`)['enabled'], `${at}.defaultConfiguration.enabled`) === false) {
+      notRun.add(id);
+    }
+    return id;
+  });
+  const succeeded = optionalList(run['invocations'], `runs[${r}].invocations`).map((value, i) => {
+    const at = `runs[${r}].invocations[${i}]`;
+    const invocation = obj(value, at);
+    const flag = invocation['executionSuccessful'];
+    if (typeof flag !== 'boolean') throw new SarifError(`${at}.executionSuccessful must be a boolean`);
+    optionalList(invocation['ruleConfigurationOverrides'], `${at}.ruleConfigurationOverrides`).forEach((o, j) => {
+      const where = `${at}.ruleConfigurationOverrides[${j}]`;
+      const override = obj(o, where);
+      const rule = driverRule(override['descriptor'], ruleIds, `${where}.descriptor`);
+      const enabled = optionalFlag(obj(override['configuration'], `${where}.configuration`)['enabled'], `${where}.configuration.enabled`);
+      if (rule === null) provesNoRule = true;
+      else if (enabled === false) notRun.add(rule);
+    });
+    // A notification about a rule reads as that rule failing or being skipped.
+    for (const kind of ['toolExecutionNotifications', 'toolConfigurationNotifications'] as const) {
+      optionalList(invocation[kind], `${at}.${kind}`).forEach((n, j) => {
+        const where = `${at}.${kind}[${j}]`;
+        const notification = obj(n, where);
+        const level = notification['level'] ?? 'warning';
+        if (typeof level !== 'string' || !NOTIFICATION_LEVELS.has(level)) throw new SarifError(`${where}.level is not a SARIF level`);
+        if (notification['associatedRule'] === undefined) {
+          if (level === 'error') provesNoRule = true;
+          return;
+        }
+        const rule = driverRule(notification['associatedRule'], ruleIds, `${where}.associatedRule`);
+        if (rule === null) provesNoRule = true;
+        else notRun.add(rule);
+      });
+    }
     return flag;
+  });
+  const scannedFiles = new Set<string>();
+  optionalList(run['artifacts'], `runs[${r}].artifacts`).forEach((value, i) => {
+    const at = `runs[${r}].artifacts[${i}]`;
+    const artifact = obj(value, at);
+    if (artifact['roles'] !== undefined) {
+      const roles = arr(artifact['roles'], `${at}.roles`);
+      if (!roles.every((role) => typeof role === 'string')) throw new SarifError(`${at}.roles must be strings`);
+      if (!roles.includes('analysisTarget')) return;
+    }
+    const location = artifact['location'] === undefined ? {} : obj(artifact['location'], `${at}.location`);
+    const uri = optionalText(location['uri'], `${at}.location.uri`);
+    const path = uri === null ? null : repoPath(uri);
+    if (path !== null) scannedFiles.add(path);
   });
   return {
     checkId,
     tool,
     toolVersion: version ?? semanticVersion,
-    rules: rules.map((value, i) => {
-      const id = obj(value, `runs[${r}].tool.driver.rules[${i}]`)['id'];
-      if (typeof id !== 'string' || id === '') throw new SarifError(`runs[${r}].tool.driver.rules[${i}].id is required`);
-      return id;
-    }),
     executionSuccessful: succeeded.length > 0 && succeeded.every((flag) => flag),
+    effectiveRules: provesNoRule ? [] : [...new Set(ruleIds)].filter((id) => !notRun.has(id)).sort(),
+    scannedFiles: [...scannedFiles].sort(),
   };
 }
 

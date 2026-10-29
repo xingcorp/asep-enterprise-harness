@@ -10,7 +10,7 @@
 // is cleared from this record.
 
 import type { FindingSeverity } from '@asep/domain';
-import { REVIEW_SEVERITIES } from '@asep/policy';
+import { REVIEW_SEVERITIES, isNormalizedRepoPath } from '@asep/policy';
 import { canonicalBytes, sha256Hex } from './canonical-json.js';
 import { pushGuardDecision, type DeterministicCheckResult, type PushGuardResult, type SarifInput, type ScannerRun } from './checks.js';
 import { egressDecisionFor, type EgressHit, type ReviewerClearance } from './egress.js';
@@ -201,7 +201,7 @@ function finding(value: unknown, at: string): CheckFinding {
 }
 
 function scannerRun(value: unknown, at: string, read: ReadonlySet<string>): ScannerRun {
-  const r = object(value, at, ['checkId', 'tool', 'toolVersion', 'rules', 'executionSuccessful']);
+  const r = object(value, at, ['checkId', 'tool', 'toolVersion', 'executionSuccessful', 'effectiveRules', 'scannedFiles']);
   const checkId = text(r['checkId'], `${at}.checkId`);
   if (!read.has(checkId)) reject(`${at} names a check whose SARIF log the report does not list`);
   const succeeded = r['executionSuccessful'];
@@ -210,8 +210,13 @@ function scannerRun(value: unknown, at: string, read: ReadonlySet<string>): Scan
     checkId,
     tool: text(r['tool'], `${at}.tool`),
     toolVersion: nullableText(r['toolVersion'], `${at}.toolVersion`),
-    rules: list(r['rules'], `${at}.rules`).map((rule, i) => text(rule, `${at}.rules[${i}]`)),
     executionSuccessful: succeeded,
+    effectiveRules: list(r['effectiveRules'], `${at}.effectiveRules`).map((rule, i) => text(rule, `${at}.effectiveRules[${i}]`)),
+    scannedFiles: list(r['scannedFiles'], `${at}.scannedFiles`).map((file, i) => {
+      const path = text(file, `${at}.scannedFiles[${i}]`);
+      if (!isNormalizedRepoPath(path)) reject(`${at}.scannedFiles[${i}] must be a normalized repository path`);
+      return path;
+    }),
   };
 }
 
