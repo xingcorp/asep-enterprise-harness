@@ -848,3 +848,163 @@ async function seedBinding(
   });
   return b.id;
 }
+
+// ---------------------------------------------------------------------------
+// Every authoritative reference is DB-coherent. A pull request names an attempt
+// of its own binding; and every artifact a row relies on — the run's product
+// spec, the task's work order, the attempt's context pack and evidence, the
+// PR's evidence — is a scoped foreign key carrying the artifact's id, its
+// checksum and its kind, so the database itself refuses an artifact of another
+// tenant, the right artifact with the wrong checksum, or an artifact of another
+// kind. Asserted with raw SQL, so no repository check stands in for the schema.
+// ---------------------------------------------------------------------------
+
+async function seedTyped(
+  client: Awaited<ReturnType<typeof freshDb>>, scope: TenantScope, kind: string, sha: string,
+): Promise<string> {
+  const id = `A${Math.random().toString(36).slice(2).toUpperCase().replace(/[ILOU]/g, 'X')}`.padEnd(26, '0').slice(0, 26);
+  await client.query(
+    `insert into artifacts
+       (id, organization_id, project_id, attempt_id, kind, sha256, size_bytes, storage_key, content_type)
+     values ($1, $2, $3, null, $4, $5, 10, $6, 'application/json')`,
+    [id, scope.organizationId, scope.projectId, kind, sha, `k/${id}`],
+  );
+  return id;
+}
+
+test("the DB refuses a pull request whose attempt belongs to another binding", async () => {
+  const client = await freshDb();
+  try {
+    const { scope, binding } = await seedScope(client);
+    const otherBinding = await seedBinding(client, scope);
+    const attemptId = await seedAttempt(client, scope, binding.id);
+    await assert.rejects(
+      () => new PullRequestRepository(client).upsert(scope, {
+        repositoryBindingId: otherBinding, attemptId, forge: 'github', number: 1,
+        headBranch: 'asep/x', baseBranch: 'main', url: 'https://example.invalid/1', state: 'OPEN',
+      }),
+      /foreign key|violates/i,
+    );
+    // The coherent row is accepted.
+    await new PullRequestRepository(client).upsert(scope, {
+      repositoryBindingId: binding.id, attemptId, forge: 'github', number: 1,
+      headBranch: 'asep/x', baseBranch: 'main', url: 'https://example.invalid/1', state: 'OPEN',
+    });
+  } finally {
+    await client.close();
+  }
+});
+
+interface RefColumn {
+  readonly table: 'runs' | 'tasks' | 'attempts' | 'pull_requests';
+  readonly column: string;      // <column>_artifact_id / <column>_sha256
+  readonly kind: string;
+}
+const REF_COLUMNS: readonly RefColumn[] = [
+  { table: 'runs', column: 'product_spec', kind: 'product-spec' },
+  { table: 'tasks', column: 'work_order', kind: 'work-order' },
+  { table: 'attempts', column: 'context_pack', kind: 'context-pack' },
+  { table: 'attempts', column: 'evidence', kind: 'evidence-bundle' },
+  { table: 'pull_requests', column: 'evidence', kind: 'evidence-bundle' },
+];
+
+// One row of each referencing table, all in `scope` and one binding.
+async function seedChain(client: Awaited<ReturnType<typeof freshDb>>, scope: TenantScope, bindingId: RepositoryBindingId) {
+  const run = await new RunRepository(client).create(scope, { repositoryBindingId: bindingId, status: 'EXECUTING', risk: 'R0' });
+  const task = await new TaskRepository(client).create(scope, { runId: run.id, repositoryBindingId: bindingId, risk: 'R0' });
+  const attempt = await new AttemptRepository(client).create(scope, { taskId: task.id, repositoryBindingId: bindingId });
+  const pr = await new PullRequestRepository(client).upsert(scope, {
+    repositoryBindingId: bindingId, attemptId: attempt.id, forge: 'github', number: 1,
+    headBranch: `asep/${attempt.id}`, baseBranch: 'main', url: 'https://example.invalid/1', state: 'OPEN',
+  });
+  return { runs: run.id, tasks: task.id, attempts: attempt.id, pull_requests: pr.id } as Record<RefColumn['table'], string>;
+}
+
+for (const ref of REF_COLUMNS) {
+  test(`${ref.table}.${ref.column} is a scoped artifact reference with checksum and kind`, async () => {
+    const client = await freshDb();
+    try {
+      const { scope, binding } = await seedScope(client);
+      const other = await seedScope(client);
+      const ids = await seedChain(client, scope, binding.id);
+      const set = (artifactId: string | null, sha: string | null) => client.query(
+        `update ${ref.table} set ${ref.column}_artifact_id = $1, ${ref.column}_sha256 = $2 where id = $3`,
+        [artifactId, sha, ids[ref.table]],
+      );
+      const sha = 'a'.repeat(64);
+      const mine = await seedTyped(client, scope, ref.kind, sha);
+      const foreign = await seedTyped(client, other.scope, ref.kind, sha);
+      const wrongKind = await seedTyped(client, scope, ref.kind === 'work-order' ? 'context-pack' : 'work-order', sha);
+
+      await assert.rejects(() => set(foreign, sha), /foreign key|violates/i, 'an artifact of another tenant');
+      await assert.rejects(() => set(mine, 'b'.repeat(64)), /foreign key|violates/i, 'the right artifact, the wrong checksum');
+      await assert.rejects(() => set(wrongKind, sha), /foreign key|violates/i, 'an artifact of another kind');
+      await assert.rejects(() => set(mine, null), /violates|check/i, 'an id without its checksum');
+      await assert.rejects(() => set(null, sha), /violates|check/i, 'a checksum without its id');
+      await set(mine, sha);
+      await set(null, null);
+    } finally {
+      await client.close();
+    }
+  });
+}
+
+test('no reference column is free JSONB any more', async () => {
+  const client = await freshDb();
+  try {
+    const r = await client.query(
+      `select table_name, column_name from information_schema.columns
+        where table_name in ('runs', 'tasks', 'attempts', 'pull_requests') and data_type = 'jsonb'`,
+    );
+    assert.deepEqual(r.rows.map((x) => `${String(x['table_name'])}.${String(x['column_name'])}`).sort(), ['attempts.usage']);
+  } finally {
+    await client.close();
+  }
+});
+
+test("a task's work order and an attempt's context pack round-trip through their repositories", async () => {
+  const client = await freshDb();
+  try {
+    const { scope, binding } = await seedScope(client);
+    const ids = await seedChain(client, scope, binding.id);
+    const wo = { artifactId: await seedTyped(client, scope, 'work-order', 'c'.repeat(64)) as never, sha256: 'c'.repeat(64), kind: 'work-order' };
+    const cp = { artifactId: await seedTyped(client, scope, 'context-pack', 'd'.repeat(64)) as never, sha256: 'd'.repeat(64), kind: 'context-pack' };
+    const tasks = new TaskRepository(client);
+    const attempts = new AttemptRepository(client);
+    assert.equal(await tasks.attachWorkOrder(scope, ids.tasks as never, 0, wo), 1);
+    assert.equal(await attempts.attachContextPack(scope, ids.attempts as never, 0, cp), 1);
+    assert.deepEqual((await tasks.getScoped(scope, ids.tasks as never)).workOrderRef, wo);
+    assert.deepEqual((await attempts.getScoped(scope, ids.attempts as never)).contextPackRef, cp);
+    // Once attached, a different work order cannot replace it.
+    const other = { artifactId: await seedTyped(client, scope, 'work-order', 'e'.repeat(64)) as never, sha256: 'e'.repeat(64), kind: 'work-order' };
+    await assert.rejects(() => tasks.attachWorkOrder(scope, ids.tasks as never, 1, other), /already/);
+  } finally {
+    await client.close();
+  }
+});
+
+test('upgrading over JSONB references keeps the valid ones and refuses a dangling one', async () => {
+  const before = MIGRATIONS.findIndex((m) => m.id === '0017_scoped_artifact_references');
+  assert.ok(before > 0, 'the scoped-reference migration is registered');
+
+  const clean = await PgliteClient.create();
+  await migrate(clean, MIGRATIONS.slice(0, before));
+  const ok = await seedScope(clean);
+  const okIds = await seedChain(clean, ok.scope, ok.binding.id);
+  const wo = await seedTyped(clean, ok.scope, 'work-order', 'f'.repeat(64));
+  await clean.query(`update tasks set work_order_ref = $1 where id = $2`,
+    [JSON.stringify({ artifactId: wo, sha256: 'f'.repeat(64), kind: 'work-order' }), okIds.tasks]);
+  await migrate(clean);
+  const back = await clean.query(`select work_order_artifact_id, work_order_sha256 from tasks where id = $1`, [okIds.tasks]);
+  assert.deepEqual([back.rows[0]!['work_order_artifact_id'], back.rows[0]!['work_order_sha256']], [wo, 'f'.repeat(64)]);
+  await clean.close();
+
+  const dirty = await PgliteClient.create();
+  await migrate(dirty, MIGRATIONS.slice(0, before));
+  const bad = await seedScope(dirty);
+  const badIds = await seedChain(dirty, bad.scope, bad.binding.id);
+  await dirty.query(`update tasks set work_order_ref = $1 where id = $2`,
+    [JSON.stringify({ artifactId: 'Z'.repeat(26), sha256: 'f'.repeat(64), kind: 'work-order' }), badIds.tasks]);
+  await assert.rejects(() => migrate(dirty), /tasks: 1 work order reference/);
+  await dirty.close();
+});

@@ -85,6 +85,10 @@ export interface SliceTaskPort {
   create(scope: TenantScope, input: {
     runId: RunId; repositoryBindingId: RepositoryBindingId; risk: RiskLevel; baseSha?: string;
   }): Promise<{ id: TaskId; version: number }>;
+  // The task's WorkOrder, as a scoped artifact reference the database checks.
+  attachWorkOrder(
+    scope: TenantScope, id: TaskId, expectedVersion: number, ref: ArtifactRef,
+  ): Promise<number>;
   updateStatus(
     scope: TenantScope, id: TaskId, expectedVersion: number, status: TaskStatus,
   ): Promise<number>;
@@ -94,6 +98,10 @@ export interface SliceAttemptPort {
   create(scope: TenantScope, input: {
     taskId: TaskId; repositoryBindingId: RepositoryBindingId; baseSha?: string; agentProviderId?: string;
   }): Promise<{ id: AttemptId; version: number }>;
+  // The context pack the agent is handed, as a scoped artifact reference.
+  attachContextPack(
+    scope: TenantScope, id: AttemptId, expectedVersion: number, ref: ArtifactRef,
+  ): Promise<number>;
   setResultSha(
     scope: TenantScope, id: AttemptId, expectedVersion: number, resultSha: string,
   ): Promise<number>;
@@ -366,6 +374,14 @@ export async function runVerticalSliceWorkflow(
       contentType: 'application/json',
     }),
   );
+  // The authoritative rows name what the agent is handed: the task its
+  // WorkOrder, the attempt its context pack. The database binds each to an
+  // artifact of this tenant with that checksum and kind, so a reader (the pilot
+  // verifier) resolves the work order from the task, never from a manifest.
+  const taskVersion = await repos.tasks.attachWorkOrder(scope, task.id, task.version, workOrderRef);
+  const attemptVersionAtStart = await repos.attempts.attachContextPack(
+    scope, attempt.id, attempt.version, contextPackRef,
+  );
 
   // --- admission FIRST → lease → workspace → agent → trusted inspection -----
   const governed = await governedExecution({
@@ -503,7 +519,7 @@ export async function runVerticalSliceWorkflow(
       title: input.prTitle,
       body: input.prBody,
       leaseId,
-      task: { id: task.id, status: 'VERIFYING', version: task.version },
+      task: { id: task.id, status: 'VERIFYING', version: taskVersion },
     });
     if (result.stoppedAt !== 'complete') {
       throw new Error(`completion stopped early at '${result.stoppedAt}'`);
@@ -524,7 +540,7 @@ export async function runVerticalSliceWorkflow(
     // and the PR row. It is the last of the ten declared spans and pairs with the
     // task.status.transition audit action, so an operator can see the transition
     // that made the attempt reviewable — not merely the effects leading up to it.
-    let attemptVersion = attempt.version;
+    let attemptVersion = attemptVersionAtStart;
     await observeFenced(
       {
         span: 'task.execute',
@@ -538,7 +554,7 @@ export async function runVerticalSliceWorkflow(
         attemptVersion = await repos.attempts.attachEvidence(
           scope, attempt.id, attemptVersion, evidence.ref,
         );
-        await repos.tasks.updateStatus(scope, task.id, task.version, 'WAITING_FOR_HUMAN_REVIEW');
+        await repos.tasks.updateStatus(scope, task.id, taskVersion, 'WAITING_FOR_HUMAN_REVIEW');
         await repos.pullRequests.upsert(scope, {
           repositoryBindingId: binding.id,
           attemptId: attempt.id,

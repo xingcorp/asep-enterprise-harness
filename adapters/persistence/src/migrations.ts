@@ -790,6 +790,180 @@ end
 $fn$;
 `;
 
+// ---------------------------------------------------------------------------
+// 0017 — every authoritative reference is DB-coherent.
+//
+// Two classes of hole remained after 0013–0015:
+//   - pull_requests carried attempt_id and repository_binding_id under two
+//     independent FKs, so a PR row could name an attempt of one binding and a
+//     binding of another;
+//   - the run's product spec, the task's work order and the attempt's context
+//     pack were free JSONB, and the evidence links of 0009 pinned a checksum
+//     the FK did not check: any artifact of the tenant, of any kind, with any
+//     claimed sha256, was accepted.
+//
+// So: a composite FK binds a PR to an attempt OF ITS BINDING; artifacts gain a
+// key that carries checksum and kind; and every reference becomes
+// `<name>_artifact_id` + `<name>_sha256` (both or neither) plus a generated
+// `<name>_kind`, FK-bound to (id, organization, project, sha256, kind). The
+// database then refuses another tenant's artifact, the right artifact with the
+// wrong checksum, and an artifact of the wrong kind.
+//
+// Existing JSONB references are carried over when they name such an artifact;
+// a row whose reference does not makes the migration FAIL rather than drop it.
+// Append-only: earlier migrations are untouched.
+// ---------------------------------------------------------------------------
+const M0017 = `
+do $chk$
+declare bad bigint;
+begin
+  select count(*) into bad from pull_requests p
+  where not exists (
+    select 1 from attempts a
+    where a.id = p.attempt_id and a.organization_id = p.organization_id
+      and a.project_id = p.project_id and a.repository_binding_id = p.repository_binding_id);
+  if bad > 0 then
+    raise exception 'pull_requests: % row(s) name an attempt of another binding; refusing to guess which is right', bad;
+  end if;
+end
+$chk$;
+alter table pull_requests
+  add constraint pull_requests_attempt_binding_fk
+  foreign key (attempt_id, organization_id, project_id, repository_binding_id)
+  references attempts (id, organization_id, project_id, repository_binding_id);
+
+alter table artifacts
+  add constraint artifacts_scoped_ref_uq unique (id, organization_id, project_id, sha256, kind);
+
+alter table runs add column product_spec_artifact_id char(26);
+alter table runs add column product_spec_sha256 text;
+update runs
+  set product_spec_artifact_id = product_spec_ref->>'artifactId',
+      product_spec_sha256 = product_spec_ref->>'sha256'
+  where product_spec_ref is not null;
+do $chk$
+declare bad bigint;
+begin
+  select count(*) into bad from runs t
+  where t.product_spec_ref is not null and not exists (
+    select 1 from artifacts a
+    where a.id = t.product_spec_artifact_id and a.organization_id = t.organization_id
+      and a.project_id = t.project_id and a.sha256 = t.product_spec_sha256 and a.kind = 'product-spec');
+  if bad > 0 then
+    raise exception 'runs: % product spec reference(s) name no product-spec artifact of their own tenant with that checksum; refusing to drop them', bad;
+  end if;
+end
+$chk$;
+alter table runs drop column product_spec_ref;
+alter table tasks add column work_order_artifact_id char(26);
+alter table tasks add column work_order_sha256 text;
+update tasks
+  set work_order_artifact_id = work_order_ref->>'artifactId',
+      work_order_sha256 = work_order_ref->>'sha256'
+  where work_order_ref is not null;
+do $chk$
+declare bad bigint;
+begin
+  select count(*) into bad from tasks t
+  where t.work_order_ref is not null and not exists (
+    select 1 from artifacts a
+    where a.id = t.work_order_artifact_id and a.organization_id = t.organization_id
+      and a.project_id = t.project_id and a.sha256 = t.work_order_sha256 and a.kind = 'work-order');
+  if bad > 0 then
+    raise exception 'tasks: % work order reference(s) name no work-order artifact of their own tenant with that checksum; refusing to drop them', bad;
+  end if;
+end
+$chk$;
+alter table tasks drop column work_order_ref;
+alter table attempts add column context_pack_artifact_id char(26);
+alter table attempts add column context_pack_sha256 text;
+update attempts
+  set context_pack_artifact_id = context_pack_ref->>'artifactId',
+      context_pack_sha256 = context_pack_ref->>'sha256'
+  where context_pack_ref is not null;
+do $chk$
+declare bad bigint;
+begin
+  select count(*) into bad from attempts t
+  where t.context_pack_ref is not null and not exists (
+    select 1 from artifacts a
+    where a.id = t.context_pack_artifact_id and a.organization_id = t.organization_id
+      and a.project_id = t.project_id and a.sha256 = t.context_pack_sha256 and a.kind = 'context-pack');
+  if bad > 0 then
+    raise exception 'attempts: % context pack reference(s) name no context-pack artifact of their own tenant with that checksum; refusing to drop them', bad;
+  end if;
+end
+$chk$;
+alter table attempts drop column context_pack_ref;
+
+do $chk$
+declare bad bigint;
+begin
+  select count(*) into bad from attempts t
+  where (t.evidence_artifact_id is null) <> (t.evidence_sha256 is null)
+     or (t.evidence_artifact_id is not null and not exists (
+       select 1 from artifacts a
+       where a.id = t.evidence_artifact_id and a.organization_id = t.organization_id
+         and a.project_id = t.project_id and a.sha256 = t.evidence_sha256 and a.kind = 'evidence-bundle'));
+  if bad > 0 then
+    raise exception 'attempts: % evidence reference(s) do not match an evidence bundle of their own tenant with that checksum; refusing to guess', bad;
+  end if;
+end
+$chk$;
+alter table attempts drop constraint attempts_evidence_scoped_fk;
+do $chk$
+declare bad bigint;
+begin
+  select count(*) into bad from pull_requests t
+  where (t.evidence_artifact_id is null) <> (t.evidence_sha256 is null)
+     or (t.evidence_artifact_id is not null and not exists (
+       select 1 from artifacts a
+       where a.id = t.evidence_artifact_id and a.organization_id = t.organization_id
+         and a.project_id = t.project_id and a.sha256 = t.evidence_sha256 and a.kind = 'evidence-bundle'));
+  if bad > 0 then
+    raise exception 'pull_requests: % evidence reference(s) do not match an evidence bundle of their own tenant with that checksum; refusing to guess', bad;
+  end if;
+end
+$chk$;
+alter table pull_requests drop constraint pull_requests_evidence_scoped_fk;
+
+alter table runs add column product_spec_kind text
+  generated always as (case when product_spec_artifact_id is null then null else 'product-spec' end) stored;
+alter table runs add constraint runs_product_spec_ref_paired
+  check ((product_spec_artifact_id is null) = (product_spec_sha256 is null));
+alter table runs add constraint runs_product_spec_ref_fk
+  foreign key (product_spec_artifact_id, organization_id, project_id, product_spec_sha256, product_spec_kind)
+  references artifacts (id, organization_id, project_id, sha256, kind);
+alter table tasks add column work_order_kind text
+  generated always as (case when work_order_artifact_id is null then null else 'work-order' end) stored;
+alter table tasks add constraint tasks_work_order_ref_paired
+  check ((work_order_artifact_id is null) = (work_order_sha256 is null));
+alter table tasks add constraint tasks_work_order_ref_fk
+  foreign key (work_order_artifact_id, organization_id, project_id, work_order_sha256, work_order_kind)
+  references artifacts (id, organization_id, project_id, sha256, kind);
+alter table attempts add column context_pack_kind text
+  generated always as (case when context_pack_artifact_id is null then null else 'context-pack' end) stored;
+alter table attempts add constraint attempts_context_pack_ref_paired
+  check ((context_pack_artifact_id is null) = (context_pack_sha256 is null));
+alter table attempts add constraint attempts_context_pack_ref_fk
+  foreign key (context_pack_artifact_id, organization_id, project_id, context_pack_sha256, context_pack_kind)
+  references artifacts (id, organization_id, project_id, sha256, kind);
+alter table attempts add column evidence_kind text
+  generated always as (case when evidence_artifact_id is null then null else 'evidence-bundle' end) stored;
+alter table attempts add constraint attempts_evidence_ref_paired
+  check ((evidence_artifact_id is null) = (evidence_sha256 is null));
+alter table attempts add constraint attempts_evidence_ref_fk
+  foreign key (evidence_artifact_id, organization_id, project_id, evidence_sha256, evidence_kind)
+  references artifacts (id, organization_id, project_id, sha256, kind);
+alter table pull_requests add column evidence_kind text
+  generated always as (case when evidence_artifact_id is null then null else 'evidence-bundle' end) stored;
+alter table pull_requests add constraint pull_requests_evidence_ref_paired
+  check ((evidence_artifact_id is null) = (evidence_sha256 is null));
+alter table pull_requests add constraint pull_requests_evidence_ref_fk
+  foreign key (evidence_artifact_id, organization_id, project_id, evidence_sha256, evidence_kind)
+  references artifacts (id, organization_id, project_id, sha256, kind);
+`;
+
 // Ordered, immutable migration set. Order is by id; the runner asserts it.
 export const MIGRATIONS: readonly Migration[] = Object.freeze([
   { id: '0001_init_tenancy', sql: M0001 },
@@ -808,4 +982,5 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   { id: '0014_fenced_lease_takeover', sql: M0014 },
   { id: '0015_lease_attempt_fk', sql: M0015 },
   { id: '0016_lease_liveness_clock', sql: M0016 },
+  { id: '0017_scoped_artifact_references', sql: M0017 },
 ]);

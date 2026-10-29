@@ -527,3 +527,41 @@ test('the vertical slice refuses a handle stripped down to its isolation claim, 
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+// The run's authoritative rows name the work order and context pack the agent
+// was actually handed: the task carries its WorkOrder and the attempt its
+// context pack, each as a scoped artifact reference whose checksum and kind the
+// database checked against the artifact the workflow wrote.
+test('the vertical slice attaches the WorkOrder to its task and the context pack to its attempt', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'asep-attached-inputs-'));
+  const client = await PgliteClient.create();
+  try {
+    await migrate(client);
+    const r = await runVerticalSlice({
+      client,
+      sandbox: await fakeDockerSandbox(join(dir, 'sandbox')),
+      dir: join(dir, 'run'),
+      checkCommand: (wtPath) => ({
+        executable: 'git', args: ['-C', wtPath, 'status', '--porcelain'], cwd: wtPath,
+        environmentProfile: 'verification-no-network', timeoutMs: 60_000,
+        outputPolicy: { maxEvidenceBytes: 65_536, displayHeadBytes: 4096, displayTailBytes: 4096 },
+      }),
+    });
+    assert.equal(r.taskStatus, 'WAITING_FOR_HUMAN_REVIEW');
+    const task = await client.query(
+      `select t.work_order_artifact_id, t.work_order_sha256, a.kind, a.sha256
+         from tasks t join artifacts a on a.id = t.work_order_artifact_id where t.id = $1`, [r.taskId]);
+    assert.equal(task.rowCount, 1, 'the task names its work order');
+    assert.equal(task.rows[0]!['kind'], 'work-order');
+    assert.equal(task.rows[0]!['work_order_sha256'], task.rows[0]!['sha256']);
+    const attempt = await client.query(
+      `select a.kind, a.sha256, t.context_pack_sha256
+         from attempts t join artifacts a on a.id = t.context_pack_artifact_id where t.id = $1`, [r.attemptId]);
+    assert.equal(attempt.rowCount, 1, 'the attempt names its context pack');
+    assert.equal(attempt.rows[0]!['kind'], 'context-pack');
+    assert.equal(attempt.rows[0]!['context_pack_sha256'], attempt.rows[0]!['sha256']);
+  } finally {
+    await client.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

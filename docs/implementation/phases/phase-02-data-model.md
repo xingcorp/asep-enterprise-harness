@@ -38,13 +38,13 @@ audit_events, idempotency_records span all.
 > **Hierarchy consistency via composite FKs (disp. P2-PLAN-HIGH-003).** Duplicated `organization_id`/`project_id` columns are NOT protected by independent single-column FKs (that lets a task claim project A while pointing at a run from project B and still pass a scoped row filter). Instead each parent declares a composite unique `(id, organization_id, project_id)` and each child FKs onto **that composite**, so the DB rejects any org/project mismatch between a row and its parent. Every table below carries the scope columns AND the composite FK.
 
 ### runs
-`id pk`, `organization_id`, `project_id`, `repository_binding_id`, `status text` (Phase-1 `RunStatus`), `product_spec_ref jsonb` (ArtifactRef), `risk text check in (R0..R4)`, `created_at`, `version`. Composite FK `(repository_binding_id, organization_id, project_id)` → `repository_bindings`. Composite unique `(id, organization_id, project_id)`.
+`id pk`, `organization_id`, `project_id`, `repository_binding_id`, `status text` (Phase-1 `RunStatus`), `product_spec_artifact_id` + `product_spec_sha256` (scoped artifact reference, see below; `product_spec_ref jsonb` until 0017), `risk text check in (R0..R4)`, `created_at`, `version`. Composite FK `(repository_binding_id, organization_id, project_id)` → `repository_bindings`. Composite unique `(id, organization_id, project_id)`.
 
 ### tasks
-`id pk`, `organization_id`, `project_id`, `run_id`, `repository_binding_id`, `status text` (see §4), `risk text`, `work_order_ref jsonb` (ArtifactRef → immutable WorkOrder), `work_order_schema_version text`, `base_sha text`, `created_at`, `version`. Composite FK `(run_id, organization_id, project_id)` → `runs`. Composite unique `(id, organization_id, project_id)`. `repository_binding_id` carried for direct repository resolution (disp. P2-PLAN-HIGH-003).
+`id pk`, `organization_id`, `project_id`, `run_id`, `repository_binding_id`, `status text` (see §4), `risk text`, `work_order_artifact_id` + `work_order_sha256` (scoped reference to the immutable WorkOrder, attached by the workflow when it writes it; set once; `work_order_ref jsonb` until 0017), `work_order_schema_version text`, `base_sha text`, `created_at`, `version`. Composite FK `(run_id, organization_id, project_id)` → `runs`. Composite unique `(id, organization_id, project_id)`. `repository_binding_id` carried for direct repository resolution (disp. P2-PLAN-HIGH-003).
 
 ### attempts
-`id pk`, `organization_id`, `project_id`, `task_id`, `repository_binding_id`, `status text` (see §4), `base_sha text`, `result_sha text null`, `agent_provider_id text`, `agent_model text`, `context_pack_ref jsonb null`, `evidence_bundle_ref jsonb null`, `failure_class text null`, `usage jsonb null`, `started_at`, `ended_at null`, `version`. Composite FK `(task_id, organization_id, project_id)` → `tasks`. Composite unique `(id, organization_id, project_id)`. Index `(task_id, started_at)`.
+`id pk`, `organization_id`, `project_id`, `task_id`, `repository_binding_id`, `status text` (see §4), `base_sha text`, `result_sha text null`, `agent_provider_id text`, `agent_model text`, `context_pack_artifact_id` + `context_pack_sha256` (scoped reference, attached by the workflow; set once), `evidence_artifact_id` + `evidence_sha256` (scoped reference; JSONB refs until 0009/0017), `failure_class text null`, `usage jsonb null`, `started_at`, `ended_at null`, `version`. Composite FK `(task_id, organization_id, project_id)` → `tasks`. Composite unique `(id, organization_id, project_id)`. Index `(task_id, started_at)`.
 `result_sha` semantics (disp. P2-PLAN-HIGH-008): the **final harness-owned commit SHA**, written only after the harness commit exists; never a provider-supplied or pre-commit SHA.
 
 ### workspace_leases
@@ -58,11 +58,13 @@ audit_events, idempotency_records span all.
 **Scope-prefixed key + create-only (disp. P2-PLAN-HIGH-004).** `storage_key = <organization_id>/<project_id>/sha256/<sha256>` — tenant/project-namespaced, never a user path. Object writes are **conditional create-only** (S3 `If-None-Match: *` / filesystem `O_EXCL`): concurrent different-byte writes to one key fail rather than overwrite. Size + checksum are verified before the metadata row is committed and re-verified on every read; mismatch fails closed. Orphan reconciliation: if metadata commit fails after an object write, the create-only object is a byte-identical no-op for the next identical put, and a reconciliation sweep records orphans. Authoritative links (`*_ref` columns) are scoped FKs carrying artifact id + expected checksum, not free JSONB.
 > **`ArtifactStore` is scope-aware (disp. P2-PLAN-HIGH-004).** Every `put/get/verify` takes a `TenantScope`; project A cannot read, verify, infer existence of, or attach project B's object. A cross-scope reference fails closed.
 
+**Scoped artifact references (migration 0017).** Every reference a row relies on — the run's product spec, the task's work order, the attempt's context pack and evidence, the PR's evidence — is a pair `<name>_artifact_id` + `<name>_sha256` (both or neither, CHECK) plus a generated `<name>_kind` (`product-spec`, `work-order`, `context-pack`, `evidence-bundle`), composite-FK-bound to `artifacts (id, organization_id, project_id, sha256, kind)`. The database refuses another tenant's artifact, the right artifact with a different checksum, and an artifact of another kind. Upgrading over JSONB references keeps those that name such an artifact and fails on any that does not.
+
 ### command_executions
 `id pk`, `organization_id`, `project_id`, `attempt_id fk`, `command_id text`, `executable text`, `args jsonb`, `exit_code integer null`, `signal text null`, `timed_out bool`, `duration_ms numeric`, `stdout_artifact_id fk null`, `stderr_artifact_id fk null`, `environment_profile text`, `executable_version text null`, `created_at`. Raw stdout/stderr are artifacts (never truncated inline).
 
 ### pull_requests
-`id pk`, `organization_id`, `project_id`, `repository_binding_id fk`, `attempt_id fk`, `forge text`, `number integer`, `head_branch text`, `base_branch text`, `url text`, `state text`, `evidence_bundle_ref` (scoped FK), `created_at`, `updated_at`, `version`. `repository_binding_id` is **declared here** (disp. P2-PLAN-HIGH-003 — the v1 unique index referenced an undeclared column). Composite FK `(repository_binding_id, organization_id, project_id)`. Unique `(repository_binding_id, head_branch)` supports idempotent upsert. No merge column.
+`id pk`, `organization_id`, `project_id`, `repository_binding_id fk`, `attempt_id fk`, `forge text`, `number integer`, `head_branch text`, `base_branch text`, `url text`, `state text`, `evidence_artifact_id` + `evidence_sha256` (scoped reference), `created_at`, `updated_at`, `version`. `repository_binding_id` is **declared here** (disp. P2-PLAN-HIGH-003 — the v1 unique index referenced an undeclared column). Composite FK `(repository_binding_id, organization_id, project_id)`, and (0017) composite FK `(attempt_id, organization_id, project_id, repository_binding_id)` → `attempts`, so a PR names an attempt of its own binding. Unique `(repository_binding_id, head_branch)` supports idempotent upsert. No merge column.
 
 ### audit_events
 `id pk`, `organization_id`, `project_id`, `run_id null`, `task_id null`, `attempt_id null`, `actor text`, `action text`, `occurred_at`, `detail jsonb`. Append-only.
@@ -127,6 +129,9 @@ Expiry is driven by `expires_at` + heartbeat; a stale `ACTIVE` lease past `expir
 0015_lease_attempt_fk             workspace_leases → attempts composite FK (tenant + binding);
                                   refuses to upgrade over a lease that names no attempt
 0016_lease_liveness_clock         asep_lease_is_live reads clock_timestamp() under a share lock
+0017_scoped_artifact_references   PR → attempt-of-its-binding FK; product spec, work order, context
+                                  pack and evidence references FK-bound with checksum and kind;
+                                  JSONB reference columns dropped
 ```
 
 Each migration has a checksum recorded in a `schema_migrations` table; re-running an altered applied migration fails closed. A clean-DB forward test asserts the full set applies and the resulting schema matches expectation.
