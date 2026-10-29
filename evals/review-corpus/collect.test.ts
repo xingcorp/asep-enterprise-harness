@@ -364,8 +364,12 @@ test('the publication path scanner fails closed', () => {
       cpSync(join(ROOT, file), join(scratch, file));
     }
     const list = readFileSync(join(ROOT, LEAK_PATTERNS_FILE), 'utf8');
-    const run = (mode: '--scan-paths' | '--scan-tracked' | '--self-test', args: readonly string[] = [], env: NodeJS.ProcessEnv = process.env) =>
-      spawnSync('bash', [join(scratch, 'scripts/check-publication.sh'), mode, ...args], { cwd: scratch, env, input: '' });
+    // `pathFirst` puts a directory first on the gate's PATH, set by the shell that starts it.
+    const run = (mode: '--scan-paths' | '--scan-tracked' | '--self-test', args: readonly string[] = [], pathFirst: string | null = null) => {
+      const gate = [join(scratch, 'scripts/check-publication.sh'), mode, ...args];
+      const argv = pathFirst === null ? gate : ['-c', 'PATH="$0:$PATH" exec bash "$@"', pathFirst, ...gate];
+      return spawnSync('bash', argv, { cwd: scratch, input: '' });
+    };
     const status = (...args: Parameters<typeof run>) => run(...args).status;
     writeFileSync(join(scratch, 'clean.txt'), 'publishable\n');
     writeFileSync(join(scratch, 'leak.txt'), `home = ${privatePath}\n`);
@@ -391,7 +395,7 @@ test('the publication path scanner fails closed', () => {
     const bin = join(scratch, 'bin');
     mkdirSync(bin);
     writeFileSync(join(bin, 'grep'), '#!/bin/sh\nfor a; do last=$a; done\n[ "$last" = /dev/null ] && exit 1\nexit 127\n', { mode: 0o755 });
-    assert.equal(status('--scan-paths', ['clean.txt'], { ...process.env, PATH: `${bin}:${process.env['PATH'] ?? ''}` }), 2, 'grep exits 127');
+    assert.equal(status('--scan-paths', ['clean.txt'], bin), 2, 'grep exits 127');
 
     // A pattern grep cannot run fails the gate before any file is scanned, alone or beside valid
     // ones, and before the scanner's self-test can report.
