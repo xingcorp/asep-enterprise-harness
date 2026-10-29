@@ -1,14 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   BLOBS_DIR,
   CYCLES,
+  GATE_SCRIPTS,
   GitReader,
   ITEMS_DIR,
+  LEAK_PATTERNS_FILE,
   PROVENANCE_EXCLUSIONS,
   baseShaAt,
   cycleLabels,
@@ -19,6 +22,7 @@ import {
   longFindingId,
   leakPatterns,
   namesFinding,
+  runGateProcess,
   severityFromId,
   sha256Hex,
   type CorpusItem,
@@ -270,6 +274,85 @@ test('the publication gates refuse an excerpt that cannot be published', () => {
   assert.equal(failing.has('d'.repeat(64)), false);
 });
 
+test('the collector and the publication gate read one list of leak patterns', () => {
+  // The gate and the pattern file are copied into a scratch root, so a pattern can be appended
+  // without touching the repository.
+  const scratch = mkdtempSync(join(tmpdir(), 'asep-leak-parity-'));
+  try {
+    for (const file of ['scripts/check-publication.sh', LEAK_PATTERNS_FILE, ...GATE_SCRIPTS]) {
+      mkdirSync(dirname(join(scratch, file)), { recursive: true });
+      cpSync(join(ROOT, file), join(scratch, file));
+    }
+    // Fixtures, assembled at runtime so no literal private path is committed.
+    const fixtures = new Map<string, string>([
+      ['1'.repeat(64), `home = ${'/Us' + 'ers/'}someone/workspace\n`],
+      ['2'.repeat(64), `home = ${'/ho' + 'me/'}someone/workspace\n`],
+      ['3'.repeat(64), `run = ~/.open${'claw/runs/'}42/log\n`],
+      ['4'.repeat(64), `root = ${'/ro' + 'ot/'}cache\n`],
+      ['5'.repeat(64), 'run = ~/.openclaw/runs/<id>/log and /usr/local/bin\n'],
+      ['6'.repeat(64), `next = ${'/private' + '-new/'}workspace\n`],
+      ['7'.repeat(64), 'publishable\n'],
+    ]);
+    const dir = join(scratch, 'fixtures');
+    mkdirSync(dir);
+    for (const [name, text] of fixtures) writeFileSync(join(dir, name), text);
+    const names = [...fixtures.keys()];
+
+    // The real script's path scanner: exit 1 with `  <file>:<line>:<text>` per hit, 0 clean.
+    const script = () => {
+      const r = spawnSync('bash', [join(scratch, 'scripts/check-publication.sh'), '--scan-paths', ...names.map((n) => join(dir, n))], { cwd: scratch });
+      const hits = new Set(
+        r.stdout
+          .toString('utf8')
+          .split('\n')
+          .filter((line) => line.startsWith(`  ${dir}/`))
+          .map((line) => line.slice(`  ${dir}/`.length, `  ${dir}/`.length + 64)),
+      );
+      return { status: r.status, hits: [...hits].sort() };
+    };
+    // The collector's path-leak gate over the same bytes; the four script gates report clean.
+    const collector = () => {
+      const candidates = new Map(names.map((n) => [n, new TextEncoder().encode(fixtures.get(n)!)]));
+      const onlyGrep: GateRunner = (command, args, cwd) =>
+        command === 'grep' ? runGateProcess(command, args, cwd) : { status: 0, signal: null, error: null, output: '' };
+      return [...failingExcerpts(scratch, candidates, onlyGrep)].filter(([, gates]) => gates.includes('path-leak-scan')).map(([n]) => n).sort();
+    };
+
+    // Both read the same list and flag the same fixtures.
+    const flagged = ['1', '2', '3', '4'].map((c) => c.repeat(64));
+    assert.deepEqual(script(), { status: 1, hits: flagged });
+    assert.deepEqual(collector(), flagged);
+    // The review's drift probe: a pattern appended to the list is seen by both.
+    appendFileSync(join(scratch, LEAK_PATTERNS_FILE), '/private-new/[A-Za-z]+\n');
+    const withNew = [...flagged, '6'.repeat(64)].sort();
+    assert.deepEqual(script(), { status: 1, hits: withNew });
+    assert.deepEqual(collector(), withNew);
+
+    // The list's format, read the same way by both: a list without a pattern, or a pattern line
+    // that starts or ends with whitespace (a CRLF line included), is refused by both.
+    const listFile = readFileSync(join(ROOT, LEAK_PATTERNS_FILE), 'utf8');
+    const patterns = leakPatterns(listFile);
+    assert.ok(patterns.length > 0);
+    for (const pattern of patterns) assert.ok(listFile.split('\n').includes(pattern), pattern);
+    for (const [label, text] of [
+      ['no pattern', '# comments only\n\n'],
+      ['leading space', ' /x/[0-9]\n'],
+      ['trailing space', '/x/[0-9] \n'],
+      ['CRLF', '/x/[0-9]\r\n'],
+    ] as const) {
+      writeFileSync(join(scratch, LEAK_PATTERNS_FILE), text);
+      assert.throws(() => leakPatterns(text), /leak pattern/, label);
+      assert.throws(() => collector(), /leak pattern/, label);
+      assert.equal(script().status, 2, label);
+    }
+    rmSync(join(scratch, LEAK_PATTERNS_FILE));
+    assert.equal(script().status, 2, 'missing list');
+    assert.equal(existsSync(join(scratch, LEAK_PATTERNS_FILE)), false);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
 test('a publication gate that does not complete aborts collection', () => {
   const encode = (text: string) => new TextEncoder().encode(text);
   const [a, b] = ['a'.repeat(64), 'b'.repeat(64)];
@@ -321,14 +404,6 @@ test('a publication gate that does not complete aborts collection', () => {
   // No temporary repository is left behind, whatever the outcome.
   assert.deepEqual(leftovers(), before);
 
-  // The path-leak patterns are read from the publication script, and an unreadable list fails closed.
-  const script = readFileSync(join(ROOT, 'scripts/check-publication.sh'), 'utf8');
-  const patterns = leakPatterns(script);
-  assert.ok(patterns.length > 0);
-  for (const pattern of patterns) assert.ok(script.includes(`'${pattern}'`), pattern);
-  assert.throws(() => leakPatterns('#!/usr/bin/env bash\n'), /LEAK_PATTERNS/);
-  assert.throws(() => leakPatterns('LEAK_PATTERNS=(\n  $(cat patterns)\n)\n'), /LEAK_PATTERNS/);
-  assert.throws(() => leakPatterns('LEAK_PATTERNS=(\n)\n'), /LEAK_PATTERNS/);
 
   // Git: a spawn error or a signal is never read as "no such object"; a probe's own
   // not-found status is, and any other failing query aborts.

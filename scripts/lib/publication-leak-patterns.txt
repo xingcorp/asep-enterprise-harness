@@ -1,0 +1,16 @@
+# Internal/leak path patterns that must never appear in a public tree, read by
+# the publication gate (scripts/check-publication.sh) and by the review-corpus
+# collector (evals/review-corpus/collect.ts), so the two cannot diverge.
+#
+# One POSIX extended regular expression per line, matched with grep -E.
+# Empty lines and lines starting with '#' are ignored. A pattern line may not
+# start or end with whitespace; a list without a pattern fails both readers.
+#
+# macOS home absolute path
+/Users/[A-Za-z0-9._-]+
+# linux home absolute path
+/home/[A-Za-z0-9._-]+
+# concrete worker run dir (placeholder <id> allowed)
+\.openclaw/runs/[0-9]
+# container root home content
+/root/[A-Za-z0-9._-]

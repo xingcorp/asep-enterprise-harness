@@ -49,7 +49,8 @@ export const PROVENANCE_EXCLUSIONS: readonly ExclusionReason[] = ['plan-defect',
 
 /**
  * The repository gates an excerpt must pass to be committed: four repository scripts, and the
- * path-leak scan of `scripts/check-publication.sh` run on the excerpts alone.
+ * path-leak scan of `scripts/check-publication.sh`, with its pattern list, run on the excerpts
+ * alone. They never replace the full publication gate, which still runs before any public push.
  */
 export const PUBLICATION_GATES = ['format-check', 'secret-scan', 'pii-scan', 'large-file-scan', 'path-leak-scan'] as const;
 export type PublicationGate = (typeof PUBLICATION_GATES)[number];
@@ -599,7 +600,7 @@ export function resolveCycle(git: GitReader, root: string, source: CycleSource):
 
 // --- publication gates ------------------------------------------------------------------------
 
-const GATE_SCRIPTS = ['scripts/format-check.sh', 'scripts/secret-scan.sh', 'scripts/pii-scan.sh', 'scripts/large-file-scan.sh', 'scripts/lib/secret-patterns.sh'];
+export const GATE_SCRIPTS = ['scripts/format-check.sh', 'scripts/secret-scan.sh', 'scripts/pii-scan.sh', 'scripts/large-file-scan.sh', 'scripts/lib/secret-patterns.sh'];
 
 /** One gate invocation's outcome; `output` is stdout and stderr, inspected for excerpt names only and never printed. */
 export interface GateRun {
@@ -621,15 +622,21 @@ export const runGateProcess: GateRunner = (command, args, cwd) => {
   };
 };
 
-/** The path-leak patterns `scripts/check-publication.sh` declares in `LEAK_PATTERNS`, read from its text. */
-export function leakPatterns(script: string): string[] {
-  const block = /^LEAK_PATTERNS=\(\n([\s\S]*?)^\)/m.exec(script) ?? fail('scripts/check-publication.sh declares no LEAK_PATTERNS');
-  const patterns = block[1]!.split('\n').flatMap((line) => {
-    if (/^\s*(#.*)?$/.test(line)) return [];
-    const quoted = /^\s*'([^']+)'\s*(#.*)?$/.exec(line);
-    return quoted === null ? fail(`LEAK_PATTERNS has a line that is not one quoted pattern: ${JSON.stringify(line)}`) : [quoted[1]!];
+/** The path-leak pattern list, shared with `scripts/check-publication.sh` so the two cannot diverge. */
+export const LEAK_PATTERNS_FILE = 'scripts/lib/publication-leak-patterns.txt';
+
+/**
+ * The patterns of the path-leak list, read the way `scripts/check-publication.sh` reads it: one
+ * ERE per line; empty lines and lines starting with `#` are ignored; a pattern line that starts
+ * or ends with whitespace, or a list without a pattern, is refused.
+ */
+export function leakPatterns(list: string): string[] {
+  const patterns = list.split('\n').flatMap((line, i) => {
+    if (line === '' || line.startsWith('#')) return [];
+    if (/^[ \t\v\f\r]|[ \t\v\f\r]$/.test(line)) fail(`leak pattern on line ${i + 1} starts or ends with whitespace`);
+    return [line];
   });
-  if (patterns.length === 0) fail('LEAK_PATTERNS is empty');
+  if (patterns.length === 0) fail('the leak pattern list has no pattern');
   return patterns;
 }
 
@@ -637,8 +644,8 @@ export function leakPatterns(script: string): string[] {
  * Run the repository's publication gates over candidate excerpts, laid out where they would be
  * committed, in a temporary repository where only the excerpts are tracked. Returns the gates
  * each failing excerpt trips. A gate is accepted only on its documented codes: the four scripts
- * exit 0 clean and 1 with findings; the path-leak scan (`grep -lE` with the publication
- * script's `LEAK_PATTERNS`) exits 1 clean and 0 with findings. A spawn error, a signal, any
+ * exit 0 clean and 1 with findings; the path-leak scan (`grep -lE` with the patterns of
+ * `LEAK_PATTERNS_FILE`) exits 1 clean and 0 with findings. A spawn error, a signal, any
  * other code, or a findings code whose output names no excerpt aborts. Gate output is
  * inspected for excerpt names only and is never printed.
  */
@@ -649,7 +656,7 @@ export function failingExcerpts(
 ): Map<string, PublicationGate[]> {
   const failing = new Map<string, PublicationGate[]>();
   if (candidates.size === 0) return failing;
-  const patterns = leakPatterns(readFileSync(join(root, 'scripts/check-publication.sh'), 'utf8'));
+  const patterns = leakPatterns(readFileSync(join(root, LEAK_PATTERNS_FILE), 'utf8'));
   const dir = mkdtempSync(join(tmpdir(), 'asep-corpus-gates-'));
   try {
     for (const file of GATE_SCRIPTS) {

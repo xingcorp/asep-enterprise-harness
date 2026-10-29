@@ -14,6 +14,9 @@
 # Usage:
 #   scripts/check-publication.sh             # run full publication gate
 #   scripts/check-publication.sh --self-test # prove abs-path scanner catches canary
+#   scripts/check-publication.sh --scan-paths FILE...
+#                                            # abs-path scan of FILEs only: exit 0 clean,
+#                                            # 1 with hits, 2 when it cannot scan
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -21,17 +24,36 @@ cd "$REPO_ROOT"
 
 # Internal/leak path patterns that must never appear in a public tree. The
 # worker runs inside ~/.openclaw/runs/... and /Users/<name>/... — those absolute
-# paths leaking into tracked files would expose the build environment.
-# shellcheck disable=SC2016
-LEAK_PATTERNS=(
-  '/Users/[A-Za-z0-9._-]+'          # macOS home absolute path
-  '/home/[A-Za-z0-9._-]+'           # linux home absolute path
-  '\.openclaw/runs/[0-9]'           # concrete worker run dir (placeholder <id> allowed)
-  '/root/[A-Za-z0-9._-]'            # container root home content
-)
+# paths leaking into tracked files would expose the build environment. The
+# patterns live in one list, also read by the review-corpus collector: one ERE
+# per line; empty lines and '#' lines are ignored; a pattern line may not start
+# or end with whitespace. A list that cannot be read this way stops the gate.
+LEAK_PATTERNS_FILE="$REPO_ROOT/scripts/lib/publication-leak-patterns.txt"
+LEAK_PATTERNS=()
+load_leak_patterns() {
+  local line n=0
+  if [ ! -r "$LEAK_PATTERNS_FILE" ]; then
+    echo "check-publication: cannot read the leak pattern list" >&2
+    exit 2
+  fi
+  while IFS= read -r line || [ -n "$line" ]; do
+    n=$((n + 1))
+    case "$line" in '' | '#'*) continue ;; esac
+    if [[ "$line" =~ ^[[:space:]] || "$line" =~ [[:space:]]$ ]]; then
+      echo "check-publication: leak pattern on line $n starts or ends with whitespace" >&2
+      exit 2
+    fi
+    LEAK_PATTERNS+=("$line")
+  done < "$LEAK_PATTERNS_FILE"
+  if [ "${#LEAK_PATTERNS[@]}" -eq 0 ]; then
+    echo "check-publication: the leak pattern list has no pattern" >&2
+    exit 2
+  fi
+}
+load_leak_patterns
 
-# The scanner and the report doc legitimately name these patterns; exempt them.
-EXEMPT_REGEX='^(scripts/check-publication\.sh|docs/implementation/phases/phase-01-publication-checklist\.md|docs/implementation/phases/phase-01-report\.md|docs/implementation/phases/phase-01-blockers\.md|artifacts/phase-01/.*)$'
+# The scanner, its pattern list and the report doc legitimately name these patterns; exempt them.
+EXEMPT_REGEX='^(scripts/check-publication\.sh|scripts/lib/publication-leak-patterns\.txt|docs/implementation/phases/phase-01-publication-checklist\.md|docs/implementation/phases/phase-01-report\.md|docs/implementation/phases/phase-01-blockers\.md|artifacts/phase-01/.*)$'
 
 scan_leaks() {
   # Args: files. Prints hits. Returns 0 if any hit, 1 if clean.
@@ -122,6 +144,20 @@ main() {
   if [ "${1:-}" = "--self-test" ]; then
     self_test
     return
+  fi
+  if [ "${1:-}" = "--scan-paths" ]; then
+    shift
+    local f
+    for f in "$@"; do
+      if [ ! -f "$f" ]; then
+        echo "check-publication: not a file: $f" >&2
+        return 2
+      fi
+    done
+    if scan_leaks "$@"; then
+      return 1
+    fi
+    return 0
   fi
 
   local fail=0
