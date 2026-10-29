@@ -106,9 +106,9 @@ test('packet schema whitelists trusted sources only', () => {
   assert.throws(() => assertPacketWhitelist(missing), PacketBuildError);
 });
 
-// Independent count of a packet's budget: key-sorted JSON.stringify of the packet with the
-// budget's own figures zeroed, plus the bytes of every content part the prompt embeds, read
-// from the artifacts.
+// Independent count of a packet's budget: key-sorted JSON.stringify of the final packet object
+// the builder returns, nothing zeroed, plus the bytes of every content part the prompt embeds,
+// read from the artifacts. It applies to a packet that is sent, which carries `overBudget: false`.
 function sortedJson(value: unknown): string {
   return JSON.stringify(value, (_key, v: unknown) =>
     v !== null && typeof v === 'object' && !Array.isArray(v)
@@ -118,18 +118,18 @@ function sortedJson(value: unknown): string {
 }
 
 function expectedBudget(world: FixtureWorld, built: BuiltPacket): number {
-  const zeroed = { ...built.packet, budget: { ...built.packet.budget, includedBytes: 0, overBudget: false } };
+  assert.equal(built.packet.budget.overBudget, false, 'the oracle measures a packet that is sent');
   const { change } = built.packet;
   const embedded = [change.cumulativeDiff, change.repairDelta, ...change.files.map((f) => f.postImage)]
     .filter((ref) => ref !== null)
     .reduce((n, ref) => n + world.contents.get(ref.artifactId)!.byteLength, 0);
-  return Buffer.byteLength(sortedJson(zeroed), 'utf8') + embedded;
+  return Buffer.byteLength(sortedJson(built.packet), 'utf8') + embedded;
 }
 
 /**
  * The smallest budget the world's packet fits, by the independent count. The packet carries
- * its own budget, so its size depends on the number of digits of `maxBytes`: measure under
- * the budget being tested.
+ * its cap, so its size depends on the number of digits of `maxBytes`: measure under the cap
+ * being tested. Each step lowers the cap, so every packet measured on the way is sent.
  */
 function smallestBudget(world: FixtureWorld): number {
   let maxBytes = world.limits.maxBytes;
@@ -163,7 +163,7 @@ test('over-budget packet is flagged, never cut', () => {
   const tight = buildReviewPacket(base.sources, { ...base.limits, maxBytes: fits - 1 });
   assert.equal(full.overBudget, false);
   assert.equal(tight.overBudget, true);
-  assert.deepEqual([full.packet.budget.includedBytes, tight.packet.budget.includedBytes], [fits, fits]);
+  assert.deepEqual([full.includedBytes, tight.includedBytes], [fits, fits]);
   assert.deepEqual(tight.packet.change, full.packet.change);
   assert.deepEqual(tight.packet.execution, full.packet.execution);
   assert.throws(() => renderReviewPrompt(tight, base.contents), PromptRenderError);
@@ -203,12 +203,12 @@ test('the budget counts the canonical packet bytes and every embedded part', () 
   ];
   for (const [label, world] of worlds) {
     const built = buildReviewPacket(world.sources, world.limits);
-    assert.equal(built.packet.budget.includedBytes, expectedBudget(world, built), label);
+    assert.equal(built.includedBytes, expectedBudget(world, built), label);
     assert.equal(built.overBudget, false, label);
     // The boundary: exactly the budget fits, one byte less is flagged.
     const at = (maxBytes: number) => buildReviewPacket(world.sources, { ...world.limits, maxBytes });
     const fits = smallestBudget(world);
-    assert.equal(at(fits).packet.budget.includedBytes, expectedBudget(world, at(fits)), label);
+    assert.equal(at(fits).includedBytes, expectedBudget(world, at(fits)), label);
     assert.deepEqual([at(fits).overBudget, at(fits - 1).overBudget], [false, true], label);
   }
 
@@ -216,10 +216,35 @@ test('the budget counts the canonical packet bytes and every embedded part', () 
   const long = fixtureWorld({ objective: 'x'.repeat(450_000) });
   assert.equal(long.limits.maxBytes, 400_000);
   const flagged = buildReviewPacket(long.sources, long.limits);
-  assert.equal(flagged.packet.budget.includedBytes, expectedBudget(long, flagged));
-  assert.ok(flagged.packet.budget.includedBytes > 450_000);
+  assert.ok(flagged.includedBytes > 450_000);
   assert.deepEqual([flagged.overBudget, flagged.packet.budget.overBudget], [true, true]);
   assert.throws(() => renderReviewPrompt(flagged, long.contents), PromptRenderError);
+});
+
+test('the budget is the final packet bytes, at the cap and one byte over', () => {
+  const worlds: readonly (readonly [string, FixtureWorld])[] = [
+    // The review's probe: no diff content and no changed file.
+    ['empty change', fixtureWorld({ diff: '', files: [] })],
+    ['first round', fixtureWorld()],
+    ['re-review with a repair delta', fixtureWorld({ round: 2 })],
+  ];
+  for (const [label, world] of worlds) {
+    const cap = smallestBudget(world);
+    const atCap = buildReviewPacket(world.sources, { ...world.limits, maxBytes: cap });
+    const over = buildReviewPacket(world.sources, { ...world.limits, maxBytes: cap - 1 });
+    // At the cap the packet is sent, and the bytes that are hashed and sent are the bytes
+    // measured: the oracle serializes the packet object itself.
+    assert.equal(atCap.overBudget, false, label);
+    assert.equal(atCap.bytes.byteLength, Buffer.byteLength(sortedJson(atCap.packet), 'utf8'), label);
+    assert.equal(atCap.sha256, createHash('sha256').update(atCap.bytes).digest('hex'), label);
+    assert.ok(expectedBudget(world, atCap) <= cap, label);
+    // One byte under that cap the same packet is one byte over: flagged, never sent.
+    assert.deepEqual([over.overBudget, over.packet.budget.overBudget], [true, true], label);
+    assert.throws(() => renderReviewPrompt(over, world.contents), PromptRenderError, label);
+    assert.deepEqual([atCap.includedBytes, over.includedBytes], [expectedBudget(world, atCap), cap], label);
+    // The measured size is reported beside the packet, never inside it.
+    assert.deepEqual(Object.keys(atCap.packet.budget).sort(), ['maxBytes', 'omissions', 'overBudget'], label);
+  }
 });
 
 test('packet carries a bounded execution manifest', () => {

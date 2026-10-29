@@ -142,7 +142,7 @@ test('a rendered prompt over the budget is refused', () => {
   // The packet fits, but the instructions, datamarks and output schema push the prompt over.
   const tight = at(size - 1);
   assert.equal(tight.overBudget, false);
-  assert.ok(tight.packet.budget.includedBytes < size - 1);
+  assert.ok(tight.includedBytes < size - 1);
   assert.throws(
     () => renderReviewPrompt(tight, world.contents),
     (err: unknown) => err instanceof PromptOverBudgetError && err.promptBytes === size && err.maxBytes === size - 1,

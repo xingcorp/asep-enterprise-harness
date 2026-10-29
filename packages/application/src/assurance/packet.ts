@@ -83,6 +83,12 @@ export interface BuiltPacket {
   /** Canonical review-packet/v1 bytes. */
   readonly bytes: Uint8Array;
   readonly sha256: string;
+  /**
+   * The packet's measured size, reported beside it and never inside it: the UTF-8 length of
+   * the canonical packet as it is sent (with `overBudget: false`), plus the bytes of the diffs
+   * and every post-image the prompt embeds. For a packet that is sent these are its final bytes.
+   */
+  readonly includedBytes: number;
   readonly overBudget: boolean;
   readonly omissions: readonly PacketOmission[];
 }
@@ -292,10 +298,10 @@ export function buildReviewPacket(sources: PacketSources, limits: PacketLimits):
       checks,
     },
     priorFindings,
-    budget: { maxBytes: limits.maxBytes, includedBytes: 0, overBudget: false, omissions },
+    budget: { maxBytes: limits.maxBytes, overBudget: false, omissions },
   };
-  // The budget: the canonical packet measured with its own figures zeroed, plus the diffs and
-  // every post-image the prompt embeds.
+  // The budget: the canonical packet exactly as it is sent, plus the diffs and every
+  // post-image the prompt embeds. An over-budget packet only changes its flag and is never sent.
   const embeddedPostImageBytes = files.reduce(
     (n, f) => n + (f.postImage === null ? 0 : (change.postImages.find((b) => b.path === f.path)?.bytes ?? 0)),
     0,
@@ -304,10 +310,10 @@ export function buildReviewPacket(sources: PacketSources, limits: PacketLimits):
     canonicalBytes(measured).byteLength + change.cumulativeDiff.bytes + (change.repairDelta?.bytes ?? 0) + embeddedPostImageBytes;
   const overBudget =
     includedBytes > limits.maxBytes || change.cumulativeDiff.overLimit || (change.repairDelta?.overLimit ?? false);
-  const packet: ReviewPacket = { ...measured, budget: { ...measured.budget, includedBytes, overBudget } };
+  const packet: ReviewPacket = overBudget ? { ...measured, budget: { ...measured.budget, overBudget } } : measured;
   assertPacketWhitelist(packet);
   const bytes = canonicalBytes(packet);
-  return { packet, bytes, sha256: sha256Hex(bytes), overBudget, omissions };
+  return { packet, bytes, sha256: sha256Hex(bytes), includedBytes, overBudget, omissions };
 }
 
 // --- whitelist -------------------------------------------------------------------------
@@ -433,7 +439,6 @@ const PACKET_SHAPE: Shape = {
     budget: {
       fields: {
         maxBytes: 'number',
-        includedBytes: 'number',
         overBudget: 'boolean',
         omissions: { array: { fields: { path: 'string', reason: 'string' } } },
       },
