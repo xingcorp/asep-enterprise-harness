@@ -6,6 +6,13 @@
 // that spawned descendants cannot outlive the kill. Raw stdout/stderr stream
 // through a BoundedCapture and are stored as immutable artifacts BEFORE the
 // result is returned, so a summary/reducer never sees uncaptured output (D5).
+//
+// In a Docker sandbox the process is a `docker run` client, and killing it does
+// not stop its container. So each container is named and labelled, killed by
+// that name first on a timeout or a cancellation, removed by it whenever the
+// client ends (on its own, killed, or killed by someone else), and run() throws
+// SandboxTeardownError rather than return beside a container it cannot show
+// gone.
 
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -16,6 +23,9 @@ import type {
 import { BoundedCapture } from './bounded-capture.js';
 import { resolveEnvironment } from './environment-profiles.js';
 import type { SandboxHandleEx } from './sandbox.js';
+import {
+  dockerCaller, dockerClientEnv, removeLabelledContainers, SandboxTeardownError,
+} from './container-teardown.js';
 
 function sha256Hex(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex');
@@ -30,6 +40,9 @@ export interface CommandRunnerConfig {
 // The runner needs the scope to store artifacts. It is constructed per attempt
 // with a scope + artifact store, then run() is called per command.
 export class TrustedCommandRunner implements CommandRunner {
+  // Numbers the containers this runner starts within one sandbox.
+  private seq = 0;
+
   constructor(
     private readonly scope: TenantScope,
     private readonly artifacts: ArtifactStore,
@@ -51,11 +64,16 @@ export class TrustedCommandRunner implements CommandRunner {
     // isolationEnforced:false.
     const ex = sandbox as SandboxHandleEx;
     const inContainer = Array.isArray(ex.runFlags) && typeof ex.image === 'string';
+    // The container's identity, so it can be removed by name however its
+    // client ends.
+    const container = inContainer ? `${ex.sandboxId}-${++this.seq}` : undefined;
     const [exe, argv] = inContainer
       ? [
           ex.dockerBinary ?? 'docker',
           [
             ...(ex.runFlags as readonly string[]),
+            '--name', container as string,
+            '--label', `asep.container=${container}`,
             '-w', spec.cwd,
             ex.image as string,
             spec.executable,
@@ -63,6 +81,19 @@ export class TrustedCommandRunner implements CommandRunner {
           ],
         ]
       : [spec.executable, [...spec.args]];
+    // A docker client needs only what finds its daemon; the container's own
+    // environment is the image's. Every client call of the sandbox uses the
+    // same, so the removal reaches the daemon the run did.
+    const clientEnv = inContainer ? dockerClientEnv() : env;
+    const docker = dockerCaller(exe, clientEnv);
+    const removeContainer = container !== undefined
+      ? () => removeLabelledContainers(docker, `asep.container=${container}`)
+      : async () => undefined;
+    // Stops the container at once. (`docker rm -f` on a `--rm` container whose
+    // client is still attached can take seconds; `docker kill` does not.)
+    const killContainer = container !== undefined
+      ? async () => { await docker(['kill', container]); }
+      : async () => undefined;
 
     const result = await new Promise<{
       exitCode: number | null; signal: string | null; timedOut: boolean;
@@ -74,7 +105,7 @@ export class TrustedCommandRunner implements CommandRunner {
       // -w), so we only set cwd for the host-spawn path.
       const child = spawn(exe, argv, {
         cwd: inContainer ? undefined : spec.cwd,
-        env,
+        env: clientEnv,
         shell: false,
         detached: true,
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -93,12 +124,18 @@ export class TrustedCommandRunner implements CommandRunner {
         }
       };
 
+      // Stop the container first: killing only its client would leave it
+      // running. The client is killed afterwards in case it has not exited, and
+      // the container is removed once the client has ended (below).
+      const terminate = () => {
+        void killContainer().finally(() => killGroup('SIGKILL'));
+      };
       const timer = setTimeout(() => {
         timedOut = true;
-        killGroup('SIGKILL');
+        terminate();
       }, spec.timeoutMs);
 
-      const onAbort = () => { killGroup('SIGKILL'); };
+      const onAbort = () => { terminate(); };
       if (this.signal) {
         if (this.signal.aborted) onAbort();
         else this.signal.addEventListener('abort', onAbort, { once: true });
@@ -125,6 +162,10 @@ export class TrustedCommandRunner implements CommandRunner {
       });
     });
 
+    // However the client ended, the container goes with it: removed by name and
+    // shown gone, or the run fails closed below.
+    const left = await removeContainer();
+
     // Store raw output as immutable artifacts BEFORE returning (D5). This
     // happens for every run, success or fail, so evidence exists before any
     // summary/reducer runs.
@@ -142,6 +183,7 @@ export class TrustedCommandRunner implements CommandRunner {
       sha256: sha256Hex(err.bytes),
       contentType: 'application/octet-stream',
     });
+    if (left !== undefined) throw new SandboxTeardownError(`verification container ${container}`, left);
 
     return {
       exitCode: result.exitCode,

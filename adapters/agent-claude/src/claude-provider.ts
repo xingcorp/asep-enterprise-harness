@@ -41,7 +41,9 @@ import type { TenantScope, ArtifactRef, WorkspaceId } from '@asep/contracts';
 import type {
   CodingAgentProvider, AgentExecuteRequest, AgentAttemptObservation, ArtifactStore,
 } from '@asep/ports';
-import { isDigestPinned } from '@asep/command-runner';
+import {
+  isDigestPinned, dockerCaller, dockerClientEnv, removeLabelledContainers, type DockerCall,
+} from '@asep/command-runner';
 import {
   ClaudeStreamParser, MalformedEventError, type ClaudeInit, type ParsedStream,
 } from './event-parser.js';
@@ -113,21 +115,9 @@ const MAX_STDOUT_BYTES = 32 * 1024 * 1024;
 const MAX_STDERR_BYTES = 64 * 1024;
 const MAX_SUMMARY_CHARS = 4000;
 
-// The docker CLI process gets only what it needs to find its daemon. None of
-// it reaches a container: container env is exactly the `-e` list below.
-const DOCKER_CLIENT_ENV = [
-  'PATH', 'HOME', 'DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_CONFIG', 'DOCKER_CERT_PATH', 'DOCKER_TLS_VERIFY',
-];
-
-function dockerClientEnv(): Record<string, string> {
-  const env: Record<string, string> = {};
-  for (const k of DOCKER_CLIENT_ENV) {
-    const v = process.env[k];
-    if (typeof v === 'string' && v !== '') env[k] = v;
-  }
-  if (env['PATH'] === undefined) env['PATH'] = '/usr/bin:/bin';
-  return env;
-}
+// The docker CLI process gets only what it needs to find its daemon
+// (dockerClientEnv). None of it reaches a container: container env is exactly
+// the `-e` list below.
 
 /** The agent's flags, exactly as the pinned CLI accepts them. */
 export function buildClaudeArgs(p: {
@@ -207,6 +197,7 @@ export function buildAgentRunArgs(p: {
     '--network', p.network,
     '--label', `asep.attempt=${p.attemptId}`,
     '--label', 'asep.role=agent',
+    '--label', `asep.container=${p.name}`,
     '--read-only',
     '--tmpfs', '/tmp:rw,nosuid,nodev,size=256m',
     '--cap-drop', 'ALL',
@@ -244,6 +235,7 @@ export function buildProxyRunArgs(p: {
     '--network', p.egressNetwork,
     '--label', `asep.attempt=${p.attemptId}`,
     '--label', 'asep.role=egress-proxy',
+    '--label', `asep.container=${p.name}`,
     '--read-only',
     '--cap-drop', 'ALL',
     '--security-opt', 'no-new-privileges',
@@ -289,6 +281,25 @@ function runDocker(
   });
 }
 
+// Remove every network carrying `label` and confirm none is left; undefined when
+// gone, else why not. (Its containers must already be gone.)
+async function removeLabelledNetworks(docker: DockerCall, label: string): Promise<string | undefined> {
+  let last = 'not checked';
+  for (let i = 0; i < 5; i++) {
+    if (i > 1) await new Promise((r) => setTimeout(r, 250));
+    const ls = await docker(['network', 'ls', '-q', '--filter', `label=${label}`]);
+    if (ls.code !== 0) {
+      last = `docker network ls failed: ${ls.stderr.trim().slice(0, 200) || `exit ${ls.code}`}`;
+      continue;
+    }
+    const ids = ls.stdout.split(/\s+/).filter((x) => x !== '');
+    if (ids.length === 0) return undefined;
+    const rm = await docker(['network', 'rm', ...ids]);
+    last = rm.code === 0 ? `${ids.join(', ')} still listed` : `docker network rm failed: ${rm.stderr.trim().slice(0, 200)}`;
+  }
+  return `network(s) labelled ${label} could not be shown removed: ${last}`;
+}
+
 // --- the attempt ---------------------------------------------------------------
 
 type AgentEnd =
@@ -319,6 +330,8 @@ interface RunRecord {
   inputsIntact?: boolean;
   invocation?: Record<string, unknown>;
   teardown: string[];
+  // Containers or networks of the attempt that could not be shown removed.
+  leftovers: string[];
   secrets: string[];
 }
 
@@ -377,6 +390,7 @@ export class ClaudeCodingProvider implements CodingAgentProvider {
       parser: new ClaudeStreamParser(),
       inputs: [],
       teardown: [],
+      leftovers: [],
       secrets: [],
     };
     await this.contained(req, grant, started, rec);
@@ -605,17 +619,27 @@ export class ClaudeCodingProvider implements CodingAgentProvider {
         setup('FAILED', `contained run failed: ${(err as Error).message}`);
       }
     } finally {
-      // Teardown is unconditional and best-effort; anything left behind is
-      // recorded, and labelled `asep.attempt=<id>` for an operator sweep.
+      // Teardown is unconditional. Each container is removed by name — the
+      // proxy's is stopped first, while its client is still attached — then
+      // everything labelled with this attempt is removed and shown gone. What
+      // cannot be shown gone fails the attempt (see conclude).
+      const docker = dockerCaller(this.docker, dockerClientEnv());
       if (created.agent) await this.remove(agentName, rec);
       if (created.proxy) {
-        await this.remove(proxyName, rec);
+        await docker(['kill', proxyName]);
         proxyChild?.kill('SIGKILL');
         await Promise.race([proxyClosed, new Promise((r) => setTimeout(r, 5_000))]);
+        await this.remove(proxyName, rec);
+      }
+      if (created.network || created.proxy || created.agent) {
+        const left = await removeLabelledContainers(docker, `asep.attempt=${req.attemptId}`);
+        if (left !== undefined) rec.leftovers.push(left);
       }
       if (created.network) {
         const r = await runDocker(this.docker, ['network', 'rm', network]);
         if (r.code !== 0) rec.teardown.push(`network ${network} not removed: ${r.stderr.trim().slice(0, 200)}`);
+        const left = await removeLabelledNetworks(docker, `asep.attempt=${req.attemptId}`);
+        if (left !== undefined) rec.leftovers.push(left);
       }
       if (inputDir !== undefined) {
         await chmod(inputDir, 0o755).catch(() => undefined);
@@ -626,7 +650,7 @@ export class ClaudeCodingProvider implements CodingAgentProvider {
 
   private async remove(name: string, rec: RunRecord): Promise<void> {
     const r = await runDocker(this.docker, ['rm', '-f', name]);
-    if (r.code !== 0 && !/no such container/i.test(r.stderr)) {
+    if (r.code !== 0 && !/no such container|already in progress/i.test(r.stderr)) {
       rec.teardown.push(`container ${name} not removed: ${r.stderr.trim().slice(0, 200)}`);
     }
   }
@@ -647,12 +671,13 @@ export class ClaudeCodingProvider implements CodingAgentProvider {
       });
       let ended: AgentEnd | undefined;
       let pending = '';
-      // The first reason to stop wins; the container is removed (not merely its
-      // docker client killed), so nothing keeps running inside.
+      // The first reason to stop wins; the container itself is stopped (not
+      // merely its docker client killed), so nothing keeps running inside. It
+      // is removed by name once the client has ended.
       const stop = (end: AgentEnd): void => {
         if (ended !== undefined) return;
         ended = end;
-        void runDocker(this.docker, ['rm', '-f', name]).finally(() => child.kill('SIGKILL'));
+        void runDocker(this.docker, ['kill', name]).finally(() => child.kill('SIGKILL'));
       };
       const timer = setTimeout(() => stop({ kind: 'timeout' }), Math.max(1, deadline - Date.now()));
       const onAbort = (): void => stop({ kind: 'aborted' });
@@ -756,7 +781,10 @@ export class ClaudeCodingProvider implements CodingAgentProvider {
     }
     if (rec.egressLog.bytes > 0) await put('claude-egress-log', egress.text, 'text/plain; charset=utf-8');
 
-    const limitations: string[] = [...rec.teardown.map((t) => `teardown: ${t}`)];
+    const limitations: string[] = [
+      ...rec.teardown.map((t) => `teardown: ${t}`),
+      ...rec.leftovers.map((t) => `teardown: ${t}`),
+    ];
     const init = rec.parser.finishedInit();
     const usageFrom = (parsed?: ParsedStream) => ({
       inputTokens: parsed?.result.inputTokens ?? 0,
@@ -778,6 +806,11 @@ export class ClaudeCodingProvider implements CodingAgentProvider {
       return init === undefined ? base : { ...base, providerSessionId: init.sessionId };
     };
 
+    // Nothing the attempt started may outlive it: a container or network that
+    // cannot be shown removed could still be running beside the worktree.
+    if (rec.leftovers.length > 0) {
+      return build('FAILED', 'Claude attempt failed closed: its containers or network could not be shown removed.', []);
+    }
     if (rec.setup !== undefined) {
       return build(rec.setup.status, `Claude attempt did not start: ${rec.setup.reason}.`, [rec.setup.reason]);
     }

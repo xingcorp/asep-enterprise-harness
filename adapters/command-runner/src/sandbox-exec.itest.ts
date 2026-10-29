@@ -16,13 +16,17 @@
 //       working tree fails; writing INTO the writable working-tree mount works
 //       and the bytes are visible on the host afterwards (containment proof).
 //   G5  exact exit code from the in-container process is preserved (no coercion).
+//   F3  a container never outlives the run that started it: its docker client
+//       SIGKILLed mid-run, a timeout, a cancellation and a normal exit all leave
+//       no container carrying the sandbox's label.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { PgliteClient, migrate, ContentAddressedArtifactStore, FilesystemObjectStore } from '@asep/persistence';
 import type { SqlClient } from '@asep/persistence';
 import { TrustedCommandRunner } from './command-runner.js';
@@ -256,6 +260,115 @@ test('G5 (in-container): a non-zero exit code from the container is preserved ex
     const res = await runner.run(spec(dir, { executable: 'sh', args: ['-c', 'exit 7'] }), handle);
     assert.equal(res.exitCode, 7, 'the container process exit code is preserved exactly');
     assert.equal(res.timedOut, false);
+  } finally {
+    await client.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// F3/G3 — a container never outlives its run. Killing a `docker run` client does
+// not stop its container; the runner must remove it by its identity. The
+// docker client here is a wrapper that records each client's pid and then
+// execs the real one, so the test can SIGKILL exactly the client of the run.
+// ---------------------------------------------------------------------------
+
+async function pidRecordingDocker(dir: string): Promise<{ docker: string; runClientPid(): number }> {
+  const real = execFileSync('sh', ['-c', 'command -v docker'], { encoding: 'utf8' }).trim();
+  const pids = join(dir, 'client-pids');
+  const docker = join(dir, 'docker');
+  await writeFile(docker, `#!/bin/sh\necho "$$ $1" >> '${pids}'\nexec '${real}' "$@"\n`, { mode: 0o755 });
+  return {
+    docker,
+    runClientPid() {
+      return Number(readFileSync(pids, 'utf8').trim().split('\n').find((l) => l.endsWith(' run'))!.split(' ')[0]);
+    },
+  };
+}
+
+function containersLabelled(label: string, runningOnly = false): Promise<string[]> {
+  const args = ['ps', '-aq', '--filter', `label=${label}`, ...(runningOnly ? ['--filter', 'status=running'] : [])];
+  return new Promise((resolve, reject) => {
+    execFile('docker', args, (err, stdout) => (err ? reject(err) : resolve(String(stdout).split(/\s+/).filter(Boolean))));
+  });
+}
+
+async function until(what: string, ok: () => Promise<boolean>, ms = 60_000): Promise<void> {
+  const end = Date.now() + ms;
+  while (!(await ok())) {
+    if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
+    await new Promise((r) => setTimeout(r, 200));
+  }
+}
+
+async function labelledSandbox(dir: string, docker: string): Promise<{ provider: DockerSandboxProvider; handle: SandboxHandleEx }> {
+  const provider = new DockerSandboxProvider({ imageDigest: ALPINE, dockerBinary: docker });
+  const handle = (await provider.start('verification-no-network', {
+    workspaceId: 'W'.repeat(26) as WorkspaceId,
+    readOnlyPaths: [],
+    writablePaths: [dir],
+    attemptId: 'A'.repeat(26) as never,
+  })) as SandboxHandleEx;
+  return { provider, handle };
+}
+
+test('F3 (in-container): SIGKILLing the docker client mid-run leaves no container behind', async () => {
+  const { client, store, scope, dir } = await harness();
+  try {
+    const d = await pidRecordingDocker(dir);
+    const { provider, handle } = await labelledSandbox(dir, d.docker);
+    const label = `asep.sandbox=${handle.sandboxId}`;
+    const running = new TrustedCommandRunner(scope, store)
+      .run(spec(dir, { executable: 'sleep', args: ['120'], timeoutMs: 120_000 }), handle);
+    await until('the container to be running', async () => (await containersLabelled(label, true)).length === 1);
+    process.kill(d.runClientPid(), 'SIGKILL');
+    const res = await running;
+    assert.equal(res.signal, 'SIGKILL', 'the client died of the signal, not the command');
+    assert.deepEqual(await containersLabelled(label), [], 'the container was removed, not left running');
+    await provider.stop(handle);
+  } finally {
+    await client.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('F3 (in-container): a timeout removes the container itself', async () => {
+  const { client, store, scope, dir } = await harness();
+  try {
+    const d = await pidRecordingDocker(dir);
+    const { provider, handle } = await labelledSandbox(dir, d.docker);
+    const started = Date.now();
+    const res = await new TrustedCommandRunner(scope, store)
+      .run(spec(dir, { executable: 'sleep', args: ['120'], timeoutMs: 3_000 }), handle);
+    assert.equal(res.timedOut, true);
+    assert.ok(Date.now() - started < 60_000, 'the run returned at its timeout, not when sleep would have ended');
+    assert.deepEqual(await containersLabelled(`asep.sandbox=${handle.sandboxId}`), []);
+    await provider.stop(handle);
+  } finally {
+    await client.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('F3 (in-container): a cancellation removes the container, and a normal exit leaves none', async () => {
+  const { client, store, scope, dir } = await harness();
+  try {
+    const d = await pidRecordingDocker(dir);
+    const { provider, handle } = await labelledSandbox(dir, d.docker);
+    const label = `asep.sandbox=${handle.sandboxId}`;
+    const ac = new AbortController();
+    const runner = new TrustedCommandRunner(scope, store, ac.signal);
+    const running = runner.run(spec(dir, { executable: 'sleep', args: ['120'], timeoutMs: 120_000 }), handle);
+    await until('the container to be running', async () => (await containersLabelled(label, true)).length === 1);
+    ac.abort();
+    await running;
+    assert.deepEqual(await containersLabelled(label), [], 'cancelled: removed');
+
+    const done = await new TrustedCommandRunner(scope, store)
+      .run(spec(dir, { executable: 'sh', args: ['-c', 'exit 3'] }), handle);
+    assert.equal(done.exitCode, 3);
+    assert.deepEqual(await containersLabelled(label), [], 'exited: nothing left');
+    await provider.stop(handle);
   } finally {
     await client.close();
     await rm(dir, { recursive: true, force: true });

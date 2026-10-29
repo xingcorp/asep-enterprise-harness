@@ -49,8 +49,17 @@ The Claude provider has no host-execution mode. Every attempt runs like this
    worktree is its one writable bind; the worktree's `.git` indirection, the work
    order and the context pack are read-only binds, and the mirror is not mounted.
    It holds a placeholder API key and `ANTHROPIC_BASE_URL` pointing at the proxy.
-4. Containers and network are removed when the attempt ends, whatever happened.
-   Each carries the label `asep.attempt=<attemptId>`.
+4. Containers and network are removed when the attempt ends, whatever happened
+   — including when a `docker run` client dies mid-run, which does not stop its
+   container. Each container carries `asep.attempt=<attemptId>`,
+   `asep.role=agent|egress-proxy` and `asep.container=<name>`; the provider
+   removes each by name, then removes everything labelled with the attempt and
+   confirms with `docker ps -a` / `docker network ls` that nothing is left. If
+   it cannot, the attempt fails closed. Verification containers work the same
+   way (`asep.role=verification`, `asep.sandbox=<id>`, `asep.workspace=<id>` and
+   `asep.attempt=<id>`): stopped by name on a timeout or a cancellation, removed
+   by name when their client ends, and swept by sandbox when the sandbox stops;
+   a container that cannot be shown gone fails the verification step.
 
 Configuration (`apps/control-plane-api/src/pilot-main.ts`, all required unless
 marked):
@@ -65,7 +74,9 @@ marked):
 | `ASEP_ANTHROPIC_API_KEY_FILE` | A file holding the model key, mode `600` (a group/other-readable file is refused). Use a key scoped to the pilot (its own workspace and spend limit). It is read per attempt, so rotation needs no restart. |
 | `ASEP_ANTHROPIC_BASE_URL` (optional) | The model API origin, `https://` only. Defaults to `https://api.anthropic.com`. |
 
-Orphan sweep after a harness crash (nothing else is ever labelled this way):
+Orphan sweep after a harness crash. The harness removes what it started only
+while it is alive; if its own process dies, its containers keep running until
+swept (nothing else is ever labelled this way):
 
 ```sh
 docker rm -f $(docker ps -aq --filter label=asep.role)

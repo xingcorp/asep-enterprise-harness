@@ -146,14 +146,22 @@ interface Harness {
   close(): Promise<void>;
 }
 
-async function harness(opts: { echoKey?: boolean; workOrder?: unknown } = {}): Promise<Harness> {
+async function harness(opts: { echoKey?: boolean; workOrder?: unknown; refuseRemoval?: boolean } = {}): Promise<Harness> {
   // Real paths: the provider resolves the worktree with realpath(3).
   const dir = await realpath(await mkdtemp(join(tmpdir(), 'claude-provider-')));
   const state = join(dir, 'docker-state');
   const bin = join(dir, 'bin');
   await mkdir(bin, { recursive: true });
   const docker = join(bin, 'docker');
-  await writeFile(docker, `#!/bin/sh\nexec "${process.execPath}" "${FAKE_DOCKER}" --state "${state}" "$@"\n`, { mode: 0o755 });
+  // Records each client's pid and argv, so a test can kill one; with
+  // `refuseRemoval` it stands for a daemon that cannot stop or remove anything.
+  await writeFile(docker, [
+    '#!/bin/sh',
+    `echo "$$ $*" >> "${join(dir, 'client-pids')}"`,
+    ...(opts.refuseRemoval ? ['case "$1" in rm|kill) echo "Error response from daemon: removal refused" >&2; exit 1;; esac'] : []),
+    `exec "${process.execPath}" "${FAKE_DOCKER}" --state "${state}" "$@"`,
+    '',
+  ].join('\n'), { mode: 0o755 });
   const wt = join(dir, 'wt');
   await mkdir(wt, { recursive: true });
   await writeFile(join(wt, '.git'), 'gitdir: /nowhere/worktrees/wt\n');
@@ -262,10 +270,14 @@ test('a contained attempt: internal network, proxy, agent, teardown — and an u
     );
     assert.equal(readFileSync(join(h.wt, 'feature.txt'), 'utf8'), 'written by the fake claude CLI\n');
 
-    // The docker choreography, in order.
+    // The docker choreography, in order: the agent is removed by name, the proxy
+    // stopped then removed by name, then everything labelled with the attempt
+    // is shown gone before and after the network goes.
     assert.deepEqual(verbs(h.invocations()), [
-      'network create', 'run', 'network connect', 'run', 'rm', 'rm', 'network rm',
+      'network create', 'run', 'network connect', 'run', 'rm', 'kill', 'rm', 'ps', 'network rm', 'network ls',
     ]);
+    const sweeps = argvOf(h.invocations()).filter((a) => a[0] === 'ps' || (a[0] === 'network' && a[1] === 'ls'));
+    for (const a of sweeps) assert.ok(a.includes(`label=asep.attempt=${ATTEMPT}`), `${a.join(' ')} sweeps by the attempt label`);
     const [create, proxy, connect, agent] = argvOf(h.invocations());
     assert.ok(create!.includes('--internal'), 'the agent network is internal: no gateway, no route out');
     const netName = create!.at(-1)!;
@@ -663,6 +675,73 @@ test('G3: cancellation stops a running agent promptly; an already-aborted signal
     assert.equal(blocked.status, 'BLOCKED');
     assert.equal(h.invocations().length, before, 'nothing was started');
   } finally {
+    await h.close();
+  }
+});
+
+// A killed `docker run` client does not stop its container. The fake docker
+// client models that: its containers are detached host processes that outlive a
+// killed client. The real-daemon proof is agent-sandbox.itest.ts.
+const alive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+function containerRecords(h: Harness): Record<string, unknown>[] {
+  const d = join(h.state, 'containers');
+  return existsSync(d) ? readdirSync(d).map((f) => JSON.parse(readFileSync(join(d, f), 'utf8')) as Record<string, unknown>) : [];
+}
+
+function runClientPid(h: Harness, role: string): number {
+  const line = readFileSync(join(h.dir, 'client-pids'), 'utf8').split('\n')
+    .find((l) => / run /.test(` ${l.split(' ').slice(1).join(' ')} `) && l.includes(`asep.role=${role}`));
+  assert.ok(line, `a ${role} client was started`);
+  return Number(line.split(' ')[0]);
+}
+
+async function until(what: string, ok: () => boolean, ms = 15_000): Promise<void> {
+  const end = Date.now() + ms;
+  while (!ok()) {
+    if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
+    await new Promise((r) => setTimeout(r, 25));
+  }
+}
+
+test('G3: killing the agent and proxy docker clients mid-run leaves no container or network behind', async () => {
+  const h = await harness();
+  try {
+    const running = (await h.provider('hang')).execute(request(h));
+    await until('the agent container to start', () => containerRecords(h).some((c) => String(c['name']).startsWith('asep-agent-')));
+    const pids = containerRecords(h).map((c) => c['pid'] as number);
+    assert.equal(pids.length, 2, 'the proxy and the agent are running');
+    process.kill(runClientPid(h, 'agent'), 'SIGKILL');
+    process.kill(runClientPid(h, 'egress-proxy'), 'SIGKILL');
+    const obs = await running;
+    assert.equal(obs.status, 'FAILED', obs.knownLimitations.join('; '));
+    assertTornDown(h);
+    await until('every container process to end', () => pids.every((p) => !alive(p)), 5_000);
+  } finally {
+    await h.close();
+  }
+});
+
+test('G3: an attempt whose containers cannot be shown removed fails closed', async () => {
+  const h = await harness({ refuseRemoval: true });
+  const pids: number[] = [];
+  try {
+    const running = (await h.provider('hang')).execute(request(h, { budget: { ...BUDGET, maxWallClockMinutes: 0.03 } }));
+    await until('the agent container to start', () => containerRecords(h).some((c) => String(c['name']).startsWith('asep-agent-')));
+    pids.push(...containerRecords(h).map((c) => c['pid'] as number));
+    const obs = await running;
+    assert.equal(obs.status, 'FAILED', 'not BUDGET_EXHAUSTED: a container may still be running beside the worktree');
+    assert.match(obs.summary, /could not be shown removed/);
+    assert.match(obs.knownLimitations.join(' '), /labelled asep\.attempt=.* could not be shown removed/);
+  } finally {
+    for (const p of pids) try { process.kill(-p, 'SIGKILL'); } catch { /* gone */ }
     await h.close();
   }
 });

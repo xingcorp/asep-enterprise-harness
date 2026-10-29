@@ -7,7 +7,7 @@
 // turns the gate RED.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -22,6 +22,8 @@ import {
   buildSandboxRunFlags, isDigestPinned,
   type SandboxHandleEx,
 } from './sandbox.js';
+import { SandboxTeardownError } from './container-teardown.js';
+import { spawn } from 'node:child_process';
 import type { CommandSpec, SandboxHandle } from '@asep/ports';
 import type {
   OrganizationId, ProjectId, TenantScope,
@@ -386,6 +388,219 @@ test('E8: a Docker handle runs commands through its configured docker client, in
       assert.ok(argv.includes(flag), `docker run carries ${flag}`);
     }
   } finally {
+    await client.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// A killed `docker run` client does not stop its container. Each verification
+// container is named and labelled for its sandbox, workspace and attempt, and
+// removed by that identity however its client ends. The fake docker client
+// models the daemon here: its "containers" are detached host processes that
+// outlive a killed client, exactly as real containers do. The real-daemon proof
+// is sandbox-exec.itest.ts.
+// ---------------------------------------------------------------------------
+
+const FAKE_DOCKER = fileURLToPath(new URL('../../../scripts/testing/fake-docker.mjs', import.meta.url));
+const ATTEMPT = 'A'.repeat(26);
+
+interface FakeDaemon {
+  readonly docker: string;
+  readonly state: string;
+  readonly wt: string;
+  containers(): Record<string, unknown>[];
+  runClientPid(): number;
+  invocations(): string[][];
+}
+
+// A fake docker client shim that records the pid of each client it starts.
+// `refuseRm` makes every `docker rm` and `docker kill` fail, as a daemon that
+// cannot stop or remove a container.
+async function fakeDaemon(dir: string, refuseRm = false): Promise<FakeDaemon> {
+  const state = join(dir, 'docker-state');
+  const docker = join(dir, 'docker');
+  const pids = join(dir, 'client-pids');
+  await writeFile(docker, [
+    '#!/bin/sh',
+    `echo "$$ $1" >> "${pids}"`,
+    ...(refuseRm ? ['case "$1" in rm|kill) echo "Error response from daemon: removal refused" >&2; exit 1;; esac'] : []),
+    `exec "${process.execPath}" "${FAKE_DOCKER}" --state "${state}" "$@"`,
+    '',
+  ].join('\n'), { mode: 0o755 });
+  const wt = join(dir, 'wt');
+  await mkdir(wt);
+  return {
+    docker, state, wt,
+    containers() {
+      const d = join(state, 'containers');
+      return existsSync(d) ? readdirSync(d).map((f) => JSON.parse(readFileSync(join(d, f), 'utf8')) as Record<string, unknown>) : [];
+    },
+    runClientPid() {
+      const line = readFileSync(pids, 'utf8').trim().split('\n').find((l) => l.endsWith(' run'));
+      assert.ok(line, 'a docker run client was started');
+      return Number(line.split(' ')[0]);
+    },
+    invocations() {
+      const p = join(state, 'invocations.jsonl');
+      return existsSync(p)
+        ? readFileSync(p, 'utf8').trim().split('\n').map((l) => (JSON.parse(l) as { argv?: string[] }).argv ?? []).filter((a) => a.length > 0)
+        : [];
+    },
+  };
+}
+
+const alive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+async function until(what: string, ok: () => boolean, ms = 15_000): Promise<void> {
+  const end = Date.now() + ms;
+  while (!ok()) {
+    if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
+    await new Promise((r) => setTimeout(r, 25));
+  }
+}
+
+const LONG = { executable: 'node', args: ['-e', 'setTimeout(() => {}, 60000)'] };
+
+async function dockerHandle(d: FakeDaemon): Promise<SandboxHandleEx> {
+  const provider = new DockerSandboxProvider({ imageDigest: `alpine@sha256:${'a'.repeat(64)}`, dockerBinary: d.docker });
+  return await provider.start('verification-no-network', {
+    workspaceId: 'W'.repeat(26) as never, readOnlyPaths: [], writablePaths: [d.wt], attemptId: ATTEMPT as never,
+  }) as SandboxHandleEx;
+}
+
+test('a verification container is named and labelled for its sandbox, workspace and attempt', async () => {
+  const { client, store, scope, dir } = await harness();
+  try {
+    const d = await fakeDaemon(dir);
+    const handle = await dockerHandle(d);
+    const r = await new TrustedCommandRunner(scope, store).run(spec({ cwd: d.wt }), handle);
+    assert.equal(r.exitCode, 0);
+    const run = d.invocations().find((a) => a[0] === 'run')!;
+    const name = run[run.indexOf('--name') + 1];
+    assert.equal(name, `${handle.sandboxId}-1`);
+    const labels = run.flatMap((a, i) => (a === '--label' ? [run[i + 1]] : []));
+    assert.deepEqual(labels.sort(), [
+      `asep.attempt=${ATTEMPT}`, `asep.container=${name}`, 'asep.role=verification',
+      `asep.sandbox=${handle.sandboxId}`, `asep.workspace=${'W'.repeat(26)}`,
+    ]);
+    // After a normal exit the runner still confirms, by that label, that it is gone.
+    assert.ok(d.invocations().some((a) => a[0] === 'ps' && a.includes(`label=asep.container=${name}`)));
+    assert.deepEqual(d.containers(), []);
+  } finally {
+    await client.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('killing the docker client mid-run does not leave its container running', async () => {
+  const { client, store, scope, dir } = await harness();
+  try {
+    const d = await fakeDaemon(dir);
+    const running = new TrustedCommandRunner(scope, store).run(spec({ ...LONG, cwd: d.wt, timeoutMs: 60_000 }), await dockerHandle(d));
+    await until('the container to start', () => d.containers().length === 1);
+    const containerPid = d.containers()[0]!['pid'] as number;
+    assert.ok(alive(containerPid));
+    process.kill(d.runClientPid(), 'SIGKILL');
+    const r = await running;
+    assert.equal(r.signal, 'SIGKILL', 'the client died of the signal');
+    assert.equal(r.timedOut, false);
+    assert.deepEqual(d.containers(), [], 'the container was removed by its name');
+    await until('the container process to end', () => !alive(containerPid), 5_000);
+  } finally {
+    await client.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('a timed-out command has its container removed, not merely its client killed', async () => {
+  const { client, store, scope, dir } = await harness();
+  try {
+    const d = await fakeDaemon(dir);
+    const handle = await dockerHandle(d);
+    const r = await new TrustedCommandRunner(scope, store).run(spec({ ...LONG, cwd: d.wt, timeoutMs: 1_500 }), handle);
+    assert.equal(r.timedOut, true);
+    assert.deepEqual(d.containers(), []);
+    assert.ok(d.invocations().some((a) => a[0] === 'kill' && a.includes(`${handle.sandboxId}-1`)),
+      'the container itself was stopped, by its name');
+  } finally {
+    await client.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('a cancelled command has its container removed', async () => {
+  const { client, store, scope, dir } = await harness();
+  try {
+    const d = await fakeDaemon(dir);
+    const ac = new AbortController();
+    const running = new TrustedCommandRunner(scope, store, ac.signal)
+      .run(spec({ ...LONG, cwd: d.wt, timeoutMs: 60_000 }), await dockerHandle(d));
+    await until('the container to start', () => d.containers().length === 1);
+    const containerPid = d.containers()[0]!['pid'] as number;
+    ac.abort();
+    const r = await running;
+    assert.equal(r.exitCode === 0, false);
+    assert.deepEqual(d.containers(), []);
+    await until('the container process to end', () => !alive(containerPid), 5_000);
+  } finally {
+    await client.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('a container that cannot be removed fails the run closed', async () => {
+  const { client, store, scope, dir } = await harness();
+  let leftover: number | undefined;
+  try {
+    const d = await fakeDaemon(dir, true);
+    const running = new TrustedCommandRunner(scope, store).run(spec({ ...LONG, cwd: d.wt, timeoutMs: 1_000 }), await dockerHandle(d));
+    await until('the container to start', () => d.containers().length === 1);
+    leftover = d.containers()[0]!['pid'] as number;
+    await assert.rejects(running, (err: Error) =>
+      err instanceof SandboxTeardownError && /could not be removed .*removal refused/.test(err.message));
+  } finally {
+    if (leftover !== undefined) try { process.kill(-leftover, 'SIGKILL'); } catch { /* gone */ }
+    await client.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('stopping a sandbox removes any container still carrying its id, and fails when it cannot', async () => {
+  const { client, dir } = await harness();
+  const leftovers: number[] = [];
+  try {
+    for (const refuseRm of [false, true]) {
+      const sub = join(dir, refuseRm ? 'refusing' : 'removing');
+      await mkdir(sub);
+      const d = await fakeDaemon(sub, refuseRm);
+      const provider = new DockerSandboxProvider({ imageDigest: `alpine@sha256:${'a'.repeat(64)}`, dockerBinary: d.docker });
+      const handle = await provider.start('verification-no-network', {
+        workspaceId: 'W'.repeat(26) as never, readOnlyPaths: [], writablePaths: [d.wt], attemptId: ATTEMPT as never,
+      }) as SandboxHandleEx;
+      // A container of this sandbox whose client died before anyone removed it.
+      const orphan = spawn(d.docker, [...handle.runFlags!, '--name', `${handle.sandboxId}-9`, handle.image!, LONG.executable, ...LONG.args],
+        { stdio: 'ignore', detached: true });
+      await until('the orphan to start', () => d.containers().length === 1);
+      leftovers.push(d.containers()[0]!['pid'] as number);
+      orphan.kill('SIGKILL');
+      if (refuseRm) {
+        await assert.rejects(() => provider.stop(handle), SandboxTeardownError);
+        assert.equal(d.containers().length, 1);
+      } else {
+        await provider.stop(handle);
+        assert.deepEqual(d.containers(), [], 'stop removed the orphan by the sandbox label');
+      }
+    }
+  } finally {
+    for (const pid of leftovers) try { process.kill(-pid, 'SIGKILL'); } catch { /* gone */ }
     await client.close();
     await rm(dir, { recursive: true, force: true });
   }

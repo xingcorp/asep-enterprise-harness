@@ -22,11 +22,20 @@
 // The command runner treats a SandboxHandle as an opaque execution context; the
 // no-network / resource guarantees are the sandbox's responsibility, so a real
 // Docker handle enforces them and the local handle transparently does not.
+//
+// Every container a Docker handle runs is labelled with the handle's sandbox
+// id, its workspace and its attempt. The runner removes each one by name when
+// its client ends; stop() then removes anything still carrying the sandbox id
+// and fails if it cannot show none is left.
 
 import { execFile } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import type {
   SandboxProvider, SandboxHandle, WorkspaceMount,
 } from '@asep/ports';
+import {
+  dockerCaller, dockerClientEnv, removeLabelledContainers, SandboxTeardownError,
+} from './container-teardown.js';
 
 export interface SandboxHandleEx extends SandboxHandle {
   // Honesty flag (F6): true only when the OS/container actually enforces the
@@ -45,6 +54,20 @@ export interface SandboxHandleEx extends SandboxHandle {
   readonly image?: string;
   // The docker client the runner invokes. undefined for local.
   readonly dockerBinary?: string;
+}
+
+/** The labels every container of a Docker sandbox carries. */
+export function sandboxLabels(
+  sandboxId: string,
+  profile: 'verification-no-network' | 'agent-restricted-egress',
+  mount: WorkspaceMount,
+): readonly string[] {
+  return [
+    `asep.role=${profile === 'verification-no-network' ? 'verification' : 'agent-sandbox'}`,
+    `asep.sandbox=${sandboxId}`,
+    `asep.workspace=${mount.workspaceId}`,
+    ...(mount.attemptId !== undefined ? [`asep.attempt=${mount.attemptId}`] : []),
+  ];
 }
 
 function dockerAvailable(binary: string): Promise<boolean> {
@@ -158,21 +181,31 @@ export class DockerSandboxProvider implements SandboxProvider {
       ...(this.cfg.memory !== undefined ? { memory: this.cfg.memory } : {}),
       ...(this.cfg.pids !== undefined ? { pids: this.cfg.pids } : {}),
     });
+    // One id per started sandbox, usable as a container-name prefix. Every
+    // container run in it is labelled with it, its workspace and its attempt.
+    const sandboxId = `asep-verify-${String(mount.workspaceId).toLowerCase().replace(/[^a-z0-9_.-]/g, '-')}-` +
+      `${Date.now().toString(36)}${randomBytes(3).toString('hex')}`;
+    const labelled = [...runFlags, ...sandboxLabels(sandboxId, profile, mount).flatMap((l) => ['--label', l])];
     // Back-compat prefix (flags + image) for the existing hardening assertions.
-    const prefix = [dockerBinary, ...runFlags, this.cfg.imageDigest];
+    const prefix = [dockerBinary, ...labelled, this.cfg.imageDigest];
     return {
-      sandboxId: `docker-${mount.workspaceId}-${Date.now()}`,
+      sandboxId,
       profile,
       isolationEnforced: true,
       dockerRunPrefix: prefix,
-      runFlags,
+      runFlags: labelled,
       image: this.cfg.imageDigest,
       dockerBinary,
     };
   }
 
-  async stop(_handle: SandboxHandle): Promise<void> {
-    // --rm containers self-remove on exit; nothing persistent to tear down.
+  // The runner removes each container when its client ends; this removes
+  // anything that still carries the sandbox's id, and refuses to report the
+  // sandbox stopped while it cannot show none is left.
+  async stop(handle: SandboxHandle): Promise<void> {
+    const docker = dockerCaller((handle as SandboxHandleEx).dockerBinary ?? this.cfg.dockerBinary ?? 'docker', dockerClientEnv());
+    const left = await removeLabelledContainers(docker, `asep.sandbox=${handle.sandboxId}`);
+    if (left !== undefined) throw new SandboxTeardownError(`sandbox ${handle.sandboxId}`, left);
   }
 }
 

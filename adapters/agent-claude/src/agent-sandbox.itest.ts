@@ -103,6 +103,7 @@ interface World {
   readonly shimDir: string;
   readonly secret: string;
   readonly keyFile: string;
+  runClientPid(role: 'agent' | 'egress-proxy'): number;
   shim(scenario: string): Promise<string>;
   teardown(): Promise<void>;
 }
@@ -152,6 +153,7 @@ async function world(): Promise<World> {
   await writeFile(dockerWrapper, [
     '#!/bin/sh',
     `{ printf 'ARGV'; for a in "$@"; do printf ' %s' "$a"; done; printf '\\n'; env | sed 's/^/ENV /'; } >> '${dockerLog}'`,
+    `echo "$$ $*" >> '${join(dir, 'client-pids')}'`,
     `exec '${realDocker}' "$@"`,
     '',
   ].join('\n'), { mode: 0o755 });
@@ -164,6 +166,12 @@ async function world(): Promise<World> {
 
   return {
     dir, wt, mirror, upstreamNet, modelName, modelIp, modelLog, dockerLog, dockerWrapper, shimDir, secret, keyFile,
+    runClientPid(role) {
+      const line = readFileSync(join(dir, 'client-pids'), 'utf8').split('\n')
+        .find((l) => l.split(' ')[1] === 'run' && l.includes(`asep.role=${role}`));
+      assert.ok(line, `a ${role} client was started`);
+      return Number(line.split(' ')[0]);
+    },
     async shim(scenario) {
       const path = join(shimDir, `claude-${scenario}`);
       await writeFile(path, [
@@ -353,6 +361,68 @@ test('a hung agent is removed by the wall-clock budget, and so is everything els
     assert.match(obs.knownLimitations.join(' '), /wall-clock/);
     assert.ok(Date.now() - started < 60_000);
     assert.equal(await leftovers(req.attemptId), '', 'the container was removed, not merely abandoned');
+  } finally {
+    await db.close();
+    await w.teardown();
+  }
+});
+
+async function running(attemptId: string, role: string): Promise<boolean> {
+  const ids = await mustDocker([
+    'ps', '-q', '--filter', `label=asep.attempt=${attemptId}`, '--filter', `label=asep.role=${role}`, '--filter', 'status=running',
+  ]);
+  return ids !== '';
+}
+
+async function until(what: string, ok: () => Promise<boolean>, ms = 60_000): Promise<void> {
+  const end = Date.now() + ms;
+  while (!(await ok())) {
+    if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
+    await new Promise((r) => setTimeout(r, 200));
+  }
+}
+
+// A killed `docker run` client does not stop its container: the provider must
+// remove the agent and the proxy by their identity when their clients die.
+test('SIGKILLing the agent and proxy docker clients mid-run leaves no container or network behind', async () => {
+  const w = await world();
+  const { db, store: s } = await store(w.dir);
+  try {
+    const workOrderRef = await put(s, 'work-order', { objective: 'hang' });
+    const contextPackRef = await put(s, 'context-pack', {});
+    const req = request(workOrderRef, contextPackRef);
+    await seedAttempt(db, req.attemptId);
+    const started = Date.now();
+    const execution = (await provider(w, s, 'hang')).execute(req);
+    await until('the agent container to be running', () => running(req.attemptId, 'agent'));
+    assert.equal(await running(req.attemptId, 'egress-proxy'), true);
+    process.kill(w.runClientPid('agent'), 'SIGKILL');
+    process.kill(w.runClientPid('egress-proxy'), 'SIGKILL');
+    const obs = await execution;
+    assert.equal(obs.status, 'FAILED', obs.knownLimitations.join('; '));
+    assert.ok(Date.now() - started < 90_000, 'the attempt ended with its clients, not at its wall-clock budget');
+    assert.equal(await leftovers(req.attemptId), '', 'the containers and the network were removed, not abandoned');
+  } finally {
+    await db.close();
+    await w.teardown();
+  }
+});
+
+test('a cancelled attempt leaves no container or network behind', async () => {
+  const w = await world();
+  const { db, store: s } = await store(w.dir);
+  try {
+    const workOrderRef = await put(s, 'work-order', { objective: 'hang' });
+    const contextPackRef = await put(s, 'context-pack', {});
+    const ac = new AbortController();
+    const req = request(workOrderRef, contextPackRef, { signal: ac.signal });
+    await seedAttempt(db, req.attemptId);
+    const execution = (await provider(w, s, 'hang')).execute(req);
+    await until('the agent container to be running', () => running(req.attemptId, 'agent'));
+    ac.abort();
+    const obs = await execution;
+    assert.equal(obs.status, 'BLOCKED', obs.knownLimitations.join('; '));
+    assert.equal(await leftovers(req.attemptId), '', 'cancelled: nothing left');
   } finally {
     await db.close();
     await w.teardown();

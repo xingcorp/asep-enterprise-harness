@@ -20,5 +20,10 @@ export { TrustedCommandRunner } from './command-runner.js';
 export type { SandboxHandleEx, DockerSandboxConfig } from './sandbox.js';
 export {
   DockerSandboxProvider, LocalUnsandboxedProvider, SandboxUnavailableError,
-  buildSandboxRunFlags, isDigestPinned,
+  buildSandboxRunFlags, isDigestPinned, sandboxLabels,
 } from './sandbox.js';
+
+export type { DockerCall, DockerResult } from './container-teardown.js';
+export {
+  dockerCaller, dockerClientEnv, removeLabelledContainers, SandboxTeardownError,
+} from './container-teardown.js';

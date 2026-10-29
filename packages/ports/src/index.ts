@@ -294,6 +294,9 @@ export interface WorkspaceMount {
   // nested read-only bind over the writable parent, so the write fails at the
   // OS level rather than being merely discouraged.
   readonly readOnlyOverlayPaths?: readonly string[];
+  // The attempt the mount serves. A sandbox labels what it starts with it, so
+  // every container of an attempt can be found, and removed, by one identity.
+  readonly attemptId?: AttemptId;
 }
 
 export interface SandboxProvider {

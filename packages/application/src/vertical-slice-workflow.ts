@@ -455,6 +455,7 @@ export async function runVerticalSliceWorkflow(
       readOnlyPaths: [],
       writablePaths: [wtPath],
       readOnlyOverlayPaths: [`${wtPath}/.git`],
+      attemptId: attempt.id,
     };
 
     // Probe the sandbox the verification commands will run in, so the caller can

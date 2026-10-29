@@ -5,6 +5,10 @@
 // network rm — is exercised quickly and deterministically, with every argv,
 // environment and stdin recorded for assertions.
 //
+// `kill`, `rm -f`, `ps -aq` and `network ls -q` (with `--filter label=…`) act on
+// those records, so a container whose client was killed stays listed, and
+// running, until something removes it — as with the real daemon.
+//
 // It does NOT isolate anything. The OS-enforced properties (internal network,
 // read-only binds, read-only rootfs, dropped capabilities) are proven against
 // the real daemon by the sandbox integration suite; this fake only checks that
@@ -71,6 +75,10 @@ async function main() {
       return network(rest);
     case 'rm':
       return remove(rest);
+    case 'ps':
+      return ps(rest);
+    case 'kill':
+      return kill(rest);
     case 'run':
       return run(rest);
     default:
@@ -119,7 +127,43 @@ function network([sub, ...rest]) {
     }
     process.exit(bad ? 1 : 0);
   }
+  if (sub === 'ls') {
+    const { quiet, labels } = listFlags(rest);
+    if (!quiet) fail('fake docker: only `network ls -q` is emulated', 125);
+    const nets = readdirSync(join(STATE, 'networks')).map((f) => readJson(join(STATE, 'networks', f)));
+    for (const n of nets.filter((x) => labels.every((l) => x.labels.includes(l)))) process.stdout.write(`${n.name}\n`);
+    return;
+  }
   fail(`fake docker: 'network ${sub}' is not emulated`, 125);
+}
+
+// `-q` and repeated `--filter label=<k=v>` (all must match), as `ps` and
+// `network ls` take them.
+function listFlags(rest) {
+  let quiet = false;
+  let all = false;
+  const labels = [];
+  for (let i = 0; i < rest.length; i++) {
+    const a = rest[i];
+    if (a === '-q' || a === '--quiet') quiet = true;
+    else if (a === '-a' || a === '--all') all = true;
+    else if (a === '-aq' || a === '-qa') { quiet = true; all = true; }
+    else if (a === '--filter' || a === '-f') {
+      const v = rest[++i] ?? '';
+      if (!v.startsWith('label=')) fail(`fake docker: filter '${v}' is not emulated`, 125);
+      labels.push(v.slice('label='.length));
+    } else fail(`unknown flag: ${a}`, 125);
+  }
+  return { quiet, all, labels };
+}
+
+// Every container record — running, or left behind by a client that died — whose
+// labels include every filter. Like `docker ps -a`, a container is listed until
+// it is removed.
+function ps(rest) {
+  const { quiet, all, labels } = listFlags(rest);
+  if (!quiet || !all) fail('fake docker: only `ps -aq` is emulated', 125);
+  for (const c of running().filter((x) => labels.every((l) => x.labels.includes(l)))) process.stdout.write(`${c.name}\n`);
 }
 
 async function remove(rest) {
@@ -137,6 +181,26 @@ async function remove(rest) {
     } catch { /* already gone */ }
     for (let i = 0; i < 200 && alive(c.pid); i++) await sleep(10);
     rmSync(containerFile(name), { force: true });
+    process.stdout.write(`${name}\n`);
+  }
+  process.exit(bad ? 1 : 0);
+}
+
+// Stops a container's process. Its record goes when its client sees it exit
+// (`--rm`), or stays, like a stopped container, when that client is gone.
+async function kill(names) {
+  let bad = false;
+  for (const name of names) {
+    if (!existsSync(containerFile(name))) {
+      process.stderr.write(`Error response from daemon: No such container: ${name}\n`);
+      bad = true;
+      continue;
+    }
+    const c = readJson(containerFile(name));
+    try {
+      process.kill(-c.pid, 'SIGKILL');
+    } catch { /* already gone */ }
+    for (let i = 0; i < 200 && alive(c.pid); i++) await sleep(10);
     process.stdout.write(`${name}\n`);
   }
   process.exit(bad ? 1 : 0);
