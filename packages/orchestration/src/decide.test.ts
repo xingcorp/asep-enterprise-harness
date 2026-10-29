@@ -1105,6 +1105,20 @@ for (const wait of WAITS) {
     assertLegalProjections(trace);
   });
 
+  test(`a confirmed ${wait.kind} approve whose content is not valid for the kind never releases the gate`, () => {
+    const invalidAmounts = wait.kind === 'budget-extension' ? [null, 0, -2, 0.0000001, 1e9] : [4, 0.5];
+    for (const extensionUsd of invalidAmounts) {
+      const confirmed = () => ({ ...wait.verified(), extensionUsd });
+      const trace = runTaskSequentially(wait.input, scripted({ verifyApprovalDecision: confirmed }, {
+        whenIdle: idleScript(wait.approve, timer('approval:')),
+      }));
+      assert.deepEqual(effectsOf(trace.commands, 'audit').filter((a) => a.action === 'approval.unverified').map((a) => a.detail['decisionId']), ['d1'], `${extensionUsd}`);
+      assertGateHeld(trace);
+      assert.deepEqual([trace.summary.outcome, trace.summary.reason], wait.rejectOutcome, `${extensionUsd}`);
+      assertLegalProjections(trace);
+    }
+  });
+
   test(`a cancel and the expiry while a ${wait.kind} decision is verified: the request expires, nothing is released, the task ends CANCELLED`, () => {
     const trace = runTaskSequentially(wait.input, scripted({ verifyApprovalDecision: wait.verified }, {
       eventsDuring: duringVerification([() => cancel(), timer('approval:')]),

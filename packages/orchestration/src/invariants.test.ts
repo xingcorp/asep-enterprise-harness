@@ -22,6 +22,8 @@ import { TASK_BASE, attemptOf, branchFor, effectsOf, happyAnswer, proceed, ref, 
 import { MAX_USD } from './budget.js';
 import { DEFAULT_ORCHESTRATION_POLICY, NEVER_REPLACEABLE_FAILURE_CLASSES } from './defaults.js';
 import type {
+  ApprovalDecisionValue,
+  ApprovalKind,
   FailureClass,
   ProjectedTaskStatus,
   TaskCommand,
@@ -131,15 +133,21 @@ function publicationFailure(rng: Rng): Answer {
   return { kind: 'activityFailed', failureClass: rng.pick(CLASSES), timedOut: rng.chance(0.3), ...(effect === null ? {} : { effect }) };
 }
 
+type DecisionMessage = Extract<TaskMessage, { type: 'approvalDecisionReceived' }>;
+
+// The approval-content choices draw from the side stream too, so they leave the main draws of a seed unchanged.
 function randomEnvironment(rng: Rng, side: Rng, input: TaskCoreInput): TaskEnvironment {
-  const sentDecisions = new Map<string, Extract<TaskMessage, { type: 'approvalDecisionReceived' }>>();
+  const approvalKinds = new Map<string, ApprovalKind>();
+  // The core accepts a decision only while no request is in flight, so the decision it verifies is the last one sent.
+  let lastDecision: DecisionMessage | null = null;
+  const accepted = new Map<string, DecisionMessage>();
   let controlCounter = 0;
   const controlId = () => (rng.chance(0.3) && controlCounter > 0 ? `ctl-${rng.int(1, controlCounter)}` : `ctl-${++controlCounter}`);
   let decisionCounter = 0;
 
   const decision = (approvalRequestId: string): TaskMessage => {
     const approve = rng.chance(0.65);
-    const message: Extract<TaskMessage, { type: 'approvalDecisionReceived' }> = {
+    const message: DecisionMessage = {
       type: 'approvalDecisionReceived',
       decisionId: rng.chance(0.2) && decisionCounter > 0 ? `dec-${rng.int(1, decisionCounter)}` : `dec-${++decisionCounter}`,
       approvalRequestId: rng.chance(0.1) ? `${approvalRequestId}-stale` : approvalRequestId,
@@ -147,8 +155,16 @@ function randomEnvironment(rng: Rng, side: Rng, input: TaskCoreInput): TaskEnvir
       extensionUsd: approve && rng.chance(0.8) ? rng.int(0, 12) : null,
       principalId: 'human-p',
     };
-    if (!sentDecisions.has(message.decisionId)) sentDecisions.set(message.decisionId, message);
-    return message;
+    // Most decisions on an opened gate carry the content its kind requires, so both kinds reach verification.
+    const kind = approvalKinds.get(message.approvalRequestId);
+    if (kind !== undefined && side.chance(0.75)) {
+      const max = input.policy.maxBudgetExtensionUsd ?? 1;
+      const amount = message.extensionUsd !== null && message.extensionUsd > 0 && message.extensionUsd <= max ? message.extensionUsd : side.int(1, max);
+      lastDecision = { ...message, extensionUsd: approve && kind === 'budget-extension' ? amount : null };
+    } else {
+      lastDecision = message;
+    }
+    return lastDecision;
   };
 
   const control = (): TaskMessage => {
@@ -159,6 +175,7 @@ function randomEnvironment(rng: Rng, side: Rng, input: TaskCoreInput): TaskEnvir
   return {
     respond(request: TaskRequest): Answer {
       const n = attemptOf(request) ?? 0;
+      if (request.kind === 'openApprovalRequest') approvalKinds.set(request.approvalRequestId, request.approvalKind);
       switch (request.kind) {
         case 'admitTask':
           if (rng.chance(0.05)) return failure(rng);
@@ -251,12 +268,20 @@ function randomEnvironment(rng: Rng, side: Rng, input: TaskCoreInput): TaskEnvir
           return { kind: 'reconcilePublication', branchHeadSha: head, prNumber: head !== null && rng.chance(0.5) ? 11 : null };
         }
         case 'verifyApprovalDecision': {
-          const sent = sentDecisions.get(request.decisionId);
+          const sent = accepted.get(request.decisionId);
+          if (sent === undefined) throw new Error(`verification of ${request.decisionId} without an accepted decision`);
           if (rng.chance(0.05)) return failure(rng);
           const r = rng.next();
-          if (!sent || r < 0.1) return { kind: 'verifyApprovalDecision', verified: false, decision: null, extensionUsd: null };
-          // PostgreSQL may not confirm a decision whose content is valid: the core must not release on content alone.
-          return { kind: 'verifyApprovalDecision', verified: r >= 0.3, decision: sent.decision, extensionUsd: sent.extensionUsd };
+          if (r < 0.1) return { kind: 'verifyApprovalDecision', verified: false, decision: null, extensionUsd: null };
+          // PostgreSQL may withhold confirmation of an approve whose content is valid for the kind, and may confirm one
+          // whose content is not: the core must release the gate on neither.
+          const kind = approvalKinds.get(request.approvalRequestId);
+          if (sent.decision === 'approve' && kind !== undefined && side.chance(0.15)) {
+            const invalidUsd = kind === 'publish-change' ? 4 : (input.policy.maxBudgetExtensionUsd ?? 0) + 1;
+            return { kind: 'verifyApprovalDecision', verified: true, decision: 'approve', extensionUsd: invalidUsd };
+          }
+          const withheld = sent.decision === 'approve' && side.chance(0.25);
+          return { kind: 'verifyApprovalDecision', verified: r >= 0.3 && !withheld, decision: sent.decision, extensionUsd: sent.extensionUsd };
         }
         default:
           if (rng.chance(0.06)) return failure(rng);
@@ -264,6 +289,10 @@ function randomEnvironment(rng: Rng, side: Rng, input: TaskCoreInput): TaskEnvir
       }
     },
     eventsDuring(request: TaskRequest, timers: readonly string[]) {
+      if (request.kind === 'verifyApprovalDecision') {
+        if (lastDecision?.decisionId !== request.decisionId) throw new Error(`verification of ${request.decisionId} is not the last decision sent`);
+        accepted.set(request.decisionId, lastDecision);
+      }
       const out: (TaskMessage | Extract<TaskEvent, { type: 'timerFired' }>)[] = [];
       while (rng.chance(0.12)) out.push(rng.chance(0.85) ? control() : decision(`asep-task-task-p:${rng.int(1, 3)}`));
       // A running timer (an approval expiry or a pause timeout) can fire while the request is in flight, before or
@@ -659,9 +688,9 @@ function checkPauses(input: TaskCoreInput, trace: TaskTrace, label: string): voi
 }
 
 // Approval gates, step by step: a gate is released (an extension recorded, or the publish-change push issued or
-// withheld for a pause) only by the result of a verifyApprovalDecision that is verified, says approve, and arrives
-// before that request's expiry fired. Such a result releases the gate unless a cancel is pending, and a result that
-// arrives after the expiry fired expires the request.
+// withheld for a pause) only by the result of a verifyApprovalDecision that is verified, says approve with content valid
+// for the kind, and arrives before that request's expiry fired. Such a result releases the gate unless a cancel is
+// pending, and a result that arrives after the expiry fired expires the request.
 function checkApprovalGates(input: TaskCoreInput, trace: TaskTrace, label: string): void {
   const fired = new Set<string>();
   for (const { before, event, decision } of replaySteps(input, trace)) {
@@ -678,13 +707,25 @@ function checkApprovalGates(input: TaskCoreInput, trace: TaskTrace, label: strin
     }
     const id = before.approval.approvalRequestId;
     const expired = fired.has(`approval:${id}`);
-    const approved = event.result.verified && event.result.decision === 'approve';
-    assert.ok(!released || (approved && !expired), `${label}: gate ${id} released by verified=${event.result.verified} decision=${event.result.decision} expired=${expired}`);
+    const { verified, decision: value, extensionUsd } = event.result;
+    const approved = verified && value === 'approve'
+      && contentValid(before.approval.kind, value, extensionUsd, input.policy.maxBudgetExtensionUsd);
+    assert.ok(!released || (approved && !expired), `${label}: gate ${id} released by verified=${verified} decision=${value} extension=${extensionUsd} expired=${expired}`);
     if (approved && !expired && !before.cancelPending) assert.ok(released, `${label}: a confirmed approve left gate ${id} closed`);
     if (expired) {
       assert.deepEqual(effectsOf(decision.commands, 'expireApprovalRequest').map((e) => e.approvalRequestId), [id], `${label}: ${id} expired while verifying`);
     }
   }
+}
+
+/**
+ * The decision content rule, stated here independently of the core: a budget-extension approve names a positive
+ * amount in whole micro-dollars within the policy bound; every other decision names no amount.
+ */
+function contentValid(kind: ApprovalKind, decision: ApprovalDecisionValue | null, extensionUsd: number | null, maxUsd: number | null): boolean {
+  if (decision === null) return false;
+  if (kind === 'publish-change' || decision === 'reject') return extensionUsd === null;
+  return extensionUsd !== null && maxUsd !== null && Number.isInteger(extensionUsd * 1_000_000) && extensionUsd > 0 && extensionUsd <= maxUsd;
 }
 
 // ---------------------------------------------------------------------------
@@ -751,8 +792,14 @@ test('the generator covers repair, replacement, approvals, pause and cancel path
       if (event.type === 'timerFired' && before.pending !== null) {
         seen.add(event.timerId.startsWith('approval:') ? 'expiry-during-verification' : 'pause-timeout-in-flight');
       }
-      if (event.type === 'result' && event.result.kind === 'verifyApprovalDecision' && !event.result.verified && event.result.decision === 'approve'
-        && before.approval !== null && !before.approval.expiryFired) seen.add('unconfirmed-approve');
+      // PostgreSQL withholds confirmation of an approve whose content is valid for the kind, so content alone must not
+      // release the gate; and it confirms an approve whose content is not, which must not release it either.
+      if (event.type === 'result' && event.result.kind === 'verifyApprovalDecision' && event.result.decision === 'approve'
+        && before.approval !== null && !before.approval.expiryFired) {
+        const valid = contentValid(before.approval.kind, 'approve', event.result.extensionUsd, input.policy.maxBudgetExtensionUsd);
+        if (!event.result.verified && valid) seen.add(`unconfirmed-approve-${before.approval.kind}`);
+        if (event.result.verified && !valid) seen.add(`invalid-content-${before.approval.kind}`);
+      }
     }
     for (const e of trace.events) {
       if (e.type === 'result' && e.result.kind === 'findAttempt') seen.add(e.result.attemptId === null ? 'registration-absent' : 'registration-found');
@@ -772,13 +819,15 @@ test('the generator covers repair, replacement, approvals, pause and cancel path
   }
   assert.deepEqual([...seen].sort(), [
     'abort', 'approval-expired', 'assurance-unavailable', 'budget-approval', 'exhausted', 'expired-while-paused',
-    'expiry-during-verification', 'extension-granted', 'hostile-policy-failure', 'lineage-retry', 'micro-overrun', 'overrun',
+    'expiry-during-verification', 'extension-granted', 'hostile-policy-failure', 'invalid-content-budget-extension',
+    'invalid-content-publish-change', 'lineage-retry', 'micro-overrun', 'overrun',
     'overrun-at-bound',
     'pause-timeout', 'pause-timeout-in-flight', 'paused', 'paused-while-waiting', 'publication-incomplete',
     'publish-approval', 'publishBranch-applied', 'publishBranch-none', 'publishBranch-unknown', 'reconciled-absent',
     'reconciled-present', 'reconciliation-failed',
     'recovered', 'registration-absent', 'registration-found', 'registration-unknown',
-    'repair', 'retry', 'unconfirmed-approve', 'upsertPullRequest-applied', 'upsertPullRequest-none',
+    'repair', 'retry', 'unconfirmed-approve-budget-extension', 'unconfirmed-approve-publish-change',
+    'upsertPullRequest-applied', 'upsertPullRequest-none',
     'upsertPullRequest-unknown', 'usage-out-of-bound', 'verification-stop', 'verified-within-grace', 'violation',
     'wall-clock-overrun',
   ]);
