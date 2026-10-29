@@ -680,6 +680,54 @@ test('check findings are fingerprinted, de-duplicated and ordered', () => {
   assert.deepEqual(noteFirst, errorFirst);
 });
 
+test('check identity keys are canonical tuples and never collide', () => {
+  // The fingerprint is the sha256 of the canonical JSON tuple, computed here independently.
+  const oracle = (category: string, file: string | null, lineStart: number | null, ruleId: string | null) =>
+    sha256Hex(JSON.stringify([category, file, lineStart === null ? null : Math.floor(lineStart / 10), ruleId]));
+  const fp = (file: string | null, lineStart: number | null, ruleId: string | null) =>
+    findingFingerprint({ category: 'CORRECTNESS', file, lineStart, ruleId });
+  for (const [file, lineStart, ruleId] of [['src/a.ts', 12, 'r'], [null, null, null], ['', 0, '']] as const) {
+    assert.equal(fp(file, lineStart, ruleId), oracle('CORRECTNESS', file, lineStart, ruleId));
+  }
+  // null and "" differ; a separator inside a field cannot shift it into the next one.
+  assert.notEqual(fp(null, null, 'r'), fp('', null, 'r'));
+  assert.notEqual(fp('src/a.ts', 1, null), fp('src/a.ts', 1, ''));
+  assert.notEqual(fp('x\n1', null, 'r'), fp('x', 10, '\nr'));
+
+  // Two SARIF results at one location, one without a rule id and one with an empty rule id,
+  // are two findings.
+  const result = (ruleId: string | undefined) => ({
+    ...(ruleId === undefined ? {} : { ruleId }),
+    level: 'warning',
+    message: { text: 'result' },
+    locations: [{ physicalLocation: { artifactLocation: { uri: 'src/feature.ts' }, region: { startLine: 2 } } }],
+  });
+  const log = utf8(JSON.stringify({ version: '2.1.0', runs: [{ tool: { driver: { name: 'lint' } }, results: [result(undefined), result('')] }] }));
+  const sarif = checksFor(fixtureWorld(), { sarif: [{ checkId: 'lint', content: log }] }).findings.filter((f) => f.source === 'sarif');
+  assert.deepEqual(sarif.map((f) => f.ruleId).sort(), ['', null].sort());
+
+  // A diff whose one path joins two of the packet's paths with a line feed does not match the
+  // packet, so nothing is scanned from it.
+  const escaped = 'src/a.ts\\nsrc/b.ts';
+  const diff = [
+    `diff --git "a/${escaped}" "b/${escaped}"`,
+    'new file mode 100644',
+    '--- /dev/null',
+    `+++ "b/${escaped}"`,
+    '@@ -0,0 +1 @@',
+    '+export const a = 1;',
+    '',
+  ].join('\n');
+  const world = fixtureWorld({
+    diff,
+    files: [
+      { path: 'src/a.ts', status: 'A', content: 'export const a = 1;\n' },
+      { path: 'src/b.ts', status: 'A', content: 'export const a = 1;\n' },
+    ],
+  });
+  assert.equal(rule(checksFor(world).findings, 'unscannable-sensitive-change').length, 1);
+});
+
 test('the check report is canonical and fails closed when it is read back', () => {
   const sarifLog = {
     version: '2.1.0',

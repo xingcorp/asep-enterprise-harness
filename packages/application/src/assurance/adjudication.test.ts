@@ -149,7 +149,7 @@ test('rule table is total and deterministic', () => {
   const shas = input.reviews.map((r) => r.recordSha256).filter((s): s is string => s !== null).sort();
   assert.equal(
     first.adjudicationId,
-    sha256Hex([input.roundKey, input.policyVersion, input.packetSha256, input.checks.reportSha256, shas.join(',')].join('|')),
+    sha256Hex(JSON.stringify([input.roundKey, input.policyVersion, input.packetSha256, input.checks.reportSha256, shas])),
   );
   assert.equal(first.policyVersion, input.policyVersion);
   assert.deepEqual(first.inputs, {
@@ -894,6 +894,64 @@ test('a re-raise never downgrades a prior that still blocks', () => {
     priorFindings: [{ record: priorFinding({ lifecycleState: 'WAIVED' }), waiverExpiresAt: '2026-12-01T00:00:00.000Z' }],
   }).record;
   assert.deepEqual([waived.outcome, waived.blocking], ['PROCEED', []]);
+});
+
+test('identity keys are canonical tuples and never collide', () => {
+  // Fields that differ only in where a separator falls, or in null against "", name two
+  // different findings. The work order cites every requirement id used here.
+  const ids = ['REQ', 'REQ\nf1', ''];
+  const round = (findings: readonly ReturnType<typeof modelFinding>[], prior: Partial<ReviewFindingRecord> | null) => {
+    const base = reReview({});
+    const output = reviewOutput({ verdict: 'REQUEST_CHANGES', findings: [...findings] });
+    return adjudicate({
+      ...base,
+      packet: { ...base.packet, workOrder: { ...base.packet.workOrder, requirementIds: [...base.packet.workOrder.requirementIds, ...ids] } },
+      reviews: base.reviews.map((r) => (r.reviewerConfigId === PRIMARY ? completedReview(PRIMARY, output) : r)),
+      priorFindings: prior === null ? [] : [{ record: priorFinding(prior), waiverExpiresAt: '2026-12-01T00:00:00.000Z' }],
+    });
+  };
+  const current = (a: Adjudication) =>
+    a.findings.filter((f) => !f.ref.startsWith('prior:')).map((f) => [f.requirementId ?? null, f.priorFindingId ?? null, f.lifecycleState, f.blocking]);
+
+  // The review's probe: a HIGH under "REQ\nf1" with key "x", and one under "REQ" with key
+  // "f1\nx" that a live waiver covers. The unwaived one still blocks.
+  const waivedReq: Partial<ReviewFindingRecord> = { lifecycleState: 'WAIVED', requirementId: 'REQ' };
+  const unwaived = modelFinding({ requirementId: 'REQ\nf1', key: 'x' });
+  const waived = modelFinding({ requirementId: 'REQ', key: 'f1\nx' });
+  assert.equal(round([unwaived], waivedReq).record.outcome, 'REPAIR');
+  assert.equal(round([waived], waivedReq).record.outcome, 'PROCEED');
+  const byRequirement = (rows: ReturnType<typeof current>) => [...rows].sort((x, y) => String(x[0]).localeCompare(String(y[0])));
+  for (const findings of [[unwaived, waived], [waived, unwaived]]) {
+    const both = round(findings, waivedReq);
+    assert.equal(both.record.outcome, 'REPAIR');
+    assert.deepEqual(byRequirement(current(both)), [
+      ['REQ', 'prior-1', 'WAIVED', false],
+      ['REQ\nf1', null, 'OPEN', true],
+    ]);
+  }
+
+  // null and "" are different requirement ids.
+  const unset = round([modelFinding({ requirementId: null, key: 'k' }), modelFinding({ requirementId: '', key: 'k' })], null);
+  assert.deepEqual(current(unset).map((f) => f[0]).length, 2);
+  assert.deepEqual(new Set(current(unset).map((f) => f[0])), new Set([null, '']));
+
+  // The adjudication id: moving a separator between two inputs changes it.
+  const base = adjudicationBase();
+  const idOf = (roundKey: string, policyVersion: string) => adjudicate({ ...base, roundKey, policyVersion }).record.adjudicationId;
+  assert.notEqual(idOf('R|a', 'b'), idOf('R', 'a|b'));
+  const shas = base.reviews.map((r) => r.recordSha256).filter((s): s is string => s !== null).sort();
+  assert.equal(idOf('R', 'a|b'), sha256Hex(JSON.stringify(['R', 'a|b', base.packetSha256, base.checks.reportSha256, shas])));
+
+  // One planned reviewer whose id joins two reviews' ids is not those two reviews.
+  const joined = `${PRIMARY}\n${COMPARATOR}`;
+  assert.throws(
+    () =>
+      adjudicate({
+        ...reReview({}),
+        reviewers: [{ reviewerConfigId: joined, role: 'primary', independentOfImplementer: true }],
+      }),
+    /reviews must match the planned reviewers/,
+  );
 });
 
 test("waiver expiry is judged at the round's opening time", () => {

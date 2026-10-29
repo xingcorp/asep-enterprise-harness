@@ -9,7 +9,7 @@
 import type { ArtifactRef } from '@asep/contracts';
 import { isNormalizedRepoPath, isSensitivePath, matchesPathGlob, type ReviewPolicy } from '@asep/policy';
 import type { FindingSeverity } from '@asep/domain';
-import { canonicalJson, sha256Hex } from './canonical-json.js';
+import { canonicalJson, sha256Hex, tupleKey } from './canonical-json.js';
 import { parseUnifiedDiff, type DiffFileChange } from './diff.js';
 import { decideEgress, type EgressResult } from './egress.js';
 import {
@@ -130,7 +130,7 @@ function readDiff(packet: ReviewPacket, contents: ReadonlyMap<string, Uint8Array
   if (files === null) return null;
   const diffPaths = files.map((f) => f.path).sort();
   const packetPaths = packet.change.files.map((f) => f.path).sort();
-  return diffPaths.join('\n') === packetPaths.join('\n') ? files : null;
+  return tupleKey(diffPaths) === tupleKey(packetPaths) ? files : null;
 }
 
 /** A diff artifact parsed, or null when it is unavailable, off its digest, not UTF-8 or unparseable. */

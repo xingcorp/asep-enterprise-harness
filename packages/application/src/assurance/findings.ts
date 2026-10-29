@@ -3,7 +3,7 @@
 
 import type { FindingSeverity } from '@asep/domain';
 import { isNormalizedRepoPath } from '@asep/policy';
-import { canonicalJson, sha256Hex } from './canonical-json.js';
+import { canonicalJson, tupleKey, tupleSha256 } from './canonical-json.js';
 import type { FindingCategory } from './local-types.js';
 
 export type CheckRuleId =
@@ -90,15 +90,15 @@ export interface CheckFinding {
 
 const LINE_BUCKET = 10;
 
-/** sha256 over category, normalized path, line bucket (10 lines) and rule id. */
+/** sha256 of the tuple of category, path, line bucket (10 lines) and rule id. */
 export function findingFingerprint(input: {
   readonly category: FindingCategory;
   readonly file: string | null;
   readonly lineStart: number | null;
   readonly ruleId: string | null;
 }): string {
-  const bucket = input.lineStart === null ? '' : String(Math.floor(input.lineStart / LINE_BUCKET));
-  return sha256Hex([input.category, input.file ?? '', bucket, input.ruleId ?? ''].join('\n'));
+  const bucket = input.lineStart === null ? null : Math.floor(input.lineStart / LINE_BUCKET);
+  return tupleSha256([input.category, input.file, bucket, input.ruleId]);
 }
 
 /** A path as finding text shows it: verbatim when normalized, JSON-quoted otherwise. */
@@ -168,7 +168,7 @@ export function mergeRuleHits(
 ): CheckFinding[] {
   const groups = new Map<string, RuleHit[]>();
   for (const hit of [...hits].sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : a.line - b.line))) {
-    const key = `${hit.file}\n${Math.floor(hit.line / LINE_BUCKET)}`;
+    const key = tupleKey([hit.file, Math.floor(hit.line / LINE_BUCKET)]);
     groups.set(key, [...(groups.get(key) ?? []), hit]);
   }
   return [...groups.values()].map((group) => {
@@ -203,7 +203,7 @@ export function preferFinding<T extends { readonly severity: FindingSeverity }>(
  * kept, whatever the input order. The result is ordered deterministically.
  */
 export function dedupeFindings(findings: readonly CheckFinding[]): CheckFinding[] {
-  const key = (f: CheckFinding) => `${f.raisedBy}\n${f.fingerprint}`;
+  const key = (f: CheckFinding) => tupleKey([f.raisedBy, f.fingerprint]);
   const order = (a: CheckFinding, b: CheckFinding): number => {
     const fields = [
       [a.raisedBy, b.raisedBy],

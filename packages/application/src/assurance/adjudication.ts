@@ -26,7 +26,7 @@ import {
   type FindingLifecycleState,
   type FindingSeverity,
 } from '@asep/domain';
-import { sha256Hex } from './canonical-json.js';
+import { tupleKey, tupleSha256 } from './canonical-json.js';
 import type { PushGuardResult, ScannerRun } from './checks.js';
 import type { DiffFileChange } from './diff.js';
 import { bySeverityDescending, findingFingerprint, preferFinding, type CheckFinding } from './findings.js';
@@ -138,7 +138,7 @@ export interface ClosureDecision {
 }
 
 export interface AdjudicationRecord {
-  /** sha256(roundKey|policyVersion|packetSha256|checkReportSha256|sorted reviewRecordSha256s). */
+  /** sha256 of the canonical JSON tuple [roundKey, policyVersion, packetSha256, checkReportSha256, sorted reviewRecordSha256s]. */
   readonly adjudicationId: string;
   readonly roundKey: string;
   readonly attemptId: string;
@@ -192,7 +192,7 @@ function validate(input: AdjudicationInput): void {
   if (!Number.isInteger(input.maxRounds) || input.maxRounds < 1) invalid('maxRounds must be an integer >= 1');
   const planned = input.reviewers.map((r) => r.reviewerConfigId);
   const reviewed = input.reviews.map((r) => r.reviewerConfigId);
-  if (planned.join('\n') !== reviewed.join('\n') || planned.length !== reviewed.length) {
+  if (tupleKey(planned) !== tupleKey(reviewed)) {
     invalid('reviews must match the planned reviewers, in plan order');
   }
   if (input.mode === 'not-required' && planned.length > 0) invalid('a round that needs no review plans no reviewer');
@@ -264,7 +264,7 @@ function persistedAggregate(prior: PriorFindingInput, asOf: string): FindingAggr
 
 /** The identity a finding keeps across rounds; a finding key is local to one review output. */
 function persistedIdentity(f: { readonly raisedBy: string; readonly fingerprint: string; readonly requirementId?: string | undefined }): string {
-  return JSON.stringify([f.raisedBy, f.fingerprint, f.requirementId ?? null]);
+  return tupleKey([f.raisedBy, f.fingerprint, f.requirementId ?? null]);
 }
 
 /**
@@ -423,7 +423,7 @@ export function adjudicate(input: AdjudicationInput): Adjudication {
         lineStart: finding.lineStart,
         ruleId: null,
       });
-      const identity = sha256Hex([fingerprint, finding.requirementId ?? '', finding.key].join('\n'));
+      const identity = tupleSha256([fingerprint, finding.requirementId, finding.key]);
       identities.set(identity, [...(identities.get(identity) ?? []), { finding, fingerprint, result: groundFinding(ctx, finding) }]);
     }
     let groundedBlockingCount = 0;
@@ -522,7 +522,7 @@ export function adjudicate(input: AdjudicationInput): Adjudication {
 
   const blocking: BlockingEntry[] = sortBy(
     evaluated.filter((f) => f.blocking),
-    (f) => `${f.raisedBy}\n${f.ref}`,
+    (f) => tupleKey([f.raisedBy, f.ref]),
   ).map((f) => ({
     findingRef: f.ref,
     source: f.source,
@@ -588,9 +588,7 @@ export function adjudicate(input: AdjudicationInput): Adjudication {
     .filter((s): s is string => s !== null)
     .sort();
   const record: AdjudicationRecord = {
-    adjudicationId: sha256Hex(
-      [input.roundKey, input.policyVersion, input.packetSha256, input.checks.reportSha256, reviewRecordSha256s.join(',')].join('|'),
-    ),
+    adjudicationId: tupleSha256([input.roundKey, input.policyVersion, input.packetSha256, input.checks.reportSha256, reviewRecordSha256s]),
     roundKey: input.roundKey,
     attemptId: input.attemptId,
     round: input.round,

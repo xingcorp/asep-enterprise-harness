@@ -72,7 +72,7 @@ test('repair order is bounded and anchored to the prior commit', () => {
   // Canonical and input-derived.
   assert.deepEqual(bytes, canonicalBytes(order));
   assert.equal(sha256, sha256Hex(bytes));
-  assert.equal(order.repairOrderId, sha256Hex(`${order.adjudicationId}|${order.nextRound}`));
+  assert.equal(order.repairOrderId, sha256Hex(JSON.stringify([order.adjudicationId, order.nextRound])));
   assert.deepEqual(buildRepairOrder(input).bytes, bytes);
 
   // Bounded: long finding text is clipped per field with an explicit marker.

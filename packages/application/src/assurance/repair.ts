@@ -9,7 +9,7 @@
 import type { ArtifactRef } from '@asep/contracts';
 import type { FindingSeverity } from '@asep/domain';
 import type { Adjudication } from './adjudication.js';
-import { canonicalBytes, sha256Hex } from './canonical-json.js';
+import { canonicalBytes, sha256Hex, tupleSha256 } from './canonical-json.js';
 import type { ReviewFindingRecord } from './local-types.js';
 import { pickFindingRecord } from './packet.js';
 
@@ -118,7 +118,7 @@ export function buildRepairOrder(input: RepairOrderInput): { readonly order: Rep
 
   const nextRound = record.round + 1;
   const order: RepairOrder = {
-    repairOrderId: sha256Hex(`${record.adjudicationId}|${nextRound}`),
+    repairOrderId: tupleSha256([record.adjudicationId, nextRound]),
     taskId: input.taskId,
     fromAttemptId: input.fromAttemptId,
     nextRound,

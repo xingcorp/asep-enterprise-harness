@@ -35,3 +35,17 @@ export function canonicalBytes(value: unknown): Uint8Array {
 export function sha256Hex(bytes: Uint8Array | string): string {
   return createHash('sha256').update(bytes).digest('hex');
 }
+
+/**
+ * The key of a tuple of fields: the canonical JSON of the array. Every identity, fingerprint,
+ * dedupe and ordering key is one, never a joined string, so no separator inside a field can make
+ * two different tuples equal, and `null` and `""` stay distinct.
+ */
+export function tupleKey(fields: readonly unknown[]): string {
+  return canonicalJson(fields);
+}
+
+/** The sha256 of a tuple's key. */
+export function tupleSha256(fields: readonly unknown[]): string {
+  return sha256Hex(tupleKey(fields));
+}
