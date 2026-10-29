@@ -77,8 +77,9 @@ export const ACTIVITY_OPTIONS: Readonly<Record<ActivityName, ActivityOptions>> =
   recordAttemptOutcome: options(30, null, retry(10), false),
   publishBranch: options(300, 30, retry(20, 300), false),
   upsertPullRequest: options(300, 30, retry(20, 300), false),
-  // A read of the remote after an unknown publication effect; it continues the
-  // publication unit, so a cancel waits for it.
+  // A read of the remote after an unknown publication effect, whose only write
+  // rewrites a diverged PR title and body from the attempt's facts; it continues
+  // the publication unit, so a cancel waits for it.
   reconcilePublication: options(60, null, retry(20, 300), false),
   projectTaskState: options(30, null, retry(50, 60), false),
   projectAttemptState: options(30, null, retry(50, 60), false),

@@ -269,7 +269,11 @@ export type TaskRequest =
       readonly prBodySectionRef: ArtifactRef | null;
     }
   | {
-      /** A read-only look at the remote after a publication effect reported `unknown`. */
+      /**
+       * A look at the remote after a publication effect reported `unknown`. Its only write rewrites a diverged title
+       * and body of the attempt's open PR from the attempt's immutable facts, reported per PR as `contentRepaired`;
+       * it never creates, retargets or closes a PR, and it decides nothing.
+       */
       readonly kind: 'reconcilePublication';
       readonly attemptNumber: number;
       /** The binding repository the attempt branch was pushed to. */

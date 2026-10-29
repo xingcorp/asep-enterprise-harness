@@ -249,9 +249,10 @@ PUBLISHING  (publishBranch [critical unit 2] → upsertPullRequest [critical uni
    │ the binding repository (the ID of task input `repository`) at the attempt's verified commit, and the PR
    │ candidates are either none or exactly one that is open, unmerged, has the binding repository as head and base
    │ repository, the attempt's branch (compared exactly, case included) and commit as head, and the task's base
-   │ branch as base. A rename or transfer of the binding repository keeps its ID and stays reconcilable, audited as
-   │ publication.repository-renamed; another repository that reuses the old owner and name has another ID and is
-   │ refused. Zero candidates after a confirmed push is "no PR". More than one candidate, a closed or merged one, a
+   │ branch as base. A rename or transfer of the binding repository keeps its ID and stays reconcilable; every
+   │ observed repository with the binding's ID under another owner or name (branch, PR head, PR base) is audited as
+   │ publication.repository-renamed, once per distinct owner and name (R37); another repository that reuses the old
+   │ owner and name has another ID and is refused, and so is an ID that is not a positive safe integer. Zero candidates after a confirmed push is "no PR". More than one candidate, a closed or merged one, a
    │ fork head, a PR at another head or base, a branch moved, missing or in another repository after a confirmed
    │ push, and an unreadable remote are not reconciled. The read only reports and repairs PR content (§7.3); the
    │ core decides and does not rely on the read's filter, and audits every content repair the read reports as
@@ -609,8 +610,8 @@ publication activities call those ports after the rebase:
   by natural key before any new call (F3). An `unknown` publication effect is reconciled by `reconcilePublication`
   before any terminal state (§4.1). That activity reads the branch and every PR candidate, and rewrites the title
   and body of an open PR whose head is the attempt branch in the binding repository (by repository ID) when they
-  differ from `pullRequestContent(facts)`, as Phase 2's `reconcilePullRequestStep` does; Phase 2 audits that write as
-  `forge.reconcile`. It reports `contentRepaired: true` on that PR, and the core audits
+  differ from `pullRequestContent(facts)`, as Phase 2's `reconcilePullRequestStep` does for content, but never through
+  a mode of that step that creates or retargets a PR (R34); Phase 2 audits that write as `forge.reconcile`. It reports `contentRepaired: true` on that PR, and the core audits
   `publication.content-repaired` for each repair it is told of. The activity never creates, closes, retargets or
   merges a PR and never moves the branch: whether the remote is the attempt's publication stays the core's decision
   under the identity predicate (§4.1, R31), so a branch at another commit, or a PR that fails the predicate, ends the

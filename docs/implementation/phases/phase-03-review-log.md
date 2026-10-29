@@ -5,8 +5,9 @@
 > audit of the S2 code (section "Review v3", which records the v4 freeze gate), of the Codex re-audit of plan v4
 > and the S2 fixes (section "Review v4", which records the v5 freeze gate), of the Codex re-audit of plan v5 and
 > the S2 fixes (section "Review v5", which records the v6 freeze gate), of the Codex re-audit of plan v6 and the S2
-> fixes (section "Review v6", which records the v7 freeze gate), and of the Codex re-audit of plan v7 and the S2 fixes
-> (section "Review v7" at the end, which records the v8 freeze gate).
+> fixes (section "Review v6", which records the v7 freeze gate), of the Codex re-audit of plan v7 and the S2 fixes
+> (section "Review v7", which records the v8 freeze gate), and of the Codex re-audit of plan v8 and the S2 fixes
+> (section "Review v8" at the end, which records the S2 acceptance condition).
 > Planner: Lane A (Claude). Reviewer: Codex `gpt-5.6-sol` via the kiro-proxy gateway, read-only, run by the
 > controller on 2026-10-29. Raw review: `phase-03-plan-review-codex-v1.md`.
 > Reviewed base: `80bb76a` · Verdict: **REQUEST_CHANGES** · Confidence: 0.98.
@@ -2006,7 +2007,126 @@ code before it, and removing or bending the fix again turned them red; the count
 - [x] Canonical docs updated: plan, architecture, data model, exit criteria, risk register, research register,
       threat model delta.
 - [x] R30's publication contract (as Phase 2 implemented it at `a447983`), the Lane A parts of R32, and R33 applied;
-      CR-28's additive port changes requested from the controller.
+      CR-28's additive port changes requested from the controller (approved afterwards by R34: Lane A lands them in
+      its own commits after G-P2; section "Review v8").
 - [ ] CR-10 verbatim text pasted (open by design; G-LB, R18).
+
+**PLAN_STATUS:** LOCKED v8 (pending controller confirmation)
+
+## Review v8
+
+> Lane A adjudication of the independent Codex re-audit of plan v8 and of the S2 fixes.
+> Reviewer: Codex `gpt-6.1-sol` via the kiro-proxy gateway, read-only, run by the controller on 2026-10-30 as a single
+> uninterrupted run of the Codex CLI 0.165.0; the gateway's own instructions apply (R16). Raw output:
+> `phase-03-review-codex-v8.md`.
+> Reviewed snapshot: `bed7a13` · Verdict: **ACCEPT_WITH_CHANGES** · Confidence: 0.95.
+> Controller gate at `bed7a13`, clean detached worktree: `pnpm verify:all` exit 0, 982 pass, 0 fail, 0 skipped;
+> 53 test files, 31 required suites.
+> Binding input: R34 (the controller's answers to Lane A's turn-10 questions) and R37 (decisions on this re-audit).
+> R37: the pure decision core S2 is accepted once these five LOWs are fixed and the controller has checked them, with
+> no further Codex round on S2 unless the fixes touch decision logic beyond them. Code line numbers below are at
+> `bed7a13`.
+
+### Summary
+
+The re-audit marks all five P3-PLAN7 findings FOLDED and every v7 S2 finding RESOLVED, with the remaining part of
+P3-S2V6-MED-001 closed by the component validation; both v7 surviving mutations now fail tests (`M_HEAD_CASE` 5,
+`M_REPO_HARDCODE` 3). It marks R30, R32 and R33 FOLDED (R33 with a LOW left) and R34 PARTIAL in the docs only. It
+raises five LOWs and reports one surviving mutation, `M_ID_COERCE`. All five are ACCEPTED and fixed without a plan
+version bump, because none changes the design: two are wording, three add audit coverage or tests to the core.
+
+| Group | Count | ACCEPTED | PARTIAL | REJECTED |
+|---|---|---|---|---|
+| Plan LOW (P3-PLAN8-LOW-001, 002) | 2 | 2 | 0 | 0 |
+| S2 LOW (P3-S2V8-LOW-001, 002, 003) | 3 | 3 | 0 | 0 |
+| **Total** | **5** | **5** | **0** | **0** |
+
+The plan LOWs are fixed in this docs commit; the S2 LOWs by the follow-up commits after it, one per finding, test first.
+
+### P3-PLAN8-LOW-001 — CR-28 still read "requested" — ACCEPTED (R34)
+
+**Finding.** CR-28 said "Phase 3 needs three additive changes, requested here" and that the port lines "land only with
+the controller's approval" (`phase-03-plan.md:1301`, `:1321` at `bed7a13`), and the v8 freeze gate said they were
+requested (`phase-03-review-log.md:2009`), while R34 had already decided: Lane A lands them in its own commits after
+G-P2.
+
+**Disposition.** ACCEPTED.
+
+**Locked change.** CR-28 records the approval by R34 (after G-P2, in Lane A's own commits, on the accepted Phase 2, with
+the union rule for shared files) and the narrow repair R34 accepts: the reconcile activity repairs only the title and
+body of the attempt's open PR and never calls `reconcilePullRequestStep` in a mode that creates or retargets a PR;
+creation stays a core decision. The v8 freeze-gate line points here. Architecture §7.3 says the same of the repair.
+
+### P3-PLAN8-LOW-002 — Two core comments called the reconciliation read-only — ACCEPTED (R34)
+
+**Finding.** `types.ts:272` ("A read-only look at the remote …") and `activity-options.ts:80` ("A read of the remote
+…") at `bed7a13` describe `reconcilePublication` as read-only, while the contract lets it rewrite a diverged PR title
+and body (architecture §5, `phase-03-architecture.md:426`).
+
+**Disposition.** ACCEPTED. Comment-only; no behavior changes.
+
+**Locked change.** Both comments say the activity's only write rewrites a diverged title and body of the attempt's open
+PR from the attempt's immutable facts, reported per PR as `contentRepaired`, and that it never creates, retargets or
+closes a PR.
+
+### P3-S2V8-LOW-001 — The rename audit read only the branch's repository — ACCEPTED (R37)
+
+**Finding.** `auditRepositoryMove` is called with `result.branch.repository` only (`task-core.ts:966`, `:974` at
+`bed7a13`). A read whose PR head or base carries the binding's ID under another owner or name, with the branch under
+the bound one, reconciles without an audit; the reviewer's `RENAME_PR_ONLY_MATRIX` reproduces it in all eight cases
+(both paths, PR head or base, with and without a cancel).
+
+**Disposition.** ACCEPTED.
+
+**Locked change.** Every observed repository that carries the binding's ID (the branch's, and each listed PR's head and
+base) under an owner or name other than the input's is audited `publication.repository-renamed`, once per distinct
+observed owner and name, before the decision and whatever it is; the identity rule is unchanged. Data model §4.4,
+architecture §4.1, exit D18.
+
+**Validation.** D18: a PR-only rename (head, base, both) on both paths, with and without a cancel; deduplication across
+branch, head and base; the property oracle checks the audits each reconciliation decision emits.
+
+### P3-S2V8-LOW-002 — No test held strict identity against a malformed observed ID — ACCEPTED (R37)
+
+**Finding.** The core compares repository IDs with `===` (`task-core.ts:901`), but no test or generated observation
+carries a malformed ID, so `Number(observed.id) === binding.id` (`M_ID_COERCE`) passed all 434 tests of the three core
+files while accepting an observed `"101"` for the binding `101` in all twelve combinations.
+
+**Disposition.** ACCEPTED. The code is right; the regression is missing.
+
+**Locked change.** Direct tests put a missing, zero, negative, unsafe and numeric-string ID on the branch, the PR head and
+the PR base, on both paths with and without a cancel, and expect `FAILED / publication-incomplete`; the generator emits
+the same malformed IDs from its own stream; `M_ID_COERCE` must fail. Exit D18.
+
+### P3-S2V8-LOW-003 — Without git the re-check reported a pass — ACCEPTED (R37)
+
+**Finding.** When git cannot run, the external re-check writes a diagnostic and returns (`decide.test.ts:313-316` at
+`bed7a13`), so the runner counts it as passed although Git was never asked (`M_NO_GIT`: 434 pass, 0 skipped).
+
+**Disposition.** ACCEPTED.
+
+**Locked change.** Without git the re-check calls `t.skip()` with the reason (git's answers were not re-checked); the
+check of the validator against the committed table runs either way. Exit D16.
+
+### Observations settled by the re-audit
+
+- **`startTask` does not run the input rules** (`task-core.ts:113`). That is by design: the S7 input mapping applies
+  them before a workflow starts (plan §26 S7, data model §4.2); the core's tests do not stand in for that obligation.
+- **S6 and S7 obligations stand**: the compare-and-set push, the narrow repair, the error mapping, runtime validation
+  and telemetry integration are proven there, not in S2.
+- **R34** settles the owner and name case, the reading of "informational and audited", the narrow repair and the
+  6000 publication seeds; the plan and the review log follow it.
+
+### Freeze gate (v8, after the re-audit)
+
+- [x] Every finding of the re-audit dispositioned: 5/5 LOWs ACCEPTED; the RESOLVED and FOLDED statuses confirmed.
+- [x] No CRITICAL, HIGH or MEDIUM open in the plan or in S2; the verbatim-text part of P3-PLAN-HIGH-004 stays open by
+      design until G-LB.
+- [x] Plan LOWs fixed in this docs commit; the S2 LOWs fixed by the follow-up commits, test first, without decision
+      logic changes beyond them.
+- [ ] CR-10 verbatim text pasted (open by design; G-LB, R18).
+
+**S2 acceptance (R37):** the pure decision core S2 is accepted once these five LOWs are fixed and the controller has
+checked them.
 
 **PLAN_STATUS:** LOCKED v8 (pending controller confirmation)

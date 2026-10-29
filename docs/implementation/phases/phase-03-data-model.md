@@ -498,10 +498,12 @@ The identity predicate, the same after a push and after a PR upsert: `branch` is
 (compared by numeric ID; owner and name are informational) with `headSha` = the attempt's verified commit, and
 `pullRequests` is empty or holds exactly one PR that is `open`, not merged, has the input's repository as head and
 base repository (by ID), the attempt's branch as head branch (compared exactly, case included), that commit as head
-SHA and the input's `baseBranch` as base branch. A rename or a transfer keeps the ID, so it stays reconcilable, and a
-reconciled observation whose repository owner or name differs from the input's is audited
-`publication.repository-renamed` (repository ID, the bound and the observed owner/name). Another repository that
-reuses the old owner and name has another ID and is refused. Every PR the read reports with `contentRepaired: true` is
+SHA and the input's `baseBranch` as base branch. IDs compare strictly: an observed ID that is missing, zero, negative,
+unsafe or a numeric string is never the binding's. A rename or a transfer keeps the ID, so it stays reconcilable.
+Every observed repository that carries the binding's ID (the branch's, and each PR's head and base) under an owner or
+name other than the input's is audited `publication.repository-renamed` (repository ID, the bound and the observed
+owner/name), once per distinct observed owner/name, before the decision and whatever it is (R37). Another repository
+that reuses the old owner and name has another ID and is refused. Every PR the read reports with `contentRepaired: true` is
 audited `publication.content-repaired` (attempt, PR number), whatever the decision. After the
 push the predicate continues to the PR upsert, a branch absent with no PR is `none` (`FAILED / publication-failed`),
 and anything else is unreconciled. After the PR upsert the predicate with exactly one PR continues as a successful

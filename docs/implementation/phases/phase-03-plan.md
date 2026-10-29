@@ -20,8 +20,14 @@
 > S2 fixes at `ac0a1bc` (`phase-03-review-codex-v7.md`, REQUEST_CHANGES 0.96). v8 adjudicates its eight new findings
 > and the v6 finding it marked PARTIAL (review log, section "Review v7") and folds them in, with Phase 2's
 > publication contract of cycle 9 (R30, Phase 2 head `a447983`, still under controller verification), R32 and R33.
-> The controller's shared-surface reconciliation v1 (R1–R21, R24, the Lane A parts of R25–R28, R29 and R30–R33) is
-> applied, and it wins wherever it disagrees with this plan.
+> The controller then answered Lane A's turn-10 questions (R34) and ran an independent Codex re-audit of v8 and of the
+> S2 fixes at `bed7a13` (`phase-03-review-codex-v8.md`, ACCEPT_WITH_CHANGES 0.95); its five LOWs are adjudicated in the
+> review log (section "Review v8") and fixed without a version bump, because none changes the design.
+> The controller's shared-surface reconciliation v1 (R1–R21, R24, the Lane A parts of R25–R28, R29, R30–R34 and the
+> Lane A part of R37) is applied, and it wins wherever it disagrees with this plan.
+> **S2 acceptance (R37):** the pure decision core S2 is accepted once the five LOWs of re-audit v8 are fixed and the
+> controller has checked them; there is no further Codex round on S2 unless those fixes touch decision logic beyond
+> them.
 > One item stays open by design: the review-loop slot TypeScript (CR-10) is pasted verbatim from Lane B's locked
 > block `Review-loop slot contract (verbatim for S0)` when the controller hands over the fixed version (R18).
 > Only S2 is implemented before the Phase 2 rebase (R15): `a133e32`, then follow-up commits that bring it in
@@ -45,7 +51,7 @@ Companion documents: `phase-03-architecture.md`, `phase-03-data-model.md`, `phas
 `phase-03-risk-register.md`, `phase-03-research-register.md`, `phase-03-threat-model-delta.md`,
 `phase-03-review-log.md`, `phase-03-plan-review-codex-v1.md`, `phase-03-plan-review-codex-v2.md`,
 `phase-03-review-codex-v3.md`, `phase-03-review-codex-v4.md`, `phase-03-review-codex-v5.md`,
-`phase-03-review-codex-v6.md`, `phase-03-review-codex-v7.md`.
+`phase-03-review-codex-v6.md`, `phase-03-review-codex-v7.md`, `phase-03-review-codex-v8.md`.
 
 ---
 
@@ -67,7 +73,9 @@ Companion documents: `phase-03-architecture.md`, `phase-03-data-model.md`, `phas
 | 3i | Controller | Codex read-only re-audit of v6 and the S2 fixes at `392f259` → `phase-03-review-codex-v6.md` |
 | 3j | Lane A | re-audit v6 adjudicated and folded; R29 and R31 applied; plan LOCKED v7; S2 fixed, test first |
 | 3k | Controller | Codex read-only re-audit of v7 and the S2 fixes at `ac0a1bc` → `phase-03-review-codex-v7.md` |
-| 3l | Lane A (this step) | re-audit v7 adjudicated and folded; R30's publication contract, R32 and R33 applied; plan LOCKED v8; S2 fixed, test first |
+| 3l | Lane A | re-audit v7 adjudicated and folded; R30's publication contract, R32 and R33 applied; plan LOCKED v8; S2 fixed, test first |
+| 3m | Controller | Codex read-only re-audit of v8 and the S2 fixes at `bed7a13` → `phase-03-review-codex-v8.md` (ACCEPT_WITH_CHANGES) |
+| 3n | Lane A (this step) | the five LOWs of re-audit v8 adjudicated and fixed (R34, R37); plan stays LOCKED v8; S2 accepted once the controller has checked the fixes (R37) |
 | 4 | Lane A, after "implement" | one slice per commit (§26), on this branch only, in the §25 order; S2 first (`a133e32`), as R15 allows |
 | 5 | Controller | independent gate run + Codex final audit; Lane A repairs |
 | 6 | Controller | merge on ACCEPT, in the order Phase 2 → Phase 3 → Phase 4 (R-ordering 4) |
@@ -1298,7 +1306,8 @@ pullRequestContent(facts: PullRequestFacts): { title: string; body: string }   /
 pushStep / upsertPrStep / reconcileBranchStep / reconcilePullRequestStep        // application steps; audit 'forge.reconcile'
 ```
 
-Phase 3 needs three additive changes, requested here:
+Phase 3 needs three additive changes. R34 approves them: Lane A lands them itself, in its own commits after G-P2 (on
+the accepted Phase 2, not in Phase 2's repair), with the union rule for shared files:
 
 1. **The assurance facts in the PR content.** Phase 3's PR carries the `ESCALATE` flag ("assurance not satisfied")
    and the content-addressed assurance section (architecture §12). Both are immutable facts of the attempt, so
@@ -1316,9 +1325,10 @@ Phase 3 needs three additive changes, requested here:
    numeric `githubRepositoryId` (the binding resolver already requires it, `adapters/github-app/src/binding-resolver.ts`)
    and its owner and name.
 
-The `reconcilePublication` activity uses these reads and repairs content as `reconcilePullRequestStep` does, without
-creating, retargeting or closing a PR (architecture §7.3). Proof: E16 and G13 (activity part). Owner: Lane A (S5
-adapter reads, S6 activities); the port lines are a shared surface and land only with the controller's approval.
+The `reconcilePublication` activity uses these reads and repairs only the title and body of the attempt's open PR; it
+never creates, retargets or closes a PR, and never calls `reconcilePullRequestStep` in a mode that does (R34,
+architecture §7.3). Creating a PR stays a core decision: the upsert after a confirmed push with no PR. Proof: E16 and
+G13 (activity part). Owner: Lane A (S5 adapter reads, S6 activities), after G-P2, as R34 decides.
 
 ---
 
@@ -1388,7 +1398,9 @@ No genuine blocker for locking the plan. Implementation is gated as in §25.
 ## Output
 
 ```text
-PLAN_STATUS: LOCKED v8 (pending controller confirmation)
+PLAN_STATUS: LOCKED v8 (pending controller confirmation); the five LOWs of re-audit v8 fixed without a version bump
+S2_ACCEPTANCE: R37 — the pure decision core S2 is accepted once the five LOWs of re-audit v8 (bed7a13,
+  ACCEPT_WITH_CHANGES 0.95) are fixed and the controller has checked them
 PLAN_V1_SHA: 80bb76a (Codex reviewed: REQUEST_CHANGES 0.98; 1 CRITICAL, 8 HIGH, 9 MEDIUM, 1 LOW)
 PLAN_V2_SHA: 98e92cf (Codex lock-check: REQUEST_CHANGES 0.97; 15 of 19 v1 findings FOLDED, 4 PARTIAL;
   new: 3 HIGH, 7 MEDIUM; all 10 new ACCEPTED, all 4 PARTIAL re-adjudicated and folded or open by design)
@@ -1409,7 +1421,7 @@ PLAN_V7_SHA: 0aedc3f (Codex re-audit of v7 + S2 fixes at ac0a1bc: REQUEST_CHANGE
   3 MEDIUM S2; all 8 ACCEPTED (R33); the PARTIAL closed through P3-S2V7-MED-001)
 BASE_SHA: 00a6889 (Phase 2 head, unaccepted; Phase 2 cycle 7 lands first)
 BASELINE: pnpm install --frozen-lockfile exit 0; pnpm verify:all exit 0 (548/548 canonical tests), observed in step 1
-RECONCILIATION: v1 (R1–R21, R24, R25, R27, the R28 slot rules, R29, R30's publication contract, R31, the Lane A parts of R32, and R33) applied; S0 shared foundation added; S3–S13 gated on Phase 2 acceptance + rebase
+RECONCILIATION: v1 (R1–R21, R24, R25, R27, the R28 slot rules, R29, R30's publication contract, R31, the Lane A parts of R32, R33, R34, and the Lane A part of R37) applied; S0 shared foundation added; S3–S13 gated on Phase 2 acceptance + rebase
 OPEN_BY_DESIGN: CR-10 verbatim slot text, pasted on controller hand-off after Lane B's fixed block locks (R18)
 PLAN_FILES:
   - docs/implementation/phases/phase-03-plan.md
@@ -1427,6 +1439,7 @@ PLAN_FILES:
   - docs/implementation/phases/phase-03-review-codex-v5.md
   - docs/implementation/phases/phase-03-review-codex-v6.md
   - docs/implementation/phases/phase-03-review-codex-v7.md
+  - docs/implementation/phases/phase-03-review-codex-v8.md
 NEW_DEPENDENCIES_PROPOSED (exact pins): @temporalio/{workflow,activity,worker,client,common} 1.24.0,
   @temporalio/testing 1.24.0 (dev)
 NEW_BACKEND_IMAGES: temporalio/temporal:1.9.1@sha256:ad4c82c97bd12b417d1ea942610dbcd511afb250c4d5ed26c694009533df447e (gate);

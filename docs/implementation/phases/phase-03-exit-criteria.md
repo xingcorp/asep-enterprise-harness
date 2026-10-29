@@ -262,7 +262,8 @@
       component starting with `.` or ending in `.lock`, and a trailing `.`; a valid non-`main` base such as
       `release/2026.10` passes. The oracle is independent of the implementation: a committed table of names with
       their `git check-ref-format --branch` result, which the validator must match name for name, and a test-only
-      check that re-runs git on the table when git is available. The decision-core fixtures and the property generator
+      check that re-runs git on the table when git is available and reports itself skipped, with the reason, when it
+      is not; the check against the committed table runs either way (R37). The decision-core fixtures and the property generator
       use bases other than `main`, every PR upsert and reconciliation request carries the input's base and repository
       (checked by the oracle against the input, not against another request), and the reviewer's mutation that forces
       the upsert base to `main` turns tests red (`asep-suite:orchestration-core`, `asep-suite:orchestration-properties`;
@@ -288,12 +289,14 @@
       `repository` carries the binding's numeric repository ID with owner and name; the reconciliation observation
       carries the ID of the branch's repository and of each PR's head and base repository; the identity predicate
       compares IDs only. On both reconciliation paths, with and without a cancel pending: the same ID under another
-      owner, another name or another case (a rename or a transfer) reconciles, and the reconciled publication is
-      audited `publication.repository-renamed` with the bound and the observed owner and name; another ID under the
-      input's owner and name (a pathname reused by another repository) is refused as `branch-other-repository`,
+      owner, another name or another case (a rename or a transfer) reconciles; every observed repository with the
+      binding's ID under another owner or name, the branch's or a PR's head or base alone included, is audited
+      `publication.repository-renamed` with the bound and the observed owner and name, once per distinct owner and
+      name (R37); another ID under the input's owner and name (a pathname reused by another repository), and an
+      observed ID that is missing, zero, negative, unsafe or a numeric string, is refused as `branch-other-repository`,
       `pull-request-fork-head` or `pull-request-other-base` and ends `FAILED / publication-incomplete`. The fixtures and
-      the generator vary the repository's ID, owner, name and case, so a core that compared owner and name, or took
-      the repository from anywhere but the input, fails a test (`asep-suite:orchestration-core`,
+      the generator vary the repository's ID, owner, name and case and emit malformed observed IDs, so a core that
+      compared owner and name, coerced an ID, or took the repository from anywhere but the input, fails a test (`asep-suite:orchestration-core`,
       `asep-suite:orchestration-properties`; the adapter reading IDs in `asep-suite:orchestration-activities`).
 
 ## E. Idempotency and fencing
