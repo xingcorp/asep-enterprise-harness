@@ -18,7 +18,7 @@ import { runTaskSequentially } from './sequential-interpreter.js';
 import type { Answer, TaskEnvironment, TaskTrace } from './sequential-interpreter.js';
 import { decideTask, startTask } from './task-core.js';
 import { TASK_BASE, attemptOf, effectsOf, happyAnswer, proceed, ref, requests, shaFor } from './test-support/fixtures.js';
-import { DEFAULT_ORCHESTRATION_POLICY } from './defaults.js';
+import { DEFAULT_ORCHESTRATION_POLICY, NEVER_REPLACEABLE_FAILURE_CLASSES } from './defaults.js';
 import type {
   FailureClass,
   ProjectedTaskStatus,
@@ -89,7 +89,14 @@ function randomInput(rng: Rng): TaskCoreInput {
       maxPauseHours: 1,
       assuranceMode: rng.pick(['shadow', 'gating'] as const),
     },
-    policy: { ...DEFAULT_ORCHESTRATION_POLICY, maxBudgetExtensionUsd: rng.chance(0.7) ? 10 : null },
+    policy: {
+      ...DEFAULT_ORCHESTRATION_POLICY,
+      // Sometimes a hostile policy that lists a never-replaceable class; the core must ignore it.
+      replaceableFailureClasses: rng.chance(0.15)
+        ? [...DEFAULT_ORCHESTRATION_POLICY.replaceableFailureClasses, rng.pick(NEVER_REPLACEABLE_FAILURE_CLASSES)]
+        : DEFAULT_ORCHESTRATION_POLICY.replaceableFailureClasses,
+      maxBudgetExtensionUsd: rng.chance(0.7) ? 10 : null,
+    },
   };
 }
 
@@ -327,15 +334,17 @@ function checkTrace(input: TaskCoreInput, trace: TaskTrace, label: string): void
   };
   for (const [n, got] of roundOf) assert.deepEqual(got, lineageRound(n), `${label}: assurance round of attempt ${n}`);
 
-  // A non-replaceable agent failure ends the task FAILED (or CANCELLED), overrun or not: no further attempt
-  // follows it.
+  // A non-replaceable agent failure ends the task FAILED (or CANCELLED), overrun or not, whatever the policy
+  // lists: no further attempt follows it.
   const requestBySeq = new Map<number, TaskRequest>();
   for (const c of commands) if (c.type === 'request') requestBySeq.set(c.seq, c.request);
   for (const e of trace.events) {
     if (e.type !== 'result' || e.result.kind !== 'runAgent') continue;
     const r = e.result;
     const failed = r.status === 'FAILED' || r.status === 'BLOCKED' || (r.status === 'BUDGET_EXHAUSTED' && r.failureClass !== null);
-    if (!failed || (r.failureClass !== null && input.policy.replaceableFailureClasses.includes(r.failureClass))) continue;
+    const replaceable = r.failureClass !== null && !NEVER_REPLACEABLE_FAILURE_CLASSES.includes(r.failureClass)
+      && input.policy.replaceableFailureClasses.includes(r.failureClass);
+    if (!failed || replaceable) continue;
     const request = requestBySeq.get(e.seq);
     assert.ok(request?.kind === 'runAgent', `${label}: agent result answers runAgent`);
     const n = request.attemptNumber;
@@ -467,7 +476,7 @@ test('generated task traces satisfy the orchestration safety invariants', () => 
 test('the generator covers repair, replacement, approvals, pause and cancel paths', () => {
   const seen = new Set<string>();
   for (let seed = 1; seed <= SEEDS; seed += 1) {
-    const { trace } = generate(seed);
+    const { input, trace } = generate(seed);
     const reqs = requests(trace.commands);
     if (reqs.some((r) => r.kind === 'ensureAttempt' && r.attemptKind === 'repair')) seen.add('repair');
     if (reqs.some((r) => r.kind === 'ensureAttempt' && r.attemptKind === 'retry')) seen.add('retry');
@@ -485,10 +494,13 @@ test('the generator covers repair, replacement, approvals, pause and cancel path
     if (effectsOf(trace.commands, 'recordOverrun').length > 0) seen.add('overrun');
     if (effectsOf(trace.commands, 'audit').some((a) => a.action === 'assurance-unavailable')) seen.add('assurance-unavailable');
     if (reqs.some((r) => r.kind === 'ensureAttempt' && r.attemptKind === 'retry' && r.repairOrderRef !== null)) seen.add('lineage-retry');
+    const hostile = input.policy.replaceableFailureClasses.filter((c) => NEVER_REPLACEABLE_FAILURE_CLASSES.includes(c));
+    if (trace.events.some((e) => e.type === 'result' && e.result.kind === 'runAgent' && e.result.failureClass !== null
+      && e.result.status !== 'AGENT_DONE' && hostile.includes(e.result.failureClass))) seen.add('hostile-policy-failure');
   }
   assert.deepEqual([...seen].sort(), [
     'abort', 'approval-expired', 'assurance-unavailable', 'budget-approval', 'exhausted', 'extension-granted',
-    'lineage-retry', 'overrun', 'pause-timeout', 'paused', 'publish-approval', 'recovered', 'repair', 'retry',
+    'hostile-policy-failure', 'lineage-retry', 'overrun', 'pause-timeout', 'paused', 'publish-approval', 'recovered', 'repair', 'retry',
     'verification-stop', 'violation',
   ]);
 });

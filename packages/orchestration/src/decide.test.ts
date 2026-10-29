@@ -23,13 +23,14 @@ import {
 import { ALLOWED_DECISIONS, APPROVAL_KINDS, approvalRequestId, validateApprovalDecision } from './approvals.js';
 import { parseAssuranceOutcome } from './assurance.js';
 import { checkReservation, crossesSoftThreshold, toMicroUsd } from './budget.js';
-import { DEFAULT_ORCHESTRATION_POLICY, FAILURE_CLASSES } from './defaults.js';
+import { DEFAULT_ORCHESTRATION_POLICY, FAILURE_CLASSES, NEVER_REPLACEABLE_FAILURE_CLASSES } from './defaults.js';
 import { isLegalProjection } from './projection.js';
 import { decideRun, startRun } from './run-core.js';
 import type { RunCommand, RunCoreInput } from './run-core.js';
 import { runTaskSequentially } from './sequential-interpreter.js';
 import type { TaskTrace } from './sequential-interpreter.js';
 import { decideTask, startTask, taskWorkflowId } from './task-core.js';
+import { orchestrationPolicyErrors } from './validation.js';
 import {
   TASK_BASE,
   baseInput,
@@ -890,6 +891,62 @@ test('agent outcome: an infrastructure error is replaced only with a fresh reser
 });
 
 // ---------------------------------------------------------------------------
+// Never-replaceable failure classes, whatever the policy says
+// ---------------------------------------------------------------------------
+
+const NEVER = ['policy-violation', 'false-completion', 'duplicate-side-effect'] as const;
+
+function hostilePolicy(failureClass: (typeof NEVER)[number]) {
+  return policy({ replaceableFailureClasses: [...DEFAULT_ORCHESTRATION_POLICY.replaceableFailureClasses, failureClass] });
+}
+
+function assertEndsAfterOneAttempt(trace: TaskTrace, reason: string): void {
+  assert.equal(ensured(trace).length, 1, 'no attempt follows a never-replaceable failure');
+  const kinds = requestKinds(trace.commands);
+  assert.ok(!kinds.includes('publishBranch') && !kinds.includes('upsertPullRequest'), 'nothing is published');
+  assert.ok(!kinds.includes('openApprovalRequest'), 'no budget-extension approval');
+  assert.deepEqual(outcomes(trace), [[1, 'failed']]);
+  assert.equal(trace.summary.outcome, 'FAILED');
+  assert.equal(trace.summary.reason, reason);
+  assertLegalProjections(trace);
+}
+
+for (const never of NEVER) {
+  for (const [label, reportedCostUsd] of [['no overrun', 1], ['a cost overrun', 7]] as const) {
+    test(`never replaceable: a hostile policy that lists ${never} still ends the task FAILED after one attempt (agent result, ${label})`, () => {
+      const trace = runTaskSequentially(baseInput({ policy: hostilePolicy(never) }), scripted({
+        runAgent: () => ({ kind: 'runAgent', status: 'FAILED', reportedCostUsd, reportedToolCalls: 10, wallClockMs: 1000, failureClass: never }),
+      }));
+      assertEndsAfterOneAttempt(trace, never);
+      assert.equal(effectsOf(trace.commands, 'recordOverrun').length, reportedCostUsd > 5 ? 1 : 0, 'an overrun is still recorded');
+    });
+  }
+
+  test(`never replaceable: a hostile policy that lists ${never} still ends the task FAILED after one attempt (activity failure)`, () => {
+    const trace = runTaskSequentially(baseInput({ policy: hostilePolicy(never) }), scripted({
+      runAgent: () => ({ kind: 'activityFailed', failureClass: never, timedOut: false }),
+    }));
+    assertEndsAfterOneAttempt(trace, never);
+  });
+}
+
+test('never replaceable: an overstep is a policy violation and is not retried under a policy that lists policy-violation', () => {
+  const trace = runTaskSequentially(baseInput({ policy: hostilePolicy('policy-violation') }), scripted({
+    inspectWorkspace: () => ({ kind: 'inspectWorkspace', overstep: true }),
+  }));
+  assertEndsAfterOneAttempt(trace, 'policy-violation');
+});
+
+test('never replaceable: the policy rule reports each never-replaceable class and accepts the default policy', () => {
+  assert.deepEqual(orchestrationPolicyErrors(DEFAULT_ORCHESTRATION_POLICY), []);
+  for (const never of NEVER) {
+    assert.deepEqual(orchestrationPolicyErrors(hostilePolicy(never)), [`replaceableFailureClasses: ${never} is never replaceable`]);
+  }
+  assert.deepEqual(orchestrationPolicyErrors(policy({ replaceableFailureClasses: ['not-a-class' as never] })),
+    ['replaceableFailureClasses: unknown failure class not-a-class']);
+});
+
+// ---------------------------------------------------------------------------
 // Repair with a failed reservation, and repair lineage on retry
 // ---------------------------------------------------------------------------
 
@@ -1166,7 +1223,8 @@ test('defaults: replaceable and never-replaceable failure classes match the arch
   assert.deepEqual([...DEFAULT_ORCHESTRATION_POLICY.replaceableFailureClasses].sort(), [
     'agent-loop-stall', 'artifact-loss', 'environment', 'provider', 'quota-rate-limit', 'tool', 'workflow-recovery-failure',
   ]);
-  for (const never of ['policy-violation', 'false-completion', 'duplicate-side-effect'] as const) {
+  assert.deepEqual([...NEVER_REPLACEABLE_FAILURE_CLASSES], ['policy-violation', 'false-completion', 'duplicate-side-effect']);
+  for (const never of NEVER_REPLACEABLE_FAILURE_CLASSES) {
     assert.ok(!DEFAULT_ORCHESTRATION_POLICY.replaceableFailureClasses.includes(never), never);
   }
 });

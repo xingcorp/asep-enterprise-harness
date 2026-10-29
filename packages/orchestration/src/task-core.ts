@@ -19,6 +19,7 @@ import { ACTIVITY_OPTIONS } from './activity-options.js';
 import { approvalRequestId, isWellFormedDecision, validateApprovalDecision } from './approvals.js';
 import { parseAssuranceOutcome } from './assurance.js';
 import { checkReservation, crossesSoftThreshold, fromMicroUsd, toMicroUsd } from './budget.js';
+import { NEVER_REPLACEABLE_FAILURE_CLASSES } from './defaults.js';
 import { isLegalProjection, isWorkStatus, statusForRequest } from './projection.js';
 import type {
   ApprovalKind,
@@ -700,9 +701,14 @@ function budgetCheck(step: Step): void {
   close(step, 'BUDGET_EXHAUSTED', reservation.reason);
 }
 
-/** Only a failure class the policy lists as replaceable may be followed by a new attempt. */
+/**
+ * Only a failure class the policy lists as replaceable may be followed by a new
+ * attempt, and never one of the never-replaceable classes, whatever the policy says.
+ */
 function isReplaceable(s: Draft, failureClass: FailureClass | null): boolean {
-  return failureClass !== null && s.input.policy.replaceableFailureClasses.includes(failureClass);
+  return failureClass !== null
+    && !NEVER_REPLACEABLE_FAILURE_CLASSES.includes(failureClass)
+    && s.input.policy.replaceableFailureClasses.includes(failureClass);
 }
 
 /** Abandon the current attempt; replace it, with the same lineage, only if the class allows and nothing was pushed. */

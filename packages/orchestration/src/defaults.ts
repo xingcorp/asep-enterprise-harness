@@ -27,9 +27,19 @@ const FAILURE_CLASS_SET: Readonly<Record<FailureClass, true>> = {
 
 export const FAILURE_CLASSES: readonly FailureClass[] = Object.keys(FAILURE_CLASS_SET) as FailureClass[];
 
+/**
+ * Never followed by a new attempt, whatever a policy says: the attempt broke a
+ * rule, claimed work it did not do, or applied an effect twice.
+ */
+export const NEVER_REPLACEABLE_FAILURE_CLASSES: readonly FailureClass[] = [
+  'policy-violation',
+  'false-completion',
+  'duplicate-side-effect',
+];
+
 export const DEFAULT_ORCHESTRATION_POLICY: OrchestrationPolicy = {
   // Failures a fresh attempt in a fresh worktree can plausibly recover from.
-  // policy-violation, false-completion and duplicate-side-effect are never replaceable.
+  // The never-replaceable classes above are never listed.
   replaceableFailureClasses: [
     'environment',
     'provider',

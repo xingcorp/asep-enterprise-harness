@@ -29,7 +29,8 @@ export {
 export { parseAssuranceOutcome } from './assurance.js';
 export type { AssuranceContext, ParsedAssuranceOutcome } from './assurance.js';
 export { isLegalProjection, statusForRequest } from './projection.js';
-export { DEFAULT_ORCHESTRATION_POLICY, FAILURE_CLASSES } from './defaults.js';
+export { DEFAULT_ORCHESTRATION_POLICY, FAILURE_CLASSES, NEVER_REPLACEABLE_FAILURE_CLASSES } from './defaults.js';
+export { orchestrationPolicyErrors } from './validation.js';
 export { runTaskSequentially } from './sequential-interpreter.js';
 export type { ActivityFailure, Answer, DeliveredMessage, TaskEnvironment, TaskTrace } from './sequential-interpreter.js';
 export type * from './types.js';
