@@ -1,7 +1,8 @@
-# Phase 4 — Risk Register (LOCKED v3, pending controller confirmation)
+# Phase 4 — Risk Register (LOCKED v4, pending controller confirmation)
 
 > Delivery, design and measurement risks for independent assurance. Base `00a6889`; v1 reviewed at `a2a7b8a`; v2
-> lock-checked at `3201335` (v3 adds PR4-32…PR4-36 and amends PR4-07, PR4-28).
+> lock-checked at `3201335` (v3 adds PR4-32…PR4-36 and amends PR4-07, PR4-28); v3 reviewed at `9e3a1c3` (v4 adds
+> PR4-37 and PR4-38).
 > Severity = impact × likelihood. v2 adds the risks surfaced by the Codex plan review and the reconciliation, and
 > retires the promotion risks with the deferral of promotion.
 
@@ -43,6 +44,8 @@
 | PR4-34 | **A step reads content through a foreign or superseded workspace** (wrong tenant, taken-over lease, stale epoch) | MED | `AssuranceWorkspaceResolver` in the S0 block checks tenant, `ACTIVE`, holder and epoch; every refusal stops the step before any read; no workspace from activity-local memory; resolver kit on both lanes | Exit E13 |
 | PR4-35 | **Snapshot versions grow without bound** under frequent recompute | LOW | An unchanged recompute writes nothing (the version trigger rejects a repeat); versions are added only when a value changes | Version count per key in the evaluator log |
 | PR4-36 | **Integration lines landed early** (policy/domain exports, `readPolicyFile`, nine suite ids) conflict at merge | LOW | Append-only lines in files the reconciliation unions at merge (R10); recorded in the review log | Merge conflict on those lines |
+| PR4-37 | **An attempt that ends before it holds a workspace lease has no fence** to present, so `recordAttemptOutcome` (fenced since v4, R23) cannot record its terminal and telemetry completeness shows a gap | MED | The block states that such an attempt is not recorded here; Lane A audits it through its own path; exit J6 exposes any gap; raised with the controller for the focused check before hand-off | J6 gap, or Lane A reports an attempt terminal without a lease |
+| PR4-38 | **Stricter path, budget and false-green rules raise more shadow would-blocks** (non-normalizable paths block; packet bytes now count the objective and every packet field; executed-zero runs flag whatever the exit code) | LOW | Shadow mode changes no workflow decision except the push guard; the would-block rate is a dashboard metric; a path block is a real fail-closed stop | Shadow would-block rate jumps after the v4 code lands |
 
 Retired from v1: promotion forgery/expiry risks (promotion deferred, DF-2); per-major compat-gate gap (D-1 = b,
 SR-C3 withdrawn); Grafana-not-exercised (D-6 = yes).

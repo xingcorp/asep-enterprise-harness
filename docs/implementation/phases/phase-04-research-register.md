@@ -1,4 +1,4 @@
-# Phase 4 — Research Register (LOCKED v3, pending controller confirmation)
+# Phase 4 — Research Register (LOCKED v4, pending controller confirmation)
 
 > Research for the independent reviewer, its independence, egress and injection resistance, replayable measurement,
 > and dashboards. All web sources were retrieved on **2026-10-29** in a Lane B session unless marked

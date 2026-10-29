@@ -1,7 +1,8 @@
-# Phase 4 — Data Model (LOCKED v3, pending controller confirmation)
+# Phase 4 — Data Model (LOCKED v4, pending controller confirmation)
 
 > Companion to `phase-04-plan.md`. PostgreSQL 17 (digest-pinned in `compose.yaml`). Base `00a6889`; v1 reviewed at
-> `a2a7b8a`; v2 lock-checked at `3201335`. Conventions inherited from `phase-02-data-model.md` §1: ULID `char(26)` ids, `timestamptz` UTC,
+> `a2a7b8a`; v2 lock-checked at `3201335`; v3 reviewed at `9e3a1c3` (v4: §2.1 identity, §2.3 budget, §2.4 closure
+> rules, §2.8 scanner runs, `review_findings` identity, disposition actor rules, §7.1 vocabulary). Conventions inherited from `phase-02-data-model.md` §1: ULID `char(26)` ids, `timestamptz` UTC,
 > optimistic `version` columns on mutable aggregates, `TenantScope` first on every repository method, composite
 > foreign keys onto `(id, organization_id, project_id)`, append-only checksummed migrations
 > (`adapters/persistence/src/migrator.ts`: strictly ascending ids, checksum per applied id). v2 writes the full DDL
@@ -39,7 +40,11 @@ Lane B adds five schema files; the compat-gate count and `COMPATIBILITY.md` are 
 | `grounded` | boolean | yes | set by the harness, never by a model |
 | `groundingReason` | string | no | required when `grounded` is false |
 | `lifecycleState` | enum `OPEN, ACKNOWLEDGED, FIXED, VERIFIED, CLOSED, REFUTED, ADJUDICATED, WAIVED` | yes | `docs/architecture/04-state-machines.md:40-48` |
-| `requirementId`, `file`, `lineStart`, `lineEnd`, `ruleId`, `priorFindingId` | | no | `file` repo-relative, no `..` |
+| `requirementId`, `file`, `lineStart`, `lineEnd`, `ruleId`, `priorFindingId` | | no | `file` a normalized repo path (plan §10.1); `priorFindingId` links a re-raised finding to the prior it matched (plan §12) |
+
+Identity within a round (plan §12): `(raisedBy, fingerprint, requirementId, finding key)`; findings are never merged
+across requirement ids or keys, and a merge keeps grounded and the highest severity. Identity across rounds, for
+reconciliation with prior findings: `(raisedBy, fingerprint, requirementId)`.
 
 ### 2.2 `review-record/v1`
 
@@ -60,10 +65,10 @@ outputTokens, reasoningTokens, wallClockMs, transportAttempts}`), `providerCalls
 | `identity` | `{organizationId, projectId, repositoryBindingId, runId, taskId, attemptId, round, roundKey}` |
 | `risk`, `reviewKind` | |
 | `workOrder` | `{objective, requirementIds, requirements?[{id, statement, priority}], allowedPaths, forbiddenChanges, architectureInvariants, acceptanceCheckIds}` |
-| `change` | `{taskBaseSha, resultSha, repairBaseSha|null, cumulativeDiff: ArtifactRef, repairDelta: ArtifactRef|null, files: [{path, status, binary, postImage: ArtifactRef|null, lineCount, omittedReason|null}]}` |
+| `change` | `{taskBaseSha, resultSha, repairBaseSha|null, cumulativeDiff: ArtifactRef, repairDelta: ArtifactRef|null, files: [{path, status, binary, postImage: ArtifactRef|null, lineCount, omittedReason|null}]}`; `omittedReason` ∈ `binary, too-large, deleted, submodule, non-utf8, unsafe-path` (`unsafe-path`: a path that is not normalizable, kept so the push guard blocks on it, never read) |
 | `execution` | `{verdict: PASS|FAIL|ERROR|NOT_RECORDED, environment: {imageDigest, lockfileHash, nodeVersion|null}|null, checks: [{id, category, command, exitCode, durationMs, stdout: {artifactId, sha256, bytes, excerptTail}|null, stderr: (same)|null, testSummary: {runner, tests, pass, fail, skipped, todo}|null}]}`; `NOT_RECORDED` (with `environment: null`, `checks: []`) is used only by corpus packets (plan §7.8), never at runtime |
 | `priorFindings` | `review-finding/v1[]` (re-review only, adjudicated, with ids and lifecycle state) |
-| `budget` | `{maxBytes, includedBytes, overBudget, omissions: [{path, reason}]}`; the slot step returns only the omission count (`omittedFiles`), the list stays here |
+| `budget` | `{maxBytes, includedBytes, overBudget, omissions: [{path, reason}]}`; `includedBytes` = UTF-8 length of the canonical packet with `includedBytes = 0` and `overBudget = false`, plus the bytes of the cumulative diff, the repair delta and every post-image the prompt embeds; `overBudget` = `includedBytes > maxBytes` or a diff over its reader limit; the rendered prompt is measured separately against `maxBytes` (plan §8); the slot step returns only the omission count (`omittedFiles`), the list stays here |
 
 No field exists for coder self-report, ContextPack, events, commit messages or other reviewers' output.
 
@@ -74,7 +79,9 @@ BLOCK`), `reason` (escalation/block reason or null), `ruleFired` (`A1`…`A11`, 
 (`{wouldBe, reason, blockingFindings}` or null), `pushGuard` (`PASS`/`BLOCK` + reason), `egressDecision`,
 `blocking` (`[{findingId, source, raisedBy, severity, reason}]`), `grounding` (`[{findingId, grounded, reason}]`),
 `verdictMismatches` (`[{reviewId, verdict, groundedBlockingCount}]`), `closureDecisions` (`[{priorFindingId,
-raisedBy, claims: [{by, status}], effectiveState, rule: deterministic-recheck|human|independent-reviewer|raiser-claim|closure-without-change|unchanged}]`),
+raisedBy, claims: [{by, status}], effectiveState, rule: deterministic-recheck|scanner-recheck|human|independent-reviewer|raiser-claim|closure-without-change|regression|unchanged}]`;
+`regression` names a prior that a finding of this round re-raised after it was verified or closed, `scanner-recheck` a SARIF
+finding the harness verified with the proof of plan §13),
 `policyVersion`, `inputs` (`{packetSha256, checkReportSha256, reviewRecordSha256s[]}`), `fence` (`{leaseId,
 fencingEpoch}`). No timestamp field: the decision time lives in the `adjudications.decided_at` column only (plan §11).
 
@@ -98,8 +105,9 @@ Plan §18.4 lists the one new `eventType` (`review.finding_dispositioned`) and t
 
 `check-report` (canonical JSON, `check-report/v1`, built and parsed by `packages/application/src/assurance/check-report.ts`,
 S6): the packet sha256, push-guard decision, egress decision with its hits (`{kind, part, detail}`, where `detail` is
-a path, a pattern label or a fixed reason — never the matched text), every deterministic and SARIF finding, and the
-sha256 and size of each SARIF log the checks read (the raw outputs themselves are artifacts the check step stores,
+a path, a pattern label or a fixed reason — never the matched text), every deterministic and SARIF finding, the
+scanner runs the SARIF logs describe (`[{checkId, tool, toolVersion|null, rules[], executionSuccessful}]`, the evidence a
+scanner recheck needs, plan §13), and the sha256 and size of each SARIF log the checks read (the raw outputs themselves are artifacts the check step stores,
 S12). There is no timestamp in it. There is no JSON Schema file: the harness writes it and re-reads it by content
 address, and a strict structural parser guards every read (v3; replaces the v2 schema file, which would have needed
 a new `ajv` dependency in `@asep/application`). Unknown or missing keys, wrong types, a sha256 mismatch, an egress
@@ -354,12 +362,15 @@ create table review_findings (
                                               and (line_end is null or (line_start is not null and line_end >= line_start))),
   constraint review_findings_text_ck        check (length(evidence) between 1 and 8192
                                               and length(required_fix) between 1 and 8192),
-  constraint review_findings_file_ck        check (file is null or (file !~ '^/' and file !~ '(^|/)\.\.(/|$)')),
+  constraint review_findings_file_ck        check (file is null or (file !~ '^/' and file !~ '(^|/)\.\.(/|$)'
+                                              and file !~ '[\u0001-\u001f\u007f-\u009f\u2028\u2029\\]' and file !~ '^"')),
   constraint review_findings_lifecycle_ck   check (lifecycle_state in ('OPEN','ACKNOWLEDGED','FIXED','VERIFIED',
                                               'CLOSED','REFUTED','ADJUDICATED','WAIVED')),
   constraint review_findings_grounded_ck    check (grounded or not blocking),
   constraint review_findings_reason_ck      check (grounded or grounding_reason is not null),
-  constraint review_findings_dedupe_uq      unique (organization_id, project_id, review_round_id, raised_by, fingerprint),
+  -- one row per finding identity in a round (plan §12): never merged across requirement ids or finding keys
+  constraint review_findings_dedupe_uq      unique nulls not distinct (organization_id, project_id, review_round_id,
+                                              raised_by, fingerprint, requirement_id, finding_key),
   constraint review_findings_scope_uq       unique (id, organization_id, project_id),
   constraint review_findings_denorm_uq      unique (id, organization_id, project_id, severity, raised_by, grounded),
   constraint review_findings_round_fk       foreign key (review_round_id, organization_id, project_id)
@@ -425,12 +436,19 @@ create table finding_dispositions (
                                                    or disposition in ('RESOLUTION_CLAIMED','RESOLUTION_VERIFIED')),
   -- the raiser of a finding can never verify its resolution
   constraint finding_dispositions_raiser_ck      check (disposition <> 'RESOLUTION_VERIFIED' or actor <> finding_raised_by),
-  -- harness rules refute ungrounded findings, verify deterministic re-checks, and reopen
+  -- harness rules refute ungrounded findings, verify deterministic and scanner re-checks, and reopen
   constraint finding_dispositions_harness_ck     check (actor_kind <> 'harness-rule'
                                                    or disposition in ('REJECTED_WITH_EVIDENCE','RESOLUTION_VERIFIED','REOPENED')),
   constraint finding_dispositions_harness_verify_ck check (not (actor_kind = 'harness-rule'
                                                    and disposition = 'RESOLUTION_VERIFIED')
-                                                   or finding_raised_by like 'deterministic:%'),
+                                                   or (finding_raised_by like 'deterministic:%'
+                                                       and actor = 'harness-rule:deterministic-recheck')
+                                                   or (finding_raised_by like 'sarif:%'
+                                                       and actor = 'harness-rule:scanner-recheck')),
+  -- model output never closes a deterministic or SARIF finding
+  constraint finding_dispositions_reviewer_verify_ck check (not (actor_kind = 'reviewer'
+                                                   and disposition = 'RESOLUTION_VERIFIED')
+                                                   or finding_raised_by !~ '^(deterministic|sarif):'),
   -- only a human can reject a grounded finding
   constraint finding_dispositions_refute_ck      check (disposition <> 'REJECTED_WITH_EVIDENCE'
                                                    or actor_kind = 'human' or not finding_grounded),
@@ -641,6 +659,15 @@ document and applied again on PGlite `0.5.4` after the twelve Phase 2 migrations
 outside the repository: all applied. A probe on one snapshot key confirmed that a first version other than 1, a
 version gap, a version repeating the previous value, an update and a delete are rejected; versions 1, 2 and 3 with
 values `0`, `1`, `0` are accepted; `metric_snapshots_latest` returns version 3; and the rollback removes the tables.
+For v4 the §3.1–§3.3 blocks and the §3.6 rollback were extracted again and applied on PGlite `0.5.4` after the twelve
+Phase 2 migrations in a fresh scratch directory outside the repository: all applied. With foreign keys and triggers
+disabled (`session_replication_role = replica`, so only check and unique constraints act), a probe confirmed: a second
+finding with the same round, raiser, fingerprint, null requirement id and key is rejected by
+`review_findings_dedupe_uq` (nulls not distinct), while another requirement id or another key is accepted; a `file`
+with LF, U+2028, U+0085, a backslash or a leading `"` is rejected and `src/café.ts` is accepted; a harness
+`RESOLUTION_VERIFIED` is accepted only as `harness-rule:scanner-recheck` on a `sarif:` finding or
+`harness-rule:deterministic-recheck` on a `deterministic:` finding; a reviewer's `RESOLUTION_VERIFIED` on a `sarif:` or
+`deterministic:` finding is rejected and on another raiser's model finding accepted.
 
 ### 3.6 Rollback (forward compensating migrations; applied only by operator decision, never by editing `02xx`)
 
@@ -826,10 +853,11 @@ are items too, excluded `plan-defect`. Excerpts live in `evals/review-corpus/sel
 | `id` | `<findingId>@<reviewedSha7>`; `<findingId>@unknown` when the reviewed SHA is unknown |
 | `findingId`, `phase`, `cycle`, `reviewKind` (`final, rereview, self-found, plan`) | *(S19 now)*; `cycle` orders a phase's reviews (plan reviews are cycle 0) |
 | `instanceKind` (`first-occurrence, residual`), `labelStatus` | *(S19 now)*; `labelStatus` is a residual's own status in its cycle (`PARTIAL, REGRESSED, OPEN`), null for a first occurrence |
-| `reviewedSha`, `reviewedShaSource` (`recorded-in-review, derived, derived-from-fix, unknown`) | *(S19 now)* full 40-hex; `recorded-in-review` = named by the document; `derived` = parent of the commit that added the review document; `derived-from-fix` = parent of the fix commit the document names (the self-found item); `unknown` when the document was never committed, or when the commit that added it also added a later cycle's document (its parent would postdate that later review) |
+| `reviewedSha`, `reviewedShaSource` (`recorded-in-review, derived, inferred-parent-of-fix, unknown`) | *(S19 now)* full 40-hex; `recorded-in-review` = named by the document; `derived` = parent of the commit that added the review document; `inferred-parent-of-fix` = parent of the fix commit the document names (the self-found item, R22); `unknown` when the document was never committed, or when the commit that added it also added a later cycle's document (its parent would postdate that later review) |
 | `baseSha`, `baseShaSource` | *(S19 now)* `B_c`: the phase plan's first `BASE_SHA` line read at `reviewedSha`; `phase-plan` |
-| `reachability` | *(S19 now)* `reachable` (from HEAD or an advertised ref) / `object-store-only` / `unavailable`; `bundle-only` is decided only in bundle mode, after the freeze |
-| `fixCommits[]` | *(S19 now)* commits after `reviewedSha` up to the next cycle with a known reviewed SHA whose subject names the finding id as a whole token (long form; Phase 2 also the short form its re-reviews use, e.g. `HIGH-005`); a rewritten copy of a commit already in the reviewed tree (same author date and subject) is not a fix |
+| `reachability` | *(S19 now)* `reachable` (from HEAD or an advertised ref) / `private-bundle-only` (present only in history the rewrite removed: the local object store holds it, a clean public clone does not, the controller's private bundle does; R22) / `unavailable` |
+| `dependsOnPrivateBundle` | *(S19 now)* true when `reviewedSha`, `baseSha`, `postFixSha` or a fix commit is `private-bundle-only`: a clean public clone verifies the item only by its excerpts' hashes; the scorecard reports the count (R22) |
+| `fixCommits[]` | *(S19 now)* `[{sha, reachability}]`, `reachability` ∈ `reachable, private-bundle-only`: commits after `reviewedSha` up to the next cycle with a known reviewed SHA whose subject names the finding id as a whole token (long form; Phase 2 also the short form its re-reviews use, e.g. `HIGH-005`); a rewritten copy of a commit already in the reviewed tree (same author date and subject) is not a fix |
 | `postFixSha` | *(S19 now)* `R_{c+1}`: the reviewed SHA of the next cycle when that cycle re-reviews this one and its tree is known; else null |
 | `negativeEligible` | eligible iff the item is `RESOLVED` at `c+1` and at least one location maps (plan §7.8) |
 | `excerpts` | *(S19 now, cited files)* `[{side: reviewed|post-fix, path, sha256}]` → `blobs/<sha256>`; the post-fix side reads the same path at `postFixSha` (renames are followed by the mapping at the freeze); chunk diffs and post-images are added at the freeze |
@@ -843,7 +871,7 @@ are items too, excluded `plan-defect`. Excerpts live in `evals/review-corpus/sel
 | `labelQuality` | `primary`, `secondhand` |
 | `labellerMiss` | |
 | `set` | `prompt-development` (Phase 1) / `reporting` (Phase 2); reporting labels were visible to the prompt author |
-| `excluded` | null or `{reason, detail}` with the reasons and order of plan §7.8; S19 records only `plan-defect`, `tree-unavailable` and `excerpt-unpublishable` (a cited file at `reviewedSha` fails a gate the repository runs over tracked files: format, secret, PII, large-file or publication) |
+| `excluded` | null or `{reason, detail}` with the reasons and order of plan §7.8; S19 records only `plan-defect`, `reviewed-tree-unknown` (R22: the reviewed tree cannot be identified, or a needed tree is in no source) and `excerpt-unpublishable` (a cited file at `reviewedSha` fails a gate the repository runs over tracked files: format, secret, PII, large-file or the publication path-leak scan); `no-location` and the packet-level reasons are applied at the freeze. A gate that does not complete within its documented codes aborts collection (plan §7.5) |
 | `synthetic` | the synthetic-field record of plan §7.8 (identity labels, objective text, `NOT_RECORDED`, masks applied) |
 | `humanVerified` | null (DF-8) or `{by, at, agrees}` |
 

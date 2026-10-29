@@ -1,6 +1,6 @@
-# Phase 4 — Architecture (LOCKED v3, pending controller confirmation)
+# Phase 4 — Architecture (LOCKED v4, pending controller confirmation)
 
-> Companion to `phase-04-plan.md`. Base `00a6889`; v1 reviewed at `a2a7b8a`; v2 lock-checked at `3201335`. Thesis unchanged from the ADRs: an
+> Companion to `phase-04-plan.md`. Base `00a6889`; v1 reviewed at `a2a7b8a`; v2 lock-checked at `3201335`; v3 reviewed at `9e3a1c3` (v4: budget and unsafe paths §8, egress paths §9, finding identity, changed-line predicate and scanner recheck §11). Thesis unchanged from the ADRs: an
 > agent cannot approve its own work (README thesis 3), every framework sits behind a port (ADR 0005),
 > deterministic evidence is stronger than model review (ADR 0010), raw evidence is captured before any reduction
 > (ADR 0009), humans own high-risk decisions (ADR 0014). v2 changes are driven by the Codex plan review and the
@@ -182,11 +182,11 @@ export interface ReviewerProvider {
 
 // --- SR-P3: trusted review source ---------------------------------------------
 export interface ReviewBlob {
-  readonly path: string;               // repo-relative, normalized; never absolute, never '..'
+  readonly path: string;               // as git reports it; a path that is not normalizable (plan §10.1) is never read
   readonly blob: ArtifactRef | null;   // null when omitted
   readonly bytes: number;
   readonly lineCount: number;
-  readonly omittedReason: 'binary' | 'too-large' | 'deleted' | 'submodule' | 'non-utf8' | null;
+  readonly omittedReason: 'binary' | 'too-large' | 'deleted' | 'submodule' | 'non-utf8' | 'unsafe-path' | null;
 }
 
 export interface ReviewSourceReader {
@@ -302,6 +302,17 @@ loader, which rejects `gating` (exit K3). The drill factory `createAssuranceDril
 | prior adjudicated findings with ids and lifecycle state (re-review) | `FindingStore` |
 | byte budget, included bytes, omissions with reason | builder |
 
+**Byte budget** (plan §8, R23). `budget.includedBytes` is the UTF-8 length of the canonical packet measured with
+`budget.includedBytes = 0` and `budget.overBudget = false`, plus the bytes of every content part the prompt embeds
+(cumulative diff, repair delta, post-images); `overBudget` is `includedBytes > maxBytes` or a diff over its reader
+limit, and the renderer refuses such a packet. The renderer then measures the canonical prompt bytes against the same
+`maxBytes` and refuses a larger prompt with `PromptOverBudgetError` (recorded `FAILED`, reason `prompt-over-budget`,
+rule A3). Nothing is truncated.
+
+**Unsafe paths.** A changed path that is not normalizable (plan §10.1) stays in `change.files` with no post-image and
+omission reason `unsafe-path`; the source reader never reads it, the push guard blocks on it and the egress decision
+classifies it.
+
 Excerpts are the last `excerptBytesPerStream` bytes (policy, proposal 4 KiB) of each stream, capped in total, and
 are subject to the egress decision like any other packet byte. Excluded by construction (no schema field):
 coder summary, known limitations, provider session id, event artifacts, ContextPack, commit messages, PR body,
@@ -327,12 +338,19 @@ requirementId|null, evidence, requiredFix, confidence}`; `priorFindingClaims[]` 
 `packages/application/src/assurance/egress.ts`:
 
 ```text
-if project not opted in to reviewer egress            → STOP_CLASSIFIED
-for each packet path: matches denyPathGlobs           → STOP_CLASSIFIED
-for each omitted path: sensitive by classification    → STOP_UNSCANNABLE
-for each text part (diff, post-images, excerpts, WorkOrder strings): secret pattern hit → STOP_SECRET
-else                                                  → CLEAR
+paths = packet paths ∪ {path, oldPath of every entry of the cumulative diff}
+                     ∪ {path, oldPath of every entry of the repair delta}   (renames, copies, deletes, delta-only files)
+if project not opted in to reviewer egress                         → STOP_CLASSIFIED
+for each p in paths: not normalizable, or matches denyPathGlobs    → STOP_CLASSIFIED
+any part unavailable, off-digest, not UTF-8, or a diff unparseable → STOP_UNSCANNABLE
+for each text part (diff, repair delta, post-images, packet JSON with excerpts and WorkOrder strings):
+        secret pattern hit                                         → STOP_SECRET
+else                                                               → CLEAR
 ```
+
+"Not normalizable" (plan §10.1): empty, absolute, an empty/`.`/`..` segment, a backslash, C0 or C1 control, DEL,
+U+2028, U+2029, or a leading `"`. Glob matching uses the `s` and `u` flags, so `**` spans every character and `?`
+counts code points; the refusal above is the primary control.
 
 The same scanner runs again over the final request body in `runReviewer` (plan §10.1). The secret patterns are
 generated from `scripts/lib/secret-patterns.sh` into a TypeScript table with a parity test.
@@ -383,7 +401,9 @@ and input hashes.
 **Grounding:** path normalized and present in the packet; a line range inside the post-image (or a diff hunk for
 deleted lines) except for `SPEC`/`EVIDENCE_INTEGRITY`, which may cite a packet `requirementId` or check id;
 non-empty `evidence`/`requiredFix` above minimum lengths. Failure → `grounded: false`, disposition
-`REJECTED_WITH_EVIDENCE` by `harness-rule:citation-unresolvable` (excluded from yield metrics).
+`REJECTED_WITH_EVIDENCE` by `harness-rule:citation-unresolvable` (excluded from yield metrics). Every finding is
+grounded before any merge; identity and the conservative merge are plan §12, and reconciliation with prior findings
+(waived, refuted, regression) runs before blocking is computed.
 
 Waiver expiry is evaluated at the round's opening time, never at the adjudicating execution's `now()` (plan §11).
 
@@ -392,13 +412,31 @@ Waiver expiry is evaluated at the round's opening time, never at the adjudicatin
 ```text
 claims  = reviewer claims on F this round
 if F.source = deterministic:   VERIFIED iff the same rule does not fire on the new tree
+else if F.source = sarif:      VERIFIED iff scannerRecheck(F) (below); otherwise unchanged (still blocking)
 else if a human RESOLUTION_VERIFIED disposition exists:                    VERIFIED
 else if ∃ claim c: c.status = RESOLVED ∧ c.raiser ≠ R(F) ∧ eligible(c.raiser vs implementer)
-        ∧ grounded(c.resolution) ∧ c.resolutionFile ∈ repairDelta.files:   VERIFIED
-else if ∃ claim c by R(F) with status RESOLVED:                            FIXED (claim only; still blocking)
-else if a RESOLVED claim cites a file outside the repair delta:            OPEN (closure-without-change)
+        ∧ grounded(c.resolution) ∧ changedLine(c, F):                      VERIFIED
+else if ∃ claim c by R(F) with status RESOLVED, grounded, its file in the repair delta:
+                                                                           FIXED (claim only; still blocking)
+else if a grounded RESOLVED claim cites a file outside the repair delta:   OPEN (closure-without-change)
 else                                                                       unchanged
 ```
+
+**Changed-line predicate** (identical to plan §13): with `E` the repair delta's entry for `c.resolutionFile`,
+
+```text
+changedLine(c, F) = E exists ∧ ( c.resolutionLine ∈ E.added.lines                          -- a + line of the post-image
+                               ∨ ( E.added = ∅ ∧ c.resolutionFile = F.file ∧ F has lines
+                                   ∧ {F.lineStart … F.lineEnd} ⊆ E.removed.lines ) )   -- deletion only: F's own lines removed
+```
+
+Context lines of a hunk, even next to an edit, are in neither set and never close a finding.
+
+**Scanner recheck** for a SARIF prior `F` (raised by `sarif:<tool>`, rule `r`, fingerprint `fp`, scanner version `v`
+recorded with `F`): this round's check report has a scanner run with the same tool and version `v` that declares `r`
+among its rules and whose every invocation reports `executionSuccessful: true`, and no SARIF finding of that tool
+has fingerprint `fp`. Then the harness records `RESOLUTION_VERIFIED` by `harness-rule:scanner-recheck`; otherwise
+only a named human closes `F`. Model output never closes a deterministic or SARIF finding.
 
 ## 12. Measurement architecture (reviewer benchmark)
 

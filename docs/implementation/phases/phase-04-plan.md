@@ -1,6 +1,16 @@
-# Phase 4 — Independent Assurance — Plan (LOCKED v3, pending controller confirmation)
+# Phase 4 — Independent Assurance — Plan (LOCKED v4, pending controller confirmation)
 
-> Status: **LOCKED v3 (pending controller confirmation).** v2 (`3201335`) received an independent lock-check
+> Status: **LOCKED v4 (pending controller confirmation).** v3 and the pre-S0 code at `9e3a1c3` received an
+> independent review (`phase-04-review-codex-v3.md`, Codex `gpt-6.1-sol`, REQUEST_CHANGES 0.99: every v2 lock-check
+> finding confirmed folded; 3 plan MEDIUM, 3 slot-block MEDIUM, 6 code HIGH, 3 code MEDIUM, 1 code LOW, one surviving
+> mutation). Every finding is dispositioned in `phase-04-review-log.md` ("Review v3") and the controller's decisions
+> R22 (corpus) and R23 (contract and code) are applied as written. v4 fixes the slot block (JSON-only outputs, a
+> validating envelope helper, fenced writing helpers with coded redelivery conflicts, RLC-14/15; §18), writes the
+> changed-line closure predicate (§13), aligns the corpus vocabulary with R22 (§7.5, §7.8) and keeps one corpus
+> execution shape (§7.8, §21.1); the code fixes land as separate commits (§0 "What v4 changes").
+>
+> v3 status, kept for the record: **LOCKED v3 (pending controller confirmation)**, superseded by v4 before it was
+> confirmed. v2 (`3201335`) received an independent lock-check
 > (`phase-04-plan-review-codex-v2.md`, Codex `gpt-6.1-sol`, REQUEST_CHANGES 0.97: 14 of 15 v1 findings folded, v1
 > MED-001 partial, 2 new HIGH and 8 new MEDIUM). Every finding is dispositioned in `phase-04-review-log.md` and
 > folded into this plan and its companions; the controller's decisions R18 (and the assurance-failure rule of R19)
@@ -29,12 +39,14 @@
 > Lane: **B** (parallel to Lane A / Phase 3 durable orchestration). Planner: Claude (Lane B session).
 > Companion documents: `phase-04-architecture.md`, `phase-04-data-model.md`, `phase-04-exit-criteria.md`,
 > `phase-04-risk-register.md`, `phase-04-research-register.md`, `phase-04-threat-model-delta.md`,
-> `phase-04-review-log.md`, `phase-04-plan-review-codex-v1.md`, `phase-04-plan-review-codex-v2.md`.
+> `phase-04-review-log.md`, `phase-04-plan-review-codex-v1.md`, `phase-04-plan-review-codex-v2.md`,
+> `phase-04-review-codex-v3.md`.
 
 ```text
 BASE_SHA:        00a68895d205122767167942326e2e0466571059   (head of phase/02-single-agent-vertical-slice; Phase 2 NOT yet accepted)
 REVIEWED_V1:     a2a7b8ad09a5389339fc3ef7131ae7b2b294d97f
 REVIEWED_V2:     32013356e0845354f40ac6f63925f928637d6fb3   (lock-check, REQUEST_CHANGES 0.97)
+REVIEWED_V3:     9e3a1c32e869193e981a867e8bb9fbd1abaec9c8   (plan, slot block and pre-S0 code, REQUEST_CHANGES 0.99)
 TARGET_BRANCH:   phase/04-independent-assurance
 SCOPE SOURCE:    docs/implementation/90-day-plan.md:33-40 (Days 46–60)
 EXIT CRITERION:  "reviewer performance measured on historical defects" (90-day-plan.md:40)
@@ -89,6 +101,24 @@ What v3 changes (lock-check `phase-04-plan-review-codex-v2.md`, controller decis
 | Late dispositions | counted in the window of the disposition | counted in the cohort of the disposed round; recompute writes a new append-only snapshot version; disposition latency reported (§15) |
 | Corpus protocol | rule names only | P/C/post-fix recipe, synthetic fields, exclusion order, category table, strict/lenient matcher, cardinality, post-fix location mapping and a golden historical item, locked before any freeze (§7.8) |
 | Proof manifest | canonical runner only | canonical and integration runners; live reviewer optionality is a policy test, never a runner skip (§19.7, exit G8, L3) |
+
+What v4 changes (review `phase-04-review-codex-v3.md`, controller decisions R22, R23):
+
+| Area | v3 | v4 |
+|---|---|---|
+| Slot outputs | `recordAttemptOutcome` returned `Promise<void>` | every method returns JSON; `recordAttemptOutcome` resolves `null` (§18) |
+| Envelope helper | `JSON.stringify` only, so `undefined`, `Infinity`, `Date`, `Map` passed lossily | recursive plain-JSON check before measuring; RLC-01 negative fixtures (§18, §18.2) |
+| Writing helpers | `AttemptOutcomeInput` and `RepairContextInput` had no caller identity | both carry the caller's `AssuranceFence`, checked in the write's transaction; terminal recorded before lease release; identical redelivery a no-op, conflicting redelivery `conflicting-redelivery`; RLC-14, RLC-15; coded `ReviewLoopContractError` (§18, §18.2, §18.3) |
+| Paths | a path with LF passed normalization and dodged `**` globs | control, DEL, C1, U+2028/U+2029 and leading `"` are not normalizable: push guard `BLOCK`, egress `STOP_CLASSIFIED`, zero sender calls; globs match every code point (§10.1, §14) |
+| Egress paths | old paths only from the cumulative diff | both sides of every entry of both diffs, copies included (§10.1) |
+| Finding identity | first finding per fingerprint, before grounding | ground first; identity keeps requirement id and key apart; conservative merge; permutation-invariant (§12) |
+| Closure | a citation anywhere in a repair-delta hunk closed a finding | changed-line predicate: a `+` line, or for a deletion-only change the finding's own cited lines among the `-` lines; context never qualifies (§13) |
+| SARIF findings | a SARIF prior stopped blocking once the round's checks no longer reported it | blocks until a human closes it or a scanner recheck proves the same scanner, version and rule completed cleanly (§13) |
+| Repeated findings | a re-raised finding opened a new blocking entry even under a live waiver | reconciled with persisted identity and disposition before blocking; regressions link to the closed prior (§12) |
+| Packet budget | diffs, post-images and excerpts only | the canonical packet's own bytes plus every embedded content part, and separately the rendered prompt bytes (§8, data model §2.3) |
+| False green | `tests === 0` only | executed = tests − skipped − todo; executed 0, and a recorded PASS with failures, are findings (§14) |
+| Corpus | `tree-unavailable`, `object-store-only`, `derived-from-fix`; scanner failure ignored | R22 vocabulary, bundle-dependent count, `no-location` freeze rule; a scanner that does not complete aborts collection (§7.5, §7.8) |
+| Corpus execution | two shapes named | one: `{ verdict: 'NOT_RECORDED', environment: null, checks: [] }` (§7.8, §21.1) |
 
 ---
 
@@ -418,11 +448,24 @@ Floors make the measurement falsifiable; failing one does not fail the phase, be
   consistency of the excerpts (bytes hash to their names; manifest hash), and items from unreachable trees are
   marked `provenance: excerpt-only`. The verifier takes the bundle path from an explicit argument supplied by the
   controller; Lane B never reads it on its own.
+- **Provenance vocabulary (R22).** A reviewed tree that cannot be identified — Phase 1 cycle 1, whose review
+  document was never committed, and Phase 2 re-review v4, whose document `5c5471b` added together with v5's — is
+  never guessed: its items are excluded `reviewed-tree-unknown`. A tree or fix commit that exists only before the
+  history rewrite (Phase 2 v5 at `bb11d00` and the pre-rewrite fix commits) is kept with reachability
+  `private-bundle-only`; its excerpts are content-addressed in the corpus, each item records whether it depends on
+  the bundle (`dependsOnPrivateBundle`), and the scorecard reports that count. A clean public clone verifies every
+  other item. The self-found item's reviewed SHA is the parent of its named fix commit (`inferred-parent-of-fix`).
 - **Collection is not freezing (R18).** S19's pure core collects label provenance (review document and line,
   derived reviewed SHAs, fix commits, reachability) and content-addressed excerpts with their hashes. It records only
-  provenance-level exclusions (`plan-defect`, `tree-unavailable`, `excerpt-unpublishable`). Packet-dependent
-  eligibility (`leakage-filtered`, `not-in-packet`, `egress-stopped`), the manifest's `corpusSha256` and the
-  preregistration are frozen only after the controller confirms the protocol of §7.8.
+  provenance-level exclusions (`plan-defect`, `reviewed-tree-unknown`, `excerpt-unpublishable`). Packet-dependent
+  eligibility (`leakage-filtered`, `not-in-packet`, `egress-stopped`), the freeze rule `no-location`, the manifest's
+  `corpusSha256` and the preregistration are frozen only after the controller confirms the protocol of §7.8.
+- **Publication gates fail closed (R23).** Collection runs each gate and accepts only its documented codes: the
+  four repository scripts exit 0 when clean and 1 with findings; the path-leak scan (`grep -lE` over the excerpts
+  with `scripts/check-publication.sh`'s `LEAK_PATTERNS`) exits 1 when clean and 0 with findings. A spawn error, a
+  missing executable, a signal, any other exit code, or a findings code whose output names no excerpt aborts the
+  whole collection with no output written. Only a findings code with an excerpt named in its output withholds that
+  excerpt.
 
 ### 7.6 Comparator choice (D-4)
 
@@ -454,9 +497,10 @@ constants below are hashed into the preregistration's `protocolSha256`; nothing 
 **Units.** A *review cycle* `c` is one labelled review: Phase 1 final review and re-reviews, Phase 2 final review
 v1 and re-reviews v2–v5, and the self-found cycle-6 item. Each cycle has a reviewed SHA `R_c` and a base `B_c`.
 `R_c` is the parent of the commit that added the cycle's review document, unless the document names its reviewed
-HEAD (`reviewedShaSource: recorded-in-review | derived`). `B_c` is the `BASE_SHA` line of the phase plan read at
-`R_c`. A defect instance is `(findingId, R_c, location set)`. Packets are built per cycle, never per item, so no
-packet depends on a label.
+HEAD (`reviewedShaSource: recorded-in-review | derived`); the self-found cycle's `R_c` is the parent of its named
+fix commit (`inferred-parent-of-fix`), and a cycle whose tree cannot be identified has `unknown` (§7.5). `B_c` is the
+`BASE_SHA` line of the phase plan read at `R_c`. A defect instance is `(findingId, R_c, location set)`. Packets are
+built per cycle, never per item, so no packet depends on a label.
 
 **Rule P — first occurrence, fresh review.** For every cycle with first-occurrence items, and for the next cycle's
 reviewed tree as a post-fix negative:
@@ -483,7 +527,7 @@ reviewed tree as a post-fix negative:
    | `risk`, `round`, `reviewKind` | `R1`, `1`, `fresh` |
    | `workOrder.objective` | `Phase <N> (<title from docs/implementation/90-day-plan.md>) at the reviewed commit. The phase plan, exit criteria and code are part of the change; review the change against them.` |
    | `workOrder` lists | `requirementIds`, `requirements`, `forbiddenChanges`, `architectureInvariants`, `acceptanceCheckIds` empty; `allowedPaths: ['**']` |
-   | `execution` | `{ verdict: 'NOT_RECORDED', environment: null, checks: [] }`; runtime packets never use `NOT_RECORDED`, and the prompt states that no execution evidence exists for the tree |
+   | `execution` | `{ verdict: 'NOT_RECORDED', environment: null, checks: [] }` — the only corpus execution shape (R23); runtime packets never use `NOT_RECORDED`, and the prompt states that no execution evidence exists for the tree. The golden fixture round-trips it through the packet validator and the prompt renderer |
    | `priorFindings` | empty |
 6. Egress: the decision of §10.1 with the committed policy and the corpus project opted in. A chunk that is not
    `CLEAR` is never sent; its items are excluded `egress-stopped`.
@@ -541,14 +585,16 @@ Category table `corpus-categories/v1`:
 | # | Reason | Applies when | Level |
 |---|---|---|---|
 | 1 | `plan-defect` | the item labels a plan or document review (no code tree) | provenance |
-| 2 | `tree-unavailable` | `R_c` or `B_c` is in no source (reachable git, local object store, controller bundle) | provenance |
+| 2 | `reviewed-tree-unknown` | `R_c` cannot be identified (§7.5), or `R_c` or `B_c` is in no source (reachable git, local object store, controller bundle) | provenance |
 | 3 | `excerpt-unpublishable` | a cited file at `R_c` cannot pass the publication gates | provenance |
-| 4 | `leakage-filtered` | every cited file is removed by the leakage filter | packet |
-| 5 | `not-in-packet` | no cited location lies in any chunk's packet content | packet |
-| 6 | `egress-stopped` | every chunk holding a cited file is not `CLEAR` | packet |
+| 4 | `no-location` | the item cites no file location (R22: such Phase 1 items drop out; the count is reported) | freeze |
+| 5 | `leakage-filtered` | every cited file is removed by the leakage filter | packet |
+| 6 | `not-in-packet` | no cited location lies in any chunk's packet content | packet |
+| 7 | `egress-stopped` | every chunk holding a cited file is not `CLEAR` | packet |
 
 Second-hand labels are not excluded; they are reported separately (`labelQuality`). S19 may record rules 1–3 now;
-rules 4–6 are frozen only after the controller confirms this protocol.
+rules 4–7 are frozen only after the controller confirms this protocol. A `private-bundle-only` item is not excluded:
+it is counted (`dependsOnPrivateBundle`) and verified by its excerpts' hashes, or against the bundle in bundle mode.
 
 **Golden fixtures (one historical item, both sides).** Item `P2-FINAL-HIGH-003@2e61f24` (risk admission after
 workspace creation; Phase 2 final review v1, cited `packages/application/src/execute-task.ts:143-148` among others;
@@ -567,7 +613,9 @@ whose derived `R_{c+1}` is `061ec236dacb985c77afa29205bf8bc0a185a49e`). Files un
   leniently; `other-file` is `unlabelled`.
 
 The S20 test "golden historical item reconstructs identical packets and matches as specified on both sides"
-rebuilds both sides from the committed excerpts and requires every digest and every expected match.
+rebuilds both sides from the committed excerpts and requires every digest and every expected match. The same test
+passes each rebuilt packet, with its corpus execution shape, through the packet validator (`assertPacketWhitelist`)
+and the prompt renderer, so the one shape of rule P item 5 is the shape both accept.
 
 ---
 
@@ -593,6 +641,20 @@ rebuilds both sides from the committed excerpts and requires every digest and ev
 A verification stop does **not** run a round; the orchestrator calls `recordAttemptOutcome` at every attempt
 terminal, verification stops included (R3). Task status stays `VERIFYING` across rounds; attempt states
 `UNDER_REVIEW` and `CHANGES_REQUESTED` are added (SR-C7).
+
+**Byte budget (R23).** Two measurements, each against the reviewer's `packetBudgetBytes`, carried in the packet
+as `budget.maxBytes`:
+
+- **Packet**, at build, before rendering: `budget.includedBytes` = the UTF-8 length of the canonical packet with
+  `budget.includedBytes = 0` and `budget.overBudget = false`, plus the byte length of every content part the prompt
+  embeds (cumulative diff, repair delta, each post-image). Every content-bearing field — the objective,
+  requirement statements, paths, commands, excerpts, prior findings — is inside the canonical packet and so is
+  counted. `overBudget` is set when `includedBytes > maxBytes` or a diff did not fit its reader limit.
+- **Rendered prompt**, before sending: the canonical prompt bytes (instructions, the datamarked input and the output
+  schema). A prompt larger than `maxBytes` is refused with a distinct over-budget error and is never sent; the
+  review is recorded `FAILED` with reason `prompt-over-budget`, which rule A3 treats like an over-budget packet.
+
+Nothing is ever truncated to fit: over budget means not sent, recorded as over-budget.
 
 ---
 
@@ -627,8 +689,15 @@ No byte leaves the harness for a reviewer gateway unless it has been scanned and
   - `STOP_SECRET` — any secret pattern (parity with `scripts/lib/secret-patterns.sh`) anywhere in the packet:
     diff, post-images, execution-manifest excerpts, WorkOrder text;
   - `STOP_CLASSIFIED` — any packet path matches the project's `egress.denyPathGlobs` (policy data; defaults cover
-    `.env*`, key and certificate files, `secrets/`, credential files), or the project has not opted in to
-    reviewer egress;
+    `.env*`, key and certificate files, `secrets/`, credential files), any path is not normalizable (below), or the
+    project has not opted in to reviewer egress. The paths classified are both sides — pre-image and post-image
+    path — of every file entry of the cumulative diff **and** of the repair delta: renames, copies, deletions and
+    files that only the repair delta touches (R23). A repair delta that cannot be parsed is `STOP_UNSCANNABLE`;
+  - a path is **not normalizable** when it is empty, absolute, has an empty, `.` or `..` segment, a backslash, any
+    C0 control character (U+0000–U+001F), DEL (U+007F), any C1 control character (U+0080–U+009F), U+2028 or
+    U+2029, or starts with `"` (an unresolved Git C-quoted form). Such a path is never read, never matched against a
+    glob as if it were ordinary, and always sensitive. Glob matching itself covers every code point (`.` spans line
+    terminators; `?` and `*` count code points), as defence in depth;
   - `STOP_UNSCANNABLE` — content that cannot be scanned (binary, non-UTF-8, over the per-file limit) at a path
     that is sensitive by classification; unscannable content elsewhere is omitted from the packet, never sent,
     and recorded as an omission;
@@ -637,9 +706,13 @@ No byte leaves the harness for a reviewer gateway unless it has been scanned and
   re-scans the **exact request body bytes** (instructions + rendered input) immediately before the provider call;
   a hit records `EGRESS_STOPPED` with zero requests.
 - The push guard is separate and also runs before the gateway: a secret in **added** lines, a forbidden-path
-  change, or an unscannable change at a sensitive path is `BLOCK` (D-5) and no reviewer is called.
+  change, a path that is not normalizable anywhere in the packet or either diff, or an unscannable change at a
+  sensitive path is `BLOCK` (D-5) and no reviewer is called. The packet builder keeps a non-normalizable changed
+  path (omitted with reason `unsafe-path`, never read) so that the push guard can block on it; it never throws on
+  one, because a build failure would leave the round without a push-guard decision.
 - Proof: a fake gateway (unit) and a local fake HTTP server driven through the real adapter and composition (itest)
-  receive **exactly 0 requests** for each stop kind (exit D1, D2).
+  receive **exactly 0 requests** for each stop kind (exit D1, D2), including a control-character path, a Git
+  C-quoted path and a sensitive pre-image that only the repair delta names.
 - In shadow mode an egress stop is recorded (`reviewerFailed`, `egressStopped`) and the round proceeds; in drill
   gating it escalates `egress-stopped`.
 
@@ -713,9 +786,11 @@ event bytes of an interrupted-then-redelivered round with an uninterrupted one (
 
 ## 12. Adjudication rules (deterministic, versioned)
 
-Evaluated in order; the first matching rule decides. `B` is the blocking set: deterministic findings with a
-blocking disposition plus grounded model findings whose severity is in `blockingSeverities[risk]` and whose
-lifecycle state is still blocking (§13). Production compositions can only produce the **Shadow** column.
+Evaluated in order; the first matching rule decides. `B` is the blocking set: deterministic and SARIF findings at a
+blocking severity, grounded model findings whose severity is in `blockingSeverities[risk]`, and prior findings at a
+blocking severity whose lifecycle state is still blocking after closure authority (§13) — model, deterministic and
+SARIF priors alike — except where this round's finding carries the decision for the same identity (below).
+Production compositions can only produce the **Shadow** column.
 
 | # | Condition | Gating (drill only in Phase 4) | Shadow (production) |
 |---|---|---|---|
@@ -733,10 +808,29 @@ lifecycle state is still blocking (§13). Production compositions can only produ
 
 Further rules: a model `APPROVE` with a grounded blocking finding is decided by the finding; a `REQUEST_CHANGES`
 with no grounded blocking finding is non-blocking ("generic comments do not block",
-`docs/platform/verification-and-review.md:31`) and counted as a verdict/finding mismatch; findings are unioned
-and de-duplicated by fingerprint per raiser; a model can never waive or refute a grounded HIGH/CRITICAL finding
-(`docs/architecture/04-state-machines.md:48`); only an ungrounded finding can be machine-refuted (reason
-`citation-unresolvable`). The persisted `adjudications` row enforces "shadow ⇒ PROCEED or BLOCK" with a check
+`docs/platform/verification-and-review.md:31`) and counted as a verdict/finding mismatch; a model can never waive or
+refute a grounded HIGH/CRITICAL finding (`docs/architecture/04-state-machines.md:48`); only an ungrounded finding can
+be machine-refuted (reason `citation-unresolvable`). `A3` also fires when a planned review failed with reason
+`context-overflow` or `prompt-over-budget` (§8).
+
+**Finding identity and merging (R23).** Every model finding is grounded first, on its own. Its identity is
+`(raisedBy, fingerprint, requirementId, key)`; findings are never merged across different requirement ids or finding
+keys. Within one identity the merge is conservative and order-free: the result is grounded if any member is, takes
+the highest severity among the grounded members (among all members when none is grounded), and its text and lines
+come from the first member by a fixed order (grounded first, then severity, then line, then evidence). Check
+findings merge the same way per `(raisedBy, fingerprint)`. The outcome, the blocking set and the record bytes are
+invariant under every permutation of a reviewer's finding list (tested over all orders of a four-element set).
+
+**Reconciling with prior findings (R23).** Before blocking is computed, each finding of this round is matched to the
+round's prior findings by `(raisedBy, fingerprint, requirementId)` — the persisted identity; a finding key is local
+to one review output and does not carry across rounds. A match links the current finding to the prior
+(`priorFindingId`) and the prior's authoritative disposition decides: an unexpired `WAIVED` prior, or a `REFUTED` or
+`ADJUDICATED` prior that was grounded (only a human refutes a grounded finding), makes the current finding
+non-blocking (it carries the prior's state); a waiver that has expired at the round's opening time blocks; a
+`VERIFIED` or `CLOSED` prior makes the current finding a **regression**: it is `OPEN`, blocking at a blocking
+severity, and linked to the prior. A prior the harness refuted as ungrounded (`citation-unresolvable`) does not
+shield a grounded re-raise. A linked prior is not counted again in `B`.
+The persisted `adjudications` row enforces "shadow ⇒ PROCEED or BLOCK" with a check
 constraint (data model §3). A shadow `BLOCK` (A1) carries **no shadow verdict**, neither in `BlockOutcome` nor in
 the row (`adjudications_shadow_ck` sets `would_be_outcome` only for a shadow `PROCEED`): the push guard is not a
 gating decision, so there is no would-be outcome to record (P4-PLAN2-MED-005; conformance case RLC-12).
@@ -759,11 +853,31 @@ gating decision, so there is no would-be outcome to record (P4-PLAN2-MED-005; co
   - The reviewer configuration that raised a finding can only move it to `FIXED` (a **claim**); it can never make
     it non-blocking. The DB rejects a `RESOLUTION_VERIFIED` disposition whose actor equals the raiser.
   - `FIXED → VERIFIED` (non-blocking) requires one of: (a) a **different** reviewer configuration, eligible by
-    family against the implementer, reporting `RESOLVED` with a grounded resolution citation inside the repair
-    delta; (b) a named human disposition; (c) for deterministic findings only, the same deterministic check no
-    longer firing on the new tree.
+    family against the implementer, reporting `RESOLVED` with a grounded resolution citation that satisfies the
+    **changed-line predicate** below; (b) a named human disposition; (c) for deterministic findings only, the same
+    deterministic check no longer firing on the new tree; (d) for SARIF findings only, a **scanner recheck** (below).
+  - **Changed-line predicate (R23; identical in architecture §11).** A resolution citation `(file, line)` closes a
+    prior finding `F` only if, in the repair delta's entry for `file`:
+    - `line` is an **added** (`+`) line of that entry's post-image; or
+    - the entry changes `F`'s file by deletion only (it adds no line to it) and every line `F` cites
+      (`F.lineStart…F.lineEnd`, pre-image numbering of the repair delta) is among that entry's **removed** (`-`)
+      lines. A deletion-only closure must cite `F`'s own file; a deleted file closes `F` this way only when `F`'s
+      cited lines were in it.
+
+    Context lines — lines a hunk shows unchanged, even directly next to an edited line — never qualify, and neither
+    does a line outside every hunk. A citation that is grounded but fails the predicate is a claim at most (`FIXED`,
+    by the raiser) and never a verification. The golden test cites the unchanged context line directly above an
+    added line and requires the finding to stay blocking.
+  - **SARIF findings (R23).** A SARIF finding stays blocking until an authorized closure; model output can never
+    close it. The harness closes it (`RESOLUTION_VERIFIED` by `harness-rule:scanner-recheck`) only when this round's
+    check report shows a run of the same scanner (`tool.driver.name`), at the same version
+    (`tool.driver.version` or `semanticVersion`, as recorded with the prior), that declares the finding's rule
+    (`tool.driver.rules[].id`) and completed successfully (every `invocations[].executionSuccessful` is `true`), on
+    this attempt's tree, with no result for the finding's fingerprint. Without that proof only a named human closes
+    it. In shadow mode this changes only the shadow verdict.
   - A `RESOLVED` claim whose cited file was not touched by the repair delta stays `OPEN`
     (`closure-without-change`).
+  - A finding of this round that matches a `VERIFIED` or `CLOSED` prior is a regression linked to that prior (§12).
   - Deterministic red→green proof for model findings is deferred (DF-7).
 - `maxRounds` per risk = 2 (D-7; matches Phase 2 practice, `phase-02-risk-register.md:23` PR2-16).
 - In Phase 4 production none of this runs: mode is never gating. It is proven by unit tests, the conformance kit,
@@ -774,20 +888,26 @@ gating decision, so there is no would-be outcome to record (P4-PLAN2-MED-005; co
 ## 14. Architecture, security and false-green checks
 
 1. **Push guard (pure):** secret patterns over added lines (parity with `scripts/lib/secret-patterns.sh`);
-   changes to `forbiddenChanges` or outside `allowedPaths`; unscannable change at a sensitive path. `BLOCK`.
+   changes to `forbiddenChanges` or outside `allowedPaths`; any path that is not normalizable (§10.1) in the packet,
+   on either side of a cumulative-diff entry or of a repair-delta entry (`forbidden-path`); unscannable change at a
+   sensitive path. `BLOCK`.
 2. **Egress decision:** §10.1.
-3. **False-green checks (P4-PLAN-HIGH-008):** `exit-code-verdict-mismatch` (a check recorded passing while its
-   raw exit code is non-zero — an evidence-reduction defect; `EVIDENCE_INTEGRITY`, HIGH); `required-check-missing`
-   (an acceptance check id of the WorkOrder absent from the evidence); `zero-tests-executed` (a unit/integration/
-   acceptance check exits 0 while its parsed test summary reports 0 tests; parsers for node:test, TAP, Vitest and
-   Jest summaries; an unparsed format is recorded `testSummary: null`, not guessed); `skipped-tests-introduced`
+3. **False-green checks (P4-PLAN-HIGH-008, R23):** `exit-code-verdict-mismatch` (a check recorded passing while its
+   raw exit code is non-zero — an evidence-reduction defect; `EVIDENCE_INTEGRITY`, HIGH); `failed-tests-recorded-pass`
+   (a check recorded passing while its parsed test summary reports `fail > 0`; `EVIDENCE_INTEGRITY`, HIGH);
+   `required-check-missing` (an acceptance check id of the WorkOrder absent from the evidence);
+   `zero-tests-executed` (a unit/integration/acceptance check whose parsed summary has executed = tests − skipped −
+   todo ≤ 0, whatever its exit code; parsers for node:test, TAP, Vitest and Jest summaries; an unparsed format is
+   recorded `testSummary: null`, not guessed, and raises nothing); `skipped-tests-introduced`
    (added `.skip(`, `xit(`, `describe.skip`, `test.skip`, `@Disabled`, `pytest.mark.skip`, `t.Skip(` in test
    files); `test-file-deleted`. In Phase 4 these are reported findings (PR section, metrics), blocking only in
    drill gating.
 4. **Trojan Source:** bidirectional and zero-width Unicode in added lines → SECURITY finding.
 5. **Dependency and invariant checks:** manifest/lockfile changes flagged; `ArchitectureInvariant` 1.1.0
    `forbidden-import` rules over added import specifiers.
-6. **Project tools via SARIF 2.1.0 subset** from L4/L5 artifacts; malformed SARIF fails closed.
+6. **Project tools via SARIF 2.1.0 subset** from L4/L5 artifacts; malformed SARIF fails closed. Each log's scanner
+   identity (tool, version, declared rules, whether every invocation completed successfully) is recorded in the
+   check report as evidence for a scanner recheck (§13).
 7. Raw check output is stored before any reduction (ADR 0009).
 
 ---
@@ -887,8 +1007,12 @@ a reopened `FAILED` call adopts an existing raw response instead of calling.
 Lane A copies the block below verbatim into its plan and lands it in S0 as three files under
 `packages/application/src/review-loop/` (re-exported from `packages/application/src/index.ts`). The types file is
 complete, including the envelope helper; the two helper files are given as signatures (`declare`) with their
-behaviour specified in §18.2. This is the **v3 block** (R18): it replaces the v2 text that Lane A has not yet
-received.
+behaviour specified in §18.2. This is the **v4 block** (R18, R23): it replaces the v2 and v3 texts, neither of which
+Lane A has received, and goes to Lane A only after the controller's focused check (R23 hand-off rule). v4 changes
+against v3: every output is JSON (`recordAttemptOutcome` resolves `null`); the envelope helper validates plain JSON
+recursively before it measures; both writing helpers carry the caller's fence; a recorded attempt's redelivery is a
+no-op when identical and a coded conflict otherwise; `ReviewLoopContractError` carries a code; `PacketOmissionReason`
+gains `unsafe-path`; the kit gains RLC-14 and RLC-15 and RLC-01's negative fixtures.
 
 Location: Lane A's v1 plan put the port and kit in `packages/ports` (CR-10). The slot returns `AdmissionResult`,
 which lives in `@asep/application` (`packages/application/src/risk-admission.ts:30-36`), and ports must not depend
@@ -905,11 +1029,13 @@ So the slot, the disabled slot, the workspace resolver port and the kit live in
 // push. Framework-free: no orchestration SDK, no wall-clock reads, no process
 // environment.
 //
-// Envelope. Every input and output is plain JSON (no functions, class instances,
-// Dates, bigint or undefined-valued keys) and at most REVIEW_LOOP_MAX_PAYLOAD_BYTES
-// when serialized. A ContextPack, a packet, a check report, a review record, a repair
-// order, a PR section and any list that grows with the change travel by ArtifactRef,
-// never inline.
+// Envelope. Every input and output is plain JSON, recursively: null, a string, a
+// boolean, a finite number, an array or a plain object of those; no undefined keys or
+// values, non-finite numbers, -0, functions, bigint, symbols, Dates, Maps, Sets or class
+// instances. No method returns undefined. reviewLoopPayloadBytes checks this before it
+// measures, and every payload is at most REVIEW_LOOP_MAX_PAYLOAD_BYTES when serialized.
+// A ContextPack, a packet, a check report, a review record, a repair order, a PR section
+// and any list that grows with the change travel by ArtifactRef, never inline.
 //
 // Time. AssuranceStepContext.now() is one fixed logical time per activity execution,
 // identical on every retry of that execution. Every timestamp an implementation
@@ -982,10 +1108,13 @@ export interface AssuranceStepContext {
 // --- caller identity and fencing ----------------------------------------------
 
 /**
- * The caller's workspace-lease identity. Every claim, completion and decision write the
- * implementation makes checks, in the same transaction, that this lease is ACTIVE, is
- * held by `leaseId`, and is at `fencingEpoch` (the Phase 2 fenced-takeover invariant).
- * A caller whose lease was taken over gets AssuranceFencedError and changes nothing.
+ * The caller's workspace-lease identity, exactly as the caller presents it. Every claim,
+ * completion and decision write the implementation makes, the writes of
+ * recordAttemptOutcome and buildRepairContextPack included, checks in the same
+ * transaction that this lease is ACTIVE, is held by `leaseId`, and is at `fencingEpoch`
+ * (the Phase 2 fenced-takeover primitive). An implementation never substitutes the
+ * epoch it reads from its own store for the caller's. A caller whose lease was taken
+ * over or ended gets AssuranceFencedError and changes nothing.
  */
 export interface AssuranceFence {
   readonly leaseId: string;
@@ -1042,8 +1171,12 @@ export type BlockReason = 'secret-in-diff' | 'forbidden-path' | 'unscannable-sen
 
 export type EgressDecision = 'CLEAR' | 'STOP_SECRET' | 'STOP_CLASSIFIED' | 'STOP_UNSCANNABLE';
 
-/** Reasons recorded in the packet's budget.omissions list. */
-export type PacketOmissionReason = 'binary' | 'too-large' | 'deleted' | 'submodule' | 'non-utf8';
+/**
+ * Reasons recorded in the packet's budget.omissions list. 'unsafe-path': the path is not a
+ * normalized repository path (a control or line-separator character, an unresolved Git
+ * quoted form); it is never read, and the push guard blocks the round.
+ */
+export type PacketOmissionReason = 'binary' | 'too-large' | 'deleted' | 'submodule' | 'non-utf8' | 'unsafe-path';
 
 // --- round input -------------------------------------------------------------------
 
@@ -1287,6 +1420,13 @@ export interface AttemptOutcomeInput {
     readonly outputTokens: number;
     readonly toolCalls: number;
   } | null;
+  /**
+   * The caller's fence on this attempt's workspace lease, as the caller holds it at the
+   * terminal. The outcome is recorded before that lease is released; after a release or a
+   * takeover the call fails AssuranceFencedError and the current holder (if any) records
+   * the terminal. An attempt that ends before it holds a lease is not recorded here.
+   */
+  readonly fence: AssuranceFence;
 }
 
 // --- admission and repair helpers ----------------------------------------------------------
@@ -1308,6 +1448,11 @@ export interface RepairContextInput {
   /** The task's original context-pack/v1 artifact; the pack itself never travels inline. */
   readonly originalContextPackRef: ArtifactRef;
   readonly repairOrderRef: ArtifactRef;
+  /**
+   * The caller's fence on the repair attempt's workspace lease, acquired on the fresh
+   * workspace at repairBaseSha before this call.
+   */
+  readonly fence: AssuranceFence;
 }
 
 export interface RepairContextOutput {
@@ -1334,28 +1479,54 @@ export interface ReviewLoopSlot {
   runReviewer(input: RunReviewerInput, ctx: AssuranceStepContext): Promise<RunReviewerOutput>;
   adjudicateRound(input: AdjudicateInput, ctx: AssuranceStepContext): Promise<AssuranceOutcome>;
 
-  /** Called at every attempt terminal, verification stops included. Idempotent per attempt. */
-  recordAttemptOutcome(input: AttemptOutcomeInput, ctx: AssuranceStepContext): Promise<void>;
+  /**
+   * Called at every attempt terminal, verification stops included, before the attempt's
+   * lease is released; resolves null. Keyed by attemptId: a redelivery whose input equals
+   * the recorded one, fence aside, writes nothing and resolves null; any other input for a
+   * recorded attempt throws ReviewLoopContractError 'conflicting-redelivery' and writes
+   * nothing. The fence is checked before the comparison.
+   */
+  recordAttemptOutcome(input: AttemptOutcomeInput, ctx: AssuranceStepContext): Promise<null>;
 
   /** Admission through the optional `admit` hook on GovernedExecutionInput. Pure. */
   admitWithAssurance(risk: RiskLevel, capability: AssuranceCapability): AdmissionResult;
 
-  /** ContextPack for a repair attempt whose workspace is created at the REPAIR outcome's repairBaseSha. */
+  /**
+   * ContextPack for a repair attempt whose workspace is created at the REPAIR outcome's
+   * repairBaseSha, called with that attempt's lease held. Keyed by attemptId: a redelivery
+   * whose input equals the recorded one, fence aside, returns the stored output and writes
+   * nothing; any other input for that attempt throws ReviewLoopContractError
+   * 'conflicting-redelivery' and writes nothing. The fence is checked before the comparison.
+   */
   buildRepairContextPack(input: RepairContextInput, ctx: AssuranceStepContext): Promise<RepairContextOutput>;
 }
 
 // --- errors -----------------------------------------------------------------------------------
 // Any other thrown error is transient and safe to retry with the same input.
 
-/** Malformed input, an input over the envelope, or an outcome that violates this contract. Non-retryable. */
+export type ReviewLoopContractErrorCode =
+  /** A payload is not plain JSON or is larger than the envelope. */
+  | 'invalid-payload'
+  /** A well-formed payload that breaks a rule of this contract (slot version, round lineage, a disabled helper). */
+  | 'invalid-input'
+  /** The scope does not own the referenced run, task or attempt; reveals nothing about other tenants. */
+  | 'not-in-scope'
+  /** A redelivery for a recorded attempt whose input differs from the recorded one. */
+  | 'conflicting-redelivery'
+  /** An output that violates this contract (a defect of the implementation itself). */
+  | 'invalid-output';
+
+/** Non-retryable, whatever the code; the code tells the caller which rule failed. */
 export class ReviewLoopContractError extends Error {
-  constructor(message: string) {
+  readonly code: ReviewLoopContractErrorCode;
+  constructor(code: ReviewLoopContractErrorCode, message: string) {
     super(message);
     this.name = 'ReviewLoopContractError';
+    this.code = code;
   }
 }
 
-/** The caller's lease is no longer current at the given epoch. Non-retryable for this delivery. */
+/** The caller's lease is no longer current at the given epoch, or has ended. Non-retryable for this delivery. */
 export class AssuranceFencedError extends Error {
   constructor(message: string) {
     super(message);
@@ -1373,27 +1544,74 @@ export class AssuranceCancelledError extends Error {
 
 // --- envelope -------------------------------------------------------------------------------------
 
-/** Serialized size of a slot payload: UTF-8 bytes of JSON.stringify(value). */
-export function reviewLoopPayloadBytes(value: unknown): number {
-  let json: unknown;
-  try {
-    json = JSON.stringify(value);
-  } catch {
-    throw new ReviewLoopContractError('payload is not JSON-serializable');
+/**
+ * Where `value` first stops being plain JSON, or null when all of it is. Plain JSON is
+ * null, a string, a boolean, a finite number other than -0, an array without holes or
+ * extra keys, or an object whose prototype is Object.prototype or null and whose own
+ * keys are all enumerable string-keyed data properties; values are plain JSON in turn.
+ * A value shared by two keys is allowed; a cycle is not.
+ */
+function plainJsonViolation(value: unknown, path: string, ancestors: Set<object>): string | null {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return null;
+  if (typeof value === 'number') {
+    if (Object.is(value, -0)) return `${path} is -0`;
+    return Number.isFinite(value) ? null : `${path} is ${String(value)}`;
   }
-  if (typeof json !== 'string') throw new ReviewLoopContractError('payload is not JSON-serializable');
+  if (typeof value !== 'object') return `${path} is ${typeof value}`;
+  if (ancestors.has(value)) return `${path} is circular`;
+  const isArray = Array.isArray(value);
+  const prototype: unknown = Object.getPrototypeOf(value);
+  if (isArray ? prototype !== Array.prototype : prototype !== Object.prototype && prototype !== null) {
+    return `${path} is not a plain object or array`;
+  }
+  if (Object.getOwnPropertySymbols(value).length > 0) return `${path} has a symbol key`;
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const keys = Object.keys(descriptors).filter((key) => !(isArray && key === 'length'));
+  if (isArray && keys.some((key, index) => key !== String(index))) return `${path} has holes or non-index keys`;
+  if (isArray && keys.length !== (value as readonly unknown[]).length) return `${path} has holes or non-index keys`;
+  ancestors.add(value);
+  for (const key of keys) {
+    const descriptor = descriptors[key];
+    const at = isArray ? `${path}[${key}]` : `${path}.${key}`;
+    if (descriptor === undefined || !('value' in descriptor) || descriptor.enumerable !== true) {
+      return `${at} is not an enumerable data property`;
+    }
+    const found = plainJsonViolation(descriptor.value, at, ancestors);
+    if (found !== null) return found;
+  }
+  ancestors.delete(value);
+  return null;
+}
+
+/**
+ * Serialized size of a slot payload: UTF-8 bytes of JSON.stringify(value), measured only
+ * after the whole payload is checked to be plain JSON (file header). A payload that is
+ * not, or that cannot be walked at all, throws ReviewLoopContractError 'invalid-payload'.
+ */
+export function reviewLoopPayloadBytes(value: unknown): number {
+  let violation: string | null;
+  let json = '';
+  try {
+    violation = plainJsonViolation(value, '$', new Set());
+    if (violation === null) json = JSON.stringify(value);
+  } catch {
+    violation = '$ cannot be walked (nested too deeply)';
+  }
+  if (violation !== null) throw new ReviewLoopContractError('invalid-payload', `payload is not plain JSON: ${violation}`);
   return new TextEncoder().encode(json).byteLength;
 }
 
 /**
- * Throws ReviewLoopContractError when a payload is larger than REVIEW_LOOP_MAX_PAYLOAD_BYTES.
- * Implementations call it on every input before any state change and on every output before
- * returning; orchestration adapters may call it before scheduling an activity.
+ * Throws ReviewLoopContractError 'invalid-payload' when a payload is not plain JSON or is
+ * larger than REVIEW_LOOP_MAX_PAYLOAD_BYTES. Implementations call it on every input before
+ * any state change and on every output before returning; orchestration adapters may call
+ * it before scheduling an activity.
  */
 export function assertWithinReviewLoopEnvelope(label: string, value: unknown): void {
   const bytes = reviewLoopPayloadBytes(value);
   if (bytes > REVIEW_LOOP_MAX_PAYLOAD_BYTES) {
     throw new ReviewLoopContractError(
+      'invalid-payload',
       `${label} serializes to ${bytes} bytes; the slot envelope allows ${REVIEW_LOOP_MAX_PAYLOAD_BYTES}`,
     );
   }
@@ -1406,10 +1624,11 @@ export function assertWithinReviewLoopEnvelope(label: string, value: unknown): v
 /**
  * The explicit, literal opt-out (Phase 2 behaviour), constructible only with the literal.
  * Every round returns PROCEED with mode 'not-required', shadow null, no reviewer call and
- * no event; recordAttemptOutcome records nothing; admitWithAssurance equals admitRisk;
- * buildRepairContextPack throws ReviewLoopContractError. It is never a default binding:
- * when no assurance is configured, the orchestration lane binds its
- * NotConfiguredAssuranceSlot, which fails closed for any risk that requires review.
+ * no event; recordAttemptOutcome resolves null and records nothing; admitWithAssurance
+ * equals admitRisk; buildRepairContextPack throws ReviewLoopContractError 'invalid-input'.
+ * It is never a default binding: when no assurance is configured, the orchestration lane
+ * binds its NotConfiguredAssuranceSlot, which fails closed for any risk that requires
+ * review.
  */
 export declare function createDisabledAssuranceSlot(ack: typeof REVIEW_LOOP_DISABLED): ReviewLoopSlot;
 
@@ -1417,22 +1636,48 @@ export declare function createDisabledAssuranceSlot(ack: typeof REVIEW_LOOP_DISA
 // packages/application/src/review-loop/review-loop-contract.ts     (S0 conformance kit; signatures)
 // ===========================================================================
 
+/** A repair attempt prepared in the backing store, for the repair-helper parts of RLC-14 and RLC-15. */
+export interface RepairContextFixture {
+  /** A valid request for the repair attempt, carrying the fence of that attempt's lease. */
+  readonly input: RepairContextInput;
+  /** Hands the repair attempt's lease to a new holder in the backing store and returns its fence. */
+  readonly rotateFence: () => Promise<AssuranceFence>;
+}
+
 export interface ReviewLoopConformanceFixture {
   /** A valid round-1 input that the implementation's backing store accepts. */
   readonly input: AssuranceSlotInput;
   /** A valid round-1 input whose change trips the push guard; null when the implementation cannot produce one. */
   readonly pushGuardInput: AssuranceSlotInput | null;
+  /** A valid terminal of `input`'s attempt, carrying `input.fence`. */
+  readonly attemptOutcome: AttemptOutcomeInput;
   /**
-   * Simulates a lease handoff in the backing store and returns the new holder's fence;
-   * null for a stateless implementation (fencing cases then report not-applicable).
+   * Simulates a lease handoff of `input`'s attempt in the backing store and returns the new
+   * holder's fence; null for a stateless implementation (fencing cases then report
+   * not-applicable).
    */
   readonly rotateFence: (() => Promise<AssuranceFence>) | null;
+  /** Releases the lease of `input`'s attempt in the backing store; null for a stateless implementation. */
+  readonly endLease: (() => Promise<void>) | null;
+  /**
+   * Brings the backing store to a persisted REPAIR adjudication of `input`'s task with the
+   * repair attempt's lease held; null when the implementation cannot reach REPAIR (the
+   * repair-helper parts of RLC-14 and RLC-15 then report not-applicable in the detail).
+   */
+  readonly prepareRepair: (() => Promise<RepairContextFixture>) | null;
   /**
    * Canonical bytes of every row and run event the backing store holds for one round key,
    * in a stable order; null for a stateless implementation (RLC-11 then reports
    * not-applicable).
    */
   readonly persistedRoundBytes: ((roundKey: string) => Promise<string>) | null;
+  /**
+   * Canonical bytes of every row, artifact and run event the backing store holds for one
+   * attempt id (its attempt outcome, its repair ContextPack), in a stable order; null for a
+   * stateless implementation ("no state change" in RLC-08, RLC-14 and RLC-15 then reports
+   * not-applicable).
+   */
+  readonly persistedAttemptBytes: ((attemptId: AttemptId) => Promise<string>) | null;
 }
 
 /** The implementation under test over an empty backing store; the kit builds a fresh one per case. */
@@ -1448,7 +1693,7 @@ export interface ReviewLoopConformanceResult {
 }
 
 /**
- * Runs cases RLC-01…RLC-13 against any implementation. Framework-free; callers assert on
+ * Runs cases RLC-01…RLC-15 against any implementation. Framework-free; callers assert on
  * the result. `makeCtx(logicalTime)` returns a live context whose now() is `logicalTime`;
  * the kit reuses one value for every redelivery of one execution.
  */
@@ -1509,19 +1754,27 @@ Lane B against `createAssuranceSlot` on PGlite and on real PostgreSQL). Every ca
 
 | Case | Assertion |
 |---|---|
-| RLC-01 | every input and output of every method JSON-round-trips deep-equal and `reviewLoopPayloadBytes` ≤ 65 536; `assertWithinReviewLoopEnvelope` accepts a payload of exactly 65 536 bytes and rejects one of 65 537 with `ReviewLoopContractError`; an input padded past the envelope (in `implementer.providerId`) → `ReviewLoopContractError` and no state change |
+| RLC-01 | every input and output of every method JSON-round-trips deep-equal and `reviewLoopPayloadBytes` ≤ 65 536; `assertWithinReviewLoopEnvelope` accepts a payload of exactly 65 536 bytes and rejects one of 65 537 with `ReviewLoopContractError` code `invalid-payload`; an input padded past the envelope (in `implementer.providerId`) → `invalid-payload` and no state change. Negative fixtures, each rejected by `reviewLoopPayloadBytes` with `invalid-payload`: `{ x: undefined }`, `{ x: Infinity }`, `{ x: -Infinity }`, `{ x: NaN }`, `{ x: -0 }`, `{ x: new Date(0) }`, `{ x: new Map() }`, `{ x: new Set() }`, `{ x: new (class Point {})() }`, `[1, , 3]`, a cycle, a `bigint`, a function and an `undefined` root; positive controls `null`, `{}`, `[]`, `Object.create(null)` and a shared (non-cyclic) reference are accepted. `fixture.input` with `budgetRemaining.costUsd` set to `undefined`, and with `budgetRemaining.wallClockMs` set to `NaN`, → `invalid-payload` and no state change |
 | RLC-02 | `runAssuranceRound` twice with the same input → deep-equal outcomes; the second call sends no provider request |
-| RLC-03 | `slotVersion` other than `review-loop/v1` → `ReviewLoopContractError` |
-| RLC-04 | round 1 with a `priorAdjudicationId`, or round > 1 without one → `ReviewLoopContractError` |
+| RLC-03 | `slotVersion` other than `review-loop/v1` → `ReviewLoopContractError` code `invalid-input` |
+| RLC-04 | round 1 with a `priorAdjudicationId`, or round > 1 without one → `ReviewLoopContractError` code `invalid-input` |
 | RLC-05 | after `rotateFence()`, a call with the old fence → `AssuranceFencedError` and no state change; the new fence completes and converges to RLC-02's outcome |
 | RLC-06 | outcome invariants: `roundKey = idempotencyKey`; mode `shadow` or `not-required` ⇒ kind ∈ {PROCEED, BLOCK}; only `PROCEED` has a `shadow` key, and it is non-null iff mode `shadow`; REPAIR ⇒ `nextRound = round + 1` and `repairBaseSha = resultSha` |
 | RLC-07 | an aborted signal → `AssuranceCancelledError`; a later call with a live signal converges to RLC-02's outcome |
-| RLC-08 | `recordAttemptOutcome` twice with the same input resolves both times and records once |
+| RLC-08 | `recordAttemptOutcome(attemptOutcome)` resolves exactly `null` (never `undefined`) and changes `persistedAttemptBytes` of the attempt (the terminal is recorded) |
 | RLC-09 | `admitWithAssurance` with `promotedReviewerConfigIds: []` equals `admitRisk` for R0–R4; R3/R4 are `DEFERRED` for every capability |
 | RLC-10 | running the individual steps in order yields the same outcome as `runAssuranceRound` |
 | RLC-11 | fixed logical time (R15): for each boundary after `plan`, `packet`, `checks`, each reviewer and `adjudicate`, a fresh subject runs the steps up to the boundary at logical time T and is interrupted; a redelivery of `runAssuranceRound` with the same input and T returns the outcome of an uninterrupted run at T on another fresh subject, and `persistedRoundBytes` of both are byte-identical; a further redelivery at a later logical time changes no persisted byte and returns the same outcome |
 | RLC-12 | shadow `BLOCK`: `pushGuardInput` → kind `BLOCK` with a `BlockReason`, no `shadow` key, `usage.providerCalls = 0` (not-applicable when `pushGuardInput` is null) |
-| RLC-13 | an input whose `scope` is another tenant's → `ReviewLoopContractError` and no state change (not-applicable for a stateless implementation) |
+| RLC-13 | an input whose `scope` is another tenant's → `ReviewLoopContractError` code `not-in-scope` and no state change (not-applicable for a stateless implementation) |
+| RLC-14 | helper fencing (R23), for `recordAttemptOutcome` (with `attemptOutcome`) and `buildRepairContextPack` (with `prepareRepair()`'s input), each on a fresh subject: the fence with `fencingEpoch` one below or one above, or with another `leaseId`, → `AssuranceFencedError` and `persistedAttemptBytes` unchanged; after the matching `rotateFence()`, the old fence → `AssuranceFencedError` and unchanged, and the new holder's fence succeeds; after `endLease()`, `recordAttemptOutcome` with the fence that held the lease → `AssuranceFencedError` and unchanged (a terminal is recorded before release) |
+| RLC-15 | helper redelivery (R23), for both helpers, each on a fresh subject after one successful call: the identical input → the same output (`null`; the same `contextPackRef` bytes) and `persistedAttemptBytes` unchanged; the identical input under the holder's new fence after `rotateFence()` → the same output and unchanged; an input that differs in one field (`terminal` or `failureClass`; `repairOrderRef` or `originalContextPackRef`) → `ReviewLoopContractError` code `conflicting-redelivery` and unchanged; with a stale fence, a conflicting input → `AssuranceFencedError` (the fence is checked first) |
+
+The two writing helpers check, in order: the envelope (`invalid-payload`), the input rules (`invalid-input`), the
+scope (`not-in-scope`), the caller's fence (`AssuranceFencedError`), then the recorded input for the attempt
+(identical: return the stored output; different: `conflicting-redelivery`). The fence check, the comparison and the
+write share one transaction; every refusal changes nothing. "Identical" means deep-equal after removing `fence`, so
+the current holder after a takeover may redeliver the same facts.
 
 `runWorkspaceResolverContract` cases, run by Lane A against its implementation over the lease table on real
 PostgreSQL and by Lane B against its fake (exit E13):
@@ -1539,8 +1792,8 @@ PostgreSQL and by Lane B against its fake (exit E13):
 | ID | Obligation |
 |---|---|
 | SR-A1 | Call the slot after evidence persistence and before push; never at a verification stop. Map outcomes: PROCEED → push, PR with `prBodySectionRef` content, `WAITING_FOR_HUMAN_REVIEW`; REPAIR → new attempt; ESCALATE → push, PR flagged "assurance not satisfied", `WAITING_FOR_HUMAN_REVIEW`; BLOCK → no push, task `BLOCKED`. |
-| SR-A2 | A repair attempt gets a fresh workspace at `repairBaseSha` and the ContextPack referenced by `buildRepairContextPack`'s `contextPackRef` (the "task baseSha + apply diff" design is withdrawn, R3). |
-| SR-A3 | Call `recordAttemptOutcome` at every attempt terminal, verification stops included. |
+| SR-A2 | A repair attempt gets a fresh workspace at `repairBaseSha`; the orchestrator acquires that attempt's workspace lease, calls `buildRepairContextPack` with that lease's fence, and starts the agent with the ContextPack its `contextPackRef` references (the "task baseSha + apply diff" design is withdrawn, R3). |
+| SR-A3 | Call `recordAttemptOutcome` at every attempt terminal, verification stops included, with the fence of the attempt's lease as the caller holds it, **before** releasing that lease (R23). An `AssuranceFencedError` means the lease was taken over or ended; the current holder records the terminal. |
 | SR-A4 | Pass `(risk) => slot.admitWithAssurance(risk, capability)` through the optional `admit` hook (SR-X1). |
 | SR-A5 | Emit `workflow.recovered` through the shared `RunEventSink`. |
 | SR-A6 | Do not emit `attempt.declared_complete`, `attempt.completed`, `review.completed`, `review.finding_dispositioned` or `repair.started`; Lane B's slot owns them, so no event is double-counted. |
@@ -1548,7 +1801,7 @@ PostgreSQL and by Lane B against its fake (exit E13):
 | SR-A8 | Implement `AssuranceWorkspaceResolver` over the workspace-lease table and pass `runWorkspaceResolverContract` on real PostgreSQL (R18). |
 | SR-A9 | Carry the activity's logical time (the workflow time at scheduling) in the activity input; the context adapter's `now()` returns it on every redelivery of that execution (R15). |
 | SR-A10 | When the assurance activity fails after its retry policy, or non-retryably: audit `assurance-unavailable`; shadow mode → continue as PROCEED with no section; gating mode → ESCALATE; never `FAILED`; call `recordAttemptOutcome` with `assuranceUnavailable: true` and `adjudicationId: null` (R19). |
-| — | Activity policy: heartbeat timeout ≥ 60 s; retry transient errors; never retry `ReviewLoopContractError` or `AssuranceFencedError` within the same delivery; on `AssuranceFencedError` the attempt is superseded under Lane A's lease-takeover semantics. |
+| — | Activity policy: heartbeat timeout ≥ 60 s; retry transient errors; never retry `ReviewLoopContractError` (any code) or `AssuranceFencedError` within the same delivery; code `conflicting-redelivery` maps to a non-retryable activity failure (R23); on `AssuranceFencedError` the attempt is superseded under Lane A's lease-takeover semantics. |
 
 ### 18.4 Other S0 items Lane B depends on (R4, R5)
 
@@ -1643,7 +1896,7 @@ request lands in a Lane B slice after the rebase onto S0, unless noted.
 
 | ID | Item |
 |---|---|
-| SR-S0-1 | `packages/application/src/review-loop/{slot.ts, disabled-slot.ts, review-loop-contract.ts}` + export lines (§18 "Review-loop slot contract (verbatim for S0)" v3 and §18.2): the slot, the envelope helper, the workspace resolver port, the disabled slot, the slot kit (RLC-01…13), the resolver kit (WRC-01…05) and the scripted slot |
+| SR-S0-1 | `packages/application/src/review-loop/{slot.ts, disabled-slot.ts, review-loop-contract.ts}` + export lines (§18 "Review-loop slot contract (verbatim for S0)" v4 and §18.2): the slot, the envelope helper, the workspace resolver port, the disabled slot, the slot kit (RLC-01…15), the resolver kit (WRC-01…05) and the scripted slot |
 | SR-S0-2 | `RunEventSink`, `RunEventConflictError` in `packages/ports/src/index.ts` (§18.4) |
 | SR-S0-3 | Lane B's `run-event` 1.2.0 additions (§18.4) inside the single superset bump |
 | SR-S0-4 | `run_events` DDL union in Lane A's `0107` (§18.4); Lane B's `0201_run_events` is withdrawn |
@@ -1807,7 +2060,7 @@ rule of §21.2.
 | S10 | `adapters/reviewer-openai` + credential source + request-byte egress re-check | fake HTTP server rows for every adapter MUST; exact request body asserted; credential canary absent; rotation on 401; expiry refresh; no `process.env` in adapter source; gateway-alteration detection (returned `instructions` vs sent, usage attribution) recorded per call against a fake gateway that mimics the injection; opt-in probe of primary (`gpt-6.1-sol`) and comparator records the gateway's behaviour and confirms detection live | after S0 | `feat(reviewer): OpenAI-compatible Responses reviewer with an injected credential source` |
 | S11 | `adapters/reviewer-replay` | exact replay by request hash; miss and manifest mismatch fail closed; scripted provider marked fake | after S0 | `feat(reviewer): deterministic replay and scripted reviewers` |
 | S12 | step use cases `planAssurance`, `buildReviewPacket`, `runDeterministicChecks`, `runReviewer`, `adjudicateRound` (application, against fakes) | JSON round trip within the envelope; zero provider calls on push-guard BLOCK and on every egress stop; crash at each step boundary converges with byte-identical records (fixed logical time); the workspace comes only from the resolver and every refusal stops the step before any read (E13); resolver kit WRC-01…05 on the fake; parallel reviewers blind | after S0 | `feat(assurance): idempotent assurance step use cases` |
-| S13 | `createAssuranceSlot` (composite, `recordAttemptOutcome`, `admitWithAssurance`, `buildRepairContextPack`, event emission); SR-X1 | conformance kit RLC-01…13 on PGlite; events per §15 with deterministic ids; repair ContextPack by `ArtifactRef` with `generatedAt` from the REPAIR decision; `admitWithAssurance` equals `admitRisk` for production capability; governed-execution suite unchanged | after S0 | `feat(assurance): implement the review-loop slot and attempt-outcome events` |
+| S13 | `createAssuranceSlot` (composite, `recordAttemptOutcome`, `admitWithAssurance`, `buildRepairContextPack`, event emission); SR-X1 | conformance kit RLC-01…15 on PGlite (helper fencing and redelivery included); events per §15 with deterministic ids; repair ContextPack by `ArtifactRef` with `generatedAt` from the REPAIR decision; `admitWithAssurance` equals `admitRisk` for production capability; governed-execution suite unchanged | after S0 | `feat(assurance): implement the review-loop slot and attempt-outcome events` |
 | S14 | `runAssuredTask` sequential driver + durable-shaped fake | shadow mode changes no workflow decision except BLOCK; drill gating loop bounded by `maxRounds`; activity-granular fake converges under retries, cancellation and a lease handoff | after S0 | `feat(assurance): sequential proof driver and activity-granular fake` |
 | S15 | `assurance-root.ts` + CLI (`asep assurance report`, disposition entry for humans) | fail-closed config; gating unreachable from production composition (policy with `gating` refused); credential source injected; disabled-reviewer literal | after S0 | `feat(control-plane): compose the independent reviewer behind a fail-closed root` |
 | S16 | **assurance-only** loop itest | real PG + Git + sandbox + real adapter vs local fake HTTP: shadow PROCEED with recorded wouldBe; push-guard BLOCK with zero gateway requests and zero forge calls; each egress stop with zero gateway requests; drill composition: REPAIR → re-review closed by the other reviewer → PROCEED, raiser-only closure → ESCALATE at max rounds; conformance kit on real PG | after P2 + S0 | `test(control-plane): assurance-only loop on real backends` |
@@ -1836,8 +2089,8 @@ landed and the integration part's checks pass.
 | S5 | canonical JSON, execution manifest (test-summary parsers, excerpt tails), whitelist packet builder, prompt renderer over local DTOs — `f6ca91d` | replace the packet, finding, blob and slot stand-ins in `local-types.ts` with `review-packet/v1`, `review-finding/v1` (S1), `ReviewBlob` (S2) and the S0 slot types, proven by a type-level assignability check and a fixture round trip through the S1 validator; the packet step reads through `ReviewSourceReader` with a workspace from `AssuranceWorkspaceResolver` (S12); suite ids **landed early** |
 | S6 | secret patterns, diff parser, push guard, egress decision and `sendIfCleared`, false-green, Trojan Source, dependency and invariant checks, SARIF — `7bcec5e`; plus the **check report** (canonical bytes, sha256, structural parser, summary counts) | bind invariant checks to `architecture-invariant` 1.1.0 (S1); SR-X4 fitness rules on the accepted Phase 2 AST framework (R8); persistence of the check report and zero-request proofs on the composed path (S12, S16); suite ids **landed early** |
 | S7 | grounding, the A1–A11 rule table, closure decisions, repair order — `b2096d3`; plus the fence field `fencingEpoch` and waiver expiry at the round's opening time (§11) | bind records to `adjudication-record/v1`, `repair-order/v1`, `review-finding/v1` (S1); dispositions and DB closure constraints (S8); drill loop proof (S16); suite ids **landed early** |
-| S19 | provenance collection from the review documents and git (finding ids, document lines, derived reviewed SHAs, fix commits, reachability) and content-addressed excerpts with hash verification; provenance-level exclusions only (§7.5, §7.8) | packet-dependent eligibility, `corpusSha256` freeze and manifest after §7.8 is confirmed; bundle mode when the controller supplies the path; `review-corpus` suite id |
-| S20 | after §7.8 is confirmed: matcher, category table, post-fix mapping, Wilson intervals, floors, the corpus `execution: null` (`NOT_RECORDED`) builder variant, golden item | scorer through the runtime grounding and packet code; `evals/tsconfig.json` include + references and `evals/package.json` deps (SR-X8, lockfile workspace links); preregistration (SR-G3); suite ids |
+| S19 | provenance collection from the review documents and git (finding ids, document lines, derived reviewed SHAs, fix commits, reachability with the R22 vocabulary and the bundle-dependent flag) and content-addressed excerpts with hash verification; publication gates that fail closed; provenance-level exclusions only (§7.5, §7.8) | packet-dependent eligibility, the `no-location` freeze rule, `corpusSha256` freeze and manifest after §7.8 is confirmed; bundle mode when the controller supplies the path; `review-corpus` suite id |
+| S20 | after §7.8 is confirmed: matcher, category table, post-fix mapping, Wilson intervals, floors, the corpus builder variant whose execution is `{ verdict: 'NOT_RECORDED', environment: null, checks: [] }` (the packet whitelist accepts `environment: null` only with `NOT_RECORDED`), golden item | scorer through the runtime grounding and packet code; `evals/tsconfig.json` include + references and `evals/package.json` deps (SR-X8, lockfile workspace links); preregistration (SR-G3); suite ids |
 
 Work that landed early in the pure-core commits and is, by this staging, integration work: the `policy` and
 `domain` index export lines (`040ee5e`, `723b3f4`), `readPolicyFile` in `policy-source.ts` (`040ee5e`) and nine
@@ -1934,7 +2187,7 @@ migration (data model §3.6).
    `…MEASUREMENT_PENDING…`. Neither `gpt-6.1-sol` nor the comparator has been probed by the lane (not verified); the gateway's request alteration is verified by the controller (U-3).
 4. **Phase 2 agent-runtime repair**: S22. Without it the verdict carries `ASSURANCE_ONLY_LOOP`.
 5. **Pilot repository**: DF-6 only.
-6. **Controller confirmation of v3**: the S19 freeze and every S20 part wait for it (§7.8, R18).
+6. **Controller confirmation of v4**: the S19 freeze, every S20 part and the hand-off of the slot block to Lane A wait for it (§7.8, R18, R23).
 
 None blocks plan lock.
 
@@ -1943,10 +2196,11 @@ None blocks plan lock.
 ## Output
 
 ```text
-PLAN_STATUS: LOCKED v3 (pending controller confirmation)
+PLAN_STATUS: LOCKED v4 (pending controller confirmation)
 BASE_SHA: 00a68895d205122767167942326e2e0466571059 (Phase 2 not accepted)
 REVIEWED_V1: a2a7b8ad09a5389339fc3ef7131ae7b2b294d97f — Codex REQUEST_CHANGES 0.99 (1 CRITICAL, 8 HIGH, 5 MEDIUM, 1 LOW), all dispositioned
 REVIEWED_V2: 32013356e0845354f40ac6f63925f928637d6fb3 — Codex gpt-6.1-sol lock-check REQUEST_CHANGES 0.97 (14/15 v1 folded, v1 MED-001 partial; new 2 HIGH, 8 MEDIUM), all dispositioned
+REVIEWED_V3: 9e3a1c32e869193e981a867e8bb9fbd1abaec9c8 — Codex gpt-6.1-sol review of plan, slot block and pre-S0 code REQUEST_CHANGES 0.99 (all v2 findings folded; new 6 MEDIUM plan/slot, 6 HIGH + 3 MEDIUM + 1 LOW code, 1 surviving mutation), all dispositioned
 BASELINE: lane-observed at a2a7b8a — verify:all exit 0; tests 548 pass 548; 50 files; 28 required suites; compat 13 schemas
 PLAN_FILES:
   - docs/implementation/phases/phase-04-plan.md
@@ -1959,9 +2213,10 @@ PLAN_FILES:
   - docs/implementation/phases/phase-04-review-log.md
   - docs/implementation/phases/phase-04-plan-review-codex-v1.md
   - docs/implementation/phases/phase-04-plan-review-codex-v2.md
+  - docs/implementation/phases/phase-04-review-codex-v3.md
 NEW_THIRD_PARTY_DEPENDENCIES: none
 GATING: shadow only in Phase 4 (user decision); gating/promotion/thresholds/R2 admission deferred
-SLOT_BLOCK: v3 (R18, R19), type-checked against the real built @asep/contracts, @asep/ports and AdmissionResult; hand-off to Lane A after controller confirmation
+SLOT_BLOCK: v4 (R18, R19, R23), type-checked against the real built @asep/contracts, @asep/ports and AdmissionResult; envelope helper executed from the block text on the RLC-01 fixtures; hand-off to Lane A only after the controller's focused check
 SHARED_SURFACE_REQUESTS: §19 (S0 4, ports 3, contracts 6 (+ SR-C3 withdrawn, SR-C5 moved to S0), migrations 3 (+ 0201_run_events withdrawn), fencing CR-F1, gates 4 (both runners), dictionary 2 + loader, other 8, controller 3)
-READY_FOR_IMPLEMENTATION: pure-core parts of S3–S7 and S19 (provenance and excerpts) per §21.1; S19 freeze and S20 after v3 confirmation; integration parts after Phase 2 acceptance, Lane A S0 and per-step controller release
+READY_FOR_IMPLEMENTATION: pure-core parts of S3–S7 and S19 (provenance and excerpts) per §21.1; S19 freeze and S20 after v4 confirmation; integration parts after Phase 2 acceptance, Lane A S0 and per-step controller release
 ```

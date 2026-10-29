@@ -9,6 +9,9 @@
 > decisions relayed by the controller on 2026-10-29.
 > v3: the lock-check of v2 (`phase-04-plan-review-codex-v2.md`, Codex `gpt-6.1-sol`, snapshot `3201335`,
 > REQUEST_CHANGES 0.97) and controller decisions R18 and R19 are dispositioned in "Lock-check v2" below.
+> v4: the review of v3, the slot block and the pre-S0 code (`phase-04-review-codex-v3.md`, Codex `gpt-6.1-sol`,
+> snapshot `9e3a1c3`, REQUEST_CHANGES 0.99) and controller decisions R22 and R23 are dispositioned in "Review v3"
+> below.
 >
 > Each finding is dispositioned `ACCEPTED` / `PARTIALLY_ACCEPTED` / `REJECTED_WITH_EVIDENCE`. Nothing was
 > auto-accepted: each finding's cited code was re-read before deciding. An accepted finding names its design
@@ -220,7 +223,7 @@ from a clean writable checkout authoritative (exit A1 records exit code, test co
 
 | Note | Outcome |
 |---|---|
-| Slot lacks claim owner / fencing identity | `AssuranceFence` in every slot input; RLC-05 |
+| Slot lacks claim owner / fencing identity | `AssuranceFence` in `AssuranceSlotInput`, which every step input carries; RLC-05. **Corrected in v4:** the earlier wording "in every slot input" was false — `AttemptOutcomeInput` and `RepairContextInput` carried no fence until v4 (P4-SLOT-MED-003); since v4 both do, checked in the write's transaction (RLC-14) |
 | Slot is wrappable as a Temporal activity (JSON I/O, signal and clock in context) | kept; context is `AssuranceStepContext` (R3) |
 | Migration range `0200–0299` correct | kept; ids now `0200`, `0201_metric_snapshots`, `0202` |
 | `attempts.status` conflict | R6: Lane B owns it |
@@ -477,7 +480,289 @@ confirmation together with §7.8:
   Phase 2 report names (`derived-from-fix`).
 
 Collected: 153 items (65 included, 69 `plan-defect`, 19 `tree-unavailable`, 0 `excerpt-unpublishable`) and 122
-excerpts; exit I13 verifies them against the repository.
+excerpts; exit I13 verifies them against the repository. (R22 then settled these four cases and R23 renamed the
+vocabulary: `tree-unavailable` → `reviewed-tree-unknown`, `object-store-only` → `private-bundle-only`,
+`derived-from-fix` → `inferred-parent-of-fix`; see "Review v3".)
+
+---
+
+## Review v3 (Codex `gpt-6.1-sol`, snapshot `9e3a1c3`)
+
+> Raw review: `phase-04-review-codex-v3.md` (verbatim copy with provenance). Verdict: REQUEST_CHANGES, confidence
+> 0.99. Controller decisions applied alongside: `reconciliation-v1.md` R22 (corpus answers) and R23 (contract and code
+> decisions; final, applied as written). Each finding's cited text was re-read at `9e3a1c3` before deciding; line
+> numbers below refer to `9e3a1c3`. The controller's gate at that snapshot: `pnpm verify:all` exit 0, 598 tests, 598
+> pass, 0 fail, 0 skipped, 60 files, 37 required suites.
+
+### Summary
+
+| Severity | Count | ACCEPTED | PARTIAL | REJECTED |
+|---|---|---|---|---|
+| MEDIUM — plan (P4-PLAN3) | 3 | 3 | 0 | 0 |
+| MEDIUM — slot block (P4-SLOT) | 3 | 3 | 0 | 0 |
+| HIGH — code (P4-CODE) | 6 | 6 | 0 | 0 |
+| MEDIUM — code (P4-CODE) | 3 | 3 | 0 | 0 |
+| LOW — code (P4-CODE) | 1 | 1 | 0 | 0 |
+| **Total numbered** | **16** | **16** | **0** | **0** |
+| Unnumbered: surviving mutation; four implementation-mirroring oracles | 2 | 2 | 0 | 0 |
+
+The review confirmed every P4-PLAN2 finding and v1 MED-001 as folded. The plan and slot-block fixes land in the
+docs-only commit that carries this section; each code finding lands in its own commit with a failing-first test whose
+oracle is independent of the code under test (R23), and each HIGH fix with a mutation check (revert the fix, show the
+new test fails, restore), reported in the lane report.
+
+### P4-PLAN3-MED-001 — R22 not synchronised into the protocol and provenance vocabulary — ACCEPTED
+**Concern:** the snapshot used `tree-unavailable`, `object-store-only` and `derived-from-fix` where R22 says
+`reviewed-tree-unknown`, `private-bundle-only` and `inferred-parent-of-fix`; the plan did not require the
+bundle-dependent count or name the Phase 1 no-location drop (`evals/review-corpus/collect.ts:37-39`,
+`phase-04-data-model.md:829-846`).
+**Disposition:** Correct; R22 was issued after the snapshot, so this is the R22 delta. Confirmed at `collect.ts:37-42`.
+**Locked change:** plan §7.5 (provenance vocabulary bullet; collection records `reviewed-tree-unknown`), §7.8 units
+(`inferred-parent-of-fix`) and exclusion table (row 2 renamed; new freeze-level row 4 `no-location`; a
+`private-bundle-only` item is counted, not excluded); data model §7.1 (`reachability`, new `dependsOnPrivateBundle`,
+`fixCommits[]` with reachability, `excluded`); exit I10, I13. The collector, its test and the committed data follow in
+the corpus commit.
+**Validation:** exit I13 (`collect.test.ts` › "collected provenance and excerpts verify against the repository"); the
+lane report states the included, `reviewed-tree-unknown`, `private-bundle-only` and Phase 1 no-location counts.
+
+### P4-PLAN3-MED-002 — Two corpus execution shapes — ACCEPTED
+**Concern:** the recipe fixes `execution: { verdict: 'NOT_RECORDED', environment: null, checks: [] }` while the S20
+staging row said `execution: null` (`phase-04-plan.md:486`, `:1840`).
+**Disposition:** Correct (both lines re-read). R23 keeps the first shape.
+**Locked change:** plan §7.8 rule P item 5 (the only shape; golden fixture round-trips it through the packet validator
+and the renderer), §21.1 S20 row (wording replaced; the whitelist accepts `environment: null` only with
+`NOT_RECORDED`). Data model §2.3 already had the first shape.
+**Validation:** exit I12 (S20 golden item test).
+
+### P4-PLAN3-MED-003 — Closure predicate differed between plan and architecture — ACCEPTED
+**Concern:** the plan required the resolution citation inside the repair delta, the architecture only that the cited
+file be in the delta's file list; the code treated hunk context as changed (`phase-04-architecture.md:397`,
+`grounding.ts:104`).
+**Disposition:** Correct; `grounding.ts:104-107` tests `newStart … newStart + max(newLines, 1) − 1`, which includes
+context lines. The code half is P4-CODE-HIGH-004.
+**Locked change:** the R23 changed-line predicate, written identically in plan §13 and architecture §11 (a `+` line;
+for a deletion-only change the finding's own cited lines among the `-` lines; context never qualifies).
+**Validation:** exit E6 (`grounding.test.ts` › "only a changed line closes a finding, never its context";
+`adjudication.test.ts` › "a resolution citing unchanged context leaves the finding blocking").
+
+### P4-SLOT-MED-001 — `Promise<void>` broke the JSON-output contract — ACCEPTED
+**Concern:** `recordAttemptOutcome` returned `Promise<void>`, the header promised plain-JSON outputs and the helper
+rejected an `undefined` root (`phase-04-plan.md:1338`, `:1384`).
+**Disposition:** Correct. R23: no `void` outputs.
+**Locked change:** `recordAttemptOutcome(...): Promise<null>`; the header states that no method returns `undefined`;
+RLC-08 requires exactly `null`; the disabled slot resolves `null`.
+**Validation:** RLC-08; the type-check control below (a `Promise<void>` implementation fails TS2322).
+
+### P4-SLOT-MED-002 — The envelope helper accepted payloads that serialization changes — ACCEPTED
+**Concern:** `reviewLoopPayloadBytes` only called `JSON.stringify`, so `{x: undefined}`, `{x: Infinity}`, a `Date` and a
+`Map` were accepted (`phase-04-plan.md:1377-1386`).
+**Disposition:** Correct; reproduced in this session with the v3 helper body (16 of 20 negative fixtures accepted,
+below).
+**Locked change:** a recursive plain-JSON check (`plainJsonViolation`) inside `reviewLoopPayloadBytes`, before it
+measures: null, string, boolean, finite number other than `-0`, hole-free arrays, objects with `Object.prototype` or
+`null` prototype and only enumerable string-keyed data properties; no cycles; a walk that overflows is a contract error,
+never a transient one. `-0` is rejected as well because `JSON.stringify` turns it into `0` and RLC-01 compares round
+trips with deep equality. RLC-01 gains the negative fixtures and two slot-input cases.
+**Validation:** RLC-01; the helper executed from the block text (below).
+
+### P4-SLOT-MED-003 — The two writing helpers carried no caller identity — ACCEPTED
+**Concern:** `AttemptOutcomeInput` and `RepairContextInput` had no fence although the block requires every write to be
+fence-checked; the log claimed a fence in every slot input (`phase-04-plan.md:1259-1311`; this log's integration-note
+row, now corrected).
+**Disposition:** Correct. R23: both helpers take the caller's fence and check it in the write's transaction through the
+Phase 2 primitive; the identity is what the caller presents; the terminal is recorded before release; identical
+redelivery is a no-op returning the stored output, a conflicting one raises a distinct code.
+**Locked change:** `fence: AssuranceFence` on both inputs; the `AssuranceFence` doc forbids substituting a stored
+epoch; `ReviewLoopContractErrorCode` (`invalid-payload`, `invalid-input`, `not-in-scope`, `conflicting-redelivery`,
+`invalid-output`) and `ReviewLoopContractError.code`; redelivery keyed by `attemptId`, compared deep-equal with
+`fence` removed (so the current holder after a takeover may redeliver the same facts), fence checked before the
+comparison; check order in §18.2; RLC-14 (fencing of both helpers, after `rotateFence()` and after `endLease()`) and
+RLC-15 (identical and conflicting redelivery of both helpers); fixture fields `attemptOutcome`, `endLease`,
+`prepareRepair`, `persistedAttemptBytes`; SR-A2 (acquire the repair attempt's lease, then call the helper), SR-A3
+(record before release), activity policy (`conflicting-redelivery` → non-retryable activity failure). An attempt that
+ends before it holds a lease has no fence; the block says it is not recorded here, and risk PR4-37 asks the controller
+to confirm this at the focused check.
+**Validation:** RLC-08, RLC-14, RLC-15; the type-check controls below (an input without `fence` fails TS2741).
+
+### P4-CODE-HIGH-001 — Control and line-separator paths passed normalization and dodged the globs — ACCEPTED
+**Concern:** a path with LF was normalized, `**` compiled to `.` without the `s` flag, and
+`src/line\nbreak/secrets/customer.txt` reached a fake sender with push guard PASS and egress CLEAR
+(`packages/policy/src/review.ts:515-538`).
+**Disposition:** Correct: `review.ts:516-518` rejects only `/`, `\`, NUL and empty/`.`/`..` segments; `:538` builds the
+regex with flags `''` or `'i'`.
+**Locked change:** plan §10.1 (definition of "not normalizable"; push guard, egress, builder behaviour), §14 item 1;
+architecture §8, §9; data model §2.1, `review_findings_file_ck`; threat T4-26. Code: `isNormalizedRepoPath` rejects C0,
+DEL, C1, U+2028, U+2029 and a leading `"`; globs use the `s` and `u` flags; the push guard raises `forbidden-path` for
+a non-normalizable path on any side of either diff; the packet builder keeps such a path as an `unsafe-path` omission
+instead of throwing (a build failure would leave the round without a push-guard decision and, in shadow mode after the
+retry policy, end as `PROCEED` under SR-A10).
+**Validation:** exit D1 (`egress.test.ts` › "a path that is not normalizable is refused before the gateway";
+`review.test.ts` › "control and line-separator paths are not normalizable and globs match every code point"); mutation
+check in the commit report.
+
+### P4-CODE-HIGH-002 — Egress classified only the cumulative diff's old paths — ACCEPTED
+**Concern:** a rename `secrets/customer.txt → src/customer.txt` present only in the repair delta was `CLEAR`
+(`egress.ts:37`, `:100`, `:109`).
+**Disposition:** Correct: `egress.ts:100-108` parses only the `diff` part. The diff parser also drops a copy's source
+path (`diff.ts:218`).
+**Locked change:** plan §10.1, architecture §9 (both sides of every entry of both diffs; an unparseable delta is
+unscannable); threat T4-27. Code: the parser records copies (`C`, with the source path) and the pre-image of any entry
+whose sides differ; egress parses both diffs and classifies `path` and `oldPath` of every entry.
+**Validation:** exit D1 (`egress.test.ts` › "both sides of every entry of both diffs are classified": rename, copy,
+delete, delta-only file); mutation check in the commit report.
+
+### P4-CODE-HIGH-003 — Dedupe before grounding made the outcome order-dependent — ACCEPTED
+**Concern:** the first finding per fingerprint was kept before grounding; the fingerprint ignores severity, key and
+requirement id, so `[LOW, CRITICAL]` gave PROCEED and the reverse REPAIR (`adjudication.ts:339`, `findings.ts:82`).
+**Disposition:** Correct: `adjudication.ts:337-347` skips a repeated fingerprint before `groundFinding` at `:349`;
+`findings.ts:163-182` keeps the first check finding per key after a sort that leaves equal keys in input order, so a
+SARIF log with two levels in one bucket has the same defect.
+**Locked change:** plan §12 (identity, conservative merge, permutation invariance); data model §2.1 and
+`review_findings_dedupe_uq` (identity incl. requirement id and key, nulls not distinct); exit E4; threat T4-28. Code:
+ground every finding, group by `(raisedBy, fingerprint, requirementId, key)`, merge conservatively; check findings merge
+per `(raisedBy, fingerprint)` keeping the highest severity; refs carry the identity, so records stay unique.
+**Validation:** exit E4 (`adjudication.test.ts` › "findings are grounded before they merge and the outcome ignores
+their order", all 24 orders of a four-element list); mutation check in the commit report.
+
+### P4-CODE-HIGH-004 — Hunk context counted as a changed line for closure — ACCEPTED
+**Concern:** `lineInRepairDelta` accepted any line of the new hunk range; a comment added at line 3 let a citation of
+line 2 verify a HIGH finding (`grounding.ts:104`, `adjudication.ts:268`).
+**Disposition:** Correct (`grounding.ts:104-107`).
+**Locked change:** the changed-line predicate (plan §13, architecture §11). Code: `groundResolution` takes the prior
+finding and computes the predicate from the delta entry's added and removed lines.
+**Validation:** exit E6 (`grounding.test.ts` › "only a changed line closes a finding, never its context";
+`adjudication.test.ts` › "a resolution citing unchanged context leaves the finding blocking", citation on the
+unchanged line directly above an added line); mutation check in the commit report.
+
+### P4-CODE-HIGH-005 — A SARIF prior stopped blocking without any closure — ACCEPTED
+**Concern:** a HIGH SARIF prior still `OPEN` was left out of the blocking set because its source is not `model`, and no
+rule could close a SARIF finding (`adjudication.ts:261`, `:391-401`; `packages/domain/src/assurance.ts:207`, `:224`).
+**Disposition:** Correct: `adjudication.ts:261` returns `unchanged` for every non-model prior and `:397-398` counts
+only model priors.
+**Locked change:** plan §12 (`B` includes SARIF and deterministic priors), §13 (scanner recheck proof), §14 item 6;
+architecture §11; data model §2.4, §2.8 (scanner runs in the check report), `finding_dispositions_harness_verify_ck`
+and new `finding_dispositions_reviewer_verify_ck`; exit E6; threat T4-28. Code: harness rule `scanner-recheck` in the
+domain (verifies `sarif` findings only); SARIF parsing records tool, version, declared rules and invocation success;
+the check report carries them; adjudication keeps SARIF priors blocking unless the proof holds or a human closed them.
+**Validation:** exit E6 (`adjudication.test.ts` › "a SARIF finding blocks until a scanner recheck proves it gone or a
+human closes it"; `assurance.test.ts` › "only a proven scanner recheck verifies a SARIF finding"); mutation check in
+the commit report.
+
+### P4-CODE-HIGH-006 — Corpus collection ignored scanner failure — ACCEPTED
+**Concern:** the collector ignored each gate's status, error and signal and withheld an excerpt only when the output
+named it; five gates failing with status 2 withheld nothing (`collect.ts:575-581`).
+**Disposition:** Correct (`collect.ts:577-581`). In the temporary repository `check-publication.sh` also always failed
+for an unrelated reason (its dependency-license step needs `scripts/license-inventory.sh` and pnpm), which the old code
+could not notice.
+**Locked change:** plan §7.5 (gates fail closed; documented codes); data model §7.1; exit I13; threat T4-29. Code: a
+gate runner seam; the four scripts accept 0/1, the path-leak scan runs `grep -lE` with `check-publication.sh`'s
+`LEAK_PATTERNS` and accepts 1/0; anything else aborts before anything is written; scripts are untracked in the
+temporary repository so only excerpts are scanned. The same class in `GitReader` (a spawn error or signal read as "no
+such object") aborts too.
+**Validation:** exit I13 (`collect.test.ts` › "a publication gate that does not complete aborts collection": crash,
+missing executable, error output without an excerpt path, status outside the documented codes); mutation check in
+the commit report.
+
+### P4-CODE-MED-001 — A re-raised finding ignored its prior's disposition — ACCEPTED
+**Concern:** the same raiser and fingerprint under an unexpired waiver produced a second, `OPEN` entry and REPAIR
+(`adjudication.ts:351`, `:363`, `:394`).
+**Disposition:** Correct (`adjudication.ts:351-383` opens every current finding; priors are evaluated separately at
+`:394-402`).
+**Locked change:** plan §12 "Reconciling with prior findings". Interpretation recorded for the controller: R23 says
+a `REFUTED` prior does not block; Lane B applies that to priors refuted while grounded (only a human can refute a
+grounded finding) and not to priors the harness refuted as ungrounded, so an unresolvable first citation cannot shield
+a later grounded one.
+**Validation:** exit E4 (`adjudication.test.ts` › "a re-raised finding is reconciled with its prior before it blocks":
+live waiver, expired waiver, human refutation, harness refutation, verified prior → regression).
+
+### P4-CODE-MED-002 — The budget left most of the packet uncounted — ACCEPTED
+**Concern:** a 450 000-character objective gave `includedBytes` 850 under a 400 000 cap; the 452 993-byte packet and
+459 199-byte prompt were accepted (`packet.ts:246`, `:267`; `prompt.ts:230`).
+**Disposition:** Correct (`packet.ts:246-249`; `prompt.ts:230` checks only the flag).
+**Locked change:** plan §8 "Byte budget"; architecture §8; data model §2.3. Code: `includedBytes` from the canonical
+packet bytes plus embedded parts; the renderer measures the prompt and throws `PromptOverBudgetError`; A3 treats
+`prompt-over-budget` like an over-budget packet.
+**Validation:** exit D7 (`packet.test.ts` › "the budget counts the canonical packet bytes and every embedded part",
+oracle: a key-sorted `JSON.stringify` byte count; `prompt.test.ts` › "a rendered prompt over the budget is refused").
+
+### P4-CODE-MED-003 — False green counted only `tests === 0` — ACCEPTED
+**Concern:** `tests=3, pass=0, skipped=3` and `tests=1, fail=1, exitCode=0, recorded PASS` raised nothing
+(`checks.ts:210`, `:237`).
+**Disposition:** Correct (`checks.ts:212`, `:238`).
+**Locked change:** plan §14 item 3 (executed = tests − skipped − todo; new rule `failed-tests-recorded-pass`); exit F5.
+R23 says executed 0 is a finding without an exit-code condition, so the earlier assertion that a failing run with zero
+tests raises nothing is replaced by its opposite; this is the controller's rule change, recorded here.
+**Validation:** exit F5 (`checks.test.ts` › "false green counts executed tests and recorded failures").
+
+### P4-CODE-LOW-001 — Extra blank line at the end of `adjudication.ts` — ACCEPTED
+**Concern:** `git diff --check a2a7b8a..HEAD` exits 2 for the trailing blank line (`adjudication.ts:494`).
+**Disposition:** Correct.
+**Locked change:** remove it; `git diff --check a2a7b8a..HEAD` must exit 0 for every Lane B file.
+**Validation:** `git diff --check a2a7b8a..HEAD` in the commit report.
+
+### Surviving mutation at the status/output guard — ACCEPTED
+**Concern:** replacing the guard at `adjudication.ts:186` with `false` left every test green; `COMPLETED_VALID` with
+`output: null` then gave PROCEED.
+**Disposition:** Correct: no test feeds an inconsistent pair.
+**Locked change:** none in the plan; the test rejects `COMPLETED_VALID` with `output: null` and every other status with a
+non-null output.
+**Validation:** `adjudication.test.ts` › "a review whose status and output disagree is rejected"; the mutation is
+re-run in the commit report.
+
+### Oracles that mirrored the implementation — ACCEPTED
+The four named oracles are replaced in the commits that fix their findings: the budget threshold is an independent
+byte count (MED-002); grounding cites in-hunk context (HIGH-004); closure has a reviewer repeating the finding
+(MED-001); publication covers scanner failure (HIGH-006).
+
+### R22 and R23 applied
+
+| Item | Applied as | Where |
+|---|---|---|
+| R22 unknown reviewed SHA | excluded `reviewed-tree-unknown`, never guessed | plan §7.5, §7.8; data model §7.1 |
+| R22 private-bundle tree | kept, `private-bundle-only`, per-item `dependsOnPrivateBundle`, count reported | plan §7.5, §7.8; data model §7.1; exit I10 |
+| R22 self-found item | `inferred-parent-of-fix` | plan §7.8; data model §7.1 |
+| R22 Phase 1 without locations | freeze rule `no-location`, count reported | plan §7.8 |
+| R22 commit trailers | the eight earlier lane commits are unchanged | — |
+| R23 slot decisions | JSON outputs; validating envelope; fenced helpers; terminal before release; redelivery codes | plan §18, §18.2, §18.3 |
+| R23 code decisions | paths, egress coverage, identity, changed-line predicate, SARIF, corpus gates, repeated findings, budget, false green, mutation, vocabulary, execution shape | plan §7.5, §7.8, §8, §10.1, §12–§14, §21.1; architecture §8, §9, §11; data model §2, §3.1, §7.1; exit criteria |
+
+### Slot block type-check and helper execution (v4)
+
+The block was extracted from plan §18 with
+`awk '/^### Review-loop slot contract \(verbatim for S0\)/{f=1} f&&/^```typescript$/{inb=1;next} inb&&/^```$/{exit} inb{print}'`
+into a scratch directory outside the repository (707 lines, sha256
+`20c540d060d70df6b0cb2e8aa345ed171ae2e7a59d2fed2c099d3e552a39ddc4`; `cmp` against a second extraction: identical) and compiled as one
+module with TypeScript 7.0.2 and the base options (`strict`, `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`,
+declaration emit, `types: ["node"]`, `NodeNext`), with `@asep/contracts` and `@asep/ports` mapped to this branch's
+built declarations (`packages/contracts/dist/index.d.ts`, `packages/ports/dist/index.d.ts`, rebuilt by
+`pnpm -s typecheck`, exit 0) and `AdmissionResult` re-exported from `packages/application/dist/risk-admission.js`.
+`tsc -p tsconfig.json`: exit 0. Controls in a second project over the same block, each expected to fail: an
+`AttemptOutcomeInput` and a `RepairContextInput` without `fence` (TS2741 twice), a `recordAttemptOutcome` returning
+`Promise<void>` (TS2322), a `ReviewLoopContractError` without a code (TS2554) and with an unknown code (TS2345); exit 1
+with exactly those five errors.
+
+The envelope helper was executed from the block text itself with Node 24.6.0's type stripping
+(`node --disable-warning=ExperimentalWarning probe.mjs ./src/review-loop/slot-block.ts`, importing the extracted `.ts`)
+and again from the `tsc` emit. Each of the 20 negative fixtures — `{x: undefined}`, `{x: Infinity}`, `{x: -Infinity}`,
+`{x: NaN}`, `{x: -0}`, `{x: new Date(0)}`, `{x: new Map()}`, `{x: new Set()}`, a class instance, `[1, , 3]`, a cycle,
+a `bigint`, a function, an `undefined` root, a nested `undefined`, a getter, a non-enumerable property, a symbol key, an
+array with an extra key and a 200 000-deep nesting — threw `ReviewLoopContractError` with code `invalid-payload`; the
+six positive controls (`null`, `{}`, `[]`, `Object.create(null)` with a key, a shared reference, a nested plain
+object) were accepted and round-trip; 65 536 bytes accepted and 65 537 rejected with `invalid-payload`; `'é'` measured
+4 bytes. Exit 0 both ways. Control: the same probe against a copy whose helper body is the v3 `JSON.stringify`-only
+version accepted 16 of the 20 negative fixtures and exited 1. Not verified: compilation as three separate files inside
+`packages/application` (they do not exist until S0).
+
+### DDL re-validation (v4)
+
+See data model §3.5: the §3.1–§3.3 blocks and the §3.6 rollback applied on PGlite `0.5.4` after the twelve Phase 2
+migrations, and a constraint probe confirmed the new identity, path and disposition-actor constraints.
+
+### Freeze gate (v4)
+
+Every numbered finding of the review is dispositioned (16 accepted, 0 rejected) and R22 and R23 are applied in the
+documents. Remaining before the corpus freeze and before Lane A receives the block: the controller's focused check of
+the slot block and of the code fixes at the lane head, and confirmation of v4.
 
 ---
 
@@ -499,4 +784,6 @@ the slot text verbatim into S0, and Phase 2 is accepted (for shared-surface and 
 
 v2 record: **LOCKED v2** (confirmed for pre-S0 slices S3–S7 on 2026-10-29; controller-approved amendment recorded above).
 
-**PLAN_STATUS: LOCKED v3 (pending controller confirmation)**
+v3 record: **LOCKED v3 (pending controller confirmation)**, superseded by v4 before confirmation.
+
+**PLAN_STATUS: LOCKED v4 (pending controller confirmation)**
