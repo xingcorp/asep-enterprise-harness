@@ -6,6 +6,7 @@
 // partial unique indexes, transactional DDL) without a Docker daemon, so the
 // tenancy/lease/migration guarantees are exercised for real, not faked.
 
+import { readFile } from 'node:fs/promises';
 import { PGlite } from '@electric-sql/pglite';
 import type { SqlClient, SqlExecutor, SqlParam, SqlResult } from './sql.js';
 
@@ -33,11 +34,42 @@ function toExecResult(results: Array<{ rows?: unknown[]; affectedRows?: number }
 // PGlite runs one statement at a time on a single in-process connection, so a
 // transaction is a straightforward BEGIN/COMMIT with ROLLBACK on throw. There
 // is no connection pool to check out — the single instance IS the connection.
+//
+// Each instance would otherwise compile its own copy of the PostgreSQL
+// WebAssembly modules. A test process opens dozens of instances, and compiling
+// and later freeing that much wasm code has aborted V8 outright ("Check failed:
+// end > addr"). The modules and the filesystem bundle are compiled and read
+// once per process and shared; every instance still gets its own memory and its
+// own database.
+interface PgliteArtifacts {
+  readonly pgliteWasmModule: WebAssembly.Module;
+  readonly initdbWasmModule: WebAssembly.Module;
+  readonly fsBundle: Blob;
+}
+
+let sharedArtifacts: Promise<PgliteArtifacts> | undefined;
+
+function pgliteArtifacts(): Promise<PgliteArtifacts> {
+  sharedArtifacts ??= (async () => {
+    const dist = new URL('.', import.meta.resolve('@electric-sql/pglite'));
+    const [pglite, initdb, data] = await Promise.all([
+      readFile(new URL('pglite.wasm', dist)),
+      readFile(new URL('initdb.wasm', dist)),
+      readFile(new URL('pglite.data', dist)),
+    ]);
+    const [pgliteWasmModule, initdbWasmModule] = await Promise.all([
+      WebAssembly.compile(pglite), WebAssembly.compile(initdb),
+    ]);
+    return { pgliteWasmModule, initdbWasmModule, fsBundle: new Blob([data]) };
+  })();
+  return sharedArtifacts;
+}
+
 export class PgliteClient implements SqlClient {
   private constructor(private readonly db: PGlite) {}
 
   static async create(dataDir?: string): Promise<PgliteClient> {
-    const db = dataDir ? new PGlite(dataDir) : new PGlite();
+    const db = new PGlite({ ...(dataDir ? { dataDir } : {}), ...(await pgliteArtifacts()) });
     await db.waitReady;
     return new PgliteClient(db);
   }
