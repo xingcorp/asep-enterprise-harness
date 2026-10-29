@@ -200,6 +200,9 @@ export interface TaskCoreInput {
 
 // --- requests: activities whose result drives the next decision --------------
 
+/** The caller's fence: the lease identity the Phase 2 primitive returns for a grant. Opaque to the core, which carries it. */
+export type LeaseFence = string;
+
 export type TaskRequest =
   | { readonly kind: 'admitTask'; readonly risk: RiskLevel }
   | {
@@ -213,6 +216,20 @@ export type TaskRequest =
   /** After a failed ensureAttempt: look the attempt up by its natural key, to learn whether it exists. */
   | { readonly kind: 'findAttempt'; readonly attemptNumber: number }
   | { readonly kind: 'acquireLease'; readonly attemptNumber: number }
+  /** After a failed or aborted acquireLease: read the attempt's durable lease history, to learn whether a grant committed. */
+  | { readonly kind: 'findLease'; readonly attemptNumber: number }
+  /**
+   * The terminal of an attempt whose lease history shows no lease, written with fence null. The slot refuses it if
+   * history shows a lease by then, so its result is awaited.
+   */
+  | {
+      readonly kind: 'recordPreLeaseOutcome';
+      readonly attemptNumber: number;
+      readonly terminal: AttemptTerminal;
+      readonly declaredComplete: boolean;
+      readonly verificationVerdict: VerificationVerdict | null;
+      readonly adjudicationId: string | null;
+    }
   | { readonly kind: 'prepareWorkspace'; readonly attemptNumber: number; readonly baseSha: string }
   | {
       readonly kind: 'storeAttemptInputs';
@@ -292,6 +309,8 @@ export type TaskEffect =
   | {
       readonly kind: 'recordAttemptOutcome';
       readonly attemptNumber: number;
+      /** The caller's fence of the lease the attempt holds or held; null only for an attempt that never asked for one. */
+      readonly fence: LeaseFence | null;
       readonly terminal: AttemptTerminal;
       readonly declaredComplete: boolean;
       readonly verificationVerdict: VerificationVerdict | null;
@@ -323,7 +342,7 @@ export type TaskEffect =
   | { readonly kind: 'reapContainers'; readonly attemptNumber: number }
   | { readonly kind: 'quarantineWorkspace'; readonly attemptNumber: number; readonly reason: string }
   | { readonly kind: 'cleanupWorkspace'; readonly attemptNumber: number }
-  | { readonly kind: 'releaseLease'; readonly attemptNumber: number }
+  | { readonly kind: 'releaseLease'; readonly attemptNumber: number; readonly fence: LeaseFence }
   | { readonly kind: 'expireApprovalRequest'; readonly approvalRequestId: string }
   | { readonly kind: 'cancelApprovalRequest'; readonly approvalRequestId: string }
   | {
@@ -369,7 +388,11 @@ export type TaskResult =
     }
   /** Null: no attempt row exists, so the failed registration never inserted one. */
   | { readonly kind: 'findAttempt'; readonly attemptId: AttemptId | null }
-  | { readonly kind: 'acquireLease' }
+  | { readonly kind: 'acquireLease'; readonly fence: LeaseFence }
+  /** Null: durable history shows no lease of the attempt. */
+  | { readonly kind: 'findLease'; readonly fence: LeaseFence | null }
+  /** False: refused, because durable history now shows a lease (a grant committed after the lookup). */
+  | { readonly kind: 'recordPreLeaseOutcome'; readonly recorded: boolean }
   | { readonly kind: 'prepareWorkspace' }
   | { readonly kind: 'storeAttemptInputs' }
   | {
@@ -533,6 +556,8 @@ export interface AttemptState {
    */
   readonly stateUnknown: boolean;
   readonly leaseRequested: boolean;
+  /** The fence of the lease the attempt holds or held, from acquireLease or findLease; null while none is known. */
+  readonly fence: LeaseFence | null;
   readonly leaseReleased: boolean;
   readonly workspaceRequested: boolean;
   readonly workspaceActive: boolean;
@@ -578,6 +603,16 @@ export interface PublicationPlan {
   readonly terminal: 'proceeded' | 'escalated';
 }
 
+/** A lease acquisition failed or was aborted: the lookups that settle whether its grant committed, and what follows. */
+export interface LeaseLookup {
+  readonly attemptNumber: number;
+  /** findLease requests issued: one, and a second only after the pre-lease write was refused. */
+  readonly lookups: number;
+  /** The acquisition's failure class; null when a cancel aborted it. */
+  readonly failureClass: FailureClass | null;
+  readonly timedOut: boolean;
+}
+
 export interface NextAttemptPlan {
   readonly kind: AttemptKind;
   readonly lineage: RepairLineage | null;
@@ -595,6 +630,7 @@ export interface TaskState {
   readonly attempts: readonly AttemptState[];
   readonly currentAttempt: number | null;
   readonly nextAttempt: NextAttemptPlan | null;
+  readonly leaseLookup: LeaseLookup | null;
   readonly publication: PublicationPlan | null;
   readonly spentMicroUsd: number;
   readonly spentWallClockMinutes: number;

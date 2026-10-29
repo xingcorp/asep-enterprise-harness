@@ -18,7 +18,7 @@ import type { RunCommand, RunCoreInput, RunEvent } from './run-core.js';
 import { runTaskSequentially } from './sequential-interpreter.js';
 import type { Answer, TaskEnvironment, TaskTrace } from './sequential-interpreter.js';
 import { decideTask, startTask } from './task-core.js';
-import { TASK_BASE, attemptOf, branchFor, effectsOf, happyAnswer, proceed, ref, requests, shaFor } from './test-support/fixtures.js';
+import { TASK_BASE, attemptOf, branchFor, effectsOf, fenceFor, happyAnswer, proceed, ref, requests, shaFor } from './test-support/fixtures.js';
 import { MAX_USD } from './budget.js';
 import { DEFAULT_ORCHESTRATION_POLICY, NEVER_REPLACEABLE_FAILURE_CLASSES } from './defaults.js';
 import type {
@@ -189,8 +189,19 @@ function publicationFailure(rng: Rng): Answer {
 type DecisionMessage = Extract<TaskMessage, { type: 'approvalDecisionReceived' }>;
 
 // The approval-content choices draw from the side stream too, so they leave the main draws of a seed unchanged.
-function randomEnvironment(rng: Rng, side: Rng, input: TaskCoreInput): TaskEnvironment {
+/** A generated environment, with the durable lease history it models: the grants that committed, per attempt. */
+type GeneratedEnvironment = TaskEnvironment & { readonly grants: ReadonlyMap<number, string> };
+
+function randomEnvironment(rng: Rng, side: Rng, input: TaskCoreInput): GeneratedEnvironment {
   const approvalKinds = new Map<string, ApprovalKind>();
+  // The lease history: a grant may commit although its acquisition failed or was aborted, and later, between a lookup
+  // and the pre-lease write; a recorded terminal refuses any later grant, and a grant never disappears.
+  const grants = new Map<number, string>();
+  const acquiring = new Set<number>();
+  const terminals = new Set<number>();
+  const grantLate = (n: number, p: number) => {
+    if (acquiring.has(n) && !grants.has(n) && !terminals.has(n) && side.chance(p)) grants.set(n, fenceFor(n));
+  };
   // The core accepts a decision only while no request is in flight, so the decision it verifies is the last one sent.
   let lastDecision: DecisionMessage | null = null;
   const accepted = new Map<string, DecisionMessage>();
@@ -226,6 +237,7 @@ function randomEnvironment(rng: Rng, side: Rng, input: TaskCoreInput): TaskEnvir
   };
 
   return {
+    grants,
     respond(request: TaskRequest): Answer {
       const n = attemptOf(request) ?? 0;
       if (request.kind === 'openApprovalRequest') approvalKinds.set(request.approvalRequestId, request.approvalKind);
@@ -277,6 +289,24 @@ function randomEnvironment(rng: Rng, side: Rng, input: TaskCoreInput): TaskEnvir
           if (r < 0.2) return failure(rng);
           return r < 0.6 ? happyAnswer(request) : { kind: 'findAttempt', attemptId: null };
         }
+        case 'acquireLease':
+          if (rng.chance(0.06)) {
+            if (side.chance(0.5)) grants.set(n, fenceFor(n));
+            return failure(rng);
+          }
+          grants.set(n, fenceFor(n));
+          return happyAnswer(request);
+        case 'findLease':
+          // The lookups draw from the side stream, so the main draws of a seed are unchanged.
+          if (side.chance(0.08)) return failure(side);
+          grantLate(n, 0.3);
+          return { kind: 'findLease', fence: grants.get(n) ?? null };
+        case 'recordPreLeaseOutcome':
+          if (side.chance(0.05)) return failure(side);
+          grantLate(n, 0.3);
+          if (grants.has(n)) return { kind: 'recordPreLeaseOutcome', recorded: false };
+          terminals.add(n);
+          return { kind: 'recordPreLeaseOutcome', recorded: true };
         case 'inspectWorkspace':
           if (rng.chance(0.06)) return failure(rng);
           return { kind: 'inspectWorkspace', overstep: rng.chance(0.05) };
@@ -350,6 +380,7 @@ function randomEnvironment(rng: Rng, side: Rng, input: TaskCoreInput): TaskEnvir
       }
     },
     eventsDuring(request: TaskRequest, timers: readonly string[]) {
+      if (request.kind === 'acquireLease') acquiring.add(request.attemptNumber);
       if (request.kind === 'verifyApprovalDecision') {
         if (lastDecision?.decisionId !== request.decisionId) throw new Error(`verification of ${request.decisionId} is not the last decision sent`);
         accepted.set(request.decisionId, lastDecision);
@@ -464,9 +495,18 @@ function checkTrace(input: TaskCoreInput, trace: TaskTrace, label: string): void
     if (e.result.kind === 'findAttempt' && request.kind === 'findAttempt' && e.result.attemptId !== null) return [request.attemptNumber];
     return [];
   }).sort();
+  // A lookup failed (the attempt's existence or lease unknown), the pre-lease write failed (its terminal unknown), or a
+  // second lease lookup found nothing after a refusal (the history contradicts itself).
   const stateUnknown = trace.events.flatMap((e) => {
-    const request = e.type === 'activityFailed' ? seqRequests.get(e.seq) : undefined;
-    return request?.kind === 'findAttempt' ? [request.attemptNumber] : [];
+    const request = seqRequests.get('seq' in e ? e.seq : -1);
+    if (e.type === 'activityFailed' && (request?.kind === 'findAttempt' || request?.kind === 'findLease' || request?.kind === 'recordPreLeaseOutcome')) {
+      return [request.attemptNumber];
+    }
+    const secondLookup = e.type === 'result' && e.result.kind === 'findLease' && e.result.fence === null && request?.kind === 'findLease'
+      && reqs.filter((r) => r.kind === 'findLease' && r.attemptNumber === request.attemptNumber).length === 2
+      && commands.findIndex((c) => c.type === 'request' && c.seq === e.seq) > commands.findIndex((c) => c.type === 'request'
+        && c.request.kind === 'recordPreLeaseOutcome' && c.request.attemptNumber === request.attemptNumber);
+    return secondLookup && request?.kind === 'findLease' ? [request.attemptNumber] : [];
   }).sort();
   const key = (n: number) => `${input.taskId}:attempt:${n}`;
   assert.deepEqual(trace.summary.unrecordedAttempts, stateUnknown.map((n) => ({ attemptNumber: n, idempotencyKey: key(n) })),
@@ -478,7 +518,13 @@ function checkTrace(input: TaskCoreInput, trace: TaskTrace, label: string): void
   }
   const recorded = registered.filter((n) => !stateUnknown.includes(n));
   const outcomes = effectsOf(commands, 'recordAttemptOutcome');
-  assert.deepEqual(outcomes.map((o) => o.attemptNumber).sort(), recorded, `${label}: one outcome per registered attempt`);
+  // A pre-lease terminal is recorded by its request when the slot accepts it; it counts like the effect.
+  const preLeaseRecorded = trace.events.flatMap((e) => {
+    const request = e.type === 'result' ? seqRequests.get(e.seq) : undefined;
+    return e.type === 'result' && e.result.kind === 'recordPreLeaseOutcome' && e.result.recorded && request?.kind === 'recordPreLeaseOutcome'
+      ? [request.attemptNumber] : [];
+  });
+  assert.deepEqual([...outcomes.map((o) => o.attemptNumber), ...preLeaseRecorded].sort(), recorded, `${label}: one outcome per registered attempt`);
   assert.deepEqual(
     effectsOf(commands, 'recordUsage').map((u) => u.attemptNumber).sort(),
     recorded,
@@ -648,12 +694,12 @@ function checkTrace(input: TaskCoreInput, trace: TaskTrace, label: string): void
     assert.ok(o.terminal === 'cancelled' || (o.terminal === 'failed' && foundAfterFailure.has(o.attemptNumber)),
       `${label}: attempt ${o.attemptNumber} never held a lease and ends ${o.terminal}`);
   }
-
-  // Resources: every lease released once, every workspace cleaned or quarantined once.
   for (const r of reqs) {
-    if (r.kind === 'acquireLease') {
-      assert.equal(effectsOf(commands, 'releaseLease').filter((e) => e.attemptNumber === r.attemptNumber).length, 1, `${label}: lease ${r.attemptNumber} released once`);
-    }
+    if (r.kind === 'recordPreLeaseOutcome') assert.ok(r.terminal === 'cancelled' || r.terminal === 'failed', `${label}: pre-lease terminal ${r.terminal}`);
+  }
+
+  // Resources: every workspace cleaned or quarantined once (leases: checkLeases).
+  for (const r of reqs) {
     if (r.kind === 'prepareWorkspace') {
       const disposed = [...effectsOf(commands, 'cleanupWorkspace'), ...effectsOf(commands, 'quarantineWorkspace')]
         .filter((e) => e.attemptNumber === r.attemptNumber);
@@ -858,6 +904,61 @@ function checkPublicationEffects(input: TaskCoreInput, trace: TaskTrace, label: 
   }
 }
 
+// Leases, step by step: every terminal write and release carries the fence the workflow learned for the attempt (from
+// its acquisition or a lookup), and fence null only for an attempt that never asked for a lease; a lookup follows only
+// a lease request, a second one only a refused pre-lease write, and never a third; a pre-lease write is issued only
+// when no lease is known. With the environment's lease history: every grant that committed is released once with its
+// fence, unless the attempt's state could not be read.
+function checkLeases(input: TaskCoreInput, trace: TaskTrace, grants: ReadonlyMap<number, string>, label: string): void {
+  const fence = new Map<number, string>();
+  const asked = new Set<number>();
+  const lookups = new Map<number, number>();
+  const refused = new Set<number>();
+  const released = new Map<number, string[]>();
+  for (const { before, event, decision } of replaySteps(input, trace)) {
+    const request = (event.type === 'result' || event.type === 'activityFailed') && before.pending?.seq === event.seq ? before.pending.request : null;
+    if (event.type === 'result' && request !== null) {
+      const r = event.result;
+      if (r.kind === 'acquireLease' && request.kind === 'acquireLease') fence.set(request.attemptNumber, r.fence);
+      if (r.kind === 'findLease' && request.kind === 'findLease' && r.fence !== null) fence.set(request.attemptNumber, r.fence);
+      if (r.kind === 'recordPreLeaseOutcome' && request.kind === 'recordPreLeaseOutcome' && !r.recorded) refused.add(request.attemptNumber);
+    }
+    for (const c of decision.commands) {
+      if (c.type === 'request' && c.request.kind === 'acquireLease') asked.add(c.request.attemptNumber);
+      if (c.type === 'request' && c.request.kind === 'findLease') {
+        const n = c.request.attemptNumber;
+        const count = (lookups.get(n) ?? 0) + 1;
+        lookups.set(n, count);
+        assert.ok(asked.has(n), `${label}: a lease lookup for attempt ${n}, which never asked for a lease`);
+        assert.ok(count === 1 || (count === 2 && refused.has(n)), `${label}: lease lookup ${count} of attempt ${n}`);
+      }
+      if (c.type === 'request' && c.request.kind === 'recordPreLeaseOutcome') {
+        const n = c.request.attemptNumber;
+        assert.ok(!fence.has(n) && lookups.get(n) === 1 && !refused.has(n), `${label}: a pre-lease write for attempt ${n} with a lease known or unsought`);
+      }
+      if (c.type === 'effect' && c.effect.kind === 'recordAttemptOutcome') {
+        const n = c.effect.attemptNumber;
+        assert.equal(c.effect.fence, fence.get(n) ?? null, `${label}: the terminal of attempt ${n} carries the fence it was granted`);
+        if (c.effect.fence === null) assert.ok(!asked.has(n), `${label}: attempt ${n} asked for a lease and records fence null`);
+      }
+      if (c.type === 'effect' && c.effect.kind === 'releaseLease') {
+        const n = c.effect.attemptNumber;
+        assert.equal(c.effect.fence, fence.get(n), `${label}: the lease of attempt ${n} is released with its fence`);
+        released.set(n, [...(released.get(n) ?? []), c.effect.fence]);
+      }
+    }
+  }
+  const unrecorded = new Set(trace.summary.unrecordedAttempts.map((u) => u.attemptNumber));
+  for (const [n, granted] of grants) {
+    if (unrecorded.has(n)) {
+      assert.equal(released.get(n), undefined, `${label}: attempt ${n} of unknown state is released`);
+      continue;
+    }
+    assert.deepEqual(released.get(n), [granted], `${label}: the lease granted to attempt ${n} is released once with its fence`);
+  }
+  for (const n of released.keys()) assert.ok(grants.has(n), `${label}: attempt ${n} released a lease that was never granted`);
+}
+
 // Pause checks, step by step: a pause takes effect at once when nothing is in flight, and never suspends an
 // approval's expiry.
 function checkPauses(input: TaskCoreInput, trace: TaskTrace, label: string): void {
@@ -932,11 +1033,12 @@ function contentValid(kind: ApprovalKind, decision: ApprovalDecisionValue | null
 // Properties
 // ---------------------------------------------------------------------------
 
-function generate(seed: number): { input: TaskCoreInput; trace: TaskTrace } {
+function generate(seed: number): { input: TaskCoreInput; trace: TaskTrace; grants: ReadonlyMap<number, string> } {
   const rng = rngFor(seed);
   const side = rngFor(seed + 1_000_003);
   const input = randomInput(rng, side, rngFor(seed + 4_000_037));
-  return { input, trace: runTaskSequentially(input, randomEnvironment(rng, side, input)) };
+  const environment = randomEnvironment(rng, side, input);
+  return { input, trace: runTaskSequentially(input, environment), grants: environment.grants };
 }
 
 const PUBLICATION_SEEDS = 3000;
@@ -964,8 +1066,9 @@ function generatePublication(seed: number): { input: TaskCoreInput; trace: TaskT
 test('generated task traces satisfy the orchestration safety invariants', () => {
   const outcomes = new Map<string, number>();
   for (let seed = 1; seed <= SEEDS; seed += 1) {
-    const { input, trace } = generate(seed);
+    const { input, trace, grants } = generate(seed);
     checkTrace(input, trace, `seed ${seed}`);
+    checkLeases(input, trace, grants, `seed ${seed}`);
     checkPauses(input, trace, `seed ${seed}`);
     checkApprovalGates(input, trace, `seed ${seed}`);
     checkPublicationEffects(input, trace, `seed ${seed}`);
@@ -1031,6 +1134,15 @@ test('the generator covers repair, replacement, approvals, pause and cancel path
     for (const e of trace.events) {
       if (e.type === 'result' && e.result.kind === 'findAttempt') seen.add(e.result.attemptId === null ? 'registration-absent' : 'registration-found');
       if (e.type === 'activityFailed' && e.activity === 'findAttempt') seen.add('registration-unknown');
+      if (e.type === 'result' && e.result.kind === 'findLease') {
+        const n = trace.commands.flatMap((c) => (c.type === 'request' && c.seq === e.seq && c.request.kind === 'findLease' ? [c.request.attemptNumber] : []))[0]!;
+        const failed = trace.events.some((f) => f.type === 'activityFailed' && f.activity === 'acquireLease'
+          && trace.commands.some((c) => c.type === 'request' && c.seq === f.seq && c.request.kind === 'acquireLease' && c.request.attemptNumber === n));
+        seen.add(`lease-${e.result.fence === null ? 'absent' : 'found'}-after-${failed ? 'failure' : 'abort'}`);
+      }
+      if (e.type === 'result' && e.result.kind === 'recordPreLeaseOutcome' && !e.result.recorded) seen.add('lease-late-grant');
+      if (e.type === 'activityFailed' && e.activity === 'findLease') seen.add('lease-lookup-failed');
+      if (e.type === 'activityFailed' && e.activity === 'recordPreLeaseOutcome') seen.add('pre-lease-write-failed');
     }
     const toleratedMs = input.attemptBudget.maxWallClockMinutes * 60_000 + input.policy.agentKillGraceSeconds * 1000;
     if (input.policy.agentKillGraceSeconds > 0 && trace.events.some((e) => e.type === 'result' && e.result.kind === 'runAgent'
@@ -1047,9 +1159,10 @@ test('the generator covers repair, replacement, approvals, pause and cancel path
   assert.deepEqual([...seen].sort(), [
     'abort', 'approval-expired', 'assurance-unavailable', 'budget-approval', 'exhausted', 'expired-while-paused',
     'expiry-during-verification', 'extension-granted', 'hostile-policy-failure', 'invalid-content-budget-extension',
-    'invalid-content-publish-change', 'lineage-retry', 'micro-overrun', 'overrun',
+    'invalid-content-publish-change', 'lease-absent-after-abort', 'lease-absent-after-failure', 'lease-found-after-abort',
+    'lease-found-after-failure', 'lease-late-grant', 'lease-lookup-failed', 'lineage-retry', 'micro-overrun', 'overrun',
     'overrun-at-bound',
-    'pause-timeout', 'pause-timeout-in-flight', 'paused', 'paused-while-waiting', 'publication-incomplete',
+    'pause-timeout', 'pause-timeout-in-flight', 'paused', 'paused-while-waiting', 'pre-lease-write-failed', 'publication-incomplete',
     'publish-approval', 'publishBranch-applied', 'publishBranch-none', 'publishBranch-unknown', 'reconciled-absent',
     'reconciled-branch-not-own-with-pr', 'reconciled-own-pr', 'reconciled-pr-not-own', 'reconciled-present',
     'reconciliation-failed',

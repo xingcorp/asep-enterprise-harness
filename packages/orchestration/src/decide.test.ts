@@ -37,6 +37,7 @@ import {
   TASK_REPOSITORY,
   baseInput,
   effectsOf,
+  fenceFor,
   governance,
   happyAnswer,
   indexOfCommand,
@@ -85,6 +86,7 @@ const ALL_REQUESTS: readonly TaskRequestKind[] = [
   'admitTask', 'ensureAttempt', 'findAttempt', 'acquireLease', 'prepareWorkspace', 'storeAttemptInputs', 'runAgent',
   'inspectWorkspace', 'runVerification', 'commitAttempt', 'persistEvidence', 'assuranceRound',
   'openApprovalRequest', 'verifyApprovalDecision', 'publishBranch', 'upsertPullRequest', 'reconcilePublication',
+  'findLease', 'recordPreLeaseOutcome',
 ];
 
 test('activity options: every activity declares an explicit retry limit and start-to-close timeout', () => {
@@ -118,6 +120,13 @@ test('activity options: the critical units are commit plus evidence, push, and P
 test('activity options: the attempt registration and its lookup are short writes a cancel waits for', () => {
   assert.equal(ACTIVITY_OPTIONS.ensureAttempt.cancellable, false);
   assert.equal(ACTIVITY_OPTIONS.findAttempt.cancellable, false);
+});
+
+test('activity options: the lease lookup and the pre-lease outcome write settle a lease and a cancel waits for them', () => {
+  assert.equal(ACTIVITY_OPTIONS.acquireLease.cancellable, true, 'the acquisition itself stays cancellable');
+  assert.equal(ACTIVITY_OPTIONS.findLease.cancellable, false);
+  assert.equal(ACTIVITY_OPTIONS.recordPreLeaseOutcome.cancellable, false);
+  assert.deepEqual(ACTIVITY_OPTIONS.recordPreLeaseOutcome.retry, ACTIVITY_OPTIONS.recordAttemptOutcome.retry);
 });
 
 test('activity options: the publication reconciliation is a read a cancel waits for, retried like the push', () => {
@@ -1985,6 +1994,10 @@ for (const [path, environment, expected] of [
   ['abandon after a non-replaceable agent failure', scripted({ runAgent: agentFails('policy-violation') }), [[1, 'failed']]],
   ['abandon after a failed workspace activity', scripted({ prepareWorkspace: firstOnly(() => ({ kind: 'activityFailed' as const, failureClass: 'environment' as const, timedOut: false })) }),
     [[1, 'failed'], [2, 'proceeded']]],
+  ['abandon after a failed lease acquisition whose grant the lookup found', scripted({ acquireLease: firstOnly(() => ({ kind: 'activityFailed' as const, failureClass: 'environment' as const, timedOut: false })) }),
+    [[1, 'failed'], [2, 'proceeded']]],
+  ['cancel that aborts a lease acquisition whose grant the lookup found', scripted({}, { eventsDuring: (request) => (request.kind === 'acquireLease' ? [cancel()] : []) }),
+    [[1, 'cancelled']]],
   ['abandon after an overstep found by inspection', scripted({ inspectWorkspace: () => ({ kind: 'inspectWorkspace' as const, overstep: true }) }), [[1, 'failed']]],
   ['exhaustion at a cap', scripted({ runAgent: firstOnly(() => ({ kind: 'runAgent' as const, status: 'BUDGET_EXHAUSTED' as const, reportedCostUsd: 5, reportedToolCalls: 50, wallClockMs: 1000, failureClass: null })) }),
     [[1, 'budget-exhausted'], [2, 'proceeded']]],
@@ -2006,6 +2019,150 @@ for (const [path, environment, expected] of [
     assertOutcomeBeforeRelease(runTaskSequentially(baseInput(), environment), expected);
   });
 }
+
+// ---------------------------------------------------------------------------
+// Lease acquisition that fails or is aborted
+// ---------------------------------------------------------------------------
+
+// The grant may commit although acquireLease failed or a cancel aborted it, and then the workflow never received the
+// fence. A non-cancellable lookup settles the lease history first: a lease found is recorded and released with its
+// fence; none found makes the terminal a pre-lease write with fence null, which a late grant can refuse, and then the
+// lookup runs once more. A lookup that cannot read the store ends the task attempt-state-unknown.
+
+const leaseFails = (failureClass: FailureClass = 'environment') => () => ({ kind: 'activityFailed' as const, failureClass, timedOut: true });
+const noLease = () => ({ kind: 'findLease' as const, fence: null });
+const lookupFails = () => ({ kind: 'activityFailed' as const, failureClass: 'environment' as const, timedOut: false });
+
+function leaseTrail(trace: TaskTrace) {
+  return {
+    lookups: requests(trace.commands).flatMap((r) => (r.kind === 'findLease' ? [r.attemptNumber] : [])),
+    preLease: requests(trace.commands).flatMap((r) => (r.kind === 'recordPreLeaseOutcome' ? [[r.attemptNumber, r.terminal]] : [])),
+    outcomes: effectsOf(trace.commands, 'recordAttemptOutcome').map((o) => [o.attemptNumber, o.terminal, o.fence]),
+    releases: effectsOf(trace.commands, 'releaseLease').map((r) => [r.attemptNumber, r.fence]),
+  };
+}
+
+test('lease: an acquisition that fails is settled by a lookup, and the lease found is recorded and released with its fence (the reviewer\'s R29_acquire-failure)', () => {
+  const trace = runTaskSequentially(baseInput(), scripted({ acquireLease: leaseFails() }));
+  assert.deepEqual(leaseTrail(trace), {
+    lookups: [1, 2, 3],
+    preLease: [],
+    outcomes: [[1, 'failed', fenceFor(1)], [2, 'failed', fenceFor(2)], [3, 'failed', fenceFor(3)]],
+    releases: [[1, fenceFor(1)], [2, fenceFor(2)], [3, fenceFor(3)]],
+  });
+  assert.deepEqual([trace.summary.outcome, trace.summary.reason], ['FAILED', 'attempts-exhausted']);
+  assertLegalProjections(trace);
+});
+
+test('lease: a cancel that aborts the acquisition settles the lease first, and the lease found is recorded and released (the reviewer\'s R29_acquire-cancel)', () => {
+  const trace = runTaskSequentially(baseInput(), scripted({}, { eventsDuring: (request) => (request.kind === 'acquireLease' ? [cancel()] : []) }));
+  assert.equal(trace.aborts, 1, 'the acquisition is interrupted');
+  assert.deepEqual(leaseTrail(trace), { lookups: [1], preLease: [], outcomes: [[1, 'cancelled', fenceFor(1)]], releases: [[1, fenceFor(1)]] });
+  assert.equal(trace.summary.outcome, 'CANCELLED');
+  assertLegalProjections(trace);
+});
+
+for (const cancelled of [false, true]) {
+  const when = cancelled ? 'with a cancel pending' : 'without a cancel';
+  const during = (kind: TaskRequestKind) => (cancelled ? cancelDuring(kind) : () => []);
+
+  test(`lease: no lease found after a failed acquisition: the terminal is a pre-lease write with no release, ${when}`, () => {
+    const trace = runTaskSequentially(baseInput(), scripted({ acquireLease: firstOnly(leaseFails()), findLease: noLease }, { eventsDuring: during('findLease') }));
+    const usageAt = indexOfCommand(trace.commands, (c) => c.type === 'effect' && c.effect.kind === 'recordUsage' && c.effect.attemptNumber === 1);
+    const writeAt = indexOfCommand(trace.commands, (c) => c.type === 'request' && c.request.kind === 'recordPreLeaseOutcome');
+    assert.ok(writeAt >= 0 && usageAt > writeAt, 'the zero usage entry follows the recorded terminal');
+    assert.deepEqual(effectsOf(trace.commands, 'recordUsage').filter((u) => u.attemptNumber === 1).map((u) => u.chargedCostUsd), [0]);
+    if (cancelled) {
+      assert.deepEqual(leaseTrail(trace), { lookups: [1], preLease: [[1, 'cancelled']], outcomes: [], releases: [] });
+      assert.equal(trace.summary.outcome, 'CANCELLED');
+    } else {
+      assert.deepEqual(leaseTrail(trace), { lookups: [1], preLease: [[1, 'failed']], outcomes: [[2, 'proceeded', fenceFor(2)]], releases: [[2, fenceFor(2)]] });
+      assert.equal(trace.summary.outcome, 'WAITING_FOR_HUMAN_REVIEW', 'the attempt was abandoned and replaced');
+    }
+    assertLegalProjections(trace);
+  });
+
+  test(`lease: no lease found after an aborted acquisition: the cancelled terminal is a pre-lease write, ${when}`, () => {
+    const trace = runTaskSequentially(baseInput(), scripted({ findLease: noLease }, { eventsDuring: during('acquireLease') }));
+    if (cancelled) {
+      assert.deepEqual(leaseTrail(trace), { lookups: [1], preLease: [[1, 'cancelled']], outcomes: [], releases: [] });
+      assert.equal(trace.summary.outcome, 'CANCELLED');
+    } else {
+      assert.deepEqual(leaseTrail(trace).lookups, [], 'nothing was aborted, so nothing is looked up');
+      assert.equal(trace.summary.outcome, 'WAITING_FOR_HUMAN_REVIEW');
+    }
+  });
+
+  test(`lease: a late grant refuses the pre-lease write; the second lookup finds it, and the terminal and release carry its fence, ${when}`, () => {
+    const trace = runTaskSequentially(baseInput(), scripted({
+      acquireLease: firstOnly(leaseFails()),
+      findLease: (r, n) => (n === 1 ? noLease() : { kind: 'findLease' as const, fence: fenceFor(r.kind === 'findLease' ? r.attemptNumber : 0) }),
+      recordPreLeaseOutcome: () => ({ kind: 'recordPreLeaseOutcome' as const, recorded: false }),
+    }, { eventsDuring: during('recordPreLeaseOutcome') }));
+    const expected = cancelled
+      ? { lookups: [1, 1], preLease: [[1, 'failed']], outcomes: [[1, 'failed', fenceFor(1)]], releases: [[1, fenceFor(1)]] }
+      : { lookups: [1, 1], preLease: [[1, 'failed']], outcomes: [[1, 'failed', fenceFor(1)], [2, 'proceeded', fenceFor(2)]], releases: [[1, fenceFor(1)], [2, fenceFor(2)]] };
+    assert.deepEqual(leaseTrail(trace), expected, 'at most two lookups');
+    assert.equal(trace.summary.outcome, cancelled ? 'CANCELLED' : 'WAITING_FOR_HUMAN_REVIEW');
+    assertLegalProjections(trace);
+  });
+
+  test(`lease: a second lookup that finds no lease contradicts the history: FAILED / attempt-state-unknown, ${when}`, () => {
+    const trace = runTaskSequentially(baseInput(), scripted({
+      acquireLease: leaseFails(), findLease: noLease, recordPreLeaseOutcome: () => ({ kind: 'recordPreLeaseOutcome' as const, recorded: false }),
+    }, { eventsDuring: during('recordPreLeaseOutcome') }));
+    assert.deepEqual(leaseTrail(trace).lookups, [1, 1], 'no third lookup');
+    assertAttemptStateUnknown(trace, 1, 'findLease', cancelled);
+    assert.equal(trace.summary.attempts, 1, 'the attempt exists');
+  });
+
+  test(`lease: a lease lookup that fails ends the task FAILED / attempt-state-unknown, ${when}`, () => {
+    const trace = runTaskSequentially(baseInput(), scripted({ acquireLease: leaseFails(), findLease: lookupFails }, { eventsDuring: during('findLease') }));
+    assert.equal(trace.aborts, 0, 'the lookup is not interrupted');
+    assertAttemptStateUnknown(trace, 1, 'findLease', cancelled);
+  });
+
+  test(`lease: a lease lookup after an aborted acquisition that fails ends FAILED / attempt-state-unknown, ${when}`, () => {
+    const trace = runTaskSequentially(baseInput(), scripted({ findLease: lookupFails }, { eventsDuring: during('acquireLease') }));
+    if (cancelled) assertAttemptStateUnknown(trace, 1, 'findLease', true);
+    else assert.equal(trace.summary.outcome, 'WAITING_FOR_HUMAN_REVIEW', 'nothing was aborted');
+  });
+
+  test(`lease: a pre-lease write that fails leaves the terminal unknown: FAILED / attempt-state-unknown, ${when}`, () => {
+    const trace = runTaskSequentially(baseInput(), scripted({
+      acquireLease: leaseFails(), findLease: noLease, recordPreLeaseOutcome: lookupFails,
+    }, { eventsDuring: during('findLease') }));
+    assertAttemptStateUnknown(trace, 1, 'recordPreLeaseOutcome', cancelled);
+  });
+}
+
+test('lease: a never-replaceable class on the failed acquisition still ends the task with that class after the lookup', () => {
+  const trace = runTaskSequentially(baseInput(), scripted({ acquireLease: leaseFails('duplicate-side-effect') }));
+  assert.deepEqual(leaseTrail(trace), { lookups: [1], preLease: [], outcomes: [[1, 'failed', fenceFor(1)]], releases: [[1, fenceFor(1)]] });
+  assert.deepEqual([trace.summary.outcome, trace.summary.reason], ['FAILED', 'duplicate-side-effect']);
+});
+
+test('lease: a pause does not withhold the lease lookup or the pre-lease write', () => {
+  const trace = runTaskSequentially(baseInput(), scripted({ acquireLease: firstOnly(leaseFails()), findLease: noLease }, {
+    eventsDuring: (request) => (request.kind === 'acquireLease' ? [pause()] : []),
+    whenIdle: idleScript(() => resume()),
+  }));
+  const kinds = requestKinds(trace.commands);
+  assert.deepEqual(kinds.slice(kinds.indexOf('acquireLease'), kinds.indexOf('acquireLease') + 3), ['acquireLease', 'findLease', 'recordPreLeaseOutcome']);
+  assert.equal(trace.summary.outcome, 'WAITING_FOR_HUMAN_REVIEW');
+});
+
+test('lease: every terminal write of a leased attempt carries the fence its acquisition returned', () => {
+  const trace = runTaskSequentially(baseInput(), scripted({ assuranceRound: firstOnly(() => ({ kind: 'assuranceRound' as const, outcome: repair(1, 1) })) }));
+  assert.deepEqual(leaseTrail(trace), {
+    lookups: [], preLease: [], outcomes: [[1, 'repair-requested', fenceFor(1)], [2, 'proceeded', fenceFor(2)]], releases: [[1, fenceFor(1)], [2, fenceFor(2)]],
+  });
+});
+
+test('lease: an attempt that never asked for a lease records its terminal with fence null and releases nothing', () => {
+  const trace = runTaskSequentially(baseInput(), scripted({}, { eventsDuring: (request) => (request.kind === 'ensureAttempt' ? [cancel()] : []) }));
+  assert.deepEqual(leaseTrail(trace), { lookups: [], preLease: [], outcomes: [[1, 'cancelled', null]], releases: [] });
+});
 
 // ---------------------------------------------------------------------------
 // The run workflow

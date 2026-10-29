@@ -60,6 +60,11 @@ export const ACTIVITY_OPTIONS: Readonly<Record<ActivityName, ActivityOptions>> =
   ensureAttempt: options(30, null, retry(10), false),
   findAttempt: options(30, null, retry(10), false),
   acquireLease: options(30, null, retry(10), true),
+  // After a failed or aborted acquisition: a read of the lease history and the
+  // pre-lease terminal write; a cancel waits for them, so the core always knows
+  // whether the attempt holds a lease before its terminal.
+  findLease: options(30, null, retry(10), false),
+  recordPreLeaseOutcome: options(30, null, retry(10), false),
   prepareWorkspace: options(300, 30, retry(3), true),
   storeAttemptInputs: options(120, null, retry(5), true),
   // The agent mutates a worktree and spends money: it is never re-run by the engine.

@@ -28,6 +28,7 @@ import type {
   AttemptTerminal,
   ControlReceipt,
   FailureClass,
+  LeaseFence,
   ObservedBranch,
   ObservedPullRequest,
   OpenApproval,
@@ -77,6 +78,8 @@ const PHASE_OF: Readonly<Record<TaskRequestKind, TaskPhase>> = {
   ensureAttempt: 'ATTEMPT_STARTING',
   findAttempt: 'ATTEMPT_STARTING',
   acquireLease: 'ATTEMPT_STARTING',
+  findLease: 'ATTEMPT_STARTING',
+  recordPreLeaseOutcome: 'ATTEMPT_STARTING',
   prepareWorkspace: 'ATTEMPT_STARTING',
   storeAttemptInputs: 'ATTEMPT_STARTING',
   runAgent: 'AGENT_RUNNING',
@@ -118,6 +121,7 @@ export function startTask(input: TaskCoreInput): TaskDecision {
     attempts: [],
     currentAttempt: null,
     nextAttempt: null,
+    leaseLookup: null,
     publication: null,
     spentMicroUsd: 0,
     spentWallClockMinutes: 0,
@@ -260,12 +264,15 @@ function baseOf(s: Draft, lineage: RepairLineage | null): string {
 
 /**
  * True for the request that finishes a unit already under way: the evidence
- * binding after its commit, the PR upsert once a push has started, and the
- * lookup that settles whether a failed registration inserted its attempt.
+ * binding after its commit, the PR upsert once a push has started, the lookup
+ * that settles whether a failed registration inserted its attempt, and the lease
+ * lookups and pre-lease write that settle a failed or aborted lease acquisition.
  */
 function completesStartedUnit(s: Draft, request: TaskRequest): boolean {
   return request.kind === 'persistEvidence'
     || request.kind === 'findAttempt'
+    || request.kind === 'findLease'
+    || request.kind === 'recordPreLeaseOutcome'
     || request.kind === 'reconcilePublication'
     || (request.kind === 'upsertPullRequest' && s.pushRequested);
 }
@@ -311,6 +318,7 @@ function markIssued(s: Draft, request: TaskRequest): void {
         registered: false,
         stateUnknown: false,
         leaseRequested: false,
+        fence: null,
         leaseReleased: false,
         workspaceRequested: false,
         workspaceActive: false,
@@ -480,12 +488,19 @@ function endAttempt(step: Step, a: MutableAttempt, terminal: AttemptTerminal): v
   recordOutcome(step, a, terminal);
 }
 
+/**
+ * The terminal is written with the caller's fence of the lease the attempt holds or held, or with none for an
+ * attempt that never asked for a lease. An attempt whose lease request is not settled has no terminal yet: its lease
+ * lookup comes first.
+ */
 function recordOutcome(step: Step, a: MutableAttempt, terminal: AttemptTerminal): void {
   if (a.outcomeRecorded) return;
+  if (a.leaseRequested && a.fence === null) throw new Error(`terminal of attempt ${a.attemptNumber} before its lease is settled`);
   a.outcomeRecorded = true;
   effect(step, {
     kind: 'recordAttemptOutcome',
     attemptNumber: a.attemptNumber,
+    fence: a.fence,
     terminal,
     declaredComplete: a.declaredComplete,
     verificationVerdict: a.verdict,
@@ -504,10 +519,10 @@ function disposeWorkspace(step: Step, a: MutableAttempt, disposal: 'cleanup' | '
 
 /** The terminal outcome is written under the lease, so the lease is released only once the outcome is recorded. */
 function releaseLease(step: Step, a: MutableAttempt): void {
-  if (!a.leaseRequested || a.leaseReleased) return;
+  if (a.fence === null || a.leaseReleased) return;
   if (!a.outcomeRecorded) throw new Error(`lease of attempt ${a.attemptNumber} released before its outcome`);
   a.leaseReleased = true;
-  effect(step, { kind: 'releaseLease', attemptNumber: a.attemptNumber });
+  effect(step, { kind: 'releaseLease', attemptNumber: a.attemptNumber, fence: a.fence });
 }
 
 /**
@@ -571,9 +586,16 @@ function onResult(step: Step, result: TaskResult): void {
     }
     case 'acquireLease': {
       const a = current(s);
+      a.fence = result.fence;
       issue(step, { kind: 'prepareWorkspace', attemptNumber: a.attemptNumber, baseSha: baseOf(s, a.lineage) });
       return;
     }
+    case 'findLease':
+      leaseFound(step, result.fence);
+      return;
+    case 'recordPreLeaseOutcome':
+      preLeaseOutcome(step, result.recorded);
+      return;
     case 'prepareWorkspace': {
       const a = current(s);
       a.workspaceActive = true;
@@ -700,6 +722,13 @@ function onActivityFailed(
       attemptStateUnknown(step, attempt(s, request.attemptNumber), 'findAttempt');
       return;
     case 'acquireLease':
+      lookUpLease(step, failureClass, timedOut);
+      return;
+    case 'findLease':
+    case 'recordPreLeaseOutcome':
+      // The store cannot tell whether the attempt holds a lease, or whether its pre-lease terminal committed.
+      attemptStateUnknown(step, attempt(s, request.attemptNumber), request.kind);
+      return;
     case 'prepareWorkspace':
     case 'storeAttemptInputs':
     case 'runAgent':
@@ -737,6 +766,79 @@ function onActivityFailed(
       publicationIncomplete(step, 'remote-unreadable', null);
       return;
   }
+}
+
+/**
+ * A lease acquisition failed after its retries, or a cancel aborted it. The grant may have committed all the same,
+ * and then the workflow never received its fence, so the attempt's lease history is read before any terminal.
+ */
+function lookUpLease(step: Step, failureClass: FailureClass | null, timedOut: boolean): void {
+  const s = step.s;
+  const a = current(s);
+  s.leaseLookup = { attemptNumber: a.attemptNumber, lookups: 1, failureClass, timedOut };
+  issue(step, { kind: 'findLease', attemptNumber: a.attemptNumber });
+}
+
+function leaseLookup(s: Draft) {
+  if (s.leaseLookup === null) throw new Error('no lease lookup');
+  return s.leaseLookup;
+}
+
+/**
+ * The lease history is read. A lease found is the attempt's: its terminal and release carry that fence. None found
+ * makes the terminal a pre-lease one, written with fence null, which a grant that committed since can refuse. A
+ * second lookup runs only after such a refusal, and a lease in history never disappears, so a second lookup that
+ * finds none means the store cannot be trusted.
+ */
+function leaseFound(step: Step, fence: LeaseFence | null): void {
+  const s = step.s;
+  const lookup = leaseLookup(s);
+  const a = attempt(s, lookup.attemptNumber);
+  if (fence !== null) {
+    a.fence = fence;
+    leaseSettled(step);
+    return;
+  }
+  if (lookup.lookups > 1) {
+    attemptStateUnknown(step, a, 'findLease');
+    return;
+  }
+  issue(step, {
+    kind: 'recordPreLeaseOutcome',
+    attemptNumber: a.attemptNumber,
+    terminal: lookup.failureClass === null || s.cancelPending ? 'cancelled' : 'failed',
+    declaredComplete: a.declaredComplete,
+    verificationVerdict: a.verdict,
+    adjudicationId: a.adjudicationId,
+  });
+}
+
+/**
+ * The pre-lease terminal was recorded, and the attempt's usage entry (zero: its agent never ran) follows it; or it
+ * was refused because a grant committed after the lookup, and the history is read again. Usage waits for the
+ * terminal, so an attempt whose terminal stays unknown has no usage entry either.
+ */
+function preLeaseOutcome(step: Step, recorded: boolean): void {
+  const s = step.s;
+  const lookup = leaseLookup(s);
+  if (recorded) {
+    const a = attempt(s, lookup.attemptNumber);
+    a.outcomeRecorded = true;
+    recordUsage(step, a);
+    leaseSettled(step);
+    return;
+  }
+  s.leaseLookup = { ...lookup, lookups: lookup.lookups + 1 };
+  issue(step, { kind: 'findLease', attemptNumber: lookup.attemptNumber });
+}
+
+/** The lease is settled: the attempt is abandoned as after any failed attempt activity, or the abort's cancel closes. */
+function leaseSettled(step: Step): void {
+  const s = step.s;
+  const lookup = leaseLookup(s);
+  s.leaseLookup = null;
+  if (lookup.failureClass === null) close(step, 'CANCELLED', 'cancelled');
+  else abandon(step, lookup.failureClass, lookup.timedOut, lookup.failureClass);
 }
 
 /** The attempt's natural key (task id, attempt number), rendered for audits and the task result. */
@@ -1241,6 +1343,12 @@ function onMessage(state: TaskState, message: TaskMessage): TaskDecision {
         step.abort = true;
         s.pending = null;
       }
+      if (pending?.request.kind === 'acquireLease') {
+        // The aborted grant may still commit: the lease is settled before the cancelled terminal.
+        s.cancelPending = true;
+        lookUpLease(step, null, false);
+        return finish(step);
+      }
       close(step, 'CANCELLED', 'cancelled');
       return finish(step);
     }
@@ -1297,6 +1405,7 @@ function close(
   s.pauseTimerId = null;
   s.deferred = null;
   s.pending = null;
+  s.leaseLookup = null;
   s.currentAttempt = null;
   if (!isLegalProjection(s.projected, outcome) && isLegalProjection(s.projected, s.workStatus)) project(step, s.workStatus);
   project(step, outcome);

@@ -42,6 +42,8 @@ export function statusForRequest(kind: TaskRequestKind, workStatus: ProjectedTas
   switch (kind) {
     case 'admitTask':
     case 'findAttempt':
+    case 'findLease':
+    case 'recordPreLeaseOutcome':
     case 'openApprovalRequest':
     case 'verifyApprovalDecision':
       return null;

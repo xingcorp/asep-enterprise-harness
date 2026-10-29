@@ -31,6 +31,11 @@ export function shaFor(attemptNumber: number): string {
   return attemptNumber.toString(16).padStart(40, 'c');
 }
 
+/** The caller's fence the lease primitive returns for attempt n's grant (opaque to the core). */
+export function fenceFor(attemptNumber: number): string {
+  return `lease-${attemptNumber}`;
+}
+
 /** The remote branch the attempt registration reports for attempt n (the Git adapter's naming rule). */
 export function branchFor(attemptNumber: number): string {
   return `asep/run-1/task-1/att-${attemptNumber}`;
@@ -101,7 +106,11 @@ export function happyAnswer(request: TaskRequest): Answer {
     case 'findAttempt':
       return { kind: 'findAttempt', attemptId: `att-${request.attemptNumber}` as AttemptId };
     case 'acquireLease':
-      return { kind: 'acquireLease' };
+      return { kind: 'acquireLease', fence: fenceFor(request.attemptNumber) };
+    case 'findLease':
+      return { kind: 'findLease', fence: fenceFor(request.attemptNumber) };
+    case 'recordPreLeaseOutcome':
+      return { kind: 'recordPreLeaseOutcome', recorded: true };
     case 'prepareWorkspace':
       return { kind: 'prepareWorkspace' };
     case 'storeAttemptInputs':
