@@ -20,6 +20,11 @@
 //   3. The dead owner is refused from then on: its lease can never be revived,
 //      and the log only lets the current, live owner finish a record.
 //
+// ADMISSION FIRST. A resume publishes (push, PR) just as a fresh run does, so
+// it is gated the same way: the task's risk is read from the authoritative task
+// row and admitted BEFORE the lease is taken. A deferred risk (R2–R4) stops the
+// resume having touched nothing but that read.
+//
 // WHAT IS RESUMED. Only attempts whose harness commit AND evidence bundle are
 // already durable — the crash windows in which something may have reached the
 // outside world (the push and the PR). The commit was minted in the dead
@@ -32,7 +37,7 @@
 
 import type {
   TenantScope, ArtifactId, ArtifactRef, RepositoryBindingId, RunId, TaskId, AttemptId,
-  TaskStatus,
+  TaskStatus, RiskLevel,
 } from '@asep/contracts';
 import type {
   EvidenceStore, ForgeProvider, SideEffectLog, WorkspaceLeaseRepository, Lease,
@@ -40,6 +45,7 @@ import type {
 import { parseSideEffectResultRef } from '@asep/ports';
 import type { SpanTracer, AuditSink } from '@asep/observability';
 import { completionObserver, fencedBy } from './completion-observer.js';
+import { admitRisk } from './risk-admission.js';
 import {
   pushStep, upsertPrStep, adoptVerifiedEvidence, isEvidenceAbsent,
 } from './pipeline-steps.js';
@@ -65,6 +71,7 @@ export interface ResumeTaskPort {
   getScoped(scope: TenantScope, id: TaskId): Promise<{
     readonly version: number;
     readonly status: TaskStatus;
+    readonly risk: RiskLevel;
   }>;
   updateStatus(
     scope: TenantScope, id: TaskId, expectedVersion: number, status: TaskStatus,
@@ -102,11 +109,14 @@ export interface ResumeAttemptInput {
   readonly actor?: string;
 }
 
-export type ResumeStop = 'complete' | 'lease-denied' | 'not-resumable';
+export type ResumeStop = 'complete' | 'admission' | 'lease-denied' | 'not-resumable';
 
 export interface ResumeAttemptResult {
   readonly stoppedAt: ResumeStop;
   readonly reason?: string;
+  // Set once admission has run: whether the resumed task still needs a
+  // separately recorded human independent review (R1).
+  readonly requiresHumanIndependentReview?: boolean;
   readonly leaseId?: string;
   readonly fencingEpoch?: number;
   readonly commitSha?: string;
@@ -131,6 +141,7 @@ function isLease(v: Lease | { readonly reason: string }): v is Lease {
 
 /**
  * Resume a crashed attempt from its durable state under a fresh lease. Returns
+ * `admission` when the task's risk is not admitted (nothing was touched),
  * `lease-denied` when the previous holder's lease is still live, `not-resumable`
  * when the attempt has to be re-executed, and `complete` once the push, the PR
  * and the authoritative transitions all converged.
@@ -140,6 +151,14 @@ export async function resumeAttemptToReview(
 ): Promise<ResumeAttemptResult> {
   const { scope } = input;
 
+  // --- GATE: admission from the authoritative task risk, before ANY effect ----
+  const task = await input.repositories.tasks.getScoped(scope, input.taskId);
+  const admission = admitRisk(task.risk);
+  if (!admission.admitted) {
+    return { stoppedAt: 'admission', reason: `${task.risk}: ${admission.reason}` };
+  }
+  const admitted = { requiresHumanIndependentReview: admission.requiresHumanIndependentReview };
+
   const lease = await input.leases.acquire(scope, {
     repositoryBindingId: input.repositoryBindingId,
     branch: input.branch,
@@ -147,9 +166,9 @@ export async function resumeAttemptToReview(
     ttlMs: input.leaseTtlMs,
   });
   if (!isLease(lease)) {
-    return { stoppedAt: 'lease-denied', reason: lease.reason };
+    return { ...admitted, stoppedAt: 'lease-denied', reason: lease.reason };
   }
-  const held = { leaseId: lease.leaseId, fencingEpoch: lease.fencingEpoch };
+  const held = { ...admitted, leaseId: lease.leaseId, fencingEpoch: lease.fencingEpoch };
 
   let finished = false;
   try {

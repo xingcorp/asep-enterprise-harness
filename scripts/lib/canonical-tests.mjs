@@ -206,6 +206,9 @@ export const REQUIRED_SUITES = Object.freeze({
   // (GitHub rate limit on the PR) injected into a real run of the governed
   // pipeline, with the runbook's recovery followed on the state it leaves.
   'asep-suite:pilot-faults': 'apps/control-plane-api/src/pilot-faults.test.ts',
+  // The resume path is admitted from the task row's own risk BEFORE its lease:
+  // a deferred risk (R2–R4) stops having touched nothing but that read.
+  'asep-suite:resume-attempt': 'packages/application/src/resume-attempt.test.ts',
 });
 
 /** The machine-readable marker a suite prints at module load: `SUITE-ID: <id>`. */

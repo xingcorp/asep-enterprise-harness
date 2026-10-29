@@ -327,3 +327,30 @@ test('an attempt whose evidence is missing is not resumed: evidence for an unver
     await cleanup(c);
   }
 });
+
+// A resume publishes, so it is admitted like a fresh run: from the task row's
+// own risk, before the lease. Here the authoritative row says R4, a deferred
+// risk, so the resume must take no lease and touch no record, ref or PR.
+test('a resume of a task whose authoritative risk is deferred stops at admission and touches nothing', async () => {
+  const c = await crashRun('after-push');
+  try {
+    await c.client.query(`update tasks set risk = 'R4' where id = $1`, [c.taskId]);
+    const leasesBefore = (await c.client.query(
+      `select count(*)::int as n from workspace_leases where attempt_id = $1`, [c.attemptId],
+    )).rows[0]!['n'];
+    const r = await resume(c);
+    assert.equal(r.stoppedAt, 'admission');
+    assert.match(r.reason ?? '', /R4/);
+    assert.equal((await c.client.query(
+      `select count(*)::int as n from workspace_leases where attempt_id = $1`, [c.attemptId],
+    )).rows[0]!['n'], leasesBefore, 'no lease was taken');
+    const push = (await records(c)).find((x) => x['operation'] === 'push')!;
+    assert.equal(push['state'], 'PENDING', 'nothing was taken over');
+    assert.equal(push['owner_lease_id'], c.deadLease);
+    assert.equal((await c.forge.listPullRequests()).length, 0, 'no PR was opened');
+    const task = await c.client.query(`select status from tasks where id = $1`, [c.taskId]);
+    assert.notEqual(task.rows[0]!['status'], 'WAITING_FOR_HUMAN_REVIEW');
+  } finally {
+    await cleanup(c);
+  }
+});
