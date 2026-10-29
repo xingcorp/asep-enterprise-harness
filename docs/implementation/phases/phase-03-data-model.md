@@ -1,10 +1,11 @@
-# Phase 3 — Data Model (LOCKED v5, pending controller confirmation)
+# Phase 3 — Data Model (LOCKED v6, pending controller confirmation)
 
 > Companion to `phase-03-plan.md`. PostgreSQL 17 (same digest-pinned image as Phase 2). Base `00a6889`; v1 of
 > this document is at `80bb76a`, v2 at `98e92cf`, v3 at `7cbf5d3`. v2 folded in the Codex plan review; v3 folds in
 > the Codex lock-check of v2 and the controller's reconciliation R15–R19; v4 folds in the Codex review of v3 and
 > reconciliation R21 (`phase-03-review-log.md`, section "Review v3"); v5 folds in the Codex re-audit of v4 and
-> reconciliation R24 (section "Review v4"). The reconciliation wins
+> reconciliation R24 (section "Review v4"); v6 folds in the Codex re-audit of v5 and reconciliation R25–R28
+> (section "Review v5"). The reconciliation wins
 > where it and this document disagree.
 > Lane A migration range: **`0100`–`0199`** (lane contract). Migrations are append-only, checksummed and applied
 > in strictly ascending id order by the Phase 2 migrator, which allows gaps (`adapters/persistence/src/migrator.ts:45-51`).
@@ -368,6 +369,9 @@ schemaVersion: "1.0.0"
 organizationId, projectId, repositoryBindingId, runId, taskId     (ULID pattern)
 risk: R0..R4
 baseSha: 40-hex
+baseBranch: Git ref name               (the branch the task's PR targets, from the repository binding; the PR
+                                       upsert uses it and the publication reconciliation checks the PR's base
+                                       against it, R27)
 workOrderRef: ArtifactRef            (WorkOrder already stored and validated)
 contextPackRef: ArtifactRef
 attemptBudget: Budget                (must equal WorkOrder.budget; checked by the first activity)
@@ -447,8 +451,22 @@ referential-integrity check is updated in lockstep (CR-19).
 | `unknown` | either is possible | anything else: a fencing error after the forge call, a timeout, any error after the call started, whatever its retryability; also the interpreter's reading of a failure that carries no effect |
 
 A result carries `effect: 'applied'` (and the PR number for the upsert). A failure carries the effect in its
-details. `unknown` leads to `reconcilePublication` (read-only: the attempt branch head and the open PR for it)
-before any terminal state, and an unreconcilable publication ends the task `FAILED / publication-incomplete` with
+details. `unknown` leads to `reconcilePublication` before any terminal state. The read reports what it observed,
+and the core decides (R27):
+
+```text
+reconcilePublication request: { attemptNumber, remoteBranch, expectedHeadSha, expectedBaseBranch }
+reconcilePublication result:  { branchHeadSha: 40-hex | null,                     (null: the branch does not exist)
+                                pullRequest: { number, headBranch, headSha, baseBranch } | null }
+                                                                    (the open PR whose head is the remote branch)
+```
+
+The identity predicate, the same after a push and after a PR upsert: `branchHeadSha` equals the attempt's verified
+commit, and a reported PR has `headBranch` = the attempt's branch, `headSha` = that commit and `baseBranch` = the
+task input's `baseBranch`. After the push the predicate continues to the PR upsert, a branch absent with no PR is
+`none` (`FAILED / publication-failed`), and anything else is unreconciled. After the PR upsert the predicate with a
+PR present continues as a successful upsert with that PR, and anything else is unreconciled. An unreconciled
+publication, or a failed read, ends the task `FAILED / publication-incomplete` whatever cancel is pending, with
 the audit row `publication.incomplete` (attempt, remote branch, whether the push was confirmed, whether a cancel
 was pending). Retryability stays the engine's concern and never reaches the core (architecture §4.1, §5). The
 overrun ledger entry records `usage_out_of_bound` when the reported cost, tool calls or measured wall-clock was not

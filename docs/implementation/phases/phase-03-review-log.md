@@ -2,8 +2,9 @@
 
 > Lane A adjudication of the independent Codex plan review (workflow step 3), of the Codex lock-check of the
 > v2 plan (section "Lock-check v2", which also records the v3 freeze gate), and of the Codex review of plan v3 and
-> audit of the S2 code (section "Review v3", which records the v4 freeze gate), and of the Codex re-audit of plan v4
-> and the S2 fixes (section "Review v4" at the end, which records the v5 freeze gate).
+> audit of the S2 code (section "Review v3", which records the v4 freeze gate), of the Codex re-audit of plan v4
+> and the S2 fixes (section "Review v4", which records the v5 freeze gate), and of the Codex re-audit of plan v5 and
+> the S2 fixes (section "Review v5" at the end, which records the v6 freeze gate).
 > Planner: Lane A (Claude). Reviewer: Codex `gpt-5.6-sol` via the kiro-proxy gateway, read-only, run by the
 > controller on 2026-10-29. Raw review: `phase-03-plan-review-codex-v1.md`.
 > Reviewed base: `80bb76a` · Verdict: **REQUEST_CHANGES** · Confidence: 0.98.
@@ -1082,7 +1083,8 @@ firings can arrive while a request is in flight.
 - [x] Reconciliation R21 applied.
 - [ ] CR-10 verbatim text pasted (open by design; G-LB, R18).
 
-**PLAN_STATUS:** LOCKED v4 (pending controller confirmation)
+**PLAN_STATUS (v4):** LOCKED v4, superseded by v5 below. The re-audit of v4 found two plan gaps and a register
+drift (section "Review v4").
 
 ## Review v4
 
@@ -1167,6 +1169,10 @@ Architecture §4.1, §5, §9; data model §4.4; plan §17, §26 (S2, S6, S7); ri
 **Validation.** G13 rewritten: the effect matrix for push and PR upsert, each with and without a cancel pending,
 with the same outcome whatever the retryability, `PUSH_PROBE` as a direct trace, and the property oracle above; D4
 pins the bridge's effect mapping (S7).
+
+**Superseded in part by R27 (section "Review v5").** "PR found → as a successful upsert" was too weak: a PR found
+at another head was taken as this attempt's. Both reconciliation paths now apply one identity predicate to the
+observed branch tip and PR identity.
 
 ### P3-PLAN4-HIGH-002 and P3-S2R-HIGH-001 — Clamping before the overrun check hid an overrun at the bound — ACCEPTED (R24)
 
@@ -1284,4 +1290,225 @@ holding a reflective name is a literal key wherever it appears (architecture §3
 - [x] Reconciliation R24 applied.
 - [ ] CR-10 verbatim text pasted (open by design; G-LB, R18).
 
-**PLAN_STATUS:** LOCKED v5 (pending controller confirmation)
+**PLAN_STATUS (v5):** LOCKED v5, superseded by v6 below. The re-audit of v5 found two plan gaps and a register
+drift (section "Review v5").
+
+## Review v5
+
+> Lane A adjudication of the independent Codex re-audit of plan v5 and of the S2 fixes.
+> Reviewer: Codex `gpt-6.1-sol` via the kiro-proxy gateway, read-only, run by the controller on 2026-10-29 as a single
+> uninterrupted run of the Codex CLI 0.165.0; the gateway's own instructions apply (R16). Raw output:
+> `phase-03-review-codex-v5.md`.
+> Reviewed snapshot: `ac04c8c` · Verdict: **REQUEST_CHANGES** · Confidence: 0.98.
+> Controller gate at `ac04c8c`, clean detached worktree: `pnpm verify:all` exit 0, 777 pass, 0 fail, 0 skipped;
+> 53 test files, 31 required suites.
+> Binding input: reconciliation R27 (decisions on this re-audit) and the two slot-contract rules of R28; R25 accepts
+> the stricter purity deny set of the v5 follow-ups, and R26 assigns the gate-crash workaround to the Phase 2 lane.
+> Lane A applies them exactly as written. Code line numbers below are at `ac04c8c` (the code is unchanged between
+> `ac04c8c` and this docs commit).
+
+### Summary
+
+The re-audit confirms the three P3-PLAN4 findings FOLDED. Of the four v4 S2 findings, P3-S2R-HIGH-001, MED-001 and
+MED-002 are RESOLVED, and with them v3's P3-S2-MED-001 and MED-002; P3-S2R-HIGH-002 and v3's P3-S2-HIGH-003 stay
+PARTIAL. P3-PLAN-HIGH-004 stays PARTIAL by design until G-LB (R18). It raises seven new findings.
+
+| Group | Count | ACCEPTED | PARTIAL | REJECTED |
+|---|---|---|---|---|
+| Plan HIGH (P3-PLAN5-HIGH-001, 002) | 2 | 2 | 0 | 0 |
+| Plan MEDIUM (P3-PLAN5-MED-001) | 1 | 1 | 0 | 0 |
+| S2 HIGH (P3-S2V5-HIGH-001, 002) | 2 | 2 | 0 | 0 |
+| S2 MEDIUM (P3-S2V5-MED-001) | 1 | 1 | 0 | 0 |
+| S2 LOW (P3-S2V5-LOW-001) | 1 | 0 | 0 | 1 |
+| **Total** | **7** | **6** | **0** | **1** |
+
+Each earlier finding the review marks PARTIAL is closed through the new finding that names its remaining gap:
+
+| Earlier finding | Remaining gap | Closed through |
+|---|---|---|
+| P3-S2R-HIGH-002 | the reconciliation after a PR-upsert failure took any PR found as this attempt's | P3-PLAN5-HIGH-002, P3-S2V5-HIGH-001 |
+| P3-S2-HIGH-003 | a PR at another head counted as a reconciled publication, also with a cancel pending | P3-PLAN5-HIGH-002, P3-S2V5-HIGH-001 |
+
+The review's reconciliation table marks R17, R21 and R24 PARTIAL for the same publication gap, R23 as a deviation
+(P3-PLAN5-HIGH-001, P3-S2V5-HIGH-002) and R10 as a minor deviation (P3-S2V5-LOW-001); each is settled below. The S2
+code findings are fixed by the follow-up commits after this docs commit, one finding or tight group per commit, test
+first; the step report names each commit, the tests that prove it and the mutation check that shows them red
+without the fix.
+
+New: risk PR3-46. Amended: architecture §3, §4.1 (flow, terminal before lease, pre-lease rule), §5, §9, §12; data
+model §4.2 (`baseBranch`), §4.4; exit B2, D13, G4, G11, G13, J1, J5; plan §11, §17, §26 (S0, S2, S6, S7), the step
+table and the output block; risk PR3-18, PR3-42, PR3-44; threat T3-19, T3-22; research Q11.
+
+### P3-PLAN5-HIGH-002 and P3-S2V5-HIGH-001 — The reconciliation took any PR found as this attempt's — ACCEPTED (R27)
+
+**Finding.** After a PR-upsert failure the core checks only `prNumber !== null` (`task-core.ts:763`), and the
+reconciliation result carries no PR identity (`types.ts:376-382`). The plan required only "PR found"
+(`phase-03-architecture.md:216` at `ac04c8c`). The reviewer's `PR_WRONG_HEAD_PROBE` read a branch tip other than
+the attempt's commit with a PR present: the task ended `WAITING_FOR_HUMAN_REVIEW` with that PR and no incident, and
+`CANCELLED` as a reconciled publication with a cancel pending. The generator produced the same counterexample at
+seed 1351 of an extended run (push failure with effect `applied`, PR upsert `unknown`, branch tip `ffff…`, PR 11),
+and the oracle passed it, because its publication check ran only when `prNumber === null`
+(`invariants.test.ts:583`) and its effect check looked only at whether a reconciliation was issued
+(`invariants.test.ts:645-659`). Re-running that generator here over seeds 1 to 10 000 at `ac04c8c` found eight such
+handoffs, the first at seed 1351.
+
+**Disposition.** ACCEPTED. R27 decides the behavior.
+
+**Locked change.**
+
+- One identity predicate on both reconciliation paths: the remote branch tip equals the attempt's verified commit,
+  and the PR, if any, has that branch as head, that commit as head SHA and the expected base.
+- The expected base needs a source the core can compare: the task workflow input gains `baseBranch` (the branch the
+  task's PR targets, from the repository binding), the PR upsert request carries it, and the reconciliation request
+  carries it as `expectedBaseBranch`. This is Lane A's choice of where the expected base comes from; R27 fixes only
+  that the base is checked.
+- The reconciliation result carries what the read observed (`branchHeadSha`, and `pullRequest` with its number,
+  head branch, head SHA and base), so the core decides, not the activity.
+- After the push: identity holds → the PR upsert runs; the branch absent with no PR → `FAILED / publication-failed`
+  (the read shows the push absent, effect `none` under R24; `CANCELLED` with a cancel pending, since nothing is on
+  the remote); anything else → `FAILED / publication-incomplete`. After the PR upsert: identity holds with a PR →
+  as a successful upsert with that PR; anything else, a PR absent included → `FAILED / publication-incomplete`. A
+  failed read → `FAILED / publication-incomplete`. `publication-incomplete` keeps its branch audit and wins over a
+  pending cancel.
+- Lane A reads R27's "a moved or missing branch" as a branch that is not at the attempt's commit once the push was
+  confirmed, or that is missing while a PR exists. On the push path an absent branch with no PR is exactly R24's
+  "a reconciliation read of the remote shows the effect absent", which R24 makes `none`; this keeps the v5 tests
+  that R27 did not question. If the controller meant every absent branch, the change is one line in the core.
+- The property oracle checks identity on every publication: a PR number the task reports comes from an upsert after
+  an applied push or from a reconciliation result that satisfies the predicate, and every reconciliation result is
+  followed by the decision the predicate gives. The generator answers reconciliations with wrong heads, moved and
+  missing branches, and PRs at another head branch, head SHA or base, from its side stream, so seed 1351 keeps its
+  scenario.
+
+Architecture §4.1, §5, §9; data model §4.2, §4.4; plan §11, §17, §26 (S2, S6, S7); risk PR3-18, PR3-44; threat T3-19.
+
+**Validation.** G13 amended: `PR_WRONG_HEAD_PROBE` and seed 1351 as tests; a wrong head, a moved or missing branch,
+a PR at another head branch, head SHA or base, and an unreadable remote, each with and without a cancel pending, on
+both paths; the oracle above.
+
+### P3-PLAN5-HIGH-001 and P3-S2V5-HIGH-002 — The lease was released before the terminal outcome — ACCEPTED (R27, R28)
+
+**Finding.** Abandon, exhaustion and close emit `releaseLease` before `recordAttemptOutcome`
+(`task-core.ts:859-860`, `:883-884`, `:1202-1203`), and the plan prescribes that order
+(`phase-03-plan.md:348`, `:352`; `phase-03-architecture.md:225` at `ac04c8c`). R23 requires the terminal outcome to
+be recorded **before** the lease is released, with the caller's fence in the same transaction as the write, so the
+planned fenced helper would run after the lease is gone. `REPAIR` already records first (`task-core.ts:946-948`), but
+no test checks the order: the reviewer inserted a release before its `endAttempt` and all 229 package tests stayed
+green.
+
+**Disposition.** ACCEPTED. R27 applies R23 from the orchestrator side; R28 adds the pre-lease rule.
+
+**Locked change.**
+
+- On every path where the attempt holds a lease (repair, abandon, exhaustion, verification stop, `BLOCK`, review
+  handoff, cancel, pause timeout and any other close) the order is reap and dispose, then `recordUsage` and
+  `recordAttemptOutcome`, then `releaseLease`. The interpreter runs effects in order, each to completion before the
+  next, so the outcome's result is in before the release starts; a failed outcome write never lets the release run.
+- The core refuses to emit a release for an attempt whose outcome is not recorded, the property test checks the
+  order per attempt, and each path has a direct test; the reviewer's mutation must turn them red.
+- The outcome write presents the caller's fence from `acquireLease` (R23). An attempt that never held a lease records
+  `fence: null`, and only with a terminal of the pre-lease allowlist `cancelled` or `infrastructure-failed` (R28).
+
+Architecture §4.1, §5, §9, §12; plan §11, §17, §26 (S0, S6, S7); exit G4, G11, J5; risk PR3-46.
+
+**Validation.** J5 amended: per-attempt ordering oracle, one direct core test per leased path, the reviewer's mutation
+red.
+
+**Pre-lease allowlist check (R28).** Every path in the core where an attempt is registered and never leased, with the
+terminal the core emits today and the terminal it takes in the slot vocabulary:
+
+| Path | Terminal today | Slot terminal |
+|---|---|---|
+| A cancel accepted while `ensureAttempt` ran (non-cancellable), so `acquireLease` is never issued | `cancelled` | `cancelled` |
+| A pause withheld `acquireLease`; its pause timeout fires (task `BLOCKED / pause-timeout`) | `cancelled` | `cancelled` |
+| A pause withheld `acquireLease`; a cancel follows | `cancelled` | `cancelled` |
+| `ensureAttempt` failed and `findAttempt` found the row (task `FAILED / attempt-registration-failed`) | `failed` | `infrastructure-failed` (S0 rename); `cancelled` with a cancel pending |
+
+Two paths are outside what the core can settle alone, and come back to the controller:
+
+| Path | Terminal today | Why it is open |
+|---|---|---|
+| `acquireLease` fails after its retries, or a cancel aborts it (it is cancellable) | `failed`, or `cancelled` | The grant may have committed before the failure or the abort. If it did not, this is a pre-lease attempt and `infrastructure-failed` or `cancelled` with `fence: null` fits the allowlist. If it did, the attempt held a lease, so R28 (3) and (7) refuse `fence: null`, and the workflow never received the fence to present. No new terminal is proposed; the choice is between a lease lookup after a failed or aborted acquire (like `findAttempt`) and a slot-side rule for this case. |
+| `ensureAttempt` failed and `findAttempt` failed too | none | Whether the row exists is unknown, so the core emits no attempt-bound effect (D13, R21) and audits `attempt.registration-unreconciled`. If the row does exist, it has no terminal, against R28's "every terminal is recorded". |
+
+No path emits a terminal outside the allowlist once S0 maps the found-after-failure row to `infrastructure-failed`.
+
+### P3-PLAN5-MED-001 — PR3-18 and T3-19 still ended every failed PR upsert `publication-incomplete` — ACCEPTED (R27)
+
+**Finding.** PR3-18 and T3-19 still said a PR upsert that fails after its retries always ends
+`FAILED / publication-incomplete` (`phase-03-risk-register.md:30`, `phase-03-threat-model-delta.md:68` at
+`ac04c8c`), while G13 continues when the reconciliation confirms the PR (`phase-03-exit-criteria.md:396`).
+
+**Disposition.** ACCEPTED.
+
+**Locked change.** PR3-18 and T3-19 say `publication-incomplete` only for a publication that cannot be reconciled
+under the identity predicate (or whose read fails, or that ends with no PR). PR3-44 adds the wrong-head case.
+
+**Validation.** Documentation only; G13 is the executable criterion.
+
+### P3-S2V5-MED-001 — Locale and host reads passed the purity check — ACCEPTED (R27)
+
+**Finding.** The detector denied named globals only (`purity.test.ts:94`, `:247`), so `(1234.5).toLocaleString()`
+and `navigator.hardwareConcurrency` scanned clean. The reviewer appended the locale read to `task-core.ts` in memory
+and all 229 tests stayed green; the same expression gives `1,234.5`, `1.234,5` and `1 234,5` under three locales.
+
+**Disposition.** ACCEPTED.
+
+**Locked change.**
+
+- Globals are an allowlist (R27): every identifier in a value position that the checker resolves to a declaration
+  outside its own file (a lib or ambient declaration), or to nothing, must be one of `Object`, `Array`, `Number`,
+  `String`, `Boolean`, `BigInt`, `Map`, `Set`, `JSON`, `Error`, `RangeError`, `TypeError`, `Symbol`, `Math`,
+  `undefined`, `NaN`, `Infinity`. A shorthand property and a local re-export are resolved to the value behind them.
+- The member deny set stays and gains the locale-dependent members `toLocaleString`, `toLocaleDateString`,
+  `toLocaleTimeString`, `toLocaleUpperCase`, `toLocaleLowerCase` and `localeCompare`. `Symbol` is allowed without
+  its registry reads `Symbol.for` and `Symbol.keyFor`; `Math` keeps its pure-member rule.
+- Three shapes the allowlist alone would miss are rules too, each with a seed: a local `declare` (it reads a host
+  global under a local name), `import.meta`, and the host-dependent error members `stack`, `captureStackTrace`,
+  `prepareStackTrace` and `stackTraceLimit` (a stack holds host paths). Like R25's additions, they are stricter than
+  R27's text.
+- The architecture states what the detector still does not close.
+
+Architecture §3; exit B2; risk PR3-42; threat T3-22; research Q11.
+
+**Validation.** B2 amended: the reviewer's two probes and a global outside the allowlist reached directly, through
+a shorthand property, a local re-export and a local `declare` are seeds; the clean-set control with the allowlisted
+globals stays green on the production core.
+
+### P3-S2V5-LOW-001 — The `usageMicroUsd` export was removed — REJECTED (R27)
+
+**Finding.** The v5 follow-up removed `usageMicroUsd` from `packages/orchestration/src/index.ts`
+(`index.ts:19`; it was exported at `7694b8b`), which R10 calls append-only.
+
+**Disposition.** REJECTED, as R27 decides. R10's append-only rule exists so that cross-lane merges of shared index
+files are a union. `packages/orchestration` is Lane A's own, unmerged package, and nothing outside it imports it
+(`git grep -n "@asep/orchestration"` outside `packages/orchestration` and `git grep -n usageMicroUsd` outside the docs
+both return nothing at `ac04c8c`). The removed function clamped usage to the bound before the overrun check, which is
+what hid the overrun of P3-S2R-HIGH-001; removing it is the fix, and a compatibility wrapper would put that clamp
+back within reach.
+
+### Observations settled by R25, R26 and R28
+
+- **Stricter purity deny set (R25).** `Intl`, `Temporal`, the four `Object` members that reach a prototype and "a
+  string holding a reflective name anywhere" are accepted; the defence-layer statement still applies.
+- **Gate crash root cause (R26).** The intermittent `Check failed: end > addr.` abort is the Node 24 V8 wasm
+  import-wrapper bug (nodejs/node#66366). The Phase 2 lane adds `--no-wasm-code-gc` to every test process; Lane A
+  adds nothing. Lane A still reports any crash with its suite, run and machine load (R24).
+- **Money at the seam (R28).** Every money field of the slot block is integer micro-USD. The core already keeps money
+  in integer micro-USD (architecture §10), so Lane A's side is the wrapper rule in architecture §12: fill the block's
+  money fields from those integers and read reported usage as non-negative safe integers or `null`. Exit J1.
+
+### Freeze gate (v6)
+
+- [x] Every finding of the re-audit dispositioned: 6/7 new ACCEPTED, P3-S2V5-LOW-001 REJECTED with R27's reason; the
+      two PARTIAL findings closed through P3-S2V5-HIGH-001; the RESOLVED statuses and P3-PLAN-HIGH-004 (PARTIAL by
+      design) confirmed.
+- [x] 0 unresolved CRITICAL/HIGH in the plan, **except** the verbatim-text part of P3-PLAN-HIGH-004, which is open by
+      design until G-LB and blocks S0. The S2 code HIGHs are folded here and fixed by the follow-up commits.
+- [x] Canonical docs updated: plan, architecture, data model, exit criteria, risk register, research register,
+      threat model delta.
+- [x] Reconciliation R27 and the R28 slot rules applied; the pre-lease paths listed above, two of them open with the
+      controller.
+- [ ] CR-10 verbatim text pasted (open by design; G-LB, R18).
+
+**PLAN_STATUS:** LOCKED v6 (pending controller confirmation)

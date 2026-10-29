@@ -1,11 +1,12 @@
-# Phase 3 — Exit Criteria (LOCKED v5, pending controller confirmation; machine-checkable)
+# Phase 3 — Exit Criteria (LOCKED v6, pending controller confirmation; machine-checkable)
 
 > Phase 3 is COMPLETE only when every MUST below passes from a clean checkout of the phase branch, as run by
 > the **controller** (lane contract step 5). Base `00a6889`; v1 at `80bb76a`, v2 at `98e92cf`, v3 at `7cbf5d3`. v2
 > folded in the Codex plan review and reconciliation R1–R14; v3 folds in the Codex lock-check of v2 and
 > reconciliation R15–R20 (`phase-03-review-log.md`, section "Lock-check v2"); v4 folds in the Codex review of v3
 > and audit of S2 and reconciliation R21 (section "Review v3"); v5 folds in the Codex re-audit of v4 and the S2
-> fixes and reconciliation R24 (section "Review v4").
+> fixes and reconciliation R24 (section "Review v4"); v6 folds in the Codex re-audit of v5 and the S2 fixes and
+> reconciliation R25–R28 (section "Review v5").
 > Each MUST names the executable test that proves it: `file` + SUITE-ID. Files marked *(new)* do not exist yet.
 > They are created by the slice named in `phase-03-plan.md` §26. Unit suites run in `pnpm test`, and
 > `*.itest.ts` suites run in `pnpm test:integration` against **real** Temporal, PostgreSQL, MinIO, Docker and
@@ -84,9 +85,15 @@
       `Math` other than its listed pure members, timers, `performance`, `process`, `crypto`, `require`,
       `globalThis`, `eval`, `Function`, `Reflect`, `Proxy`, `fetch`, `Intl`, `Temporal`, dynamic `import()`, any
       `constructor`, `prototype` or `__proto__` member or an `Object` member that reaches a prototype without naming
-      it (`getPrototypeOf`, `setPrototypeOf`, `getOwnPropertyDescriptor(s)`), also as a string anywhere, a computed
-      member access whose key type is not a finite union of literals or whose literal key is denied). Every relative import, re-export and import type resolves, through the
-      compiler's module resolution, to a `.ts` file of the scanned production set; a specifier with a percent-encoded
+      it (`getPrototypeOf`, `setPrototypeOf`, `getOwnPropertyDescriptor(s)`), also as a string anywhere, the
+      locale-dependent members `toLocaleString`, `toLocaleDateString`, `toLocaleTimeString`, `toLocaleUpperCase`,
+      `toLocaleLowerCase` and `localeCompare`, the host-dependent error members `stack`, `captureStackTrace`,
+      `prepareStackTrace` and `stackTraceLimit`, `Symbol.for` and `Symbol.keyFor`, `import.meta`, any `declare`, a
+      computed member access whose key type is not a finite union of literals or whose literal key is denied).
+      Every identifier in a value position that the checker resolves outside its file (a lib or ambient
+      declaration) or to nothing is on the allowlist of deterministic globals in architecture §3 (R27). Every
+      relative import, re-export and import type resolves, through the compiler's module resolution, to a `.ts` file
+      of the scanned production set; a specifier with a percent-encoded
       character, a query or a fragment, or without the `.js` extension, fails. Tests may use runtime imports. The
       check uses the TypeScript checker and is a defence layer, not a proof (architecture §3, R24). It asserts that
       every production file parsed. Seeded violations fail, including an alias of `Math`, computed access
@@ -95,8 +102,11 @@
       constructor, and the re-audit's survivors (R24): the reflected constructor
       `Reflect.get(() => {}, "constructor")("return Date.now()")()` and its computed, member-access, destructuring,
       argument and prototype-descriptor equivalents, a hidden `.mjs` module, `./%74est-support/…` and
-      `./decide.test.ts?cache`, and clock reads through `Intl` and `Temporal`; a clean-set control with valid
-      constructs stays green, and the scanned file set excludes tests and test support. Two checkpoints
+      `./decide.test.ts?cache`, and clock reads through `Intl` and `Temporal`; and the v5 re-audit's probes (R27):
+      `(1234.5).toLocaleString()` and `navigator.hardwareConcurrency`, with a global outside the allowlist reached
+      directly, through a shorthand property, a local re-export or a local `declare`; a clean-set control with valid
+      constructs and the allowlisted globals stays green, and the scanned file set excludes tests and test support.
+      The architecture states the detector's remaining limits. Two checkpoints
       (architecture §3):
       - S2: package-local self-check (`packages/orchestration/src/purity.test.ts`, `asep-suite:orchestration-purity`);
       - S7, after G-P2: the same rule in `scripts/forbidden-imports.test.ts` on the accepted Phase 2 framework
@@ -212,7 +222,8 @@
       reaped (timing assertion in F2) (`asep-suite:temporal-chaos-kill`).
 - [ ] D13. **Attempt registration (R21).** No usage or outcome is recorded for an attempt whose registration has not
       reconciled. `ensureAttempt` is non-cancellable. When it fails, `findAttempt` looks the attempt up by
-      `(task_id, attempt_number)`: found → the attempt ends `failed` with zero usage; absent → no attempt-bound
+      `(task_id, attempt_number)`: found → the attempt ends `failed` with zero usage (never leased, so `fence: null`,
+      and S0 maps the terminal to `infrastructure-failed`, R28); absent → no attempt-bound
       effect; lookup failed → no attempt-bound effect and an audited `attempt.registration-unreconciled`. Each case
       ends the task `FAILED / attempt-registration-failed` with no replacement (core table in
       `asep-suite:orchestration-core`; the lookup activity in `asep-suite:orchestration-activities`).
@@ -358,8 +369,8 @@ All in `workers/temporal-worker/src/e2e/controls.itest.ts` *(new)*, `asep-suite:
       start, the projection is `PAUSED`, and a duplicate pause is a no-op.
 - [ ] G2. Resume continues from the recorded phase and converges to the same single commit, ref and PR.
 - [ ] G3. The lease stays `ACTIVE` through a pause longer than the lease TTL (renewal timer).
-- [ ] G4. Pause timeout → `BLOCKED`, with containers reaped, workspace quarantined, lease released and
-      `recordAttemptOutcome('cancelled')` recorded.
+- [ ] G4. Pause timeout → `BLOCKED`, with containers reaped, workspace quarantined,
+      `recordAttemptOutcome('cancelled')` recorded and then the lease released.
 - [ ] G5. Cancel before any side effect leaves no lease, workspace or container. Task `CANCELLED`.
 - [ ] G6. Cancel during the agent: container reaped, workspace quarantined, no commit.
 - [ ] G7. Critical units (architecture §9): a cancel inside commit plus evidence binding is processed after that
@@ -372,7 +383,7 @@ All in `workers/temporal-worker/src/e2e/controls.itest.ts` *(new)*, `asep-suite:
       rejected control writes no accepted-control audit row
       (`apps/control-plane-api/src/orchestration/orchestration-routes.test.ts` *(new)*, `asep-suite:orchestration-api`).
 - [ ] G11. Cancel during the assurance round: the activity receives the cancellation, nothing is pushed, the
-      workspace is quarantined, the lease released, `recordAttemptOutcome('cancelled')` recorded, task `CANCELLED`
+      workspace is quarantined, `recordAttemptOutcome('cancelled')` recorded, then the lease released, task `CANCELLED`
       (core table in `asep-suite:orchestration-core`; real proof here).
 - [ ] G12. Cancel during the publication-approval wait: the task ends at once, the open request is closed with
       `cancelApprovalRequest` (a later decision gets 409), nothing is pushed, task `CANCELLED` (core table in
@@ -387,19 +398,26 @@ All in `workers/temporal-worker/src/e2e/controls.itest.ts` *(new)*, `asep-suite:
         `FAILED / publication-incomplete`, never `CANCELLED`, with an audit row `publication.incomplete` naming the
         remote branch and `pushConfirmed: true`;
       - a push failure with effect `unknown` (for example a fencing error after the forge call) runs
-        `reconcilePublication`: the branch at the attempt's commit → the PR upsert runs, and with a cancel pending
-        the task ends `CANCELLED` with the PR left open and audited; the branch absent → `FAILED /
+        `reconcilePublication`: the identity predicate holds → the PR upsert runs, and with a cancel pending the
+        task ends `CANCELLED` with the PR left open and audited; the branch absent with no PR → `FAILED /
         publication-failed` (`CANCELLED` with a cancel pending: nothing was pushed); the branch at another commit,
-        or a failing read → `FAILED / publication-incomplete`;
+        a PR at another head, head SHA or base, or a failing read → `FAILED / publication-incomplete`;
       - a push failure with effect `none` runs no PR upsert and ends `FAILED / publication-failed` (`CANCELLED`
         with a cancel pending); a push failure with effect `applied` continues as a completed push;
-      - a PR-upsert failure with effect `unknown` or `applied` runs `reconcilePublication`: a PR found → the task
-        continues as after a successful upsert; none found, or a failing read → `FAILED / publication-incomplete`.
+      - a PR-upsert failure with effect `unknown` or `applied` runs `reconcilePublication`: the identity predicate
+        holds with a PR → the task continues as after a successful upsert with that PR; no PR, the branch moved or
+        missing, a PR at another head, head SHA or base, or a failing read → `FAILED / publication-incomplete`,
+        whatever cancel is pending (the reviewer's `PR_WRONG_HEAD_PROBE` and generator seed 1351 are tests).
 
+      The identity predicate (R27, architecture §4.1) is the same on both paths: the branch tip equals the
+      attempt's verified commit, and a reported PR has that branch as head, that commit as head SHA and the task
+      input's `baseBranch` as base; the reconciliation result carries the observed values and the core decides.
       The property oracle accepts a task that ends without a PR after a push request only when the push failed
-      with effect `none`, or the reconciliation found the branch absent; otherwise the task ends
+      with effect `none`, or the reconciliation found the branch absent with no PR; otherwise the task ends
       `FAILED / publication-incomplete` with the branch audited, and no terminal state follows an `unknown` effect
-      before its reconciliation.
+      before its reconciliation. On every publication it checks identity: a PR number the task reports comes from
+      an upsert after an applied push, or from a reconciliation result that satisfies the predicate, and every
+      reconciliation result is followed by the decision the predicate gives.
 
       Core table in `asep-suite:orchestration-core`; real proof here with a forge double that fails the PR create.
 - [ ] G14. **Pause while waiting for approval (R21).** For both approval kinds: a pause in the wait applies at once
@@ -516,7 +534,9 @@ Real-Temporal proofs in `workers/temporal-worker/src/e2e/assurance-slot.itest.ts
 - [ ] J1. Exactly one assurance round runs per attempt that passes verification, after `persistEvidence` and
       before the publication gate. No round runs after a verification stop. The request carries every field of
       the S0 block, including `model`, `declaredComplete`, `priorAdjudicationId` (null iff round 1), the
-      idempotency key and the claim identity.
+      idempotency key and the claim identity. Every money field at the seam is integer micro-USD (`*MicroUsd`, a
+      non-negative safe integer or `null`), filled from the core's integer amounts without passing through floating
+      USD; a reported usage field that is not one is a contract violation (R28).
 - [ ] J2. `NotConfiguredAssuranceSlot` gives `PROCEED`/`not-required` for R0 and R1 and fails closed
       (`AssuranceUnavailableError`) for any risk that requires review. It is distinct from Lane B's
       `DisabledAssuranceSlot`, the explicit opt-out (R18). It passes the S0 conformance kit
@@ -545,6 +565,12 @@ Real-Temporal proofs in `workers/temporal-worker/src/e2e/assurance-slot.itest.ts
 - [ ] J5. `recordAttemptOutcome` is called exactly once per registered attempt at every terminal in architecture
       §12, and never for an attempt whose registration did not reconcile (D13). This holds across engine retries:
       one `attempt.completed` per registered attempt (property test in `asep-suite:orchestration-properties` + e2e).
+      **Terminal before lease (R27, R28).** On every path where the attempt holds a lease (repair, abandon,
+      exhaustion, verification stop, `BLOCK`, review handoff, cancel, pause timeout and any other close),
+      `recordAttemptOutcome` precedes `releaseLease`: a per-attempt ordering oracle in the property test, a direct
+      core test per path, and the reviewer's mutation (a release inserted before the `REPAIR` outcome) red. The
+      outcome write presents the caller's fence; an attempt that never held a lease records `fence: null` and only
+      `cancelled` or `infrastructure-failed` (architecture §4.1; the slot side is Lane B's conformance kit).
 - [ ] J6. A scripted slot defined in a module that imports neither `@asep/orchestration`, `@asep/temporal` nor
       `@temporalio/*` drives the real workflow. This proves Lane B can plug in without Lane A imports.
 - [ ] J7. In every generated path, the assurance outcome for an attempt precedes any publish command for it, and
