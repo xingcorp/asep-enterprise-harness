@@ -82,9 +82,10 @@
       `src/test-support/**`) has no external runtime dependency (only type imports from `@asep/contracts` and
       `@asep/ports`, plus relative imports between its own modules) and none of the banned constructs (`Date`,
       `Math` other than its listed pure members, timers, `performance`, `process`, `crypto`, `require`,
-      `globalThis`, `eval`, `Function`, `Reflect`, `Proxy`, `fetch`, dynamic `import()`, any `constructor`,
-      `prototype` or `__proto__` member, a computed member access whose key type is not a finite union of literals
-      or whose literal key is denied). Every relative import, re-export and import type resolves, through the
+      `globalThis`, `eval`, `Function`, `Reflect`, `Proxy`, `fetch`, `Intl`, `Temporal`, dynamic `import()`, any
+      `constructor`, `prototype` or `__proto__` member or an `Object` member that reaches a prototype without naming
+      it (`getPrototypeOf`, `setPrototypeOf`, `getOwnPropertyDescriptor(s)`), also as a string anywhere, a computed
+      member access whose key type is not a finite union of literals or whose literal key is denied). Every relative import, re-export and import type resolves, through the
       compiler's module resolution, to a `.ts` file of the scanned production set; a specifier with a percent-encoded
       character, a query or a fragment, or without the `.js` extension, fails. Tests may use runtime imports. The
       check uses the TypeScript checker and is a defence layer, not a proof (architecture §3, R24). It asserts that
@@ -92,8 +93,9 @@
       `Math["random"]`, a re-export with a comment, an escaped identifier, `export *` out of the package, imports of
       test support and of a test file, import-equals, an import type from another source, the `Function`
       constructor, and the re-audit's survivors (R24): the reflected constructor
-      `Reflect.get(() => {}, "constructor")("return Date.now()")()` and its computed and member-access equivalents,
-      a hidden `.mjs` module, `./%74est-support/…` and `./decide.test.ts?cache`; a clean-set control with valid
+      `Reflect.get(() => {}, "constructor")("return Date.now()")()` and its computed, member-access, destructuring,
+      argument and prototype-descriptor equivalents, a hidden `.mjs` module, `./%74est-support/…` and
+      `./decide.test.ts?cache`, and clock reads through `Intl` and `Temporal`; a clean-set control with valid
       constructs stays green, and the scanned file set excludes tests and test support. Two checkpoints
       (architecture §3):
       - S2: package-local self-check (`packages/orchestration/src/purity.test.ts`, `asep-suite:orchestration-purity`);
