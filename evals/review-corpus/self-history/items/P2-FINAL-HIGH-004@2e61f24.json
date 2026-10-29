@@ -14,8 +14,12 @@
   "reachability": "reachable",
   "postFixSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
   "fixCommits": [
-    "fa87b716dd38cddf27cbb5433c5b312167ffc7d7"
+    {
+      "sha": "fa87b716dd38cddf27cbb5433c5b312167ffc7d7",
+      "reachability": "reachable"
+    }
   ],
+  "dependsOnPrivateBundle": false,
   "locations": [
     {
       "file": "apps/control-plane-api/src/app.ts",

@@ -14,8 +14,12 @@
   "reachability": "reachable",
   "postFixSha": "1af1cff0dde456b935a5886e9895ae4ebbeeec58",
   "fixCommits": [
-    "a8bb5c865f4df0ca8e05b11da88efe967ddbd620"
+    {
+      "sha": "a8bb5c865f4df0ca8e05b11da88efe967ddbd620",
+      "reachability": "reachable"
+    }
   ],
+  "dependsOnPrivateBundle": false,
   "locations": [
     {
       "file": "scripts/lib/secret-patterns.sh",

@@ -2,10 +2,11 @@
 //
 // Collects every labelled defect instance of Phase 1 and Phase 2 from this repository's
 // own review documents and git history: the finding id and the document line that labels
-// it, the reviewed and base SHAs and where each came from, reachability, fix commits, the
-// next review cycle's confirmation, the cited locations, and content-addressed excerpts of
-// the cited files at the reviewed and post-fix trees. It records only provenance-level
-// exclusions (plan-defect, tree-unavailable, excerpt-unpublishable). Packet-dependent
+// it, the reviewed and base SHAs and where each came from, reachability, fix commits, whether
+// the item depends on the controller's private bundle, the next review cycle's confirmation,
+// the cited locations, and content-addressed excerpts of the cited files at the reviewed and
+// post-fix trees. It records only provenance-level exclusions (plan-defect,
+// reviewed-tree-unknown, excerpt-unpublishable). Packet-dependent
 // eligibility, the manifest and corpusSha256 are frozen only after the corpus protocol is
 // confirmed (docs/implementation/phases/phase-04-plan.md §7.5, §7.8; data model §7.1).
 //
@@ -35,12 +36,16 @@ const PHASES = 'docs/implementation/phases';
 export type Severity = 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW';
 export type LabelStatus = 'RESOLVED' | 'PARTIAL' | 'REGRESSED' | 'OPEN';
 export type ReviewKind = 'final' | 'rereview' | 'self-found' | 'plan';
-export type ShaSource = 'recorded-in-review' | 'derived' | 'derived-from-fix' | 'unknown';
-export type Reachability = 'reachable' | 'object-store-only' | 'unavailable';
-export type ExclusionReason = 'plan-defect' | 'tree-unavailable' | 'excerpt-unpublishable';
+export type ShaSource = 'recorded-in-review' | 'derived' | 'inferred-parent-of-fix' | 'unknown';
+/**
+ * `private-bundle-only`: present only in history the rewrite removed. The local object store
+ * holds it, a clean public clone does not, and the controller's private bundle does.
+ */
+export type Reachability = 'reachable' | 'private-bundle-only' | 'unavailable';
+export type ExclusionReason = 'plan-defect' | 'reviewed-tree-unknown' | 'excerpt-unpublishable';
 
 /** The exclusions collection may record, in the order they apply (plan §7.8 rules 1–3). */
-export const PROVENANCE_EXCLUSIONS: readonly ExclusionReason[] = ['plan-defect', 'tree-unavailable', 'excerpt-unpublishable'];
+export const PROVENANCE_EXCLUSIONS: readonly ExclusionReason[] = ['plan-defect', 'reviewed-tree-unknown', 'excerpt-unpublishable'];
 
 /**
  * The repository gates an excerpt must pass to be committed: four repository scripts, and the
@@ -59,6 +64,11 @@ export interface CorpusExcerpt {
   readonly side: 'reviewed' | 'post-fix';
   readonly path: string;
   readonly sha256: string;
+}
+
+export interface FixCommit {
+  readonly sha: string;
+  readonly reachability: Exclude<Reachability, 'unavailable'>;
 }
 
 export interface WithheldExcerpt {
@@ -84,14 +94,16 @@ export interface CorpusItem {
   readonly reachability: Reachability;
   /** The next review cycle's reviewed SHA, when that cycle re-reviews this one and its tree is known. */
   readonly postFixSha: string | null;
-  readonly fixCommits: readonly string[];
+  readonly fixCommits: readonly FixCommit[];
+  /** True when the reviewed, base or post-fix tree, or a fix commit, is private-bundle-only. */
+  readonly dependsOnPrivateBundle: boolean;
   readonly locations: readonly CorpusLocation[];
   readonly excerpts: readonly CorpusExcerpt[];
   readonly excerptsWithheld: readonly WithheldExcerpt[];
   readonly provenance: {
     readonly doc: string;
     readonly line: number;
-    /** The document line that names the reviewed SHA (recorded) or the fix commit (derived-from-fix). */
+    /** The document line that names the reviewed SHA (recorded) or the fix commit (inferred-parent-of-fix). */
     readonly shaEvidence: { readonly doc: string; readonly line: number } | null;
     readonly excerptSource: 'git' | 'object-store' | null;
     readonly excerptOnly: boolean;
@@ -107,7 +119,7 @@ type DocFormat = 'yaml-list' | 'log-headings' | 'id-list' | 'status-table' | 'pa
 type ReviewedShaRule =
   | { readonly kind: 'recorded'; readonly pattern: RegExp }
   | { readonly kind: 'derived' }
-  | { readonly kind: 'derived-from-fix'; readonly pattern: RegExp }
+  | { readonly kind: 'inferred-parent-of-fix'; readonly pattern: RegExp }
   | { readonly kind: 'unknown'; readonly reason: string };
 
 export interface CycleSource {
@@ -191,7 +203,7 @@ export const CYCLES: readonly CycleSource[] = [
     doc: `${PHASES}/phase-02-report.md`,
     format: 'paragraph',
     start: /^(P2-CYCLE6-HIGH-001) exposed /,
-    reviewedSha: { kind: 'derived-from-fix', pattern: /^\s*implementation_head_sha: ([0-9a-f]{40})\s*$/ },
+    reviewedSha: { kind: 'inferred-parent-of-fix', pattern: /^\s*implementation_head_sha: ([0-9a-f]{40})\s*$/ },
   },
 ];
 
@@ -479,7 +491,7 @@ export class GitReader {
 
   reachability(sha: string | null): Reachability {
     if (sha === null || this.commit(sha) === null) return 'unavailable';
-    return this.reachable(sha) ? 'reachable' : 'object-store-only';
+    return this.reachable(sha) ? 'reachable' : 'private-bundle-only';
   }
 
   /** The oldest commit on the current history that added `path`. */
@@ -556,7 +568,7 @@ function lineMatching(docText: string, pattern: RegExp): { readonly line: number
 /**
  * The reviewed SHA of a cycle: named by its document (recorded), the parent of the commit that
  * added the document (derived), or the parent of the fix commit the document names
- * (derived-from-fix). A derived SHA is unknown when the adding commit also added a later
+ * (inferred-parent-of-fix). A derived SHA is unknown when the adding commit also added a later
  * cycle's document of the same phase: the parent then postdates that later review.
  */
 export function resolveCycle(git: GitReader, root: string, source: CycleSource): ResolvedCycle {
@@ -564,14 +576,14 @@ export function resolveCycle(git: GitReader, root: string, source: CycleSource):
   const rule = source.reviewedSha;
   if (rule.kind === 'unknown') return unknown(rule.reason);
   const docText = readFileSync(join(root, source.doc), 'utf8');
-  if (rule.kind === 'recorded' || rule.kind === 'derived-from-fix') {
+  if (rule.kind === 'recorded' || rule.kind === 'inferred-parent-of-fix') {
     const hit = lineMatching(docText, rule.pattern) ?? fail(`${source.key}: the document names no SHA`);
     const named = git.commit(hit.value) ?? fail(`${source.key}: ${hit.value} is not in the object store`);
     const reviewedSha = rule.kind === 'recorded' ? named : (git.parent(named) ?? fail(`${source.key}: ${named} has no parent`));
     return {
       source,
       reviewedSha,
-      reviewedShaSource: rule.kind === 'recorded' ? 'recorded-in-review' : 'derived-from-fix',
+      reviewedShaSource: rule.kind === 'recorded' ? 'recorded-in-review' : 'inferred-parent-of-fix',
       shaEvidence: { doc: source.doc, line: hit.line },
       unknownReason: null,
     };
@@ -734,16 +746,19 @@ export function collectSelfHistory(root: string, git = new GitReader(root), runG
           : git
               .commitsBetween(present, rangeEnd)
               .filter((c) => !ancestry!.has(c.key) && namesFinding(c.subject, label.findingId))
-              .map((c) => c.sha);
+              .map((c): FixCommit => ({ sha: c.sha, reachability: git.reachable(c.sha) ? 'reachable' : 'private-bundle-only' }));
+      const dependsOnPrivateBundle = [reachability, git.reachability(baseSha), git.reachability(postFixSha), ...fixCommits.map((f) => f.reachability)].includes(
+        'private-bundle-only',
+      );
       const confirmationLabel = reReview === null ? null : (labels.get(reReview.source.key)!.find((l) => l.kind === 'status' && l.findingId === label.findingId) ?? null);
 
       let excluded: CorpusItem['excluded'] = null;
       if (source.reviewKind === 'plan') {
         excluded = { reason: 'plan-defect', detail: 'labels a plan review; no code tree was reviewed' };
       } else if (present === null) {
-        excluded = { reason: 'tree-unavailable', detail: cycle.unknownReason ?? `the reviewed tree ${reviewedSha} is in no available source` };
+        excluded = { reason: 'reviewed-tree-unknown', detail: cycle.unknownReason ?? `the reviewed tree ${reviewedSha} is in no available source` };
       } else if (baseSha === null || git.commit(baseSha) === null) {
-        excluded = { reason: 'tree-unavailable', detail: `the base tree named by ${PHASE_PLANS[source.phase]} at ${present.slice(0, 7)} is unavailable` };
+        excluded = { reason: 'reviewed-tree-unknown', detail: `the base tree named by ${PHASE_PLANS[source.phase]} at ${present.slice(0, 7)} is unavailable` };
       }
 
       const wanted: Draft['wanted'][number][] = [];
@@ -775,6 +790,7 @@ export function collectSelfHistory(root: string, git = new GitReader(root), runG
           reachability,
           postFixSha,
           fixCommits,
+          dependsOnPrivateBundle,
           locations,
           provenance: {
             doc: source.doc,
@@ -841,6 +857,7 @@ function serializeItem(item: CorpusItem): string {
     reachability: item.reachability,
     postFixSha: item.postFixSha,
     fixCommits: item.fixCommits,
+    dependsOnPrivateBundle: item.dependsOnPrivateBundle,
     locations: item.locations,
     excerpts: item.excerpts,
     excerptsWithheld: item.excerptsWithheld,

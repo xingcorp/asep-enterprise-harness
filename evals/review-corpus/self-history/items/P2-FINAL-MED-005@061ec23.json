@@ -14,8 +14,12 @@
   "reachability": "reachable",
   "postFixSha": "594b6287416ab6f18b18adb9a152bdba1c6278be",
   "fixCommits": [
-    "87e5ab01eef78402a64b1b85b34c40f7e908d0e2"
+    {
+      "sha": "87e5ab01eef78402a64b1b85b34c40f7e908d0e2",
+      "reachability": "reachable"
+    }
   ],
+  "dependsOnPrivateBundle": false,
   "locations": [
     {
       "file": "docs/implementation/phases/phase-02-report.md",

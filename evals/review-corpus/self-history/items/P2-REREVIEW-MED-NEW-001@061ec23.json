@@ -14,8 +14,12 @@
   "reachability": "reachable",
   "postFixSha": "594b6287416ab6f18b18adb9a152bdba1c6278be",
   "fixCommits": [
-    "ec0086aeae2bd51e9c1299fceae4afdb4977a22f"
+    {
+      "sha": "ec0086aeae2bd51e9c1299fceae4afdb4977a22f",
+      "reachability": "reachable"
+    }
   ],
+  "dependsOnPrivateBundle": false,
   "locations": [
     {
       "file": "adapters/persistence/src/object-store.ts",

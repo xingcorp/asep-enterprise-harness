@@ -14,9 +14,16 @@
   "reachability": "reachable",
   "postFixSha": "594b6287416ab6f18b18adb9a152bdba1c6278be",
   "fixCommits": [
-    "7009b2248d29b493fa03efaf0636ba1b34e7ef09",
-    "0331c95d617ab82278400e6fae2b6c31c4c07c2a"
+    {
+      "sha": "7009b2248d29b493fa03efaf0636ba1b34e7ef09",
+      "reachability": "reachable"
+    },
+    {
+      "sha": "0331c95d617ab82278400e6fae2b6c31c4c07c2a",
+      "reachability": "reachable"
+    }
   ],
+  "dependsOnPrivateBundle": false,
   "locations": [
     {
       "file": "adapters/persistence/src/migrations.ts",

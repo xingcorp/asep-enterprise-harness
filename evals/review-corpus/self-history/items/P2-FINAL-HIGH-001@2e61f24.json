@@ -14,9 +14,16 @@
   "reachability": "reachable",
   "postFixSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
   "fixCommits": [
-    "e1c161cfd558df3e19a3a1201cbd24c54f200262",
-    "4ae6974bc436cffbbc97baa9d37df9dff975e255"
+    {
+      "sha": "e1c161cfd558df3e19a3a1201cbd24c54f200262",
+      "reachability": "reachable"
+    },
+    {
+      "sha": "4ae6974bc436cffbbc97baa9d37df9dff975e255",
+      "reachability": "reachable"
+    }
   ],
+  "dependsOnPrivateBundle": false,
   "locations": [
     {
       "file": ".github/workflows/ci.yml",

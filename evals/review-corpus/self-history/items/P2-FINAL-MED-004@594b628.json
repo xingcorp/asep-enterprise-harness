@@ -14,6 +14,7 @@
   "reachability": "reachable",
   "postFixSha": null,
   "fixCommits": [],
+  "dependsOnPrivateBundle": false,
   "locations": [
     {
       "file": "apps/control-plane-api/src/vertical-slice.ts",

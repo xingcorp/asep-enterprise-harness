@@ -14,9 +14,16 @@
   "reachability": "reachable",
   "postFixSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
   "fixCommits": [
-    "45084d2e2a2bd5fdccd6f230634e0ab478638452",
-    "25394932a4f94af9273a2f272ab57d0166c3abe2"
+    {
+      "sha": "45084d2e2a2bd5fdccd6f230634e0ab478638452",
+      "reachability": "reachable"
+    },
+    {
+      "sha": "25394932a4f94af9273a2f272ab57d0166c3abe2",
+      "reachability": "reachable"
+    }
   ],
+  "dependsOnPrivateBundle": false,
   "locations": [
     {
       "file": "adapters/persistence/src/side-effect-log.test.ts",

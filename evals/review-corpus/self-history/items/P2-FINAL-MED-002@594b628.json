@@ -14,8 +14,12 @@
   "reachability": "reachable",
   "postFixSha": null,
   "fixCommits": [
-    "c8c6cc87ecb226a11871d391f63a5a631f74af3f"
+    {
+      "sha": "c8c6cc87ecb226a11871d391f63a5a631f74af3f",
+      "reachability": "private-bundle-only"
+    }
   ],
+  "dependsOnPrivateBundle": true,
   "locations": [
     {
       "file": "adapters/github-app/src/credential-provider.ts",

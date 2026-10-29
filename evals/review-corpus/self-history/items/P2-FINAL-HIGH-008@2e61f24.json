@@ -14,9 +14,16 @@
   "reachability": "reachable",
   "postFixSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
   "fixCommits": [
-    "6de0393dc253f6d6477c0494716ef71943ebad06",
-    "66d20bd16627d8e5c048ae43def8f0ede95a3f8a"
+    {
+      "sha": "6de0393dc253f6d6477c0494716ef71943ebad06",
+      "reachability": "reachable"
+    },
+    {
+      "sha": "66d20bd16627d8e5c048ae43def8f0ede95a3f8a",
+      "reachability": "reachable"
+    }
   ],
+  "dependsOnPrivateBundle": false,
   "locations": [
     {
       "file": "adapters/github-app/src/forge-provider.ts",

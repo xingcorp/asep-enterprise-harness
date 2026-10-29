@@ -14,10 +14,20 @@
   "reachability": "reachable",
   "postFixSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
   "fixCommits": [
-    "c0a8d6d99c6c4822566bab1f6f6ea7d232044512",
-    "626a148dee31c6bb7ec5614e05b139ee3035489f",
-    "9b767aa714ed8d9201be30767d150e532565b2cf"
+    {
+      "sha": "c0a8d6d99c6c4822566bab1f6f6ea7d232044512",
+      "reachability": "reachable"
+    },
+    {
+      "sha": "626a148dee31c6bb7ec5614e05b139ee3035489f",
+      "reachability": "reachable"
+    },
+    {
+      "sha": "9b767aa714ed8d9201be30767d150e532565b2cf",
+      "reachability": "reachable"
+    }
   ],
+  "dependsOnPrivateBundle": false,
   "locations": [
     {
       "file": "adapters/agent-claude/src/claude-provider.ts",

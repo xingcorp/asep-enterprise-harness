@@ -14,8 +14,12 @@
   "reachability": "reachable",
   "postFixSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
   "fixCommits": [
-    "8e1dc5dda6922981713f412e1fa520619f4a858e"
+    {
+      "sha": "8e1dc5dda6922981713f412e1fa520619f4a858e",
+      "reachability": "reachable"
+    }
   ],
+  "dependsOnPrivateBundle": false,
   "locations": [
     {
       "file": "apps/control-plane-api/src/vertical-integration.test.ts",

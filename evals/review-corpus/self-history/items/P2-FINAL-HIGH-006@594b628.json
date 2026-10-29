@@ -14,8 +14,12 @@
   "reachability": "reachable",
   "postFixSha": null,
   "fixCommits": [
-    "f08bec2f67ee84b7c4264f712c1cbb74c0f1c3e3"
+    {
+      "sha": "f08bec2f67ee84b7c4264f712c1cbb74c0f1c3e3",
+      "reachability": "reachable"
+    }
   ],
+  "dependsOnPrivateBundle": false,
   "locations": [
     {
       "file": "adapters/git-worktree/src/git-worktree.test.ts",

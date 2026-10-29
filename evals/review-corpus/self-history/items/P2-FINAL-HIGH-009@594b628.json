@@ -14,8 +14,12 @@
   "reachability": "reachable",
   "postFixSha": null,
   "fixCommits": [
-    "eaae44abeae9ac27f346df5269365c582bd38537"
+    {
+      "sha": "eaae44abeae9ac27f346df5269365c582bd38537",
+      "reachability": "reachable"
+    }
   ],
+  "dependsOnPrivateBundle": false,
   "locations": [
     {
       "file": "scripts/pilot/authority-resolver.mjs",

@@ -14,8 +14,12 @@
   "reachability": "reachable",
   "postFixSha": "594b6287416ab6f18b18adb9a152bdba1c6278be",
   "fixCommits": [
-    "55bac8852b03ba6707406857a1b9469d5d317a67"
+    {
+      "sha": "55bac8852b03ba6707406857a1b9469d5d317a67",
+      "reachability": "reachable"
+    }
   ],
+  "dependsOnPrivateBundle": false,
   "locations": [
     {
       "file": "adapters/agent-claude/src/claude-provider.ts",

@@ -14,8 +14,12 @@
   "reachability": "reachable",
   "postFixSha": "594b6287416ab6f18b18adb9a152bdba1c6278be",
   "fixCommits": [
-    "2cbc09fef2afa18767d6bdd683383492f864d6db"
+    {
+      "sha": "2cbc09fef2afa18767d6bdd683383492f864d6db",
+      "reachability": "reachable"
+    }
   ],
+  "dependsOnPrivateBundle": false,
   "locations": [
     {
       "file": "scripts/pilot/verify-pilot-manifest.mjs",

@@ -14,10 +14,20 @@
   "reachability": "reachable",
   "postFixSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
   "fixCommits": [
-    "6d9e6e6273f08e3c191d36267de5240f41208249",
-    "9844adc44ea983d6d692f4e686364ec5c5a63bf9",
-    "2fb8889ffe61585f3927d2fe460bc30c11f9c6e8"
+    {
+      "sha": "6d9e6e6273f08e3c191d36267de5240f41208249",
+      "reachability": "reachable"
+    },
+    {
+      "sha": "9844adc44ea983d6d692f4e686364ec5c5a63bf9",
+      "reachability": "reachable"
+    },
+    {
+      "sha": "2fb8889ffe61585f3927d2fe460bc30c11f9c6e8",
+      "reachability": "reachable"
+    }
   ],
+  "dependsOnPrivateBundle": false,
   "locations": [
     {
       "file": "packages/observability/src/audit.ts",

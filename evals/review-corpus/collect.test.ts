@@ -63,6 +63,15 @@ test('collected provenance and excerpts verify against the repository', () => {
   }
   assert.deepEqual(new Set(items.map((i) => `${i.provenance.doc}:${i.provenance.line}:${i.findingId}:${i.labelStatus}`)), expected);
 
+  // The R22 vocabulary, stated independently of the collector.
+  assert.deepEqual(PROVENANCE_EXCLUSIONS, ['plan-defect', 'reviewed-tree-unknown', 'excerpt-unpublishable']);
+  const SHA_SOURCES = new Set(['recorded-in-review', 'derived', 'inferred-parent-of-fix', 'unknown']);
+  const REACHABILITY = new Set(['reachable', 'private-bundle-only', 'unavailable']);
+  // A SHA's reachability as this clone shows it; a commit this clone lacks is one only the
+  // controller's bundle can still hold.
+  const reach = (sha: string | null) =>
+    sha === null ? null : git.commit(sha) === null ? 'absent' : git.reachable(sha) ? 'reachable' : 'private-bundle-only';
+
   const referenced = new Set<string>();
   for (const item of items) {
     const at = item.id;
@@ -78,6 +87,8 @@ test('collected provenance and excerpts verify against the repository', () => {
     if (token !== null) assert.equal(item.severity, token, at);
 
     // The reviewed SHA is where its source says it is.
+    assert.ok(SHA_SOURCES.has(item.reviewedShaSource), `${at}: ${item.reviewedShaSource}`);
+    assert.ok(REACHABILITY.has(item.reachability), `${at}: ${item.reachability}`);
     switch (item.reviewedShaSource) {
       case 'recorded-in-review': {
         const evidence = item.provenance.shaEvidence!;
@@ -92,7 +103,7 @@ test('collected provenance and excerpts verify against the repository', () => {
         assert.equal(git.parent(added), item.reviewedSha, `${at}: not the parent of ${added}`);
         break;
       }
-      case 'derived-from-fix': {
+      case 'inferred-parent-of-fix': {
         const evidence = item.provenance.shaEvidence!;
         const fix = /[0-9a-f]{40}/.exec(lineOf(evidence.doc, evidence.line))?.[0];
         assert.ok(fix !== undefined, `${at}: no fix commit on its evidence line`);
@@ -105,10 +116,10 @@ test('collected provenance and excerpts verify against the repository', () => {
     }
 
     // Reachability is what the repository shows. A clone without the local object store cannot
-    // hold an object-store-only commit; such an item is excerpt-only.
+    // hold a private-bundle-only commit; such an item is excerpt-only.
     const present = item.reviewedSha !== null && git.commit(item.reviewedSha) !== null;
     if (item.reachability === 'reachable') assert.ok(present && git.reachable(item.reviewedSha!), `${at}: not reachable`);
-    if (item.reachability === 'object-store-only') {
+    if (item.reachability === 'private-bundle-only') {
       assert.ok(!present || !git.reachable(item.reviewedSha!), `${at}: reachable from a ref`);
       assert.equal(item.provenance.excerptOnly, true, at);
     }
@@ -121,7 +132,7 @@ test('collected provenance and excerpts verify against the repository', () => {
     // Only provenance-level exclusions, in their order.
     if (item.excluded !== null) assert.ok(PROVENANCE_EXCLUSIONS.includes(item.excluded.reason), `${at}: ${item.excluded.reason}`);
     const treeMissing = item.reachability === 'unavailable' || item.baseSha === null || git.commit(item.baseSha) === null;
-    const reason = item.reviewKind === 'plan' ? 'plan-defect' : treeMissing ? 'tree-unavailable' : (item.excluded?.reason ?? null);
+    const reason: string | null = item.reviewKind === 'plan' ? 'plan-defect' : treeMissing ? 'reviewed-tree-unknown' : (item.excluded?.reason ?? null);
     assert.equal(item.excluded?.reason ?? null, reason, `${at}: exclusion`);
 
     // Excerpts: every byte hashes to its name and, where the tree is present, equals git.
@@ -145,12 +156,22 @@ test('collected provenance and excerpts verify against the repository', () => {
       assert.deepEqual(item.excerptsWithheld.filter((e) => e.side === 'reviewed'), [], at);
     }
 
-    // Fix commits name the finding and descend from the reviewed tree.
+    // Fix commits name the finding, descend from the reviewed tree and carry their reachability.
     for (const fix of item.fixCommits) {
-      if (git.commit(fix) === null) continue;
-      assert.ok(namesFinding(git.subject(fix), item.findingId), `${at}: ${fix} does not name the finding`);
-      assert.ok(git.isAncestor(item.reviewedSha!, fix), `${at}: ${fix} does not descend from the reviewed tree`);
+      assert.ok(fix.reachability === 'reachable' || fix.reachability === 'private-bundle-only', `${at}: ${fix.sha} ${fix.reachability}`);
+      if (git.commit(fix.sha) === null) {
+        assert.equal(fix.reachability, 'private-bundle-only', at);
+        continue;
+      }
+      assert.equal(fix.reachability, reach(fix.sha), `${at}: ${fix.sha} reachability`);
+      assert.ok(namesFinding(git.subject(fix.sha), item.findingId), `${at}: ${fix.sha} does not name the finding`);
+      assert.ok(git.isAncestor(item.reviewedSha!, fix.sha), `${at}: ${fix.sha} does not descend from the reviewed tree`);
     }
+
+    // The item depends on the bundle when any tree or fix commit it names is private-bundle-only.
+    const named = [item.reachability === 'unavailable' ? null : reach(item.reviewedSha), reach(item.baseSha), reach(item.postFixSha), ...item.fixCommits.map((f) => reach(f.sha))];
+    if (named.includes('absent')) assert.equal(item.dependsOnPrivateBundle, true, `${at}: names a commit this clone lacks`);
+    else assert.equal(item.dependsOnPrivateBundle, named.includes('private-bundle-only'), `${at}: bundle dependence`);
 
     // The confirmation is the next re-review's status row for this finding.
     if (item.confirmation !== null && item.confirmation.line !== null) {

@@ -14,8 +14,12 @@
   "reachability": "reachable",
   "postFixSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
   "fixCommits": [
-    "fbe4d7af555e74d8106ba158eb2c1d2a6cf116cf"
+    {
+      "sha": "fbe4d7af555e74d8106ba158eb2c1d2a6cf116cf",
+      "reachability": "reachable"
+    }
   ],
+  "dependsOnPrivateBundle": false,
   "locations": [
     {
       "file": "adapters/persistence/package.json",

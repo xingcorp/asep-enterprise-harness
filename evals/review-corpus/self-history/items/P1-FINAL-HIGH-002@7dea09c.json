@@ -14,8 +14,12 @@
   "reachability": "reachable",
   "postFixSha": "1af1cff0dde456b935a5886e9895ae4ebbeeec58",
   "fixCommits": [
-    "02d82e6438e5884e235d8eecda1d890d6dbbed1e"
+    {
+      "sha": "02d82e6438e5884e235d8eecda1d890d6dbbed1e",
+      "reachability": "reachable"
+    }
   ],
+  "dependsOnPrivateBundle": false,
   "locations": [],
   "excerpts": [],
   "excerptsWithheld": [],

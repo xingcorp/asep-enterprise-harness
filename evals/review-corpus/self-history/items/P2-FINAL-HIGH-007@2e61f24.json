@@ -14,8 +14,12 @@
   "reachability": "reachable",
   "postFixSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
   "fixCommits": [
-    "3815620d023e7ebcfc6799dfc7efd26283b4fc3c"
+    {
+      "sha": "3815620d023e7ebcfc6799dfc7efd26283b4fc3c",
+      "reachability": "reachable"
+    }
   ],
+  "dependsOnPrivateBundle": false,
   "locations": [
     {
       "file": "adapters/agent-claude/src/agent-claude.test.ts",

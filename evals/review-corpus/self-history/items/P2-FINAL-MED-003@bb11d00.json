@@ -11,9 +11,10 @@
   "reviewedShaSource": "recorded-in-review",
   "baseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
   "baseShaSource": "phase-plan",
-  "reachability": "object-store-only",
+  "reachability": "private-bundle-only",
   "postFixSha": null,
   "fixCommits": [],
+  "dependsOnPrivateBundle": true,
   "locations": [
     {
       "file": "apps/control-plane-api/src/vertical-slice.itest.ts",

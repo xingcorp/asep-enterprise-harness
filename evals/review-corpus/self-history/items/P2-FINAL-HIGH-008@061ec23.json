@@ -14,8 +14,12 @@
   "reachability": "reachable",
   "postFixSha": "594b6287416ab6f18b18adb9a152bdba1c6278be",
   "fixCommits": [
-    "e692a9b1413adef555e05d3fbf7357676a1180c0"
+    {
+      "sha": "e692a9b1413adef555e05d3fbf7357676a1180c0",
+      "reachability": "reachable"
+    }
   ],
+  "dependsOnPrivateBundle": false,
   "locations": [
     {
       "file": "adapters/github-app/src/port-adapter.ts",

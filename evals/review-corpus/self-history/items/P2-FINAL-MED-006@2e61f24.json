@@ -14,8 +14,12 @@
   "reachability": "reachable",
   "postFixSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
   "fixCommits": [
-    "9d2bbd03e0e5aa698ff6b6ff035063cdf25a684e"
+    {
+      "sha": "9d2bbd03e0e5aa698ff6b6ff035063cdf25a684e",
+      "reachability": "reachable"
+    }
   ],
+  "dependsOnPrivateBundle": false,
   "locations": [
     {
       "file": "docs/implementation/phases/phase-02-pilot-rehearsal.md",

@@ -14,8 +14,12 @@
   "reachability": "reachable",
   "postFixSha": "594b6287416ab6f18b18adb9a152bdba1c6278be",
   "fixCommits": [
-    "bbabb5a496746c56e84d726575fa4eca496da159"
+    {
+      "sha": "bbabb5a496746c56e84d726575fa4eca496da159",
+      "reachability": "reachable"
+    }
   ],
+  "dependsOnPrivateBundle": false,
   "locations": [
     {
       "file": "scripts/integration/lib.mjs",
