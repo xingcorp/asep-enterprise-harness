@@ -7,7 +7,6 @@ import { loadReviewPolicy, type ReviewPolicy } from '@asep/policy';
 import { buildReviewPacket } from './packet.js';
 import {
   isTestPath,
-  readSarif,
   runDeterministicCheckRules,
   sarifFindings,
   type DeterministicCheckSources,
@@ -446,137 +445,6 @@ test('sarif results become findings and malformed sarif fails closed', () => {
   assert.equal(all.findings.filter((f) => f.source === 'sarif').length, 3);
 });
 
-test('sarif logs record the scanner runs a recheck needs', () => {
-  const log = (...runs: unknown[]) => utf8(JSON.stringify({ version: '2.1.0', runs }));
-  const runsOf = (checkId: string, content: Uint8Array) => checksFor(fixtureWorld(), { sarif: [{ checkId, content }] }).scannerRuns;
-  const driver = (extra: Record<string, unknown>) => ({ tool: { driver: { name: 'Semgrep OSS', ...extra } }, results: [] });
-
-  assert.deepEqual(
-    runsOf(
-      'semgrep',
-      log({
-        ...driver({ version: '1.90.0', rules: [{ id: 'js.eval-use' }, { id: 'js.xss' }] }),
-        invocations: [{ executionSuccessful: true }, { executionSuccessful: true }],
-      }),
-    ),
-    [{ checkId: 'semgrep', tool: 'semgrep-oss', toolVersion: '1.90.0', executionSuccessful: true, effectiveRules: ['js.eval-use', 'js.xss'], scannedFiles: [] }],
-  );
-  // The semantic version stands in for a missing version; no version is recorded as null.
-  assert.deepEqual(
-    runsOf('semgrep', log({ ...driver({ semanticVersion: '2.0.1' }), invocations: [{ executionSuccessful: true }] })).map((r) => r.toolVersion),
-    ['2.0.1'],
-  );
-  assert.deepEqual(runsOf('semgrep', log({ ...driver({}), invocations: [{ executionSuccessful: true }] })).map((r) => r.toolVersion), [null]);
-  // Completion is proven only by invocations that all report success.
-  assert.deepEqual(
-    [
-      runsOf('semgrep', log(driver({ version: '1' }))),
-      runsOf('semgrep', log({ ...driver({ version: '1' }), invocations: [] })),
-      runsOf('semgrep', log({ ...driver({ version: '1' }), invocations: [{ executionSuccessful: true }, { executionSuccessful: false }] })),
-    ].map((runs) => runs.map((r) => r.executionSuccessful)),
-    [[false], [false], [false]],
-  );
-  // Each run of a log is recorded, in a fixed order whatever order the logs arrive in.
-  const two = [
-    { checkId: 'lint', content: log({ tool: { driver: { name: 'eslint', version: '9.0.0' } }, results: [], invocations: [{ executionSuccessful: true }] }) },
-    { checkId: 'semgrep', content: log(driver({ version: '1' }), driver({ version: '2' })) },
-  ];
-  const forward = checksFor(fixtureWorld(), { sarif: two }).scannerRuns;
-  assert.deepEqual(forward.map((r) => [r.checkId, r.tool, r.toolVersion]), [['lint', 'eslint', '9.0.0'], ['semgrep', 'semgrep-oss', '1'], ['semgrep', 'semgrep-oss', '2']]);
-  assert.deepEqual(checksFor(fixtureWorld(), { sarif: [...two].reverse() }).scannerRuns, forward);
-
-  // A log whose scanner identity cannot be read records no run and fails closed.
-  for (const [label, content] of [
-    ['version not text', log({ ...driver({ version: 1 }), invocations: [{ executionSuccessful: true }] })],
-    ['rule without an id', log({ ...driver({ rules: [{ name: 'x' }] }), invocations: [{ executionSuccessful: true }] })],
-    ['rules not a list', log({ ...driver({ rules: {} }), invocations: [{ executionSuccessful: true }] })],
-    ['invocation flag not a boolean', log({ ...driver({}), invocations: [{ executionSuccessful: 'true' }] })],
-    ['invocations not a list', log({ ...driver({}), invocations: {} })],
-    ['not json', utf8('{')],
-  ] as const) {
-    const result = checksFor(fixtureWorld(), { sarif: [{ checkId: 'semgrep', content }] });
-    assert.deepEqual(result.scannerRuns, [], label);
-    assert.deepEqual(result.findings.filter((f) => f.source === 'sarif' || f.ruleId === 'sarif-malformed').map((f) => f.ruleId), ['sarif-malformed'], label);
-  }
-});
-
-test('a scanner run records the rules it effectively ran and the files it scanned', () => {
-  // A declared rule is not proof that it ran: the run's effective configuration and its
-  // notifications decide, and only the artifacts it analysed count as scanned.
-  const RULES = [{ id: 'js.eval-use' }, { id: 'js.xss' }];
-  const run = (over: { readonly rules?: unknown; readonly invocation?: Record<string, unknown>; readonly artifacts?: unknown } = {}) => ({
-    tool: { driver: { name: 'semgrep', version: '1.90.0', rules: over.rules ?? RULES } },
-    invocations: [{ executionSuccessful: true, ...over.invocation }],
-    ...(over.artifacts === undefined ? {} : { artifacts: over.artifacts }),
-    results: [],
-  });
-  const read = (value: unknown) => readSarif({ checkId: 'semgrep', content: utf8(JSON.stringify({ version: '2.1.0', runs: [value] })) });
-  const effective = (value: unknown) => read(value).runs.map((r) => r.effectiveRules);
-  const disable = (descriptor: unknown) => ({ ruleConfigurationOverrides: [{ descriptor, configuration: { enabled: false } }] });
-  const notify = (kind: string, notification: Record<string, unknown>) => ({ [kind]: [{ message: { text: 'rule could not run' }, ...notification }] });
-
-  const both = [['js.eval-use', 'js.xss']];
-  const xssOnly = [['js.xss']];
-  const none = [[]];
-  const cases: readonly (readonly [string, unknown, readonly (readonly string[])[]])[] = [
-    ['every declared rule enabled', run(), both],
-    ['enabled explicitly', run({ rules: [{ id: 'js.eval-use', defaultConfiguration: { enabled: true } }, { id: 'js.xss' }] }), both],
-    // The four ways a declared rule did not run.
-    ['disabled by its default configuration', run({ rules: [{ id: 'js.eval-use', defaultConfiguration: { enabled: false } }, { id: 'js.xss' }] }), xssOnly],
-    ['disabled by an override naming its id', run({ invocation: disable({ id: 'js.eval-use' }) }), xssOnly],
-    ['disabled by an override naming its index', run({ invocation: disable({ index: 0 }) }), xssOnly],
-    ['an execution notification about the rule', run({ invocation: notify('toolExecutionNotifications', { level: 'error', associatedRule: { id: 'js.eval-use' } }) }), xssOnly],
-    ['a configuration notification about the rule', run({ invocation: notify('toolConfigurationNotifications', { associatedRule: { index: 0 } }) }), xssOnly],
-    ['a note about the rule', run({ invocation: notify('toolExecutionNotifications', { level: 'note', associatedRule: { id: 'js.eval-use' } }) }), xssOnly],
-    // An override that enables changes nothing; a warning that names no rule changes nothing.
-    ['an override that enables', run({ invocation: { ruleConfigurationOverrides: [{ descriptor: { id: 'js.eval-use' }, configuration: { enabled: true } }] } }), both],
-    ['a warning that names no rule', run({ invocation: notify('toolExecutionNotifications', { level: 'warning' }) }), both],
-    // What cannot be tied to a driver rule proves no rule.
-    ['an error that names no rule', run({ invocation: notify('toolExecutionNotifications', { level: 'error' }) }), none],
-    ['an override into another tool component', run({ invocation: disable({ id: 'js.eval-use', toolComponent: { index: 0 } }) }), none],
-    ['a notification about a rule of another tool component', run({ invocation: notify('toolExecutionNotifications', { associatedRule: { id: 'x', toolComponent: { name: 'ext' } } }) }), none],
-    ['a rule named only by guid', run({ invocation: notify('toolExecutionNotifications', { associatedRule: { guid: '00000000-0000-0000-0000-000000000000' } }) }), none],
-  ];
-  for (const [label, value, expected] of cases) assert.deepEqual(effective(value), expected, label);
-
-  // Coverage: the artifacts the run analysed, as repository paths, in a fixed order.
-  const files = (artifacts: unknown) => read(run({ artifacts })).runs.map((r) => r.scannedFiles);
-  assert.deepEqual(files(undefined), [[]]);
-  assert.deepEqual(
-    files([
-      { location: { uri: 'src/util.ts' } },
-      { location: { uri: './src/feature.ts' }, roles: ['analysisTarget', 'modified'] },
-      { location: { uri: 'docs/notes.md' }, roles: ['responseFile'] },
-      { location: { uri: 'docs/empty.md' }, roles: [] },
-      { location: { uri: 'file:///abs/src/x.ts' }, roles: ['analysisTarget'] },
-      { roles: ['analysisTarget'] },
-    ]),
-    [['src/feature.ts', 'src/util.ts']],
-  );
-
-  // A structure that cannot be read is malformed: no run, one sarif-malformed finding.
-  const malformed: readonly (readonly [string, unknown])[] = [
-    ['enabled not a boolean', run({ rules: [{ id: 'js.eval-use', defaultConfiguration: { enabled: 'false' } }] })],
-    ['default configuration not an object', run({ rules: [{ id: 'js.eval-use', defaultConfiguration: [] }] })],
-    ['override index past the rules', run({ invocation: disable({ index: 2 }) })],
-    ['override index below -1', run({ invocation: disable({ index: -2 }) })],
-    ['override naming two rules', run({ invocation: disable({ id: 'js.xss', index: 0 }) })],
-    ['override without its configuration', run({ invocation: { ruleConfigurationOverrides: [{ descriptor: { id: 'js.eval-use' } }] } })],
-    ['override enabled not a boolean', run({ invocation: { ruleConfigurationOverrides: [{ descriptor: { id: 'js.eval-use' }, configuration: { enabled: 0 } }] } })],
-    ['overrides not a list', run({ invocation: { ruleConfigurationOverrides: {} } })],
-    ['notifications not a list', run({ invocation: { toolExecutionNotifications: {} } })],
-    ['notification level unknown', run({ invocation: notify('toolExecutionNotifications', { level: 'fatal' }) })],
-    ['artifacts not a list', run({ artifacts: {} })],
-    ['roles not text', run({ artifacts: [{ location: { uri: 'src/a.ts' }, roles: [1] }] })],
-    ['artifact uri not text', run({ artifacts: [{ location: { uri: 1 } }] })],
-  ];
-  for (const [label, value] of malformed) {
-    const result = read(value);
-    assert.deepEqual(result.runs, [], label);
-    assert.deepEqual(result.findings.map((f) => f.ruleId), ['sarif-malformed'], label);
-  }
-});
-
 test('git diffs are read line by line', () => {
   const diff = [
     'diff --git a/src/a.ts b/src/a.ts',
@@ -745,9 +613,7 @@ test('the check report is canonical and fails closed when it is read back', () =
   assert.deepEqual(buildCheckReport(result, { packetSha256, sarif }).bytes, report.bytes);
   assert.equal(report.sha256, sha256Hex(report.bytes));
   assert.deepEqual(parseCheckReport(report.bytes, report.sha256), report.report);
-  assert.deepEqual(Object.keys(report.report).sort(), ['egress', 'findings', 'packetSha256', 'pushGuard', 'reportVersion', 'sarifInputs', 'scannerRuns']);
-  assert.deepEqual(report.report.scannerRuns, [{ checkId: 'lint', tool: 'lint', toolVersion: null, executionSuccessful: false, effectiveRules: [], scannedFiles: [] }]);
-  assert.deepEqual(report.report.scannerRuns, result.scannerRuns);
+  assert.deepEqual(Object.keys(report.report).sort(), ['egress', 'findings', 'packetSha256', 'pushGuard', 'reportVersion', 'sarifInputs']);
   assert.deepEqual(report.report.findings, result.findings);
   assert.deepEqual(report.report.sarifInputs, [{ checkId: 'lint', sha256: sha256Hex(sarif[0]!.content), bytes: sarif[0]!.content.byteLength }]);
 
@@ -777,7 +643,6 @@ test('the check report is canonical and fails closed when it is read back', () =
   const cleanEgress = clean['egress'] as Record<string, unknown>;
   const stoppedEgress = stopped['egress'] as Record<string, unknown>;
   const firstFinding = result.findings[0]!;
-  const cleanRun = (clean['scannerRuns'] as Record<string, unknown>[])[0]!;
   const reread = (value: unknown) => {
     const bytes = canonicalBytes(value);
     return () => parseCheckReport(bytes, sha256Hex(bytes));
@@ -804,14 +669,7 @@ test('the check report is canonical and fails closed when it is read back', () =
     ['raiser of another source', reread({ ...clean, findings: [{ ...firstFinding, raisedBy: 'sarif:x' }] })],
     ['short fingerprint', reread({ ...clean, findings: [{ ...firstFinding, fingerprint: 'abc' }] })],
     ['negative sarif size', reread({ ...clean, sarifInputs: [{ checkId: 'lint', sha256: 'a'.repeat(64), bytes: -1 }] })],
-    ['scanner run with an unknown key', reread({ ...clean, scannerRuns: [{ ...cleanRun, extra: true }] })],
-    ['scanner run without its log', reread({ ...clean, scannerRuns: [{ ...cleanRun, checkId: 'other' }] })],
-    ['scanner run flag not a boolean', reread({ ...clean, scannerRuns: [{ ...cleanRun, executionSuccessful: 'true' }] })],
-    ['scanner rules not text', reread({ ...clean, scannerRuns: [{ ...cleanRun, effectiveRules: [1] }] })],
-    ['scanned files not text', reread({ ...clean, scannerRuns: [{ ...cleanRun, scannedFiles: [1] }] })],
-    ['scanned file not a repository path', reread({ ...clean, scannerRuns: [{ ...cleanRun, scannedFiles: ['/etc/passwd'] }] })],
-    ['scanner run with its declared rules', reread({ ...clean, scannerRuns: [{ ...cleanRun, rules: [] }] })],
-    ['scanner version not text', reread({ ...clean, scannerRuns: [{ ...cleanRun, toolVersion: 1 }] })],
+    ['a scanner-run record', reread({ ...clean, scannerRuns: [] })],
   ];
   for (const [label, read] of tampered) assert.throws(read, CheckReportError, label);
 });

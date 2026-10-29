@@ -7,7 +7,7 @@ import type { ArtifactId, ArtifactRef, AttemptId, OrganizationId, ProjectId, Rep
 import { loadReviewPolicy } from '@asep/policy';
 import { buildReviewPacket, type PacketLimits, type PacketSources } from './packet.js';
 import { buildCheckReport } from './check-report.js';
-import { runDeterministicCheckRules } from './checks.js';
+import { runDeterministicCheckRules, type SarifInput } from './checks.js';
 import { parseUnifiedDiff } from './diff.js';
 import type { AdjudicationInput, ReviewInput } from './adjudication.js';
 import type { ModelFindingOutput, ReviewOutput } from './prompt.js';
@@ -346,7 +346,9 @@ export function completedReview(reviewerConfigId: string, output: ReviewOutput, 
 }
 
 /** A consistent adjudication input: one independent primary reviewer that approved, gating mode. */
-export function adjudicationBase(options: { readonly round?: number; readonly world?: FixtureWorld } = {}): AdjudicationInput {
+export function adjudicationBase(
+  options: { readonly round?: number; readonly world?: FixtureWorld; readonly sarif?: readonly SarifInput[] } = {},
+): AdjudicationInput {
   const world = options.world ?? fixtureWorld({ round: options.round ?? 1 });
   const round = world.sources.identity.round;
   const built = buildReviewPacket(world.sources, world.limits);
@@ -360,7 +362,7 @@ export function adjudicationBase(options: { readonly round?: number; readonly wo
       verdict: c.exitCode === 0 ? ('PASS' as const) : ('FAIL' as const),
     })),
     invariants: [],
-    sarif: [],
+    sarif: options.sarif ?? [],
   });
   const decode = (id: string) => new TextDecoder().decode(world.contents.get(id)!);
   return {
@@ -381,8 +383,7 @@ export function adjudicationBase(options: { readonly round?: number; readonly wo
       pushGuard: checks.pushGuard,
       egress: { decision: checks.egress.decision, packetSha256: checks.egress.packetSha256 },
       findings: checks.findings,
-      scannerRuns: checks.scannerRuns,
-      reportSha256: buildCheckReport(checks, { packetSha256: built.sha256, sarif: [] }).sha256,
+      reportSha256: buildCheckReport(checks, { packetSha256: built.sha256, sarif: options.sarif ?? [] }).sha256,
     },
     unsatisfiable: null,
     reviewers: [{ reviewerConfigId: PRIMARY, role: 'primary', independentOfImplementer: true }],

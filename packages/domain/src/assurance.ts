@@ -4,8 +4,8 @@
 // which state. A reviewer that raised a finding can only claim it fixed (still
 // blocking); a fix is verified only by a different reviewer that is independent of
 // the implementer and cites a grounded resolution inside the repair delta, by a
-// named human, for deterministic findings by the same rule no longer firing, or, for
-// SARIF findings, by a scanner recheck the harness proved clean.
+// named human, or, for deterministic findings, by the same rule no longer firing. A
+// SARIF finding is verified only by a named human: no scanner output closes it.
 // Only humans accept, waive (with rationale, expiry and signature) or reject a
 // grounded finding. The rules mirror the database constraints on
 // finding_dispositions, so a write the database would refuse is refused here first.
@@ -57,17 +57,11 @@ export interface FindingAggregate {
   readonly version: number;
 }
 
-export type HarnessRule =
-  | 'citation-unresolvable'
-  | 'deterministic-recheck'
-  | 'scanner-recheck'
-  | 'closure-without-change'
-  | 'waiver-expired';
+export type HarnessRule = 'citation-unresolvable' | 'deterministic-recheck' | 'closure-without-change' | 'waiver-expired';
 
 /** The finding source each harness rule may verify: a re-check verifies only its own kind of evidence. */
 const harnessVerifies: Readonly<Partial<Record<HarnessRule, FindingSource>>> = {
   'deterministic-recheck': 'deterministic',
-  'scanner-recheck': 'sarif',
 };
 
 export type DispositionActor =
@@ -227,7 +221,7 @@ function checkAuthority(finding: FindingAggregate, input: FindingDispositionInpu
     return;
   }
 
-  // Harness rules: refute ungrounded findings, verify deterministic and scanner re-checks, reopen.
+  // Harness rules: refute ungrounded findings, verify deterministic re-checks, reopen.
   switch (disposition) {
     case 'REJECTED_WITH_EVIDENCE':
       if (actor.rule !== 'citation-unresolvable') reject('actor-not-permitted', `${actorId} cannot refute`);

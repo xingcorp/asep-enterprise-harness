@@ -27,7 +27,7 @@ import {
   type FindingSeverity,
 } from '@asep/domain';
 import { tupleKey, tupleSha256 } from './canonical-json.js';
-import type { PushGuardResult, ScannerRun } from './checks.js';
+import type { PushGuardResult } from './checks.js';
 import type { DiffFileChange } from './diff.js';
 import { bySeverityDescending, findingFingerprint, preferFinding, type CheckFinding } from './findings.js';
 import { groundFinding, groundResolution, type GroundingContext, type GroundingFailure, type GroundingResult } from './grounding.js';
@@ -65,11 +65,6 @@ export interface PriorFindingInput {
   readonly record: ReviewFindingRecord;
   /** Set while the finding is waived. */
   readonly waiverExpiresAt: string | null;
-  /**
-   * SARIF priors only: the scanner version recorded when the finding was raised. Absent or
-   * null, no scanner recheck can be proven and only a named human closes the finding.
-   */
-  readonly scannerVersion?: string | null;
 }
 
 export interface AdjudicationInput {
@@ -95,8 +90,6 @@ export interface AdjudicationInput {
     readonly pushGuard: PushGuardResult;
     readonly egress: { readonly decision: EgressDecision; readonly packetSha256: string };
     readonly findings: readonly CheckFinding[];
-    /** The scanner runs of this round's check report. */
-    readonly scannerRuns: readonly ScannerRun[];
     readonly reportSha256: string;
   };
   /** Set by planning when the policy cannot be met. */
@@ -121,7 +114,6 @@ export interface BlockingEntry {
 
 export type ClosureRule =
   | 'deterministic-recheck'
-  | 'scanner-recheck'
   | 'human'
   | 'independent-reviewer'
   | 'raiser-claim'
@@ -236,27 +228,6 @@ function optional<K extends string, V>(key: K, value: V | null | undefined): Par
   return value === null || value === undefined ? {} : ({ [key]: value } as Record<K, V>);
 }
 
-/**
- * Whether this round's checks prove a SARIF prior gone: a run of the same scanner at the
- * version recorded with the prior effectively ran the prior's rule and scanned the prior's
- * file, no run of that scanner failed, and no result has the prior's fingerprint. A declared
- * rule is not proof that it ran.
- */
-function scannerRecheckProven(input: AdjudicationInput, prior: PriorFindingInput): boolean {
-  const F = prior.record;
-  const tool = F.raisedBy.slice('sarif:'.length);
-  const version = prior.scannerVersion ?? null;
-  const rule = F.ruleId ?? null;
-  const file = F.file ?? null;
-  if (version === null || rule === null || file === null) return false;
-  const runs = input.checks.scannerRuns.filter((r) => r.tool === tool);
-  return (
-    runs.every((r) => r.executionSuccessful) &&
-    runs.some((r) => r.toolVersion === version && r.effectiveRules.includes(rule) && r.scannedFiles.includes(file)) &&
-    !input.checks.findings.some((f) => f.raisedBy === F.raisedBy && f.fingerprint === F.fingerprint)
-  );
-}
-
 /** A prior finding as persisted, with a waiver that had expired when the round opened lifted. */
 function persistedAggregate(prior: PriorFindingInput, asOf: string): FindingAggregate {
   return expireWaiver(toAggregate(prior.record, prior.record.lifecycleState, prior.waiverExpiresAt), asOf);
@@ -313,17 +284,9 @@ function closePrior(
     }
     return decision(current, 'unchanged');
   }
-  if (F.source === 'sarif') {
-    if (isLifecycleBlocking(agg, asOf) && scannerRecheckProven(input, prior)) {
-      const verified = dispose(agg, {
-        ...at,
-        disposition: 'RESOLUTION_VERIFIED',
-        actor: { kind: 'harness-rule', rule: 'scanner-recheck' },
-      });
-      if (verified !== null) return decision(verified.state, 'scanner-recheck');
-    }
-    return decision(current, 'unchanged');
-  }
+  // Only a named human closes a SARIF finding: a log that no longer reports it is no proof
+  // that it is gone, and no reviewer's claim outranks the scanner.
+  if (F.source === 'sarif') return decision(current, 'unchanged');
   if (!isLifecycleBlocking(agg, asOf)) return decision(current, 'unchanged');
 
   const eligible = new Set(input.reviewers.filter((r) => r.independentOfImplementer).map((r) => r.reviewerConfigId));
