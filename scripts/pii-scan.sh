@@ -96,7 +96,7 @@ scan_paths() {
 }
 
 # ---------------------------------------------------------------------------
-# Git metadata scan (MED-NEW-004).
+# Git metadata scan.
 #
 # Tracked files are not the only thing a public push publishes: every commit
 # carries an author and a committer email, and both ship with the history. The
@@ -379,7 +379,7 @@ self_test() {
 
   rm -rf "$tmp"
 
-  # 5. Git author/committer/trailer metadata (MED-NEW-004).
+  # 5. Git author/committer/trailer metadata.
   metadata_self_test || rc=1
   return $rc
 }

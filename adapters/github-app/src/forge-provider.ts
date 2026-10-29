@@ -259,8 +259,8 @@ export class GitHubAppForgeProvider {
     return token;
   }
 
-  // The ONE credential-recovery loop every token-spending operation goes through
-  // (MED-002). Each attempt mints a fresh token — bypassing the auth strategy's
+  // The ONE credential-recovery loop every token-spending operation goes
+  // through. Each attempt mints a fresh token — bypassing the auth strategy's
   // cache on every re-mint — skips a token that is already expired at use time,
   // and retries only when the failure is credential expiry/revocation. Anything
   // else propagates unchanged on the first occurrence. Exhausting the bound is a
@@ -312,7 +312,7 @@ export class GitHubAppForgeProvider {
       pushArgsTemplate.push(`--force-with-lease=${safe.branch}:${safe.forceWithLeaseExpectedSha}`);
     }
 
-    // MED-002: one bounded recovery loop; the token is injected only into this
+    // One bounded recovery loop; the token is injected only into this
     // one git child. A credential failure is rethrown raw so the loop re-mints;
     // any other failure is a genuine push error, scrubbed, and fails fast.
     return this.withCredential('push', input.repository.repositoryId, async (token) => {
@@ -403,7 +403,7 @@ export class GitHubAppForgeProvider {
   }): Promise<string | null> {
     const safe = safeRefspecFor(input.branch);
     const baseUrl = buildCloneUrl(input.repository.identity, this.allowedHosts);
-    // MED-002: the same bounded recovery as every other operation. A resume that
+    // The same bounded recovery as every other operation. A resume that
     // finds a PENDING push calls this first, so a probe that died on an expired
     // token wedged the whole recovery path.
     return this.withCredential('resolve-ref', input.repository.repositoryId, async (token) => {

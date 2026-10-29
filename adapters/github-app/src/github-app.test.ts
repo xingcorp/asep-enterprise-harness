@@ -398,7 +398,7 @@ test('MED-002: PR upsert re-mints on a revoked credential and does NOT open a du
 });
 
 // ---------------------------------------------------------------------------
-// MED-002 (cycle 6) — the credential-recovery rule is one invariant over EVERY
+// The credential-recovery rule is one invariant over EVERY
 // operation that mints a JIT token: reject an already-expired mint, re-mint on
 // expiry/revocation within the bound (bypassing the auth strategy's token
 // cache), and surface exhaustion as ForgeAuthExpiredError — never as a push
@@ -429,7 +429,7 @@ function recordingAuth(log: MintLog, opts: { expiredFirst?: boolean } = {}): Ins
 
 const SHA = 'a'.repeat(40);
 
-test('MED-002: git HTTPS authentication failures are recognised as credential expiry', () => {
+test('git HTTPS authentication failures are recognised as credential expiry', () => {
   assert.equal(isAuthExpiryError(new Error(GIT_AUTH_FAILURE)), true);
   assert.equal(isAuthExpiryError(new Error("fatal: Authentication failed for 'https://github.com/a/b/'")), true);
   assert.equal(isAuthExpiryError(new Error('remote: Invalid username or password.')), true);
@@ -438,7 +438,7 @@ test('MED-002: git HTTPS authentication failures are recognised as credential ex
   assert.equal(isAuthExpiryError(new Error('fatal: unable to access: The requested URL returned error: 403')), false);
 });
 
-test('MED-002: resolveRef re-mints after a revoked credential and returns the remote SHA', async () => {
+test('resolveRef re-mints after a revoked credential and returns the remote SHA', async () => {
   const log: MintLog = { tokens: [], refresh: [] };
   let calls = 0;
   const runner: GitRunner = async () => {
@@ -453,7 +453,7 @@ test('MED-002: resolveRef re-mints after a revoked credential and returns the re
   assert.equal(log.tokens.length, 2, 'a fresh token was minted for the retry');
 });
 
-test('MED-002: resolveRef skips an already-expired mint instead of failing on it', async () => {
+test('resolveRef skips an already-expired mint instead of failing on it', async () => {
   const log: MintLog = { tokens: [], refresh: [] };
   const used: string[] = [];
   const runner: GitRunner = async (args) => {
@@ -470,7 +470,7 @@ test('MED-002: resolveRef skips an already-expired mint instead of failing on it
   assert.ok(!used[0]!.includes(log.tokens[0]!), 'the expired token was not used');
 });
 
-test('MED-002: resolveRef fails closed with ForgeAuthExpiredError, not ForgePushError, when the budget runs out', async () => {
+test('resolveRef fails closed with ForgeAuthExpiredError, not ForgePushError, when the budget runs out', async () => {
   let calls = 0;
   const runner: GitRunner = async () => { calls++; throw new Error(GIT_AUTH_FAILURE); };
   const creds = new GitHubAppCredentialProvider({ appId: 1, privateKey: 'PEM', installationId: 9 }, fakeAuth());
@@ -486,7 +486,7 @@ test('MED-002: resolveRef fails closed with ForgeAuthExpiredError, not ForgePush
   assert.equal(calls, MAX_REMINT_ATTEMPTS + 1);
 });
 
-test('MED-002: a non-auth resolveRef failure is not retried and never leaks the token', async () => {
+test('a non-auth resolveRef failure is not retried and never leaks the token', async () => {
   const token = 'ghs_probeLeak42';
   let calls = 0;
   const runner: GitRunner = async () => {
@@ -512,7 +512,7 @@ test('MED-002: a non-auth resolveRef failure is not retried and never leaks the 
 // The same invariant, table-driven over all four token-using operations, so a
 // fifth operation added later without the shared recovery path has a template
 // to fail against.
-test('MED-002: every forge operation re-mints once on expiry and bypasses the token cache', async () => {
+test('every forge operation re-mints once on expiry and bypasses the token cache', async () => {
   const pr = { number: 3, html_url: 'https://github.com/acme/web/pull/3', head: { ref: attemptBranchStr, sha: SHA }, base: { ref: 'main' } };
   const flakyOctokit = (failures: { left: number }) => (): OctokitLike => {
     const once = async <T>(v: T): Promise<T> => {
