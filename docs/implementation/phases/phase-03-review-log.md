@@ -1041,6 +1041,27 @@ Architecture §4.1, §5.
 **Validation.** D13 (new), core table: the three lookups. J5 amended: one outcome and one usage entry per
 **registered** attempt.
 
+### S2 follow-up commits
+
+One commit per S2 code finding, on top of the docs commit `ecf7b1c`. Each fix commit's new tests failed on the code
+before it; the two test-only commits are proven by the mutations and evasions they kill. `pnpm verify:all` passed
+after each commit.
+
+| Finding | Commit | Proof |
+|---|---|---|
+| P3-S2-HIGH-002 | `f5fd317` | Hostile-policy table, loader rule and property: red before the fix. |
+| P3-S2-HIGH-005 | `40676fd` | Wall-clock traces at cap, cap plus grace and above, and property: red before the fix. |
+| P3-S2-MED-001 | `dd67fce` | `5.0000004` on `5`, sub-micro charge, input rule and property: red before the fix. |
+| P3-S2-HIGH-003 | `867257d` | Publication-incomplete traces and property: red before the fix. |
+| P3-S2-MED-005 | `10d072f` | Registration lookups and property: red before the fix. |
+| P3-S2-HIGH-004 | `d0fa252` | Seal traces below `maxTasks` and across continue-as-new, and run property: red before the fix. |
+| P3-S2-MED-003 | `d5c6aa2` | Approval-wait pause traces for both kinds, projection edges and step-replay property: red before the fix. |
+| P3-S2-MED-004 | `ec9e420` | Dropping the `expiryFired` branch or the `verified` check turns direct race traces and the gate oracle red. |
+| P3-S2-MED-002 | `4d6ce51` | 15 of the 33 seeds and the clean set fail under the regex detector; all pass on the AST detector. |
+
+The interpreter hook `messagesDuring(request)` became `eventsDuring(request, activeTimers)` in `ec9e420`, so timer
+firings can arrive while a request is in flight.
+
 ### Freeze gate (v4)
 
 - [x] Every finding of the review dispositioned: 15/15 new; the v2 statuses confirmed, P3-PLAN-HIGH-004 still PARTIAL
