@@ -1,124 +1,129 @@
-# Phase 4 — Research Register (DRAFT v1)
+# Phase 4 — Research Register (LOCKED v2 (pending controller confirmation))
 
-> Research for the independent reviewer, its independence and injection resistance, replayable measurement,
-> and dashboards. All web sources below were retrieved on **2026-10-29** in this session unless marked
-> "bibliographic (not fetched)". Node 24.6.0, pnpm 10.31.0, TypeScript 7.0.2 per `phase-02-report.md`
-> `versions`; root `package.json` requires Node ≥ 24.
+> Research for the independent reviewer, its independence, egress and injection resistance, replayable measurement,
+> and dashboards. All web sources were retrieved on **2026-10-29** in a Lane B session unless marked
+> "bibliographic (not fetched)". Node 24.6.0, pnpm 10.31.0, TypeScript 7.0.2 per `phase-02-report.md` `versions`;
+> `./node_modules/.bin/tsc --version` printed `Version 7.0.2` in this session. Root `package.json` requires
+> Node ≥ 24.
 
 ## 1. Reviewer API: OpenAI Responses API (behind the reviewer port)
 
-Source: OpenAI API reference, "Create a model response", `https://developers.openai.com/api/reference/resources/responses/methods/create`
-(retrieved through Context7 library `/websites/developers_openai_api_reference`, 2026-10-29). REST API version
-reported by the `openai-version` response header: `2020-10-01` (OpenAI API reference, "Debugging requests",
-`https://developers.openai.com/api/docs/api-reference/administration`).
+Source: OpenAI API reference, "Create a model response",
+`https://developers.openai.com/api/reference/resources/responses/methods/create` (through Context7 library
+`/websites/developers_openai_api_reference`). REST API version reported by the `openai-version` response header:
+`2020-10-01` (OpenAI API reference, "Debugging requests").
 
 | Item | What the documentation says | Plan consequence |
 |---|---|---|
 | Endpoint | `POST /v1/responses` | adapter calls `{baseUrl}/responses` |
-| `store` | "Defaults to true when omitted. If set to true, response data will be stored for at least 30 days" | always send `store: false` (no provider-side retention, no shared state) |
-| `truncation` | `disabled` (default): input over the context window fails with a 400 error; `auto` drops items from the beginning | send `disabled` explicitly; classify the 400 as `CONTEXT_OVERFLOW` → ESCALATE |
-| `reasoning.effort` | `none, minimal, low, medium, high, xhigh, max`; not every model supports every value | pinned per reviewer config |
-| `temperature` / `top_p` | exist on create; model guidance: "When reasoning effort is not `none`, remove `temperature`, `top_p`, and `top_logprobs`" (`https://developers.openai.com/api/docs/guides/model-guidance`) | not sent; determinism is not available → record/replay (§3) |
-| seed | appears in Evals/grader sampling parameters; **not** found in the Responses create reference | not used; plan does not rely on a seed |
-| `service_tier` | `auto, default, flex, scale, priority, fast, ultrafast`; "This tier is currently available for `gpt-5.6-sol`"; the response reports the tier actually used | pinned when configured; served tier recorded |
+| `store` | "Defaults to true when omitted. If set to true, response data will be stored for at least 30 days" | always send `store: false`; no remote state to reconcile (plan §16 I4) |
+| `truncation` | `disabled` (default): input over the context window fails with a 400 error | send `disabled`; classify the 400 as `CONTEXT_OVERFLOW` |
+| `reasoning.effort` | `none, minimal, low, medium, high, xhigh, max`; not every model supports every value | pinned per reviewer config; comparator value kept only if the probe accepts it |
+| `temperature` / `top_p` | model guidance: "When reasoning effort is not `none`, remove `temperature`, `top_p`, and `top_logprobs`" (`https://developers.openai.com/api/docs/guides/model-guidance`) | not sent; determinism unavailable → record/replay |
+| seed | not found in the Responses create reference | not used |
+| `service_tier` | `auto, default, flex, scale, priority, fast, ultrafast`; "This tier is currently available for `gpt-5.6-sol`" | pinned when configured; served tier recorded |
 | `text.format` | `json_schema` with `strict: true` enables Structured Outputs | strict schema for the model-facing output |
-| `previous_response_id`, `conversation` | carry prior context into a response | never sent (fresh context, ADR 0010) |
-| `background` | default `false` | not used |
-| `include: reasoning.encrypted_content` | needed only for stateless multi-turn reasoning | not used (single turn) |
+| `previous_response_id`, `conversation` | carry prior context | never sent |
 | response `status` | `completed, failed, in_progress, cancelled, queued, incomplete` | only `completed` can be `COMPLETED` |
 | `incomplete_details.reason` | `max_output_tokens, max_messages, content_filter, steered` | → `INCOMPLETE`, fail closed |
-| `error.code` | includes `server_error`, `rate_limit_exceeded`, `invalid_prompt`, … | classified; bounded detail recorded |
-| `usage` | `input_tokens`, `input_tokens_details.cached_tokens`, `output_tokens`, `output_tokens_details.reasoning_tokens`, `total_tokens` | mapped to `ReviewerUsage` |
-| `model` (response) | the model used | recorded as `servedModel`; drift detected |
+| `usage` | input, cached input, output, reasoning, total tokens | mapped to `ReviewerUsage` |
+| `model` (response) | the model used | recorded as `servedModel`; drift fails the review |
 
-Structured Outputs (`https://developers.openai.com/api/docs/guides/structured-outputs`): strict mode
-"ensures the model will always generate responses that adhere to your supplied JSON Schema", but the model
-"might not generate a valid response" on refusal or incomplete output; refusals appear as a `refusal` content
-item; only a subset of JSON Schema is supported in strict mode and every example lists all properties as
-required with `additionalProperties: false`, using nullable types for optional values. Consequence: the
-model-facing schema follows that shape, and the harness re-validates with AJV and its own grounding rules —
-provider-side adherence is never trusted on its own.
+Structured Outputs (`https://developers.openai.com/api/docs/guides/structured-outputs`): strict mode adheres to the
+schema, but refusals appear as a `refusal` content item and incomplete output may not validate; strict mode supports
+a subset of JSON Schema with all properties required and `additionalProperties: false`. The harness re-validates
+with AJV and grounds every citation; provider adherence is never trusted alone.
 
-Rate limits (`https://developers.openai.com/api/docs/guides/rate-limits`): `Retry-After` may be present on
-429 (temporary rate limit) and 503 (temporary overload); otherwise back off exponentially with jitter, limit
-attempts and total time, avoid nested retry loops, and do not retry quota/billing errors. `x-ratelimit-*`
-headers report remaining requests/tokens. OpenAI recommends logging `x-request-id`. Consequence: adapter retry
-policy (EC G4); no SDK-level retries layered on top.
+Rate limits (`https://developers.openai.com/api/docs/guides/rate-limits`): `Retry-After` may be present on 429 and
+503; otherwise exponential backoff with jitter, bounded attempts and time, no nested retry loops, no retry of
+quota/billing errors; log `x-request-id`.
 
-**Gateway.** The environment provides an OpenAI-compatible gateway serving `gpt-5.6-sol` over the Responses
-API (task statement). It was **not probed** in this session (no credential read, lane hard rules). Whether it
-honours `store`, `truncation`, strict `text.format`, `reasoning.effort`, `service_tier` and returns `usage`,
-`model` and `x-request-id` is **not verified**; the S9 opt-in live smoke records the answer. If the gateway
-rejects or ignores a parameter, the adapter fails closed and the gap is adjudicated in the review log — a
-parameter is never dropped silently.
+**Gateway.** The environment provides an OpenAI-compatible gateway (kiro-proxy) serving `gpt-5.6-sol` over the
+Responses API, and also `deepseek-v4-pro`, `qwen3.8-max` and `grok-4.6` (controller statement). **Not probed** in
+any Lane B session (no credential; lane rules). Unknown and recorded by the S10 probe for both the primary and the
+comparator: support for the Responses API, `store`, `truncation`, strict `text.format`, `reasoning.effort`,
+`service_tier`, and whether `usage`, `model` and `x-request-id` are returned. The controller's notes suggest the
+gateway injects a style instruction into prompts; not verified by Lane B (risk PR4-30). A parameter the gateway
+rejects or ignores is never dropped silently; the adapter fails closed and the gap is adjudicated.
 
 ## 2. Prompt-injection resistance
 
 | Source | Date | Use in the plan |
 |---|---|---|
-| OWASP Top 10 for LLM Applications, LLM01:2025 Prompt Injection, `https://genai.owasp.org/llmrisk/llm01-prompt-injection/` | 2025 edition | direct vs indirect injection; mitigations: constrain behaviour, "define and validate expected output formats", "least privilege", "require human approval for high-risk actions", "segregate and identify external content", adversarial testing |
-| OpenAI, "Agent builder safety", `https://developers.openai.com/api/docs/guides/agent-builder-safety` | retrieved 2026-10-29 | do not put untrusted variables in developer messages; structured outputs between nodes remove free-form channels; isolation "greatly reduce[s], but don't fully remove" the risk |
-| Hines et al., "Defending Against Indirect Prompt Injection Attacks With Spotlighting", arXiv:2403.14720 | 2024-03-20 | delimiting, datamarking, encoding; reported attack success falling from above 50% to below 2% in their GPT-family experiments — evidence that spotlighting helps, not a guarantee for our model or data |
-| Wallace et al., "The Instruction Hierarchy", arXiv:2404.13208 | 2024-04-19 | models trained to prefer privileged instructions over lower-privileged content; supports keeping the rubric in `instructions` and data in user input |
-| Boucher & Anderson, "Trojan Source: Invisible Vulnerabilities", arXiv:2111.00169 (USENIX Security 2023) | v1 2021-10-30 | bidirectional/invisible Unicode makes reviewers misread code; recommends scanning in repositories and build pipelines → deterministic check (EC D4) |
+| OWASP Top 10 for LLM Applications, LLM01:2025 Prompt Injection, `https://genai.owasp.org/llmrisk/llm01-prompt-injection/` | 2025 edition | constrain behaviour, validate output formats, least privilege, human approval for high-risk actions, segregate external content, adversarial testing |
+| OpenAI, "Agent builder safety", `https://developers.openai.com/api/docs/guides/agent-builder-safety` | retrieved 2026-10-29 | no untrusted variables in developer messages; structured outputs between nodes; isolation reduces but does not remove the risk |
+| Hines et al., "Defending Against Indirect Prompt Injection Attacks With Spotlighting", arXiv:2403.14720 | 2024-03-20 | delimiting, datamarking, encoding; reported attack success falling from above 50% to below 2% in their experiments — evidence, not a guarantee |
+| Wallace et al., "The Instruction Hierarchy", arXiv:2404.13208 | 2024-04-19 | rubric in `instructions`, data in user input |
+| Boucher & Anderson, "Trojan Source: Invisible Vulnerabilities", arXiv:2111.00169 | v1 2021-10-30 | deterministic bidi/invisible-Unicode check |
 
-Design conclusion: no single technique is sufficient; the plan's primary defence is architectural (model
-verdict is advisory; deterministic checks and humans hold authority), with spotlighting and strict outputs as
-measured secondary layers (EC D5).
+Design conclusion: the primary defence is architectural — in Phase 4 production the model cannot change the
+workflow at all (shadow), and in any mode deterministic checks and humans hold authority. Spotlighting and strict
+outputs are measured secondary layers (exit D6).
 
 ## 3. Independence, correlation and determinism
 
 | Source | Date | Use |
 |---|---|---|
-| Kim, Garg, Peng, Garg, "Correlated Errors in Large Language Models", arXiv:2506.07962 | 2025-06-09 | models "agree 60% of the time when both models err" on one leaderboard dataset; shared providers/architectures raise correlation, and larger accurate models correlate even across providers → a different family reduces but does not remove correlated misses; measure, do not assume |
-| Panickssery, Bowman, Feng, "LLM Evaluators Recognize and Favor Their Own Generations", arXiv:2404.13076 | 2024-04-15 | self-preference bias → reviewer must not share family with the coder for R2, and same-model labels bias measurement (plan §6.2 item 2) |
+| Kim, Garg, Peng, Garg, "Correlated Errors in Large Language Models", arXiv:2506.07962 | 2025-06-09 | models "agree 60% of the time when both models err" on one leaderboard dataset (retrieved in the planning session); shared providers/architectures raise correlation → a different-family comparator reduces but does not remove correlated misses; measure, do not assume |
+| Panickssery, Bowman, Feng, "LLM Evaluators Recognize and Favor Their Own Generations", arXiv:2404.13076 | 2024-04-15 | self-preference → reviewer family ≠ implementer family; same-model labels bias measurement (plan §7.2 item 2) |
 
-Determinism: not available from the provider for reasoning models (§1). Replayability is achieved by
-canonical request bytes + recorded response bytes + pure scoring (plan §10).
+Determinism: unavailable from the provider for reasoning models (§1). Replayability = canonical request bytes +
+recorded response bytes + pure scoring.
 
 ## 4. Measurement methodology
 
 | Source | Date | Use |
 |---|---|---|
-| Defects4J, `https://github.com/rjust/defects4j`; Just, Jalali, Ernst, "Defects4J: A Database of Existing Faults to Enable Controlled Testing Studies for Java Programs", ISSTA 2014 | README retrieved 2026-10-29 | real bugs as buggy/fixed version pairs isolated from one fix commit with minimised diffs → corpus items pair a reviewed tree with its fix commits; our fixes are not minimised, which the item records |
-| Brown, Cai, DasGupta, "Interval Estimation for a Binomial Proportion", Statistical Science 16(2), 2001 | bibliographic (not fetched) | Wilson score interval for small-n proportions (EC I5) |
+| Defects4J, `https://github.com/rjust/defects4j`; Just, Jalali, Ernst, ISSTA 2014 | README retrieved 2026-10-29 | buggy/fixed version pairs → corpus items pair a reviewed tree with a post-fix tree (post-fix negatives); our fixes are not minimised, which the item records |
+| Brown, Cai, DasGupta, "Interval Estimation for a Binomial Proportion", Statistical Science 16(2), 2001 | bibliographic (not fetched) | Wilson score interval for small-n proportions |
 
-Protocol choices (pre-registered in S15, proposals here): unit = defect instance; primary metrics on
+Protocol choices (frozen in the controller-approved preregistration): unit = defect instance; primary metrics on
 first-occurrence instances; deterministic matcher (path equality, line overlap within ±10 lines, category
-compatibility table) with strict and lenient variants; k = 3 on the test split; precision only over
-adjudicated findings; descriptive-only below n = 20 (decision D-7).
+compatibility table) with strict and lenient variants; k = 3 on reporting items for both reviewers; precision only
+over human-adjudicated findings; descriptive-only below n = 20 (D-7); floors in plan §7.4, reported not gating.
 
 ## 5. Tooling
 
 | Item | Source | Fact | Decision |
 |---|---|---|---|
-| Node global `fetch` | `https://nodejs.org/api/globals.html` (retrieved 2026-10-29) | added v17.5.0/v16.15.0; flag removed v18.0.0; "No longer experimental" v21.0.0 | use built-in `fetch` in the adapter; no HTTP client dependency |
-| SARIF 2.1.0 | `https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html` — "SARIF Version 2.1.0 Plus Errata 01", OASIS Standard incorporating Approved Errata, 2023-08-28 | `runs[].results[]` with `ruleId` (§3.27.5), `level` (§3.27.10), `message` (§3.27.11), `locations[].physicalLocation.region.startLine/endLine` (§3.29.4, §3.30.5, §3.30.7) | parse this subset only; anything else ignored; malformed → fail closed |
-| Grafana provisioning | `https://grafana.com/docs/grafana/latest/administration/provisioning/` (documents 12.x) | data sources in `provisioning/datasources` (`type: postgres`, `jsonData.sslmode`, `secureJsonData.password`); dashboards via `providers` with `options.path`, `foldersFromFilesStructure`, `allowUiUpdates` | provision from `deploy/grafana/provisioning`; compose runs `grafana/grafana:12.0.2` (`compose.yaml:94`) |
+| Node global `fetch` | `https://nodejs.org/api/globals.html` | stable ("No longer experimental") since v21.0.0 | built-in `fetch` in the adapter; no HTTP client dependency |
+| Node test reporters | `https://nodejs.org/api/test.html` ("Test reporters") | built-ins `spec, tap, dot, junit, lcov`; "The `--test-reporter` flag can be specified multiple times … it is required to specify a destination for each reporter using `--test-reporter-destination` … Reporters and destinations are paired according to the order they were specified." The version that added `junit` was not shown in the fetched excerpt (not verified) | SR-T3: keep the stdout reporter, add `junit` to a temp file, pair destinations in order |
+| SARIF 2.1.0 | `https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html` — Plus Errata 01, OASIS Standard, 2023-08-28 | `runs[].results[]` with `ruleId`, `level`, `message`, `locations[].physicalLocation.region` | parse this subset only; malformed → fail closed |
+| Grafana provisioning | `https://grafana.com/docs/grafana/latest/administration/provisioning/` (12.x content) | data sources and dashboard providers from `provisioning/` | provision from `deploy/grafana/provisioning` |
+| Grafana HTTP API | `https://grafana.com/docs/grafana/latest/developer-resources/api-reference/http-api/api-legacy/other/`; `…/api-legacy/data_source/` | `GET /api/health` (response fields `commit`, `database`, `version`); `GET /api/datasources/uid/:uid`; `POST /api/ds/query` with `queries[]` (`datasource.uid`, `refId`), `from`, `to`. The index page notes the docs now describe Grafana 13 and that `/api` moves to `/apis` starting in Grafana 13 | exit J4 uses these on the pinned 12.x image; the dashboard-by-uid (`/api/dashboards/uid/:uid`) and search (`/api/search`) paths were **not fetched** and are confirmed against the 12.x reference in S18 |
+| Grafana image | `compose.yaml:94` | `grafana/grafana:12.0.2` by tag, not digest | S18 pins a digest and records pull/inspect output; digest **not verified** in this session |
+| PGlite | `adapters/persistence/node_modules/@electric-sql/pglite/package.json` | version `0.5.4`; Lane B scratch run applied the §3 DDL incl. `plpgsql` triggers (data model §3.5) | fast suites run the same migrations |
 
 ## 6. Dependency decisions
 
 **No new third-party dependency.**
 
-- **Why not the `openai` npm SDK in the adapter:** the adapter must persist the exact canonical request and
-  response bytes before parsing (ADR 0009), control retries itself without nested SDK retries (rate-limit
-  guidance, §1), and talk to an OpenAI-*compatible* gateway whose feature coverage is unverified. A thin
-  `fetch` client gives byte-level control with no transitive supply-chain surface. The SDK version was not
-  evaluated in this session; if the controller prefers the SDK, it must be pinned exactly (Phase 2
-  `phase-02-research-register.md` §1 pinning policy) and confined to `adapters/reviewer-openai`.
-- **Validation:** reuse `ajv` 8.20.0 / `ajv-formats` 3.0.1 already pinned in `packages/contracts/package.json`.
-- **YAML policy loading:** reuse `yaml` 2.9.0 already used by `@asep/contracts` and `@asep/evals`.
-- **Test HTTP server:** `node:http` inside adapter test files only (adapters may use Node networking; the
-  fitness rules forbid it only in domain/application).
+- **Not the `openai` npm SDK:** the adapter must persist exact request/response bytes before parsing (ADR 0009),
+  control retries itself, and talk to an OpenAI-compatible gateway with unverified feature coverage. A thin `fetch`
+  client gives byte-level control without transitive supply-chain surface. If the controller prefers the SDK, it
+  must be pinned exactly and confined to `adapters/reviewer-openai`.
+- **Validation:** `ajv` 8.20.0 / `ajv-formats` 3.0.1 already pinned in `packages/contracts/package.json`.
+- **YAML:** `yaml` 2.9.0 already used by `@asep/contracts` and `@asep/evals`.
+- **Test HTTP server:** `node:http` in adapter tests only.
 
-## 7. Open research questions (resolved at plan lock or by the S9 live smoke)
+## 7. Comparator selection (D-4, user decision: mandatory)
 
-1. Does the gateway honour `store: false`, strict `text.format`, `truncation: "disabled"`,
-   `reasoning.effort`, `service_tier`, and return `usage`, `model`, `x-request-id`? (S9 live smoke)
-2. What is the effective context window and output limit of `gpt-5.6-sol` behind the gateway? Determines the
-   default `packetBudgetBytes` (proposal 400 000 bytes) and `maxOutputTokens`. Not verified.
-3. Published price for `gpt-5.6-sol` on the gateway — required for cost; until configured with source and
-   date, cost is reported as uncovered (EC J6). Not verified.
-4. Datamarking vs base64 encoding for diffs: comprehension cost vs injection resistance — measured by the
-   injection suite (EC D5), not decided a priori.
-5. Whether a different-family comparator (D-4) is worth its cost for quantifying labeller bias.
+| Candidate | Family | Differs from implementer (`anthropic-claude`) and labeller/primary (`openai-gpt`) | Re-runnable outside the gateway | Probed |
+|---|---|---|---|---|
+| `deepseek-v4-pro` | deepseek | yes | DeepSeek has historically published open weights for its flagship line; for this model **not verified** | no |
+| `qwen3.8-max` | alibaba-qwen | yes | "max" tiers have historically been API-only; **not verified** | no |
+| `grok-4.6` | xai-grok | yes | not known to have open weights; **not verified** | no |
+
+Choice: `deepseek-v4-pro`, fallback order `qwen3.8-max`, `grok-4.6` (plan §7.6). The model-capability statements
+above are general history, not facts about these specific versions.
+
+## 8. Open questions (answered by S10 probe, S18 or the controller)
+
+1. Gateway behaviour for both reviewers (§1). (S10)
+2. Effective context window and output limit behind the gateway → default `packetBudgetBytes` (proposal 400 000)
+   and `maxOutputTokens`. Not verified.
+3. Published prices for both models on the gateway; until configured with source and date, cost is reported as
+   uncovered. Not verified.
+4. Datamarking vs base64 encoding for diffs — measured by the injection suite.
+5. Whether the gateway alters prompts (PR4-30).
+6. The Grafana 12.x image digest and the dashboard-by-uid path on 12.x. (S18)

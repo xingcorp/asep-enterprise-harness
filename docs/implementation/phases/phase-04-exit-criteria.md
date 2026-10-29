@@ -1,177 +1,198 @@
-# Phase 4 — Exit Criteria (DRAFT v1, machine-checkable)
+# Phase 4 — Exit Criteria (LOCKED v2 (pending controller confirmation), machine-checkable)
 
-> Phase 4 reaches a verdict only from a clean checkout. Base `00a6889`. Draft for the controller's Codex plan
-> review; not locked.
+> Phase 4 reaches a verdict only from a clean checkout. Base `00a6889`; v1 reviewed at `a2a7b8a`.
 > `[ ]` unmet · `[x]` met with evidence in `artifacts/phase-04/` or a committed scorecard.
-> Verdicts (`phase-04-plan.md` §21): **COMPLETE** (every MUST incl. I6 + I8) ·
-> **IMPLEMENTATION_COMPLETE_MEASURED_ON_SELF_HISTORY** (all but I8) ·
-> **IMPLEMENTATION_COMPLETE_MEASUREMENT_PENDING** (all but I6 + I8); suffix `_UNREVIEWED` until the
-> controller's independent final review.
+> Verdicts (`phase-04-plan.md` §23): **IMPLEMENTATION_COMPLETE_DESCRIPTIVE_SELF_HISTORY_ONLY_UNVALIDATED** (every MUST)
+> · **IMPLEMENTATION_COMPLETE_ASSURANCE_ONLY_LOOP_DESCRIPTIVE_SELF_HISTORY_ONLY_UNVALIDATED** (all but N1) ·
+> **IMPLEMENTATION_COMPLETE_MEASUREMENT_PENDING_UNVALIDATED** (all but I1); suffix `_UNREVIEWED` until the
+> controller's independent final review. `COMPLETE` is not reachable in Phase 4.
 
 ## How MUSTs map to tests
 
-Every MUST names the executable proof that will demonstrate it. Proof kinds:
+Every MUST names the executable proof. Proof kinds:
 
-- `unit` — a `*.test.ts` file registered in `REQUIRED_SUITES` (`scripts/lib/canonical-tests.mjs`) and run by
-  `pnpm verify:all`;
-- `itest` — a `*.itest.ts` file registered in `REQUIRED_ITEST_SUITES` (`scripts/integration/lib.mjs`) and
-  run by `pnpm test:integration` against real digest-pinned PostgreSQL, object storage and Docker;
-- `gate` — a step of `scripts/verify-all.sh` or the integration gate itself;
-- `live` — an opt-in run that needs the reviewer gateway credential (SR-G2); its *output* is committed and its
-  *re-scoring* is a `unit` proof;
-- `review` — judged by the controller's independent review (kept to the minimum; listed explicitly).
+- `unit` — a `*.test.ts` file registered in `REQUIRED_SUITES` and run by `pnpm verify:all`;
+- `itest` — a `*.itest.ts` file registered in `REQUIRED_ITEST_SUITES`, run by `pnpm test:integration` against real
+  digest-pinned PostgreSQL, object storage, Docker and (from S18) Grafana;
+- `gate` — a step of `scripts/verify-all.sh` or the integration gate;
+- `live` — needs the reviewer gateway credential (SR-G2); its output is committed and re-scored by a `unit` proof;
+- `review` — judged by the controller's independent review (listed explicitly, kept minimal).
 
-`packages/application/src/assurance/exit-criteria-coverage.test.ts` parses the table below and fails if a
-`unit`/`itest` row names a file that does not exist, is not registered under the stated suite id, or does not
-print `SUITE-ID: <id>` at module load. This is the structural guard against a green gate that never exercised
-a MUST. Test names are planned names (stable behaviour descriptions, no phase or finding codes).
+Gate adequacy (P4-PLAN-MED-001), three layers:
+
+1. `packages/application/src/assurance/exit-criteria-coverage.test.ts` parses the tables below and fails if a
+   `unit`/`itest` row names a file that does not exist, is not registered under the stated suite id, or does not
+   print `SUITE-ID: <id>`.
+2. **Proof manifest** (SR-T3): the canonical runner writes a JUnit report and runs the registered post-run proof
+   check, which fails the gate if any test name mapped below is absent, skipped, todo or failed (L3).
+3. **Mutation proofs**: for the key MUSTs (marked †), `scripts/assurance-mutation-proofs.json` holds a seeded
+   mutation of the guarding code; the suite applies each in a temporary copy of the tree and requires the mapped test
+   to fail, with an unmutated control run passing (L4).
+
+Test names are planned names (stable behaviour descriptions, no phase or finding codes).
 
 ## A. Baseline and build integrity
 
 | ID | MUST | Kind | Proof | Suite |
 |---|---|---|---|---|
-| A1 | `pnpm install --frozen-lockfile` then `pnpm verify:all` green from a clean checkout | gate | `scripts/verify-all.sh` | — |
-| A2 | `pnpm test:integration` green, including the three new required itest suites | gate | `scripts/integration/run-integration.mjs` | — |
-| A3 | `schema/snapshots/v1/*` byte-identical to `00a6889` (no silent v1 edit) | unit | `packages/contracts/src/compat-gate.test.ts` › "frozen v1 snapshots keep their recorded digests" | `asep-suite:compat-gate` |
+| A1 | `pnpm install --frozen-lockfile` then `pnpm verify:all` green from a clean writable checkout; exit code, test count, required-suite count and exact HEAD recorded by the controller | gate | `scripts/verify-all.sh` | — |
+| A2 | `pnpm test:integration` green, including every new required itest suite | gate | `scripts/integration/run-integration.mjs` | — |
+| A3 | `review-report/v1` and `finding/v1` schema files and all `schema/snapshots/v1/*` byte-identical to `00a6889` | unit | `packages/contracts/src/compat-gate.test.ts` › "legacy review contracts and v1 snapshots keep their recorded digests" | `asep-suite:compat-gate` |
 | A4 | Working tree clean after the full gate | gate | `verify-all.sh` clean-tree step | — |
-| A5 | No Lane B path imports `@temporalio/*` or any Lane A package; domain/application source calls no global `fetch`/`WebSocket` | unit | `scripts/forbidden-imports.test.ts` › "assurance code imports no orchestration engine" and "pure layers make no network call through globals" (+ seeded self-checks) | `asep-suite:forbidden-imports` |
+| A5 | No Lane B path imports `@temporalio/*`; domain/application call no global `fetch`/`WebSocket`; production entry points never import `assurance/drill`; each rule has a seeded self-check | unit | `scripts/forbidden-imports.test.ts` (or its AST successor) › "assurance code imports no orchestration engine", "pure layers make no network call through globals", "production entry points never reach drill compositions" | `asep-suite:forbidden-imports` |
 
 ## B. Contracts and versioning
 
 | ID | MUST | Kind | Proof | Suite |
 |---|---|---|---|---|
-| B1 | `review-report/v2` and `finding/v2` carry required provenance; `$id` major is 2; `snapshots/v2` frozen | unit | `packages/contracts/src/compat-gate.test.ts` › "a live v2 schema is compared against its frozen v2 snapshot" | `asep-suite:compat-gate` |
-| B2 | Compat gate: an edit to a v2 schema without a v3 bump fails; a live v2 schema with no v2 snapshot fails; deleting the v1 snapshot of a v2 schema fails | unit | `compat-gate.test.ts` › "per-major snapshot selection rejects an unguarded v2 edit" | `asep-suite:compat-gate` |
-| B3 | `review-packet/v1`, `adjudication-record/v1`, `repair-order/v1` exist with valid and invalid fixtures; the validator accepts/rejects each | unit | `packages/contracts/src/validate.test.ts` › existing tests "every valid fixture is accepted", "every invalid fixture is rejected with a real error", "every contract has at least one valid and one invalid fixture" (file gains a suite marker) | `asep-suite:contract-fixtures` |
-| B4 | `run-event` 1.2.0 is additive only (compat gate MINOR); every new dictionary operand exists on `RunEvent` | unit | `packages/observability/src/metric-eval.test.ts` › "dictionary operands resolve against run-event 1.2.0" | `asep-suite:metric-eval` |
-| B5 | The model-facing output schema is strict-compatible (every property required, optional values nullable, no unsupported keywords) and maps deterministically to `review-report/v2` | unit | `adapters/reviewer-openai/src/reviewer-openai.test.ts` › "model-facing schema is strict-compatible and maps to the canonical report" | `asep-suite:reviewer-openai` |
+| B1 | `review-record/v1`, `review-finding/v1`, `review-packet/v1`, `adjudication-record/v1`, `repair-order/v1` exist with valid and invalid fixtures; the validator knows each name and accepts/rejects each fixture | unit | `packages/contracts/src/validate.test.ts` › existing "every valid fixture is accepted", "every invalid fixture is rejected with a real error", "every contract has at least one valid and one invalid fixture" (file gains a suite marker) | `asep-suite:contract-fixtures` |
+| B2 | Compat gate: `architecture-invariant` 1.1.0 classified MINOR; the five new schemas have frozen snapshots; drift guard green | unit | `compat-gate.test.ts` › "assurance contract additions are additive" | `asep-suite:compat-gate` |
+| B3 | `run-event` 1.2.0 (S0) carries every Lane B field and enum value of plan §18.4; every new dictionary operand resolves | unit | `packages/observability/src/metric-eval.test.ts` › "dictionary operands resolve against run-event 1.2.0" | `asep-suite:metric-eval` |
+| B4 | The model-facing output schema is strict-compatible and maps deterministically to `review-record/v1` | unit | `adapters/reviewer-openai/src/reviewer-openai.test.ts` › "model-facing schema is strict-compatible and maps to the canonical record" | `asep-suite:reviewer-openai` |
 
 ## C. Reviewer independence (ADR 0010)
 
 | ID | MUST | Kind | Proof | Suite |
 |---|---|---|---|---|
-| C1 | Unique canary strings planted in the coder's summary, known limitations, event artifacts and ContextPack never appear in the packet, the prompt or the raw request bytes | unit | `packages/application/src/assurance/packet.test.ts` › "coder self-report never reaches the reviewer" | `asep-suite:review-packet` |
-| C2 | The packet schema has no field that can carry coder self-report, ContextPack, commit message, PR body or another reviewer's output | unit | `packet.test.ts` › "packet schema whitelists trusted sources only" | `asep-suite:review-packet` |
-| C3 | R2 requires a reviewer whose policy-resolved family differs from the implementer's; same family and unknown family fail closed | unit | `packages/policy/src/review.test.ts` › "independence requires a different resolved model family" | `asep-suite:review-policy` |
+| C1 † | Canary strings planted in the coder's summary, limitations, event artifacts and ContextPack never appear in the packet, prompt or raw request bytes | unit | `packages/application/src/assurance/packet.test.ts` › "coder self-report never reaches the reviewer" | `asep-suite:review-packet` |
+| C2 | The packet schema has no field for coder self-report, ContextPack, commit message, PR body or another reviewer's output | unit | `packet.test.ts` › "packet schema whitelists trusted sources only" | `asep-suite:review-packet` |
+| C3 | A reviewer's policy-resolved family differs from the implementer's; the comparator's differs from the primary's; unknown family fails closed | unit | `packages/policy/src/review.test.ts` › "independence requires different resolved model families" | `asep-suite:review-policy` |
 | C4 | Every reviewer request has `store:false`, no `previous_response_id`/`conversation`, no tools, `tool_choice:"none"`, `truncation:"disabled"` | unit | `reviewer-openai.test.ts` › "request body is stateless and tool-free" | `asep-suite:reviewer-openai` |
-| C5 | The reviewer credential never reaches the coder container env, an artifact, a log line or a DB row | unit + itest | `adapters/agent-claude/src/reviewer-credential-isolation.test.ts` › "agent env allowlist cannot carry the reviewer credential"; `apps/control-plane-api/src/assurance/assurance-loop.itest.ts` › "credential canary absent from artifacts, logs and rows" | `asep-suite:reviewer-credential-isolation`, `asep-suite:assurance-loop-real` |
+| C5 | The reviewer credential is injected by the composition root; adapter source reads no `process.env`; the value never reaches the coder container env, an artifact, a log line, an error text or a DB row; expiry refresh and one-shot rotation on 401 work | unit + itest | `adapters/reviewer-openai/src/credential.test.ts` › "credential is refreshed before expiry and rotated once on rejection"; `adapters/agent-claude/src/reviewer-credential-isolation.test.ts` › "agent env allowlist cannot carry the reviewer credential"; `apps/control-plane-api/src/assurance/assurance-loop.itest.ts` › "credential canary absent from artifacts, logs and rows"; `forbidden-imports.test.ts` › "reviewer adapters read no process environment" | `asep-suite:reviewer-credential`, `asep-suite:reviewer-credential-isolation`, `asep-suite:assurance-loop-real`, `asep-suite:forbidden-imports` |
 | C6 | Reviewers in one round are blind to each other | unit | `packages/application/src/assurance/steps.test.ts` › "parallel reviewers receive identical packets without peer output" | `asep-suite:assurance-steps` |
 
-## D. Prompt-injection resistance
+## D. Egress and prompt-injection resistance
 
 | ID | MUST | Kind | Proof | Suite |
 |---|---|---|---|---|
-| D1 | Untrusted content appears only in the user input, delimited with the packet-derived nonce and datamarked per line; the rubric contains no untrusted byte | unit | `packages/application/src/assurance/prompt.test.ts` › "untrusted content is spotlighted outside the instructions" | `asep-suite:review-prompt` |
-| D2 | A model verdict never clears a deterministic failure; `APPROVE` with a grounded blocking finding still blocks; injected verdict text has no effect beyond findings | unit | `packages/application/src/assurance/adjudication.test.ts` › "model verdict cannot override findings or deterministic failures" | `asep-suite:adjudication` |
-| D3 | Unknown fields, tool-call items, refusals, `incomplete` responses and citations outside the packet fail closed (never PROCEED in gating mode) | unit | `reviewer-openai.test.ts` › "malformed provider output fails closed"; `grounding.test.ts` › "citations outside the packet are refuted" | `asep-suite:reviewer-openai`, `asep-suite:review-grounding` |
-| D4 | Bidirectional and zero-width Unicode in added lines produces a deterministic SECURITY finding | unit | `packages/application/src/assurance/checks.test.ts` › "invisible and bidirectional characters are flagged" | `asep-suite:assurance-checks` |
-| D5 | The synthetic injection suite runs through the scorer and reports detection with and without injection (a reported measurement, not a pass threshold) | unit | `evals/review-benchmark/injection-suite.test.ts` › "injection suite executes and reports paired deltas" | `asep-suite:review-injection-suite` |
-| D6 | No silent truncation: an over-budget packet escalates (gating) without calling the reviewer; a provider context overflow is classified and escalates | unit | `packet.test.ts` › "over-budget packet is flagged, never cut"; `adjudication.test.ts` › "over-budget and context overflow escalate" | `asep-suite:review-packet`, `asep-suite:adjudication` |
+| D1 † | Zero provider calls (fake provider call counter = 0) for: push-guard BLOCK, `STOP_SECRET`, `STOP_CLASSIFIED` (deny glob and project not opted in), `STOP_UNSCANNABLE`, and a secret appearing only in the final request bytes | unit | `packages/application/src/assurance/egress.test.ts` › "no reviewer request leaves the harness unless egress is clear" | `asep-suite:assurance-egress` |
+| D2 † | The same five cases through `assurance-root` and the real adapter against a local fake HTTP gateway: request counter = 0, and the round is recorded `EGRESS_STOPPED`/`SKIPPED_PUSH_GUARD` | itest | `assurance-loop.itest.ts` › "egress stops send zero requests on the production path" | `asep-suite:assurance-loop-real` |
+| D3 | Untrusted content appears only in the user input, delimited with the packet-derived nonce and datamarked per line; the rubric contains no untrusted byte | unit | `packages/application/src/assurance/prompt.test.ts` › "untrusted content is spotlighted outside the instructions" | `asep-suite:review-prompt` |
+| D4 | A model verdict never clears a deterministic failure; malformed output, tool calls, refusals and `incomplete` fail closed; citations outside the packet are refuted | unit | `adjudication.test.ts` › "model verdict cannot override findings or deterministic failures"; `reviewer-openai.test.ts` › "malformed provider output fails closed"; `grounding.test.ts` › "citations outside the packet are refuted" | `asep-suite:adjudication`, `asep-suite:reviewer-openai`, `asep-suite:review-grounding` |
+| D5 | Bidirectional and zero-width Unicode in added lines produces a deterministic SECURITY finding | unit | `packages/application/src/assurance/checks.test.ts` › "invisible and bidirectional characters are flagged" | `asep-suite:assurance-checks` |
+| D6 | Injection suite: deterministic harness invariants pass (injected text cannot change authority, add tool calls or forge the nonce); model degradation is measured against the pre-registered floor with a positive control; the result is one of `MEETS_FLOOR`, `BELOW_FLOOR`, `INVALID_CONTROL`, and zero detection on controls yields `INVALID_CONTROL`, never a pass | unit | `evals/review-benchmark/injection-suite.test.ts` › "injection invariants hold and degradation is classified against the floor" | `asep-suite:review-injection-suite` |
+| D7 | No silent truncation: over-budget packets are flagged without calling the reviewer; a provider context overflow is classified | unit | `packet.test.ts` › "over-budget packet is flagged, never cut"; `adjudication.test.ts` › "over-budget and context overflow escalate in gating and are recorded in shadow" | `asep-suite:review-packet`, `asep-suite:adjudication` |
 
-## E. Review, adjudication and repair loop
-
-| ID | MUST | Kind | Proof | Suite |
-|---|---|---|---|---|
-| E1 | Every step input/output survives a JSON round trip; ids are derived deterministically from inputs | unit | `steps.test.ts` › "step contracts are serializable and ids are input-derived" | `asep-suite:assurance-steps` |
-| E2 | A crash at each step boundary resumes to one review record per `reviewId`, one adjudication per round; duplicate model calls are counted | unit + itest | `steps.test.ts` › "resume after a crash at every step boundary converges"; `adapters/persistence/src/assurance/assurance-persistence.itest.ts` › "concurrent claims on one review id yield one winner" | `asep-suite:assurance-steps`, `asep-suite:assurance-persistence-real` |
-| E3 | Adjudication is a pure function with a recorded rule, policy version and input hashes; every rule row × mode is covered | unit | `adjudication.test.ts` › "rule table is total and deterministic" | `asep-suite:adjudication` |
-| E4 | Deterministic findings outrank model review; findings from all reviewers are unioned and de-duplicated by fingerprint | unit | `adjudication.test.ts` › "deterministic evidence outranks model review" | `asep-suite:adjudication` |
-| E5 | A repair order carries only grounded blocking findings (plus capped informational ones), `repairBaseSha` = prior harness commit, bounded sizes; the next round is a re-review with closure statuses | unit | `packages/application/src/assurance/repair.test.ts` › "repair order is bounded and anchored to the prior commit" | `asep-suite:repair-order` |
-| E6 | A prior blocking finding reported `RESOLVED` without a change at the cited or resolution location stays blocking (`closure-without-change`) | unit | `adjudication.test.ts` › "closure without change keeps the finding open" | `asep-suite:adjudication` |
-| E7 | `maxRounds` reached → ESCALATE; the loop never exceeds the policy bound | unit | `packages/application/src/assurance/driver.test.ts` › "repair loop is bounded by policy" | `asep-suite:assurance-driver` |
-| E8 | Reviewer failure (provider error, malformed, refused, budget, served-model drift) never yields PROCEED in gating mode | unit | `adjudication.test.ts` › "reviewer failure escalates in gating mode" | `asep-suite:adjudication` |
-| E9 | Shadow mode changes no task/attempt state and no push decision except rule 1; the would-be outcome is recorded | unit | `driver.test.ts` › "shadow mode records but does not decide" | `asep-suite:assurance-driver` |
-| E10 | The thin driver runs the full loop on real PostgreSQL + real Git worktree + real sandbox, with the real reviewer adapter against a local fake HTTP server: PROCEED; REPAIR → re-review → PROCEED; ESCALATE; BLOCK with zero pushes | itest | `assurance-loop.itest.ts` › "assured task reaches each outcome on real backends" | `asep-suite:assurance-loop-real` |
-| E11 | A durable-shaped fake (no orchestration SDK) drives each step as an activity with injected failures, retries and cancellation and converges to the same outcomes | unit | `driver.test.ts` › "activity-granular composition converges under retries" | `asep-suite:assurance-driver` |
-
-## F. Architecture and security checks
+## E. Review, adjudication, repair and fencing
 
 | ID | MUST | Kind | Proof | Suite |
 |---|---|---|---|---|
-| F1 | Diff checks: secrets in added lines (pattern parity with `scripts/lib/secret-patterns.sh`), invisible Unicode, forbidden/out-of-scope paths, dependency/lockfile changes, `forbidden-import` invariants — each with a seeded-violation self-check | unit | `checks.test.ts` › "each diff check catches its seeded violation" and "secret patterns match the repository scanner" | `asep-suite:assurance-checks` |
-| F2 | A secret in the diff BLOCKs before any push for every admitted risk (decision D-5) | itest | `assurance-loop.itest.ts` › "secret in diff blocks with zero forge calls" | `asep-suite:assurance-loop-real` |
-| F3 | SARIF 2.1.0 subset from L4/L5 artifacts parses into `source:"sarif"` findings; malformed SARIF fails closed | unit | `checks.test.ts` › "sarif results become findings and malformed sarif fails closed" | `asep-suite:assurance-checks` |
-| F4 | Check reports are stored as artifacts before any reduction | unit | `steps.test.ts` › "check report is persisted before adjudication reads it" | `asep-suite:assurance-steps` |
+| E1 | Every step input/output survives a JSON round trip; ids derive from inputs | unit | `steps.test.ts` › "step contracts are serializable and ids are input-derived" | `asep-suite:assurance-steps` |
+| E2 † | Fencing per the Phase 2 primitive: after a lease handoff the new owner completes the reviewer call and the old owner is fenced; concurrent claims yield one winner; a holder with an expired lease cannot claim; a reopened `FAILED` call adopts an existing raw response instead of calling; every decision write is fence-checked in its transaction | unit + itest | `steps.test.ts` › "a lease handoff hands the review to the new owner and fences the old one"; `adapters/persistence/src/assurance/assurance-persistence.itest.ts` › "fenced review writes survive a lease handoff on real PostgreSQL" | `asep-suite:assurance-steps`, `asep-suite:assurance-persistence-real` |
+| E3 | Adjudication is pure with a recorded rule, policy version and input hashes; every rule A1–A11 × {gating, shadow} is covered | unit | `adjudication.test.ts` › "rule table is total and deterministic" | `asep-suite:adjudication` |
+| E4 | Deterministic findings outrank model review; findings are unioned and de-duplicated by fingerprint per raiser | unit | `adjudication.test.ts` › "deterministic evidence outranks model review" | `asep-suite:adjudication` |
+| E5 | A repair order carries only grounded blocking findings (plus capped informational), `repairBaseSha` = prior harness commit, bounded sizes | unit | `packages/application/src/assurance/repair.test.ts` › "repair order is bounded and anchored to the prior commit" | `asep-suite:repair-order` |
+| E6 † | Closure authority: the raiser's `RESOLVED` only moves a finding to `FIXED` (still blocking); a different eligible reviewer with a grounded resolution in the repair delta, a human, or (deterministic findings) a clean re-check moves it to `VERIFIED`; a claim citing an untouched file stays `OPEN`; the database rejects a raiser's verification | unit + itest | `packages/domain/src/assurance.test.ts` › "only an independent reviewer, a human or a deterministic re-check verifies a fix"; `adjudication.test.ts` › "closure without change keeps the finding open"; `assurance-persistence.itest.ts` › "disposition actor rules are enforced by the database" | `asep-suite:finding-lifecycle`, `asep-suite:adjudication`, `asep-suite:assurance-persistence-real` |
+| E7 | `maxRounds` reached → ESCALATE (drill); the loop never exceeds the bound | unit | `packages/application/src/assurance/driver.test.ts` › "repair loop is bounded by policy" | `asep-suite:assurance-driver` |
+| E8 | Reviewer failure (provider error, malformed, refused, budget, served-model drift) never yields PROCEED in gating | unit | `adjudication.test.ts` › "reviewer failure escalates in gating mode" | `asep-suite:adjudication` |
+| E9 † | Shadow mode returns only PROCEED or BLOCK, records `shadow.wouldBe`, and changes no workflow decision except the push guard; the `adjudications` table rejects a shadow `REPAIR`/`ESCALATE` | unit + itest | `driver.test.ts` › "shadow mode records but does not decide"; `assurance-persistence.itest.ts` › "shadow rounds cannot persist a gating outcome" | `asep-suite:assurance-driver`, `asep-suite:assurance-persistence-real` |
+| E10 | Assurance-only loop on real PostgreSQL + Git + sandbox with the real adapter against a local fake gateway: shadow PROCEED; push-guard BLOCK with zero gateway requests and zero forge calls; drill REPAIR → re-review closed by the other reviewer → PROCEED; drill raiser-only closure → ESCALATE at max rounds | itest | `assurance-loop.itest.ts` › "assurance round reaches each outcome on real backends" | `asep-suite:assurance-loop-real` |
+| E11 | A durable-shaped fake (no orchestration SDK) drives each slot step as an activity with failures, retries, cancellation and a lease handoff, and converges | unit | `driver.test.ts` › "activity-granular composition converges under retries and handoff" | `asep-suite:assurance-driver` |
+| E12 | Conformance kit RLC-01…RLC-10 passes for `createAssuranceSlot` on PGlite and on real PostgreSQL, and for the disabled and scripted slots | unit + itest | `packages/application/src/assurance/slot.test.ts` › "assurance slot satisfies the review-loop contract"; `assurance-loop.itest.ts` › "assurance slot satisfies the review-loop contract on real PostgreSQL" | `asep-suite:assurance-slot`, `asep-suite:assurance-loop-real` |
 
-## G. Reviewer adapter (provider DoD: malformed output, rate limit, cancellation, budget, event order, permission, artifact capture)
+## F. Architecture, security and false-green checks
 
 | ID | MUST | Kind | Proof | Suite |
 |---|---|---|---|---|
-| G1 | Pinned model and config hash recorded; served model recorded; drift fails the review in gating, flags it in shadow | unit | `reviewer-openai.test.ts` › "served-model drift is detected" | `asep-suite:reviewer-openai` |
-| G2 | Canonical request (no credential) and exact response bytes are persisted before parsing | unit | `reviewer-openai.test.ts` › "raw request and response are captured before parsing" | `asep-suite:reviewer-openai` |
-| G3 | Malformed JSON, partial body, refusal, `incomplete`, `failed`, tool-call items and multiple text items each classify correctly and fail closed | unit | `reviewer-openai.test.ts` › "every malformed shape is classified" | `asep-suite:reviewer-openai` |
-| G4 | 429/503 honour `Retry-After`, else bounded exponential backoff with jitter; 401/403 and quota errors are not retried; fake clock | unit | `reviewer-openai.test.ts` › "retries are bounded and policy-correct" | `asep-suite:reviewer-openai` |
+| F1 | Diff checks each catch a seeded violation; secret patterns match `scripts/lib/secret-patterns.sh` | unit | `checks.test.ts` › "each diff check catches its seeded violation", "secret patterns match the repository scanner" | `asep-suite:assurance-checks` |
+| F2 † | A secret in added lines BLOCKs before the gateway and before any push, for every admitted risk | itest | `assurance-loop.itest.ts` › "secret in diff blocks with zero gateway requests and zero forge calls" | `asep-suite:assurance-loop-real` |
+| F3 | SARIF 2.1.0 subset parses into `source:"sarif"` findings; malformed SARIF fails closed | unit | `checks.test.ts` › "sarif results become findings and malformed sarif fails closed" | `asep-suite:assurance-checks` |
+| F4 | Raw check outputs are stored as artifacts before any reduction | unit | `steps.test.ts` › "check report is persisted before adjudication reads it" | `asep-suite:assurance-steps` |
+| F5 † | The packet carries the execution manifest (command, exit code, duration, environment digest, raw-output refs, scanned bounded excerpts, parsed test summary); seeded false-green cases are caught deterministically: zero tests executed with exit 0, an added skip marker, a passing record with a non-zero exit code, a missing required check | unit | `checks.test.ts` › "seeded false-green evidence is caught"; `packet.test.ts` › "packet carries a bounded execution manifest" | `asep-suite:assurance-checks`, `asep-suite:review-packet` |
+| F6 | The synthetic false-green suite measures whether each reviewer flags the seeded cases (reported, separate scope) | unit | `evals/review-benchmark/false-green-suite.test.ts` › "false-green suite executes and reports per-reviewer detection" | `asep-suite:review-false-green-suite` |
+
+## G. Reviewer adapter (provider DoD)
+
+| ID | MUST | Kind | Proof | Suite |
+|---|---|---|---|---|
+| G1 | Pinned model and config hash recorded; served model recorded; drift fails the review in every mode | unit | `reviewer-openai.test.ts` › "served-model drift fails the review" | `asep-suite:reviewer-openai` |
+| G2 | Canonical request (no credential) and exact response bytes persisted before parsing; the prompt artifact hash is re-checked before sending | unit | `reviewer-openai.test.ts` › "raw request and response are captured before parsing" | `asep-suite:reviewer-openai` |
+| G3 | Malformed JSON, partial body, refusal, `incomplete`, `failed`, tool-call items and multiple text items classify correctly and fail closed | unit | `reviewer-openai.test.ts` › "every malformed shape is classified" | `asep-suite:reviewer-openai` |
+| G4 | 429/503 honour `Retry-After`, else bounded exponential backoff with jitter; quota errors are not retried; fake clock | unit | `reviewer-openai.test.ts` › "retries are bounded and policy-correct" | `asep-suite:reviewer-openai` |
 | G5 | `AbortSignal` cancels in flight; wall-clock budget enforced; `max_output_tokens` sent | unit | `reviewer-openai.test.ts` › "cancellation and budgets are enforced" | `asep-suite:reviewer-openai` |
 | G6 | `baseUrl` must be https and allowlisted; redirects are refused | unit | `reviewer-openai.test.ts` › "endpoint is allowlisted and redirects are refused" | `asep-suite:reviewer-openai` |
-| G7 | The live smoke is opt-in, skips with a recorded reason when the credential is absent, never prints the credential | unit | `reviewer-openai.test.ts` › "live smoke entry point skips cleanly without a credential" (drives the entry point used by the opt-in `reviewer-openai.live.test.ts`) | `asep-suite:reviewer-openai` |
-| G8 | Replay returns recorded bytes for a request hash, fails closed on a miss or a manifest hash mismatch; the scripted provider is marked fake | unit | `adapters/reviewer-replay/src/reviewer-replay.test.ts` › "replay is exact and fails closed" | `asep-suite:reviewer-replay` |
+| G7 | The production composition (`assurance-root` with a fake credential source) drives the real adapter against a local fake gateway end to end | unit | `apps/control-plane-api/src/assurance-root.test.ts` › "production composition reaches the gateway through the injected credential source" | `asep-suite:assurance-root` |
+| G8 | The live test prints its suite id, skips with a recorded reason when no credential is configured, fails when `ASEP_REQUIRE_LIVE_REVIEWER=1` and none is configured, and never prints the credential | unit | `adapters/reviewer-openai/src/reviewer-openai.live.test.ts` › "live reviewer round trip or a recorded skip reason" | `asep-suite:reviewer-live` |
+| G9 | Replay returns recorded bytes for a request hash, fails closed on a miss or manifest mismatch; the scripted provider is marked fake | unit | `adapters/reviewer-replay/src/reviewer-replay.test.ts` › "replay is exact and fails closed" | `asep-suite:reviewer-replay` |
 
 ## H. Persistence and events
 
 | ID | MUST | Kind | Proof | Suite |
 |---|---|---|---|---|
-| H1 | Migrations `0200`–`0203` apply forward on a clean PostgreSQL, re-apply as a no-op, and stay within the Lane B id range | unit + itest | `adapters/persistence/src/assurance/assurance-persistence.test.ts` › "assurance migrations apply once and stay in range"; itest on real PG | `asep-suite:assurance-persistence`, `asep-suite:assurance-persistence-real` |
-| H2 | Review rounds, records, findings, dispositions, adjudications and promotions are tenant-scoped; cross-project read and write fail at the DB boundary | itest | `assurance-persistence.itest.ts` › "cross-project review access fails closed" | `asep-suite:assurance-persistence-real` |
-| H3 | `run_events` is append-only (UPDATE/DELETE rejected), idempotent on `eventId`, conflicting bytes rejected, every row validates against its declared version | itest | `assurance-persistence.itest.ts` › "run events are append-only and idempotent" | `asep-suite:assurance-persistence-real` |
-| H4 | Disposition rules are DB-enforced: waiver needs human + expiry + signature; a reviewer actor can only set closure statuses | itest | `assurance-persistence.itest.ts` › "disposition actor rules are enforced by the database" | `asep-suite:assurance-persistence-real` |
-| H5 | `recordAttemptOutcome` at every terminal produces `attempt.declared_complete` + `attempt.completed`, including verification stops | unit | `steps.test.ts` › "every attempt terminal emits its outcome events" | `asep-suite:assurance-steps` |
+| H1 | Migrations `0200`–`0202` apply forward on clean PGlite and PostgreSQL 17, re-apply as a no-op, stay in the Lane B range | unit + itest | `adapters/persistence/src/assurance/assurance-persistence.test.ts` › "assurance migrations apply once and stay in range"; itest on real PG | `asep-suite:assurance-persistence`, `asep-suite:assurance-persistence-real` |
+| H2 | All review tables are tenant-scoped; cross-project read and write fail at the DB boundary | itest | `assurance-persistence.itest.ts` › "cross-project review access fails closed" | `asep-suite:assurance-persistence-real` |
+| H3 | Append-only and finality triggers and the named check constraints of data model §3.1 behave as specified | itest | `assurance-persistence.itest.ts` › "review history is append-only and final records are immutable" | `asep-suite:assurance-persistence-real` |
+| H4 | `recordAttemptOutcome` at every terminal (verification stops included) emits `attempt.declared_complete` + `attempt.completed` once through `RunEventSink`; re-delivery is a no-op | unit | `steps.test.ts` › "every attempt terminal emits its outcome events exactly once" | `asep-suite:assurance-steps` |
+| H5 | `review.completed` is emitted once per review source per round; `review.finding_dispositioned` only by the human disposition use case | unit | `slot.test.ts` › "review events are emitted per source and dispositions only by humans" | `asep-suite:assurance-slot` |
+| H6 † | A human accepting, then rejecting, a finding after its round changes the next `review_finding_yield`/`review_false_positive_rate` snapshot each time (latest per finding); harness refutations are excluded | unit | `metric-eval.test.ts` › "late human dispositions update yield and false-positive snapshots" | `asep-suite:metric-eval` |
 
-## I. Reviewer measurement on historical defects (the exit criterion)
+## I. Reviewer measurement on historical defects (descriptive, self-history)
 
 | ID | MUST | Kind | Proof | Suite |
 |---|---|---|---|---|
-| I1 | The self-history corpus manifest is frozen (sha256 recorded) and every item's claims are git-verified: reviewed SHA reachable from advertised refs (else excluded `tree-unreachable`), cited file exists at that SHA, cited lines inside the file, fix-commit subject carries the id, id present at the cited review-doc line; exclusions enumerated with reasons | unit | `evals/review-corpus/corpus-verifier.test.ts` › "every corpus claim is verified against git" | `asep-suite:review-corpus` |
-| I2 | Leakage: no packet contains a review artifact (`*review*`, review logs), git metadata or a commit message; packets are built at the reviewed SHA, never at the parent of a fix commit | unit | `evals/review-benchmark/scorer.test.ts` › "packets exclude review artifacts and history" | `asep-suite:review-benchmark` |
-| I3 | Split discipline: a test-split scorecard is rejected unless corpus, protocol and reviewer config hashes equal the values frozen before the first test-split run | unit | `scorer.test.ts` › "test split is scored only under the frozen configuration" | `asep-suite:review-benchmark` |
-| I4 | Scoring is deterministic and offline: re-scoring every committed recording twice yields byte-identical scorecards; no model is called while scoring | unit | `scorer.test.ts` › "committed recordings rescore byte-identically" | `asep-suite:review-benchmark` |
-| I5 | The scorecard reports n and Wilson 95% intervals for strict and lenient recall (all, first-occurrence, labeller-miss subset, per severity, per defect class), precision over adjudicated findings plus the unadjudicated count, stale-flag rate, k-run stability, failure rates, tokens, cost or null, and both baselines; cells with n < 20 are marked descriptive-only | unit | `scorer.test.ts` › "scorecard carries every required field with intervals" | `asep-suite:review-benchmark` |
-| I6 | A live measurement run of the pinned reviewer on the frozen corpus exists: recordings and manifest committed, scorecard committed, the scorer refuses fake/scripted recordings for a `self-history` scorecard | live + unit | capture via `pnpm --filter @asep/evals review-bench:capture`; `scorer.test.ts` › "measurement scorecards come only from live recordings" | `asep-suite:review-benchmark` |
-| I7 | The report states the corpus biases (§6.2 of the plan), uses the verdict vocabulary, and claims nothing beyond `scope` | review | controller review of `phase-04-report.md` against the scorecard `scope` field | — |
-| I8 | An independent pilot-repository corpus (human-labelled) is measured with the same protocol | live + unit | as I6 with `scope: "pilot-history"` | `asep-suite:review-benchmark` |
+| I1 | Live descriptive measurement of the primary reviewer **and** the comparator on the frozen corpus (k = 3 on reporting items): recordings, manifests and scorecards committed | live + unit | capture via `pnpm --filter @asep/evals review-bench:capture`; `evals/review-benchmark/scorer.test.ts` › "committed live recordings rescore to the committed scorecards" | `asep-suite:review-benchmark` |
+| I2 | Leakage: no packet contains a review artifact, git metadata or a commit message; packets are built at the reviewed SHA, never at the parent of a fix | unit | `scorer.test.ts` › "packets exclude review artifacts and history" | `asep-suite:review-benchmark` |
+| I3 † | Every self-history scorecard has `scope: self-history`, `eligibleForPromotion: false`, `blindHoldout: false` and a circularity statement; the scorer rejects anything else | unit | `scorer.test.ts` › "self-history scorecards are descriptive and never promotion-eligible" | `asep-suite:review-benchmark` |
+| I4 | Capture refuses to run unless the preregistration's protocol, floors, matcher, corpus and both reviewer config hashes match and its controller approval reference is present | unit | `scorer.test.ts` › "capture refuses a mismatched or unapproved preregistration" | `asep-suite:review-benchmark` |
+| I5 | Scoring is deterministic and offline (strict and lenient matcher, no model); rescoring twice is byte-identical | unit | `scorer.test.ts` › "committed recordings rescore byte-identically" | `asep-suite:review-benchmark` |
+| I6 | Scorecards report n and Wilson 95% intervals (cells with n < 20 descriptive-only), k-run stability, invalid-output rates, tokens, cost or null, baselines, labeller-miss subset and primary-vs-comparator overlap | unit | `scorer.test.ts` › "scorecard carries every required field with intervals" | `asep-suite:review-benchmark` |
+| I7 † | The scorer refuses scripted or fake recordings for any measurement scorecard | unit | `scorer.test.ts` › "measurement scorecards come only from live recordings" | `asep-suite:review-benchmark` |
+| I8 | Post-fix negative pairs are scored and the stale-flag rate is reported | unit | `scorer.test.ts` › "post-fix negatives yield a stale-flag rate" | `asep-suite:review-benchmark` |
+| I9 | The report states the corpus biases (plan §7.2), uses the verdict vocabulary, and claims nothing beyond the scorecard `scope`; no sentence calls the result production-valid | review | controller review of `phase-04-report.md` against the scorecards | — |
+| I10 | Corpus verifier: every claim git-verified for reachable SHAs; every excerpt's bytes hash to its name; exclusions enumerated; no ref to a pre-rewrite commit exists; excerpts pass the publication gates; bundle mode verifies object-store-only items when the controller supplies the bundle path | unit | `evals/review-corpus/corpus-verifier.test.ts` › "every corpus claim and excerpt is verified" | `asep-suite:review-corpus` |
+| I11 | Each scorecard evaluates every pre-registered floor per reviewer (`floorsMet`), and the report states each result | unit | `scorer.test.ts` › "every pre-registered floor is evaluated and reported" | `asep-suite:review-benchmark` |
 
 ## J. Dashboards (false completion, review yield, cost, recovery)
 
 | ID | MUST | Kind | Proof | Suite |
 |---|---|---|---|---|
-| J1 | The evaluator implements every dictionary aggregation, filter and zero-denominator policy; golden values on labelled fixture events | unit | `packages/observability/src/metric-eval.test.ts` › "evaluator matches golden values for every dashboard metric" | `asep-suite:metric-eval` |
-| J2 | No source events → value `null` with the dictionary's reason, never 0 (covers `workflow_recovery_rate` until Lane A emits, `escaped_defect_rate`) | unit | `metric-eval.test.ts` › "missing source events yield null with a reason" | `asep-suite:metric-eval` |
-| J3 | Every panel reads `metric_snapshots` for a metric that exists in the dictionary; every required metric has a panel; four dashboards exist | unit | `packages/observability/src/dashboards.test.ts` › "panels and dictionary metrics correspond one to one" | `asep-suite:assurance-dashboards` |
-| J4 | On real PostgreSQL, snapshot values computed from the events the E10 loop emitted equal hand-derived expectations for that run | itest | `apps/control-plane-api/src/assurance/assurance-dashboards.itest.ts` › "snapshots computed from real emitted events" | `asep-suite:assurance-dashboards-real` |
-| J5 | Telemetry completeness compares terminal attempts with emitted `attempt.completed` events and exposes the gap | itest | `assurance-dashboards.itest.ts` › "telemetry completeness exposes a missing emission" | `asep-suite:assurance-dashboards-real` |
-| J6 | Reviewer cost = recorded tokens × configured price; no price → `reviewCostUsd` omitted and cost coverage shows the gap | unit | `metric-eval.test.ts` › "unpriced reviews are reported as uncovered, never zero" | `asep-suite:metric-eval` |
-| J7 | Restricted-class metrics are computed only when capture is enabled for the project | unit | `metric-eval.test.ts` › "restricted metrics respect opt-in capture" | `asep-suite:metric-eval` |
+| J1 | The evaluator implements every dictionary aggregation, filter, `dedupeLatestBy` and zero-denominator policy; golden values on labelled fixture events | unit | `metric-eval.test.ts` › "evaluator matches golden values for every dashboard metric" | `asep-suite:metric-eval` |
+| J2 | No source events → `null` with the dictionary's reason, never 0 (`workflow_recovery_rate` until Lane A emits; gating-only metrics in Phase 4) | unit | `metric-eval.test.ts` › "missing source events yield null with a reason" | `asep-suite:metric-eval` |
+| J3 | Every panel reads `metric_snapshots` for a dictionary metric; every required metric has a panel; four dashboards exist | unit | `packages/observability/src/dashboards.test.ts` › "panels and dictionary metrics correspond one to one" | `asep-suite:assurance-dashboards` |
+| J4 | A digest-pinned Grafana loads the committed provisioning in the integration gate: `GET /api/health` ok; the data source loads by uid; every dashboard loads by uid; every panel query (`POST /api/ds/query`) returns the snapshot values written for the E10 run | itest | `apps/control-plane-api/src/assurance/assurance-dashboards.itest.ts` › "grafana loads the provisioned dashboards and panels return snapshot values" | `asep-suite:assurance-dashboards-real` |
+| J5 | Snapshot values computed on real PostgreSQL from the events the E10 loop emitted equal hand-derived expectations | itest | `assurance-dashboards.itest.ts` › "snapshots computed from real emitted events" | `asep-suite:assurance-dashboards-real` |
+| J6 | Telemetry completeness compares terminal attempts with emitted `attempt.completed` events and exposes a gap | itest | `assurance-dashboards.itest.ts` › "telemetry completeness exposes a missing emission" | `asep-suite:assurance-dashboards-real` |
+| J7 | Reviewer cost = recorded tokens × configured price; no price → `reviewCostUsd` omitted and cost coverage shows the gap | unit | `metric-eval.test.ts` › "unpriced reviews are reported as uncovered, never zero" | `asep-suite:metric-eval` |
+| J8 | Restricted-class metrics are computed only when capture is enabled | unit | `metric-eval.test.ts` › "restricted metrics respect opt-in capture" | `asep-suite:metric-eval` |
 
-## K. Risk admission and human accountability
+## K. Admission, gating and human accountability
 
 | ID | MUST | Kind | Proof | Suite |
 |---|---|---|---|---|
-| K1 | R2 is admitted only with a gating reviewer whose promotion record is valid (signed, unexpired, config hash equal); otherwise R2 stays `DEFERRED` exactly as in Phase 2; table over R0–R4 × {no reviewer, shadow, promoted, expired, config-changed} | unit | `packages/application/src/assurance/admission.test.ts` › "R2 admission requires a valid promotion" | `asep-suite:assurance-admission` |
-| K2 | R3/R4 remain `DEFERRED` | unit | `admission.test.ts` › "R3 and R4 stay deferred" | `asep-suite:assurance-admission` |
-| K3 | Without SR-X1's `admit` argument, `governedExecution` behaves byte-identically to Phase 2 (existing governed-execution suite unchanged and green) | unit | `packages/application/src/governed-execution.test.ts` (unchanged) | `asep-suite:governed-execution` |
-| K4 | Phase 1 policy parity tests unchanged; `approval-matrix.yaml` and `verification-matrix.yaml` byte-identical | unit | `packages/policy/src/review.test.ts` › "phase-one matrices are unchanged" | `asep-suite:review-policy` |
-| K5 | A model cannot waive or refute a grounded HIGH/CRITICAL finding; a waiver needs a named human, rationale, expiry and signature; an expired waiver reopens the finding | unit | `packages/domain/src/assurance.test.ts` › "only humans waive, and waivers expire" | `asep-suite:finding-lifecycle` |
-| K6 | An R2 task with assurance not satisfied cannot be recorded `ACCEPTED` without a fresh passing review or a human waiver | unit | `admission.test.ts` › "acceptance is refused while assurance is unsatisfied" | `asep-suite:assurance-admission` |
+| K1 | With the production capability (`promotedReviewerConfigIds: []`), `admitWithAssurance` equals `admitRisk` for R0–R4; R3/R4 are `DEFERRED` for every capability | unit | `packages/application/src/assurance/admission.test.ts` › "assurance admission equals Phase 2 admission without promotion" | `asep-suite:assurance-admission` |
+| K2 | D-2 (user decision) as a policy rule: R1 with a promoted reviewer needs no separate human independent review; R1 without one does; R2 stays deferred; no production code path supplies a non-empty promoted list | unit | `review.test.ts` › "a promoted reviewer satisfies R1 only"; `assurance-root.test.ts` › "production composition never supplies promoted reviewers" | `asep-suite:review-policy`, `asep-suite:assurance-root` |
+| K3 † | Gating is unreachable in production: the policy loader rejects `gating`; `assurance-root` refuses such a policy; drill factories are not reachable from entry points (A5); the DB rejects shadow gating outcomes (E9) | unit | `review.test.ts` › "phase four policy accepts only shadow and not-required modes"; `assurance-root.test.ts` › "a gating policy is refused at composition" | `asep-suite:review-policy`, `asep-suite:assurance-root` |
+| K4 | Without SR-X1's `admit` argument, `governedExecution` behaves byte-identically (existing suite unchanged and green) | unit | `packages/application/src/governed-execution.test.ts` (unchanged) | `asep-suite:governed-execution` |
+| K5 | `approval-matrix.yaml` and `verification-matrix.yaml` byte-identical; Phase 1 policy parity tests unchanged | unit | `review.test.ts` › "phase-one matrices are unchanged" | `asep-suite:review-policy` |
+| K6 | A model cannot waive or refute a grounded finding; a waiver needs a named human, rationale, expiry and signature; an expired waiver reopens the finding | unit | `assurance.test.ts` › "only humans waive, and waivers expire" | `asep-suite:finding-lifecycle` |
 | K7 | `WAITING_FOR_HUMAN_REVIEW` remains the machine ceiling; no merge capability is added | unit | `driver.test.ts` › "the assured path ends at human review and never merges" | `asep-suite:assurance-driver` |
-| K8 | The assurance composition root fails closed: missing reviewer config throws unless the explicit disabled literal is given; a disabled reviewer makes R2 `DEFERRED` | unit | `apps/control-plane-api/src/assurance-root.test.ts` › "reviewer configuration fails closed" | `asep-suite:assurance-root` |
+| K8 | `assurance-root` fails closed: missing reviewer config throws unless the explicit disabled literal is given | unit | `assurance-root.test.ts` › "reviewer configuration fails closed" | `asep-suite:assurance-root` |
 
 ## L. Completion protocol
 
 | ID | MUST | Kind | Proof | Suite |
 |---|---|---|---|---|
-| L1 | `phase-04-report.md` present; machine fields (counts, hashes, SHAs) generated from scorecards, gate logs and `git rev-parse`, never typed by hand; a completion sentinel written last carries `git rev-parse HEAD` (same protocol as Phase 2 L1) | review + gate | controller compares sentinel SHA with `git rev-parse HEAD` | — |
-| L2 | No unresolved CRITICAL/HIGH from the Codex final audit (or a recorded disposition) | review | `phase-04-review-log.md` | — |
-| L3 | Every `unit`/`itest` row above is registered and prints its suite id | unit | `packages/application/src/assurance/exit-criteria-coverage.test.ts` › "every mapped proof is a registered suite" | `asep-suite:exit-criteria-coverage` |
+| L1 | `phase-04-report.md` present; machine fields generated from scorecards, gate logs and `git rev-parse`; a completion sentinel written last carries `git rev-parse HEAD` | review + gate | controller compares sentinel SHA with `git rev-parse HEAD` | — |
+| L2 | Zero unresolved CRITICAL/HIGH from the Codex final audit; the only accepted dispositions are fixed, not-applicable with evidence, or an explicit user-accepted risk | review | `phase-04-review-log.md` | — |
+| L3 | Every `unit`/`itest` row above is registered, prints its suite id, and its named tests appear as passed in the JUnit proof manifest | unit + gate | `exit-criteria-coverage.test.ts` › "every mapped proof is a registered suite"; runner post-run proof check (SR-T3) | `asep-suite:exit-criteria-coverage` |
+| L4 | Each mutation in `scripts/assurance-mutation-proofs.json` (one per † row: C1, D1, D2, E2, E6, E9, F2, F5, H6, I3, I7, K3) turns its mapped test red in a temporary copy; the unmutated control passes; a mutation whose search text does not match exactly once fails the suite | unit | `scripts/assurance-mutation-proofs.test.ts` › "every seeded guard mutation is caught" | `asep-suite:assurance-mutation-proofs` |
 
 ## M. Operational readiness
 
 | ID | MUST | Kind | Proof | Suite |
 |---|---|---|---|---|
-| M1 | Runbook covers reviewer outage, rate limiting, cost overrun, served-model drift, credential rotation, kill switch (reviewer disabled → R2 `DEFERRED`), promotion and demotion | review | `phase-04-assurance-runbook.md` (S17) | — |
-| M2 | Executable rehearsal: 429 storm, 503, malformed outputs, cost budget exceeded, served-model drift and reviewer disabled each reach the documented decision on real mechanisms | unit | `apps/control-plane-api/src/assurance/assurance-rehearsal.test.ts` › "each injected reviewer fault reaches its documented decision" | `asep-suite:assurance-rehearsal` |
+| M1 | Runbook covers reviewer outage, rate limiting, cost overrun, served-model drift, credential expiry and rotation, egress stops, kill switch (reviewer disabled) | review | `phase-04-assurance-runbook.md` (S24) | — |
+| M2 | Executable rehearsal: 429 storm, 503, malformed outputs, cost budget exceeded, served-model drift, credential expiry/rotation, egress stop and reviewer disabled each reach the documented decision on real mechanisms | unit | `apps/control-plane-api/src/assurance/assurance-rehearsal.test.ts` › "each injected reviewer fault reaches its documented decision" | `asep-suite:assurance-rehearsal` |
 
-## Suite registry (shared-surface request SR §17.5)
+## N. Real coder
 
-New `REQUIRED_SUITES` (25):
+| ID | MUST | Kind | Proof | Suite |
+|---|---|---|---|---|
+| N1 | One real `CodingAgentProvider` attempt (accepted Phase 2 agent runtime) produces a diff and passes through a shadow assurance round on real backends; evidence committed. **Blocked** until the Phase 2 agent-runtime repair is accepted; until then the verdict carries `ASSURANCE_ONLY_LOOP` | itest | `apps/control-plane-api/src/assurance/real-coder-shadow.itest.ts` › "a real coder attempt passes through a shadow assurance round" (registered when S22 lands) | `asep-suite:real-coder-shadow` |
+
+## Suite registry (SR-T1, SR-T2)
+
+New `REQUIRED_SUITES` (31):
 
 ```text
 asep-suite:contract-fixtures             packages/contracts/src/validate.test.ts   (existing file; marker added)
@@ -180,16 +201,20 @@ asep-suite:finding-lifecycle             packages/domain/src/assurance.test.ts
 asep-suite:review-packet                 packages/application/src/assurance/packet.test.ts
 asep-suite:review-prompt                 packages/application/src/assurance/prompt.test.ts
 asep-suite:review-grounding              packages/application/src/assurance/grounding.test.ts
+asep-suite:assurance-egress              packages/application/src/assurance/egress.test.ts
 asep-suite:assurance-checks              packages/application/src/assurance/checks.test.ts
 asep-suite:adjudication                  packages/application/src/assurance/adjudication.test.ts
 asep-suite:repair-order                  packages/application/src/assurance/repair.test.ts
 asep-suite:assurance-steps               packages/application/src/assurance/steps.test.ts
+asep-suite:assurance-slot                packages/application/src/assurance/slot.test.ts
 asep-suite:assurance-driver              packages/application/src/assurance/driver.test.ts
 asep-suite:assurance-admission           packages/application/src/assurance/admission.test.ts
 asep-suite:exit-criteria-coverage        packages/application/src/assurance/exit-criteria-coverage.test.ts
 asep-suite:metric-eval                   packages/observability/src/metric-eval.test.ts
 asep-suite:assurance-dashboards          packages/observability/src/dashboards.test.ts
 asep-suite:reviewer-openai               adapters/reviewer-openai/src/reviewer-openai.test.ts
+asep-suite:reviewer-credential           adapters/reviewer-openai/src/credential.test.ts
+asep-suite:reviewer-live                 adapters/reviewer-openai/src/reviewer-openai.live.test.ts
 asep-suite:reviewer-replay               adapters/reviewer-replay/src/reviewer-replay.test.ts
 asep-suite:assurance-persistence         adapters/persistence/src/assurance/assurance-persistence.test.ts
 asep-suite:review-source                 adapters/git-worktree/src/review-source.test.ts
@@ -197,24 +222,27 @@ asep-suite:reviewer-credential-isolation adapters/agent-claude/src/reviewer-cred
 asep-suite:review-corpus                 evals/review-corpus/corpus-verifier.test.ts
 asep-suite:review-benchmark              evals/review-benchmark/scorer.test.ts
 asep-suite:review-injection-suite        evals/review-benchmark/injection-suite.test.ts
+asep-suite:review-false-green-suite      evals/review-benchmark/false-green-suite.test.ts
 asep-suite:assurance-root                apps/control-plane-api/src/assurance-root.test.ts
 asep-suite:assurance-rehearsal           apps/control-plane-api/src/assurance/assurance-rehearsal.test.ts
+asep-suite:assurance-mutation-proofs     scripts/assurance-mutation-proofs.test.ts
 ```
 
-New `REQUIRED_ITEST_SUITES` (3):
+New `REQUIRED_ITEST_SUITES` (3 now, 4 after S22):
 
 ```text
 asep-suite:assurance-persistence-real    adapters/persistence/src/assurance/assurance-persistence.itest.ts
 asep-suite:assurance-loop-real           apps/control-plane-api/src/assurance/assurance-loop.itest.ts
 asep-suite:assurance-dashboards-real     apps/control-plane-api/src/assurance/assurance-dashboards.itest.ts
+asep-suite:real-coder-shadow             apps/control-plane-api/src/assurance/real-coder-shadow.itest.ts   (S22)
 ```
 
-`asep-suite:review-source` is exercised by real temporary Git repositories, as `asep-suite:git-worktree` is
-today. Existing suites extended (no new id): `asep-suite:compat-gate`, `asep-suite:forbidden-imports`,
+Existing suites extended (no new id): `asep-suite:compat-gate`, `asep-suite:forbidden-imports`,
 `asep-suite:governed-execution` (unchanged by design).
 
-## Not Phase 4 exit
+## Not Phase 4 exit (deferred, plan §5.3)
 
-Durable orchestration (Lane A), gating promotion of a reviewer (a human decision after the phase), R3/R4
-admission, auto-merge, tool-using reviewers, production Grafana, escaped-defect measurement from production
-incidents, the Phase 1 historical-task dataset (PP2).
+Gating mode in production (DF-1), signed promotion (DF-2), promotion thresholds (DF-3), R2 admission through a
+reviewer (DF-4), activation of the D-2 rule (DF-5), production-valid measurement on a pilot corpus (DF-6),
+red→green closure proof for model findings (DF-7), blind human relabel (DF-8); durable orchestration (Lane A); R3/R4
+admission; auto-merge; tool-using reviewers; production Grafana; the Phase 1 historical-task dataset (PP2).

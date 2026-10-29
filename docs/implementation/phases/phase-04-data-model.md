@@ -1,379 +1,680 @@
-# Phase 4 — Data Model (DRAFT v1)
+# Phase 4 — Data Model (LOCKED v2 (pending controller confirmation))
 
-> Companion to `phase-04-plan.md`. PostgreSQL 17 (digest-pinned in `compose.yaml`). Base `00a6889`.
-> Conventions inherited from `phase-02-data-model.md` §1: ULID `char(26)` ids, `timestamptz` UTC, optimistic
-> `version` columns on mutable aggregates, `TenantScope` first parameter on every repository method, composite
-> foreign keys onto `(id, organization_id, project_id)`, append-only checksummed migrations.
+> Companion to `phase-04-plan.md`. PostgreSQL 17 (digest-pinned in `compose.yaml`). Base `00a6889`; v1 reviewed at
+> `a2a7b8a`. Conventions inherited from `phase-02-data-model.md` §1: ULID `char(26)` ids, `timestamptz` UTC,
+> optimistic `version` columns on mutable aggregates, `TenantScope` first on every repository method, composite
+> foreign keys onto `(id, organization_id, project_id)`, append-only checksummed migrations
+> (`adapters/persistence/src/migrator.ts`: strictly ascending ids, checksum per applied id). v2 writes the full DDL
+> with constraint names, indexes, trigger functions and rollback SQL (P4-PLAN-MED-003).
 
-## 1. Contract inventory after Phase 4
+## 1. Contract inventory after Phase 4 (Lane B additions only; no cross-lane total, R7)
 
-| Contract | Version | Change | Shared-surface id |
+| Contract | Version | Change | Request |
 |---|---|---|---|
-| `review-report` | 1.0.0 → **2.0.0** (`/v2`) | provenance + re-review closure fields | SR-C1 |
-| `finding` | 1.0.0 → **2.0.0** (`/v2`) | `source`, `fingerprint`, grounding, `EVIDENCE_INTEGRITY` category | SR-C2 |
-| `review-packet` | **new 1.0.0** | reviewer input | SR-C4 |
+| `review-finding` | **new 1.0.0** (`…/review-finding/v1`) | canonical finding with source, raiser, fingerprint, grounding, lifecycle | SR-C2 |
+| `review-record` | **new 1.0.0** (`…/review-record/v1`) | canonical, harness-produced review record with provenance and closure claims | SR-C1 |
+| `review-packet` | **new 1.0.0** | reviewer input incl. execution manifest | SR-C4 |
 | `adjudication-record` | **new 1.0.0** | deterministic decision record | SR-C4 |
-| `repair-order` | **new 1.0.0** | repair instruction for the next attempt | SR-C4 |
-| `run-event` | 1.1.0 → **1.2.0** | optional assurance fields | SR-C5 |
+| `repair-order` | **new 1.0.0** | repair instruction for the next attempt (drill only in Phase 4) | SR-C4 |
 | `architecture-invariant` | 1.0.0 → **1.1.0** | optional machine-checkable `check` | SR-C6 |
+| `run-event` | 1.1.0 → **1.2.0** | Lane B's part of the S0 superset (plan §18.4) | SR-S0-3 |
+| `review-report`, `finding` | **unchanged 1.0.0** | legacy; no producer in Phase 4 | — |
 
-`snapshots/v1/review-report.schema.json` and `snapshots/v1/finding.schema.json` stay byte-identical; v2 copies
-are frozen under `snapshots/v2/` and the compat gate selects the snapshot directory by the live `$id` major
-(SR-C3). Contract count: 13 → 16.
+Lane B adds five schema files; the compat-gate count and `COMPATIBILITY.md` are updated for those only.
+`packages/contracts/src/validate.ts` gains the five `ContractName` values.
 
-## 2. Schemas (field-level; JSON Schema draft 2020-12, `additionalProperties: false` everywhere)
+## 2. Schemas (JSON Schema draft 2020-12, `additionalProperties: false` everywhere)
 
-### 2.1 `finding/v2`
+### 2.1 `review-finding/v1`
 
 | Field | Type | Req | Notes |
 |---|---|---|---|
-| `id` | string | yes | report-local key |
+| `id` | string | yes | record-local key |
 | `source` | enum `model, deterministic, sarif` | yes | |
-| `fingerprint` | string (64 hex) | yes | sha256(category, normalized path, line bucket, ruleId) — dedup across reviewers in one round |
-| `severity` | enum `INFO, LOW, MEDIUM, HIGH, CRITICAL` | yes | unchanged |
-| `category` | enum v1 values + `EVIDENCE_INTEGRITY` | yes | |
-| `evidence`, `requiredFix` | string, minLength 1 | yes | unchanged |
-| `requirementId`, `file`, `lineStart`, `lineEnd` | as v1 | no | |
-| `ruleId` | string | no | deterministic/SARIF rule id |
-| `grounded` | boolean | no | set by the harness, never by the model |
-| `groundingReason` | string | no | |
-| `priorFindingId` | string | no | re-review linkage |
+| `raisedBy` | string | yes | `reviewerConfigId`, `deterministic:<ruleId>` or `sarif:<tool>` |
+| `fingerprint` | string, 64 hex | yes | sha256(category, normalized path, line bucket, ruleId) |
+| `severity` | enum `INFO, LOW, MEDIUM, HIGH, CRITICAL` | yes | |
+| `category` | enum `SPEC, ARCHITECTURE, CORRECTNESS, SECURITY, PERFORMANCE, TEST_QUALITY, MAINTAINABILITY, EVIDENCE_INTEGRITY` | yes | |
+| `evidence`, `requiredFix` | string, 1–8192 chars | yes | |
+| `grounded` | boolean | yes | set by the harness, never by a model |
+| `groundingReason` | string | no | required when `grounded` is false |
+| `lifecycleState` | enum `OPEN, ACKNOWLEDGED, FIXED, VERIFIED, CLOSED, REFUTED, ADJUDICATED, WAIVED` | yes | `docs/architecture/04-state-machines.md:40-48` |
+| `requirementId`, `file`, `lineStart`, `lineEnd`, `ruleId`, `priorFindingId` | | no | `file` repo-relative, no `..` |
 
-### 2.2 `review-report/v2`
+### 2.2 `review-record/v1`
 
-Required: `reviewId`, `attemptId`, `round` (int ≥ 1), `reviewKind` (`fresh, re-review`), `packetSha256`,
-`reviewerConfigId`, `reviewerConfigSha256`, `requestedModel`, `servedModel`, `rawResponseArtifactId`,
-`verdict` (`APPROVE, REQUEST_CHANGES, ESCALATE`), `findings` (`finding/v2[]`), `priorFindingStatuses`
-(`[{priorFindingId, status: RESOLVED|PARTIAL|OPEN, evidence, resolutionFile?, resolutionLine?}]`, empty for
-fresh). Optional: `confidence` (0..1), `packetCoverage` (`complete, partial`). The canonical report is
-produced by the harness from validated model output; the model never writes it directly.
+Required: `reviewId` (64 hex), `roundKey`, `attemptId`, `round` (≥ 1), `reviewKind` (`fresh, re-review`),
+`reviewerConfigId`, `reviewerConfigSha256`, `reviewerRole` (`primary, comparator`), `requestedModel`,
+`resolvedFamily`, `servedModel`, `packetSha256`, `promptSha256`, `rawRequestArtifactId`, `rawResponseArtifactId`,
+`validity` (`VALID, INVALID`), `verdict` (`APPROVE, REQUEST_CHANGES, ESCALATE`, null when invalid), `findings`
+(`review-finding/v1[]`), `priorFindingClaims` (`[{priorFindingId, status: RESOLVED|PARTIAL|OPEN, evidence,
+resolutionFile|null, resolutionLine|null}]`, empty for fresh), `usage` (`{inputTokens, cachedInputTokens,
+outputTokens, reasoningTokens, wallClockMs, transportAttempts}`), `providerCalls` (≥ 1). Optional: `confidence`
+(0..1), `packetCoverage` (`complete, partial`). Produced by the harness from validated model output only.
 
 ### 2.3 `review-packet/v1`
 
 | Field | Notes |
 |---|---|
 | `packetVersion` | const `review-packet/v1` |
-| `identity` | `{organizationId, projectId, repositoryBindingId, runId, taskId, attemptId, round}` |
+| `identity` | `{organizationId, projectId, repositoryBindingId, runId, taskId, attemptId, round, roundKey}` |
 | `risk`, `reviewKind` | |
 | `workOrder` | `{objective, requirementIds, requirements?[{id, statement, priority}], allowedPaths, forbiddenChanges, architectureInvariants, acceptanceCheckIds}` |
-| `change` | `{taskBaseSha, baseSha, resultSha, cumulativeDiff: ArtifactRef, repairDelta: ArtifactRef|null, files: [{path, status, postImage: ArtifactRef|null, lineCount, omittedReason|null}]}` |
-| `verification` | `{verdict, checks: [{id, category, verdict}]}` — no raw output |
-| `priorFindings` | `finding/v2[]` (re-review only, adjudicated, with ids) |
+| `change` | `{taskBaseSha, resultSha, repairBaseSha|null, cumulativeDiff: ArtifactRef, repairDelta: ArtifactRef|null, files: [{path, status, binary, postImage: ArtifactRef|null, lineCount, omittedReason|null}]}` |
+| `execution` | `{verdict, environment: {imageDigest, lockfileHash, nodeVersion|null}, checks: [{id, category, command, exitCode, durationMs, stdout: {artifactId, sha256, bytes, excerptTail}|null, stderr: (same)|null, testSummary: {runner, tests, pass, fail, skipped, todo}|null}]}` |
+| `priorFindings` | `review-finding/v1[]` (re-review only, adjudicated, with ids and lifecycle state) |
 | `budget` | `{maxBytes, includedBytes, overBudget, omissions: [{path, reason}]}` |
 
 No field exists for coder self-report, ContextPack, events, commit messages or other reviewers' output.
 
 ### 2.4 `adjudication-record/v1`
 
-`adjudicationId`, `reviewRoundId`, `attemptId`, `round`, `mode`, `outcome` (`PROCEED, REPAIR, ESCALATE,
-BLOCK`), `reason` (escalation/block reason or null), `ruleFired` (1–9, plan §11), `wouldBeOutcome` (shadow
-only), `blocking` (`[{findingId, source, severity, reason}]`), `grounding` (`[{findingId, grounded, reason}]`),
-`verdictMismatches` (`[{reviewId, verdict, groundedBlockingCount}]`), `closureChecks` (re-review:
-`[{priorFindingId, reportedStatus, effectiveStatus, reason}]`), `policyVersion`, `inputs` (`{packetSha256,
-checkReportSha256, reviewReportSha256s[]}`).
+`adjudicationId`, `roundKey`, `reviewRoundId`, `attemptId`, `round`, `mode`, `outcome` (`PROCEED, REPAIR, ESCALATE,
+BLOCK`), `reason` (escalation/block reason or null), `ruleFired` (`A1`…`A11`, plan §12), `shadow`
+(`{wouldBe, reason, blockingFindings}` or null), `pushGuard` (`PASS`/`BLOCK` + reason), `egressDecision`,
+`blocking` (`[{findingId, source, raisedBy, severity, reason}]`), `grounding` (`[{findingId, grounded, reason}]`),
+`verdictMismatches` (`[{reviewId, verdict, groundedBlockingCount}]`), `closureDecisions` (`[{priorFindingId,
+raisedBy, claims: [{by, status}], effectiveState, rule: deterministic-recheck|human|independent-reviewer|raiser-claim|closure-without-change|unchanged}]`),
+`policyVersion`, `inputs` (`{packetSha256, checkReportSha256, reviewRecordSha256s[]}`), `fence` (`{leaseId,
+leaseEpoch}`).
 
 ### 2.5 `repair-order/v1`
 
 `repairOrderId`, `taskId`, `fromAttemptId`, `nextRound`, `taskBaseSha`, `repairBaseSha`, `adjudicationId`,
-`blockingFindings` (`finding/v2[]`, each `evidence`/`requiredFix` ≤ 4 KiB, total ≤ 64 KiB — limits are policy
-data), `informationalFindings` (same shape, capped), `workOrderRef`.
+`blockingFindings` (`review-finding/v1[]`, each `evidence`/`requiredFix` ≤ 4 KiB, total ≤ 64 KiB — policy data),
+`informationalFindings` (same shape, capped), `closureRule` (const text: "a fix is verified only by a different
+eligible reviewer, a human, or a deterministic re-check"), `workOrderRef`.
 
-### 2.6 `run-event` 1.2.0 additions (all optional)
+### 2.6 `architecture-invariant` 1.1.0
 
-| Field | Type | Used by |
-|---|---|---|
-| `reviewRound` | integer ≥ 1 | `review.completed`, `repair.started` |
-| `reviewerConfigId` | string | dimension |
-| `reviewMode` | enum `not-required, shadow, gating` | dimension / filter |
-| `assuranceOutcome` | enum `PROCEED, REPAIR, ESCALATE, BLOCK` | filter |
-| `reviewFindingsAdjudicated` | integer ≥ 0 | adjudication coverage |
-| `reviewFindingsBlocking` | integer ≥ 0 | |
-| `repairRound` | boolean | repair success denominator |
-| `repairClosedAllBlocking` | boolean | repair success numerator |
-| `reviewerFailed` | boolean | reviewer failure rate |
-| `shadowWouldBlock` | boolean | shadow would-block rate |
+Optional `check: { kind: "forbidden-import", fromGlobs: string[], specifierPattern: string }`.
 
-`run-event-catalog.ts` reads the schema, so the dictionary validator picks the fields up without code change.
+### 2.7 `run-event` 1.2.0 (Lane B part of the S0 superset)
 
-### 2.7 `architecture-invariant` 1.1.0
+Plan §18.4 lists the one new `eventType` (`review.finding_dispositioned`) and the optional fields.
+`run-event-catalog.ts` reads the schema, so the dictionary validator sees the new fields without code change.
 
-Optional `check: { kind: "forbidden-import", fromGlobs: string[], specifierPattern: string }`. Invariants
-without `check` are prose and go to the model rubric only.
+### 2.8 Internal artifacts (not canonical contracts)
 
-## 3. Tables (migrations in Lane B range)
+`check-report` (JSON, schema in `packages/application/src/assurance/schemas/check-report.schema.json`): raw check
+outputs by artifact ref, findings, push-guard decision, egress decision with per-part scan results, omissions.
+`review-prompt`: instructions, rendered input, output schema, template hash.
 
-### 0200_assurance_reviews
+## 3. Tables (migrations in Lane B range; withdrawn `0201_run_events`, R4)
+
+### 3.1 `0200_assurance_reviews`
 
 ```sql
+-- Review rounds must prove "attempt belongs to task" at the database.
+alter table attempts
+  add constraint attempts_id_task_scope_uq unique (id, task_id, organization_id, project_id);
+
+create function assurance_reject_mutation() returns trigger
+language plpgsql as $$
+begin
+  raise exception '% on % is not allowed (append-only)', tg_op, tg_table_name
+    using errcode = '55000';
+end;
+$$;
+
 create table review_rounds (
-  id                    char(26) primary key,
-  organization_id       char(26) not null,
-  project_id            char(26) not null,
-  repository_binding_id char(26) not null,
-  task_id               char(26) not null,
-  attempt_id            char(26) not null,
-  round                 integer not null check (round >= 1),
-  review_kind           text not null check (review_kind in ('fresh','re-review')),
-  review_mode           text not null check (review_mode in ('not-required','shadow','gating')),
-  packet_artifact_id    char(26),
-  packet_sha256         text,
-  over_budget           boolean not null default false,
+  id                       char(26)    primary key,
+  organization_id          char(26)    not null,
+  project_id               char(26)    not null,
+  repository_binding_id    char(26)    not null,
+  task_id                  char(26)    not null,
+  attempt_id               char(26)    not null,
+  round                    integer     not null,
+  round_key                text        not null,
+  review_kind              text        not null,
+  review_mode              text        not null,
+  policy_version           text        not null,
+  packet_artifact_id       char(26),
+  packet_sha256            text,
+  over_budget              boolean     not null default false,
   check_report_artifact_id char(26),
-  state                 text not null check (state in ('OPEN','ADJUDICATED','SUPERSEDED')),
-  prior_round_id        char(26) references review_rounds(id),
-  created_at            timestamptz not null default now(),
-  version               integer not null default 0,
-  foreign key (attempt_id, organization_id, project_id) references attempts (id, organization_id, project_id),
-  foreign key (task_id, organization_id, project_id)    references tasks (id, organization_id, project_id),
-  unique (task_id, round),
-  unique (attempt_id),
-  unique (id, organization_id, project_id)
+  push_guard               text,
+  egress_decision          text,
+  state                    text        not null,
+  prior_round_id           char(26),
+  opened_at                timestamptz not null,
+  adjudicated_at           timestamptz,
+  version                  integer     not null default 0,
+  constraint review_rounds_round_ck       check (round >= 1),
+  constraint review_rounds_kind_ck        check (review_kind in ('fresh','re-review')),
+  constraint review_rounds_mode_ck        check (review_mode in ('not-required','shadow','gating')),
+  constraint review_rounds_state_ck       check (state in ('OPEN','ADJUDICATED','SUPERSEDED')),
+  constraint review_rounds_push_guard_ck  check (push_guard is null or push_guard in ('PASS','BLOCK')),
+  constraint review_rounds_egress_ck      check (egress_decision is null or egress_decision in
+                                            ('CLEAR','STOP_SECRET','STOP_CLASSIFIED','STOP_UNSCANNABLE')),
+  constraint review_rounds_packet_sha_ck  check (packet_sha256 is null or packet_sha256 ~ '^[0-9a-f]{64}$'),
+  constraint review_rounds_first_ck       check ((round = 1) = (prior_round_id is null)),
+  constraint review_rounds_kind_round_ck  check ((review_kind = 'fresh') = (round = 1)),
+  constraint review_rounds_adjudicated_ck check ((state = 'OPEN') = (adjudicated_at is null)),
+  constraint review_rounds_scope_uq       unique (id, organization_id, project_id),
+  constraint review_rounds_round_key_uq   unique (organization_id, project_id, round_key),
+  constraint review_rounds_task_round_uq  unique (organization_id, project_id, task_id, round),
+  constraint review_rounds_attempt_uq     unique (organization_id, project_id, attempt_id),
+  constraint review_rounds_task_binding_fk foreign key (task_id, organization_id, project_id, repository_binding_id)
+    references tasks (id, organization_id, project_id, repository_binding_id),
+  constraint review_rounds_attempt_task_fk foreign key (attempt_id, task_id, organization_id, project_id)
+    references attempts (id, task_id, organization_id, project_id),
+  constraint review_rounds_packet_fk       foreign key (packet_artifact_id, organization_id, project_id)
+    references artifacts (id, organization_id, project_id),
+  constraint review_rounds_check_report_fk foreign key (check_report_artifact_id, organization_id, project_id)
+    references artifacts (id, organization_id, project_id),
+  constraint review_rounds_prior_fk        foreign key (prior_round_id, organization_id, project_id)
+    references review_rounds (id, organization_id, project_id)
 );
+create index review_rounds_task_idx on review_rounds (organization_id, project_id, task_id, round);
+
+create function assurance_review_round_guard() returns trigger
+language plpgsql as $$
+begin
+  if tg_op = 'DELETE' then
+    raise exception 'review_rounds rows are never deleted' using errcode = '55000';
+  end if;
+  if (new.id, new.organization_id, new.project_id, new.repository_binding_id, new.task_id, new.attempt_id,
+      new.round, new.round_key, new.review_kind, new.review_mode, new.policy_version, new.prior_round_id,
+      new.opened_at)
+     is distinct from
+     (old.id, old.organization_id, old.project_id, old.repository_binding_id, old.task_id, old.attempt_id,
+      old.round, old.round_key, old.review_kind, old.review_mode, old.policy_version, old.prior_round_id,
+      old.opened_at) then
+    raise exception 'review round % identity is immutable', old.id using errcode = '55000';
+  end if;
+  if old.packet_sha256 is not null and new.packet_sha256 is distinct from old.packet_sha256 then
+    raise exception 'review round % packet is immutable once set', old.id using errcode = '55000';
+  end if;
+  if old.state = 'SUPERSEDED'
+     or (old.state = 'ADJUDICATED' and new.state not in ('ADJUDICATED','SUPERSEDED')) then
+    raise exception 'review round % cannot move from % to %', old.id, old.state, new.state
+      using errcode = '55000';
+  end if;
+  return new;
+end;
+$$;
+create trigger review_rounds_guard before update or delete on review_rounds
+  for each row execute function assurance_review_round_guard();
 
 create table review_records (
-  id                      char(26) primary key,
-  organization_id         char(26) not null,
-  project_id              char(26) not null,
-  review_round_id         char(26) not null,
-  review_id               text not null,                       -- deterministic hash id
-  reviewer_config_id      text not null,
-  reviewer_config_sha256  text not null,
-  requested_model         text not null,
-  served_model            text,
-  state                   text not null check (state in ('PENDING','COMPLETED','FAILED')),
-  observation_status      text,
-  validity                text check (validity in ('VALID','INVALID')),
-  prompt_artifact_id      char(26),
-  raw_request_artifact_id char(26),
+  id                       char(26)    primary key,
+  organization_id          char(26)    not null,
+  project_id               char(26)    not null,
+  review_round_id          char(26)    not null,
+  review_id                text        not null,
+  reviewer_config_id       text        not null,
+  reviewer_config_sha256   text        not null,
+  reviewer_role            text        not null,
+  requested_model          text        not null,
+  resolved_family          text        not null,
+  served_model             text,
+  terminal_state           text        not null,
+  failure_reason           text,
+  observation_status       text,
+  validity                 text,
+  verdict                  text,
+  prompt_artifact_id       char(26),
+  raw_request_artifact_id  char(26),
   raw_response_artifact_id char(26),
-  report_artifact_id      char(26),
-  provider_request_id     text,
-  input_tokens            integer, cached_input_tokens integer, output_tokens integer, reasoning_tokens integer,
-  wall_clock_ms           integer, transport_attempts integer,
-  duplicate_calls         integer not null default 0,
-  cost_usd                numeric,                              -- null when no price is configured
-  started_at              timestamptz not null default now(),
-  completed_at            timestamptz,
-  version                 integer not null default 0,
-  foreign key (review_round_id, organization_id, project_id) references review_rounds (id, organization_id, project_id),
-  unique (organization_id, project_id, review_id),
-  unique (id, organization_id, project_id)
+  record_artifact_id       char(26),
+  provider_request_id      text,
+  input_tokens             integer,
+  cached_input_tokens      integer,
+  output_tokens            integer,
+  reasoning_tokens         integer,
+  wall_clock_ms            integer,
+  transport_attempts       integer,
+  provider_calls           integer     not null,
+  call_generation          integer     not null default 1,
+  cost_usd                 numeric(12,6),
+  price_source             text,
+  claim_semantic_key       text        not null,   -- the Phase 2 fenced claim that authorized the call
+  fence_lease_id           text        not null,
+  fence_lease_epoch        integer     not null,
+  recorded_at              timestamptz not null,
+  constraint review_records_review_id_ck  check (review_id ~ '^[0-9a-f]{64}$'),
+  constraint review_records_config_sha_ck check (reviewer_config_sha256 ~ '^[0-9a-f]{64}$'),
+  constraint review_records_role_ck       check (reviewer_role in ('primary','comparator')),
+  constraint review_records_state_ck      check (terminal_state in
+                                            ('COMPLETED','FAILED','EGRESS_STOPPED','SKIPPED_PUSH_GUARD')),
+  constraint review_records_failure_ck    check (failure_reason is null or failure_reason in
+                                            ('served-model-drift','refused','incomplete','malformed','rate-limited',
+                                             'provider-error','auth-error','context-overflow','budget-exhausted',
+                                             'cancelled','egress-secret','egress-classified','egress-unscannable',
+                                             'egress-request-rescan','push-guard')),
+  constraint review_records_failure_state_ck check ((terminal_state = 'COMPLETED') = (failure_reason is null)),
+  constraint review_records_observation_ck check (observation_status is null or observation_status in
+                                            ('COMPLETED','REFUSED','INCOMPLETE','MALFORMED','RATE_LIMITED',
+                                             'PROVIDER_ERROR','AUTH_ERROR','CONTEXT_OVERFLOW','BUDGET_EXHAUSTED',
+                                             'CANCELLED')),
+  constraint review_records_validity_ck   check (validity is null or validity in ('VALID','INVALID')),
+  constraint review_records_verdict_ck    check (verdict is null or verdict in ('APPROVE','REQUEST_CHANGES','ESCALATE')),
+  constraint review_records_completed_ck  check (terminal_state <> 'COMPLETED'
+                                            or (raw_response_artifact_id is not null and validity is not null
+                                                and provider_calls >= 1)),
+  constraint review_records_valid_ck      check (validity is distinct from 'VALID'
+                                            or (record_artifact_id is not null and verdict is not null)),
+  constraint review_records_no_request_ck check (terminal_state not in ('EGRESS_STOPPED','SKIPPED_PUSH_GUARD')
+                                            or (provider_calls = 0 and raw_request_artifact_id is null
+                                                and raw_response_artifact_id is null)),
+  constraint review_records_counts_ck     check (provider_calls >= 0 and call_generation >= 1 and fence_lease_epoch >= 1),
+  constraint review_records_cost_ck       check ((cost_usd is null) = (price_source is null)),
+  constraint review_records_review_uq     unique (organization_id, project_id, review_id),
+  constraint review_records_scope_uq      unique (id, organization_id, project_id),
+  constraint review_records_round_fk      foreign key (review_round_id, organization_id, project_id)
+    references review_rounds (id, organization_id, project_id),
+  constraint review_records_prompt_fk     foreign key (prompt_artifact_id, organization_id, project_id)
+    references artifacts (id, organization_id, project_id),
+  constraint review_records_raw_request_fk  foreign key (raw_request_artifact_id, organization_id, project_id)
+    references artifacts (id, organization_id, project_id),
+  constraint review_records_raw_response_fk foreign key (raw_response_artifact_id, organization_id, project_id)
+    references artifacts (id, organization_id, project_id),
+  constraint review_records_record_fk     foreign key (record_artifact_id, organization_id, project_id)
+    references artifacts (id, organization_id, project_id)
 );
+create index review_records_round_idx on review_records (organization_id, project_id, review_round_id);
+
+create function assurance_review_record_guard() returns trigger
+language plpgsql as $$
+begin
+  if tg_op = 'DELETE' then
+    raise exception 'review_records rows are never deleted' using errcode = '55000';
+  end if;
+  if old.terminal_state <> 'FAILED' then
+    raise exception 'review record % is final (%)', old.review_id, old.terminal_state using errcode = '55000';
+  end if;
+  if (new.organization_id, new.project_id, new.review_round_id, new.review_id, new.reviewer_config_id,
+      new.reviewer_config_sha256, new.reviewer_role, new.requested_model, new.resolved_family)
+     is distinct from
+     (old.organization_id, old.project_id, old.review_round_id, old.review_id, old.reviewer_config_id,
+      old.reviewer_config_sha256, old.reviewer_role, old.requested_model, old.resolved_family) then
+    raise exception 'review record % identity is immutable', old.review_id using errcode = '55000';
+  end if;
+  if new.call_generation <= old.call_generation or new.provider_calls < old.provider_calls then
+    raise exception 'review record % must advance its call generation', old.review_id using errcode = '55000';
+  end if;
+  return new;
+end;
+$$;
+create trigger review_records_guard before update or delete on review_records
+  for each row execute function assurance_review_record_guard();
 
 create table review_findings (
-  id                char(26) primary key,
-  organization_id   char(26) not null,
-  project_id        char(26) not null,
-  review_round_id   char(26) not null,
-  review_record_id  char(26),                                   -- null for deterministic/SARIF findings
-  source            text not null check (source in ('model','deterministic','sarif')),
-  finding_key       text not null,
-  fingerprint       text not null,
-  severity          text not null check (severity in ('INFO','LOW','MEDIUM','HIGH','CRITICAL')),
-  category          text not null,
-  file              text, line_start integer, line_end integer, requirement_id text, rule_id text,
-  evidence          text not null,
-  required_fix      text not null,
-  grounded          boolean not null,
-  grounding_reason  text,
-  blocking          boolean not null,
-  prior_finding_id  char(26) references review_findings(id),
-  lifecycle_state   text not null check (lifecycle_state in
-    ('OPEN','ACKNOWLEDGED','FIXED','VERIFIED','CLOSED','REFUTED','ADJUDICATED','WAIVED')),
-  created_at        timestamptz not null default now(),
-  version           integer not null default 0,
-  foreign key (review_round_id, organization_id, project_id) references review_rounds (id, organization_id, project_id),
-  foreign key (review_record_id, organization_id, project_id) references review_records (id, organization_id, project_id),
-  unique (id, organization_id, project_id)
+  id               char(26)    primary key,
+  organization_id  char(26)    not null,
+  project_id       char(26)    not null,
+  review_round_id  char(26)    not null,
+  review_record_id char(26),
+  source           text        not null,
+  raised_by        text        not null,
+  finding_key      text        not null,
+  fingerprint      text        not null,
+  severity         text        not null,
+  category         text        not null,
+  file             text,
+  line_start       integer,
+  line_end         integer,
+  requirement_id   text,
+  rule_id          text,
+  evidence         text        not null,
+  required_fix     text        not null,
+  grounded         boolean     not null,
+  grounding_reason text,
+  blocking         boolean     not null,
+  prior_finding_id char(26),
+  lifecycle_state  text        not null,
+  created_at       timestamptz not null,
+  version          integer     not null default 0,
+  constraint review_findings_source_ck      check (source in ('model','deterministic','sarif')),
+  constraint review_findings_record_ck      check ((source = 'model') = (review_record_id is not null)),
+  constraint review_findings_raiser_ck      check ((source = 'model') = (raised_by !~ '^(deterministic|sarif):')),
+  constraint review_findings_fingerprint_ck check (fingerprint ~ '^[0-9a-f]{64}$'),
+  constraint review_findings_severity_ck    check (severity in ('INFO','LOW','MEDIUM','HIGH','CRITICAL')),
+  constraint review_findings_category_ck    check (category in ('SPEC','ARCHITECTURE','CORRECTNESS','SECURITY',
+                                              'PERFORMANCE','TEST_QUALITY','MAINTAINABILITY','EVIDENCE_INTEGRITY')),
+  constraint review_findings_lines_ck       check ((line_start is null or line_start >= 1)
+                                              and (line_end is null or (line_start is not null and line_end >= line_start))),
+  constraint review_findings_text_ck        check (length(evidence) between 1 and 8192
+                                              and length(required_fix) between 1 and 8192),
+  constraint review_findings_file_ck        check (file is null or (file !~ '^/' and file !~ '(^|/)\.\.(/|$)')),
+  constraint review_findings_lifecycle_ck   check (lifecycle_state in ('OPEN','ACKNOWLEDGED','FIXED','VERIFIED',
+                                              'CLOSED','REFUTED','ADJUDICATED','WAIVED')),
+  constraint review_findings_grounded_ck    check (grounded or not blocking),
+  constraint review_findings_reason_ck      check (grounded or grounding_reason is not null),
+  constraint review_findings_dedupe_uq      unique (organization_id, project_id, review_round_id, raised_by, fingerprint),
+  constraint review_findings_scope_uq       unique (id, organization_id, project_id),
+  constraint review_findings_denorm_uq      unique (id, organization_id, project_id, severity, raised_by, grounded),
+  constraint review_findings_round_fk       foreign key (review_round_id, organization_id, project_id)
+    references review_rounds (id, organization_id, project_id),
+  constraint review_findings_record_fk      foreign key (review_record_id, organization_id, project_id)
+    references review_records (id, organization_id, project_id),
+  constraint review_findings_prior_fk       foreign key (prior_finding_id, organization_id, project_id)
+    references review_findings (id, organization_id, project_id)
 );
+create index review_findings_round_idx on review_findings (organization_id, project_id, review_round_id);
 
-create table finding_dispositions (                              -- append-only
-  id               char(26) primary key,
-  organization_id  char(26) not null,
-  project_id       char(26) not null,
-  finding_id       char(26) not null,
-  disposition      text not null check (disposition in
-    ('ACCEPTED','REJECTED_WITH_EVIDENCE','WAIVED','RESOLVED','PARTIAL','OPEN')),
-  actor_kind       text not null check (actor_kind in ('human','harness-rule','reviewer')),
-  actor            text not null,                               -- named human, rule id, or reviewerConfigId
-  finding_severity text not null,                               -- denormalized so the waiver rule is a CHECK
-  rationale        text not null,
+create function assurance_review_finding_guard() returns trigger
+language plpgsql as $$
+begin
+  if tg_op = 'DELETE' then
+    raise exception 'review_findings rows are never deleted' using errcode = '55000';
+  end if;
+  if (new.id, new.organization_id, new.project_id, new.review_round_id, new.review_record_id, new.source,
+      new.raised_by, new.finding_key, new.fingerprint, new.severity, new.category, new.file, new.line_start,
+      new.line_end, new.requirement_id, new.rule_id, new.evidence, new.required_fix, new.grounded,
+      new.grounding_reason, new.prior_finding_id, new.created_at)
+     is distinct from
+     (old.id, old.organization_id, old.project_id, old.review_round_id, old.review_record_id, old.source,
+      old.raised_by, old.finding_key, old.fingerprint, old.severity, old.category, old.file, old.line_start,
+      old.line_end, old.requirement_id, old.rule_id, old.evidence, old.required_fix, old.grounded,
+      old.grounding_reason, old.prior_finding_id, old.created_at) then
+    raise exception 'review finding % content is immutable', old.id using errcode = '55000';
+  end if;
+  return new;
+end;
+$$;
+create trigger review_findings_guard before update or delete on review_findings
+  for each row execute function assurance_review_finding_guard();
+
+create table finding_dispositions (
+  id                   char(26)    primary key,
+  organization_id      char(26)    not null,
+  project_id           char(26)    not null,
+  finding_id           char(26)    not null,
+  disposition          text        not null,
+  actor_kind           text        not null,
+  actor                text        not null,
+  finding_severity     text        not null,
+  finding_raised_by    text        not null,
+  finding_grounded     boolean     not null,
+  rationale            text        not null,
   evidence_artifact_id char(26),
-  expires_at       timestamptz,
-  signature        text,                                        -- ed25519, same scheme as human_authorizations
-  created_at       timestamptz not null default now(),
-  check (disposition <> 'WAIVED' or (actor_kind = 'human' and expires_at is not null and signature is not null)),
-  check (actor_kind <> 'reviewer' or disposition in ('RESOLVED','PARTIAL','OPEN')),
-  check (actor_kind <> 'harness-rule' or disposition = 'REJECTED_WITH_EVIDENCE'),
-  foreign key (finding_id, organization_id, project_id) references review_findings (id, organization_id, project_id)
+  expires_at           timestamptz,
+  signature            text,
+  fence_lease_id       text,
+  fence_lease_epoch    integer,
+  recorded_at          timestamptz not null,
+  constraint finding_dispositions_disposition_ck check (disposition in ('ACCEPTED','REJECTED_WITH_EVIDENCE','WAIVED',
+                                                   'RESOLUTION_CLAIMED','RESOLUTION_VERIFIED','REOPENED')),
+  constraint finding_dispositions_actor_kind_ck  check (actor_kind in ('human','harness-rule','reviewer')),
+  constraint finding_dispositions_rationale_ck   check (length(rationale) between 1 and 4000),
+  -- only a named human waives, always with an expiry and a signature
+  constraint finding_dispositions_waiver_ck      check (disposition <> 'WAIVED'
+                                                   or (actor_kind = 'human' and expires_at is not null
+                                                       and signature is not null)),
+  -- a reviewer can only claim a resolution, or verify one it did not raise
+  constraint finding_dispositions_reviewer_ck    check (actor_kind <> 'reviewer'
+                                                   or disposition in ('RESOLUTION_CLAIMED','RESOLUTION_VERIFIED')),
+  -- the raiser of a finding can never verify its resolution
+  constraint finding_dispositions_raiser_ck      check (disposition <> 'RESOLUTION_VERIFIED' or actor <> finding_raised_by),
+  -- harness rules refute ungrounded findings, verify deterministic re-checks, and reopen
+  constraint finding_dispositions_harness_ck     check (actor_kind <> 'harness-rule'
+                                                   or disposition in ('REJECTED_WITH_EVIDENCE','RESOLUTION_VERIFIED','REOPENED')),
+  constraint finding_dispositions_harness_verify_ck check (not (actor_kind = 'harness-rule'
+                                                   and disposition = 'RESOLUTION_VERIFIED')
+                                                   or finding_raised_by like 'deterministic:%'),
+  -- only a human can reject a grounded finding
+  constraint finding_dispositions_refute_ck      check (disposition <> 'REJECTED_WITH_EVIDENCE'
+                                                   or actor_kind = 'human' or not finding_grounded),
+  -- validity decisions (accept/reject) are human, except harness refutation of ungrounded findings
+  constraint finding_dispositions_accept_ck      check (disposition <> 'ACCEPTED' or actor_kind = 'human'),
+  -- machine-written rows carry the fence that authorized them; human rows do not
+  constraint finding_dispositions_fence_ck       check ((actor_kind = 'human')
+                                                   = (fence_lease_id is null and fence_lease_epoch is null)),
+  constraint finding_dispositions_scope_uq       unique (id, organization_id, project_id),
+  constraint finding_dispositions_finding_fk     foreign key (finding_id, organization_id, project_id,
+                                                   finding_severity, finding_raised_by, finding_grounded)
+    references review_findings (id, organization_id, project_id, severity, raised_by, grounded),
+  constraint finding_dispositions_evidence_fk    foreign key (evidence_artifact_id, organization_id, project_id)
+    references artifacts (id, organization_id, project_id)
 );
+create index finding_dispositions_finding_idx
+  on finding_dispositions (organization_id, project_id, finding_id, recorded_at);
+create trigger finding_dispositions_append_only before update or delete on finding_dispositions
+  for each row execute function assurance_reject_mutation();
 
 create table adjudications (
-  id                   char(26) primary key,
-  organization_id      char(26) not null,
-  project_id           char(26) not null,
-  review_round_id      char(26) not null unique,
-  adjudication_id      text not null,                            -- deterministic hash id
-  outcome              text not null check (outcome in ('PROCEED','REPAIR','ESCALATE','BLOCK')),
-  reason               text,
-  rule_fired           integer not null check (rule_fired between 1 and 9),
-  would_be_outcome     text,
-  review_mode          text not null,
-  blocking_count       integer not null,
-  policy_version       text not null,
-  record_artifact_id   char(26) not null,
-  record_sha256        text not null,
+  id                       char(26)    primary key,
+  organization_id          char(26)    not null,
+  project_id               char(26)    not null,
+  review_round_id          char(26)    not null,
+  adjudication_id          text        not null,
+  outcome                  text        not null,
+  reason                   text,
+  rule_fired               text        not null,
+  review_mode              text        not null,
+  would_be_outcome         text,
+  would_be_reason          text,
+  blocking_count           integer     not null,
+  policy_version           text        not null,
+  record_artifact_id       char(26)    not null,
+  record_sha256            text        not null,
   repair_order_artifact_id char(26),
-  created_at           timestamptz not null default now(),
-  foreign key (review_round_id, organization_id, project_id) references review_rounds (id, organization_id, project_id),
-  unique (organization_id, project_id, adjudication_id)
+  fence_lease_id           text        not null,
+  fence_lease_epoch        integer     not null,
+  decided_at               timestamptz not null,
+  constraint adjudications_id_ck          check (adjudication_id ~ '^[0-9a-f]{64}$'),
+  constraint adjudications_sha_ck         check (record_sha256 ~ '^[0-9a-f]{64}$'),
+  constraint adjudications_outcome_ck     check (outcome in ('PROCEED','REPAIR','ESCALATE','BLOCK')),
+  constraint adjudications_mode_ck        check (review_mode in ('not-required','shadow','gating')),
+  constraint adjudications_rule_ck        check (rule_fired ~ '^A([1-9]|1[01])$'),
+  constraint adjudications_reason_ck      check (reason is null or reason in ('packet-over-budget','egress-stopped',
+                                            'independence-unsatisfiable','reviewer-unavailable','reviewer-escalated',
+                                            'max-repair-rounds','budget-exhausted','secret-in-diff','forbidden-path',
+                                            'unscannable-sensitive-change')),
+  constraint adjudications_reason_present_ck check ((outcome in ('ESCALATE','BLOCK')) = (reason is not null)),
+  -- shadow and not-required never change the workflow beyond the deterministic push guard
+  constraint adjudications_non_gating_ck  check (review_mode = 'gating' or outcome in ('PROCEED','BLOCK')),
+  constraint adjudications_shadow_ck      check ((review_mode = 'shadow' and outcome = 'PROCEED')
+                                            = (would_be_outcome is not null)),
+  constraint adjudications_would_be_ck    check (would_be_outcome is null or would_be_outcome in ('PROCEED','REPAIR','ESCALATE')),
+  constraint adjudications_repair_ck      check ((outcome = 'REPAIR') = (repair_order_artifact_id is not null)),
+  constraint adjudications_counts_ck      check (blocking_count >= 0 and fence_lease_epoch >= 1),
+  constraint adjudications_round_uq       unique (organization_id, project_id, review_round_id),
+  constraint adjudications_adjudication_uq unique (organization_id, project_id, adjudication_id),
+  constraint adjudications_scope_uq       unique (id, organization_id, project_id),
+  constraint adjudications_round_fk       foreign key (review_round_id, organization_id, project_id)
+    references review_rounds (id, organization_id, project_id),
+  constraint adjudications_record_fk      foreign key (record_artifact_id, organization_id, project_id)
+    references artifacts (id, organization_id, project_id),
+  constraint adjudications_repair_fk      foreign key (repair_order_artifact_id, organization_id, project_id)
+    references artifacts (id, organization_id, project_id)
 );
-
-create table reviewer_promotions (
-  id                     char(26) primary key,
-  organization_id        char(26) not null,
-  project_id             char(26) not null,
-  reviewer_config_id     text not null,
-  reviewer_config_sha256 text not null,                         -- any config change invalidates the promotion
-  mode                   text not null check (mode = 'gating'),
-  scorecard_sha256       text not null,
-  scorecard_ref          text not null,                         -- repo path of the committed scorecard
-  approved_by            text not null,
-  rationale              text not null,
-  approved_at            timestamptz not null default now(),
-  expires_at             timestamptz not null,
-  signature              text not null,
-  revoked_at             timestamptz,
-  foreign key (project_id, organization_id) references projects (id, organization_id)
-);
+create trigger adjudications_append_only before update or delete on adjudications
+  for each row execute function assurance_reject_mutation();
 ```
 
-(Artifact columns additionally carry composite FKs onto `artifacts (id, organization_id, project_id)`, as
-`0009_scoped_evidence_refs` does; omitted above for brevity, required in the migration.)
+Write rules (application, plan §16 I5): every insert/update above made by the harness runs in a transaction that
+first performs the Phase 2 fence check for `(fence_lease_id, fence_lease_epoch)`; human dispositions are written by
+the disposition use case (CLI/API) after authenticating the human and verifying the ed25519 signature with the
+scheme used for `human_authorizations` (`migrations.ts` `0010`).
 
-### 0201_run_events
-
-```sql
-create table run_events (
-  organization_id  char(26) not null,
-  project_id       char(26) not null,
-  event_id         text not null,
-  event_type       text not null,
-  schema_version   text not null,
-  occurred_at      timestamptz not null,
-  run_id           text not null,
-  task_id          text, attempt_id text,
-  payload          jsonb not null,          -- the full validated RunEvent
-  payload_sha256   text not null,
-  inserted_at      timestamptz not null default now(),
-  primary key (organization_id, project_id, event_id)
-);
-create index run_events_type_time on run_events (organization_id, project_id, event_type, occurred_at);
--- append-only: a trigger raises on UPDATE or DELETE
-```
-
-### 0202_metric_snapshots
+### 3.2 `0201_metric_snapshots`
 
 ```sql
 create table metric_snapshots (
-  id                 char(26) primary key,
-  organization_id    char(26) not null,
-  project_id         char(26) not null,
-  metric_name        text not null,
-  dictionary_version text not null,
-  evaluator_version  text not null,
+  id                 char(26)    primary key,
+  organization_id    char(26)    not null,
+  project_id         char(26)    not null,
+  metric_name        text        not null,
+  dictionary_version text        not null,
+  evaluator_version  text        not null,
   window_start       timestamptz not null,
   window_end         timestamptz not null,
-  dimensions         jsonb not null,           -- canonical, sorted keys
-  dimensions_sha256  text not null,
-  value              numeric,                  -- null when the zero-denominator policy says so
+  dimensions         jsonb       not null,   -- canonical, sorted keys
+  dimensions_sha256  text        not null,
+  value              numeric,
   numerator          numeric,
   denominator        numeric,
   null_reason        text,
-  privacy_class      text not null,
-  source_event_count integer not null,
+  privacy_class      text        not null,
+  source_event_count integer     not null,
+  source_watermark   timestamptz,           -- max inserted_at of the events read
   computed_at        timestamptz not null,
-  unique (organization_id, project_id, metric_name, window_start, window_end, dimensions_sha256, dictionary_version)
+  revision           integer     not null default 1,
+  constraint metric_snapshots_window_ck   check (window_end > window_start),
+  constraint metric_snapshots_null_ck     check ((value is null) = (null_reason is not null)),
+  constraint metric_snapshots_privacy_ck  check (privacy_class in ('public','operational','sensitive','restricted')),
+  constraint metric_snapshots_dims_sha_ck check (dimensions_sha256 ~ '^[0-9a-f]{64}$'),
+  constraint metric_snapshots_counts_ck   check (source_event_count >= 0 and revision >= 1),
+  constraint metric_snapshots_key_uq      unique (organization_id, project_id, metric_name, dictionary_version,
+                                            window_start, window_end, dimensions_sha256),
+  constraint metric_snapshots_project_fk  foreign key (project_id, organization_id)
+    references projects (id, organization_id)
 );
+create index metric_snapshots_lookup_idx on metric_snapshots (organization_id, project_id, metric_name, window_end);
 ```
 
-Retention follows the dictionary privacy class (`retentionDays`); `restricted` metrics are computed only when
-capture is enabled for the project.
+Recompute is an upsert on `metric_snapshots_key_uq` that bumps `revision` only when numerator, denominator, value
+or null reason changed, so a late human disposition is reflected without losing idempotency (exit H6). Retention
+follows the dictionary privacy class; `restricted` metrics are computed only when capture is enabled.
 
-### 0203_attempt_review_states
+### 3.3 `0202_attempt_review_states`
 
-Drops and recreates the `attempts.status` check constraint with the Phase 2 values plus `UNDER_REVIEW` and
-`CHANGES_REQUESTED`. The constraint name is read from `pg_constraint` at implementation time, not assumed.
-Must be reconciled with any Lane A change to the same constraint (plan §17.3, SR-M4).
+```sql
+do $$
+begin
+  if not exists (select 1 from pg_constraint
+                 where conrelid = 'attempts'::regclass and conname = 'attempts_status_check') then
+    raise exception 'expected constraint attempts_status_check on attempts';
+  end if;
+end;
+$$;
+alter table attempts drop constraint attempts_status_check;
+alter table attempts add constraint attempts_status_check check (status in
+  ('STARTED','AGENT_RUNNING','AGENT_DONE','INSPECTING','VERIFYING','EVIDENCE_BUILT',
+   'COMMITTED','UNDER_REVIEW','CHANGES_REQUESTED','PUSHED','PR_OPEN','SUCCEEDED',
+   'FAILED','BLOCKED','BUDGET_EXHAUSTED','CANCELLED'));
+```
+
+`attempts_status_check` is PostgreSQL's default name for the unnamed column check in `0002`
+(`migrations.ts:106-108`); the guard fails closed if a Phase 2 repair renamed or replaced it, and the value list is
+re-derived from accepted Phase 2 at rebase. Lane B owns this constraint; Lane A owns `tasks.status` (R6).
+
+### 3.4 Withdrawn
+
+`0201_run_events` (v1) is withdrawn; events go to Lane A's `0107_run_events` (R4). `reviewer_promotions` (v1) is
+removed; promotion is deferred (DF-2).
+
+### 3.5 Validation evidence (Lane B scratch run, PGlite)
+
+The fast suites run the same migrations on PGlite. In a scratch directory outside the repository (deleted
+afterwards), Lane B applied the twelve Phase 2 migrations from `adapters/persistence/src/migrations.ts` and then the
+SQL blocks of §3.1–§3.3 verbatim on PGlite `0.5.4` (the version installed under `adapters/persistence`): all applied,
+so `plpgsql` trigger functions work there; the pre-existing check is named `attempts_status_check`; the §3.6 rollback
+applied cleanly and restored the Phase 2 constraint. A probe with a valid row chain then confirmed: a final review
+record and finding content cannot be updated; a lifecycle move is allowed; a raiser cannot verify its own finding
+while another reviewer can; a mismatched denormalized severity is rejected by the composite FK; a harness rule cannot
+reject a grounded finding; a reviewer cannot waive; dispositions and adjudications are append-only; a shadow round
+cannot record `REPAIR` but can record `PROCEED` with a would-be `REPAIR`; a round cannot regress from `ADJUDICATED`
+to `OPEN`; round identity is immutable. Not isolated by the probe: the `review_rounds_attempt_task_fk` path (the
+probe tripped `review_rounds_attempt_uq` first). This is design validation, not the S8 acceptance suite; S8 repeats
+every check on PGlite and on real PostgreSQL 17.
+
+### 3.6 Rollback (forward compensating migrations; applied only by operator decision, never by editing `02xx`)
+
+```sql
+-- undo 0202 (refuses while any attempt uses the review states)
+do $$
+begin
+  if exists (select 1 from attempts where status in ('UNDER_REVIEW','CHANGES_REQUESTED')) then
+    raise exception 'rollback refused: attempts use UNDER_REVIEW or CHANGES_REQUESTED';
+  end if;
+end;
+$$;
+alter table attempts drop constraint attempts_status_check;
+alter table attempts add constraint attempts_status_check check (status in
+  ('STARTED','AGENT_RUNNING','AGENT_DONE','INSPECTING','VERIFYING','EVIDENCE_BUILT',
+   'COMMITTED','PUSHED','PR_OPEN','SUCCEEDED','FAILED','BLOCKED','BUDGET_EXHAUSTED','CANCELLED'));
+
+-- undo 0201
+drop table metric_snapshots;
+
+-- undo 0200 (destroys review history: export first)
+drop table adjudications;
+drop table finding_dispositions;
+drop table review_findings;
+drop table review_records;
+drop table review_rounds;
+drop function assurance_review_finding_guard();
+drop function assurance_review_record_guard();
+drop function assurance_review_round_guard();
+drop function assurance_reject_mutation();
+alter table attempts drop constraint attempts_id_task_scope_uq;
+```
 
 ## 4. State machines
 
 ### Review round
 
 ```text
-OPEN → ADJUDICATED → SUPERSEDED (when the next round for the task opens)
+OPEN → ADJUDICATED → SUPERSEDED (when the task's next round opens)
 ```
 
-### Review record
+### Review record (projection of the fenced reviewer call)
 
 ```text
-PENDING → COMPLETED (validity VALID | INVALID) | FAILED
-PENDING → PENDING   (resume re-call; duplicate_calls += 1)
+(claimed through the Phase 2 primitive; no row yet)
+→ COMPLETED | EGRESS_STOPPED | SKIPPED_PUSH_GUARD     (final)
+→ FAILED → FAILED | COMPLETED                         (only via a newer claim; call_generation advances)
 ```
 
-### Finding lifecycle (from `docs/architecture/04-state-machines.md:40-48`, made executable)
+### Finding lifecycle (closure authority, plan §13)
 
 ```text
 OPEN → ACKNOWLEDGED → FIXED → VERIFIED → CLOSED
-OPEN → REFUTED → ADJUDICATED
-OPEN → WAIVED          (human only, rationale + expiry + signature)
+OPEN → REFUTED → ADJUDICATED       (harness-rule only for ungrounded findings; human otherwise)
+OPEN → WAIVED                      (named human, rationale, expiry, signature)
+FIXED → OPEN                       (closure-without-change; expired waiver also reopens)
 ```
 
-Rules: a model actor may only report `RESOLVED/PARTIAL/OPEN` closure statuses, which move a finding to
-`VERIFIED` or keep it `OPEN`; `REFUTED` by `harness-rule` only for ungrounded findings; a model can never waive
-or refute a grounded HIGH/CRITICAL finding; an expired waiver returns the finding to `OPEN`.
+Blocking while `OPEN`, `ACKNOWLEDGED`, `FIXED`. `FIXED` = a resolution claim (raiser or coder). `VERIFIED` only via a
+different eligible reviewer, a human, or (deterministic findings) the same rule no longer firing.
 
-### Attempt (delta, SR-C7/SR-X2)
+### Attempt (delta, SR-C7 / SR-X2)
 
 ```text
-COMMITTED → UNDER_REVIEW → PUSHED        (PROCEED / ESCALATE)
-UNDER_REVIEW → CHANGES_REQUESTED         (REPAIR; terminal for this attempt)
-UNDER_REVIEW → BLOCKED                   (BLOCK; existing interrupt state)
-COMMITTED → PUSHED                       (kept: pipelines without the slot)
+COMMITTED → UNDER_REVIEW → PUSHED        (PROCEED; ESCALATE in drill)
+UNDER_REVIEW → CHANGES_REQUESTED         (REPAIR in drill; terminal for this attempt)
+UNDER_REVIEW → BLOCKED                   (push guard)
+COMMITTED → PUSHED                       (kept: compositions with the disabled slot)
 ```
 
-Task status is unchanged: it stays `VERIFYING` across repair rounds and ends `WAITING_FOR_HUMAN_REVIEW`,
-`BLOCKED` or `FAILED` as in Phase 2.
+## 5. Metrics dictionary changes (SR-D1, SR-D2; dictionary 1.0.0 → 1.1.0)
 
-## 5. Metrics dictionary additions (SR-C5, plan §17.7)
+New operand option: `dedupeLatestBy: <RunEvent field>` — group events by that field and keep the latest by
+`(occurredAt, eventId)` before filtering and aggregating (SR-X6).
 
-| Metric | Formula | Zero-denominator policy | Privacy |
-|---|---|---|---|
-| `review_adjudication_coverage` | `sum(review.completed.reviewFindingsAdjudicated) / sum(review.completed.reviewFindingsTotal)` | `report-null-when-no-findings` | operational |
-| `repair_success_rate` | `count(review.completed where repairRound=true and repairClosedAllBlocking=true) / count(review.completed where repairRound=true)` | `report-null-when-no-repairs` | operational |
-| `reviewer_failure_rate` | `count(review.completed where reviewerFailed=true) / count(review.completed)` | `report-null-when-no-reviews` | operational |
-| `shadow_would_block_rate` | `count(review.completed where reviewMode=shadow and shadowWouldBlock=true) / count(review.completed where reviewMode=shadow)` | `report-null-when-no-shadow-reviews` | operational |
-| `review_escalation_rate` | `count(review.completed where assuranceOutcome=ESCALATE) / count(review.completed)` | `report-null-when-no-reviews` | operational |
-| `mean_review_cost_usd` | `mean(review.completed.reviewCostUsd)` | — | restricted |
+| Metric | Numerator | Denominator | Zero-denominator policy | Privacy |
+|---|---|---|---|---|
+| `review_finding_yield` (changed) | `count(review.finding_dispositioned where findingValid=true and dispositionActorKind=human)`, `dedupeLatestBy: findingId` | `sum(review.completed.reviewFindingsTotal)` | `report-null-when-no-findings` | operational |
+| `review_false_positive_rate` (changed) | same with `findingValid=false` | same | `report-null-when-no-findings` | operational |
+| `review_adjudication_coverage` | `count(review.finding_dispositioned where dispositionActorKind=human)`, `dedupeLatestBy: findingId` | `sum(review.completed.reviewFindingsTotal)` | `report-null-when-no-findings` | operational |
+| `review_ungrounded_rate` | `sum(review.completed.reviewFindingsUngrounded)` | `sum(review.completed.reviewFindingsTotal)` | `report-null-when-no-findings` | operational |
+| `reviewer_failure_rate` | `count(review.completed where reviewerFailed=true and reviewerRole!=deterministic)` | `count(review.completed where reviewerRole!=deterministic)` | `report-null-when-no-reviews` | operational |
+| `review_egress_stop_rate` | `count(review.completed where egressStopped=true and reviewerRole!=deterministic)` | `count(review.completed where reviewerRole!=deterministic)` | `report-null-when-no-reviews` | operational |
+| `shadow_would_block_rate` | `count(attempt.completed where reviewMode=shadow and shadowWouldBlock=true)` | `count(attempt.completed where reviewMode=shadow)` | `report-null-when-no-shadow-rounds` | operational |
+| `review_cost_coverage` | `count(review.completed where reviewCostPriced=true and reviewerRole!=deterministic)` | `count(review.completed where reviewerRole!=deterministic)` | `report-null-when-no-reviews` | operational |
+| `mean_review_cost_usd` | `mean(review.completed.reviewCostUsd)` | — | — | restricted |
+| `repair_success_rate` | `count(attempt.completed where repairRound=true and repairClosedAllBlocking=true)` | `count(attempt.completed where repairRound=true)` | `report-null-when-no-repairs` (always null in Phase 4 production) | operational |
+| `review_escalation_rate` | `count(attempt.completed where assuranceOutcome=ESCALATE)` | `count(attempt.completed where reviewMode=gating)` | `report-null-when-no-gating-rounds` (always null in Phase 4 production) | operational |
 
-Existing metrics consumed unchanged: `false_completion_rate`, `review_finding_yield`,
-`review_false_positive_rate`, `escaped_defect_rate` (null until post-merge defect mapping exists),
-`cost_per_accepted_task`, `workflow_recovery_rate`, `repair_cycles_per_task`, `first_attempt_pass_rate`,
-`human_intervention_rate`.
+Existing metrics consumed unchanged: `false_completion_rate`, `escaped_defect_rate` (null until post-merge defect
+mapping exists), `cost_per_accepted_task`, `workflow_recovery_rate`, `repair_cycles_per_task`,
+`human_intervention_rate`, `artifact_loss_rate`.
 
-Event emission points (Lane B steps):
+### Event emission (Lane B; ownership in plan §18.3 SR-A6)
 
 | Event | Emitted by | Key fields |
 |---|---|---|
-| `attempt.declared_complete` | `recordAttemptOutcome` | `declaredComplete`, `passedRequiredAssurance` = verification PASS ∧ outcome ∈ {PROCEED} (gating) or ∉ {BLOCK} (not-required/shadow) |
-| `attempt.completed` | `recordAttemptOutcome` | `outcome`, `failureClass`, `modelCostUsd` (coder), `reviewCostUsd` (sum for the attempt, omitted when unpriced) |
-| `review.completed` | `adjudicateRound` (round close) | totals, `reviewFindingsValid` (accepted dispositions), `reviewFindingsFalsePositive` (rejected), `reviewFindingsAdjudicated`, round/mode/outcome fields |
-| `repair.started` | `adjudicateRound` on REPAIR | `reviewRound` = next round |
-| `task.completed`, `human.intervention` | `recordTaskDisposition`, `recordFindingDisposition` (human) | `outcome`, `repairCycles` |
+| `attempt.declared_complete` | `recordAttemptOutcome` | `declaredComplete`; `passedRequiredAssurance` = verification PASS ∧ outcome ≠ BLOCK (shadow/not-required) or outcome = PROCEED (drill gating) |
+| `attempt.completed` | `recordAttemptOutcome` | `outcome`, `failureClass`, `modelCostUsd`, `computeCostUsd`, `reviewCostUsd` (round sum, omitted when any call is unpriced), `reviewRound`, `reviewMode`, `assuranceOutcome`, `shadowWouldBlock`, `repairRound`, `repairClosedAllBlocking` |
+| `review.completed` | `adjudicateRound`, one per review source (each model reviewer record + one `deterministic`) | `reviewerConfigId`, `reviewerRole`, `reviewRound`, `reviewMode`, `reviewFindingsTotal`, `reviewFindingsUngrounded`, `reviewFindingsBlocking`, `reviewerFailed`, `egressStopped`, `reviewCostUsd`/`reviewCostPriced`, tokens, `durationMs` |
+| `review.finding_dispositioned` | disposition use case (human) | `findingId`, `findingValid`, `findingDisposition`, `dispositionActorKind=human`, `findingSource`, `findingSeverity`, `reviewerConfigId` (raiser), `reviewRound` |
+| `repair.started` | `adjudicateRound` on REPAIR (drill only) | `reviewRound` = next round |
 
-Because `RunEvent`s are immutable, `review.completed` is emitted when the round closes; later human
-dispositions update the operational tables and are reflected in the next round's or the task's events, never
-by rewriting an event. Adjudication coverage makes the unadjudicated remainder visible.
+Event ids are input-derived (architecture §7), so a retried emission is a no-op through `RunEventSink`.
 
 ## 6. Policy data (`policies/review-policy.yaml`)
 
@@ -381,33 +682,58 @@ by rewriting an event. Adjudication coverage makes the unadjudicated remainder v
 apiVersion: asep.policy/v1
 kind: ReviewPolicy
 version: 1.0.0
-modelFamilies:              # longest-prefix match on the pinned model id; unknown → fail closed
+modelFamilies:                 # longest-prefix match on the pinned model id; unknown → fail closed
   - { family: anthropic-claude, prefixes: [claude-] }
   - { family: openai-gpt,       prefixes: [gpt-] }
-reviewers:                  # pinned configurations; secrets never appear here
-  - id: openai-responses-primary
+  - { family: deepseek,         prefixes: [deepseek-] }
+  - { family: alibaba-qwen,     prefixes: [qwen] }
+  - { family: xai-grok,         prefixes: [grok-] }
+reviewers:                     # pinned configurations; no secret appears here
+  - id: primary-gpt-5.6-sol
+    role: primary
     providerId: openai-responses
     model: gpt-5.6-sol
     reasoningEffort: high
     maxOutputTokens: 16000
     packetBudgetBytes: 400000
-    pricing: null           # set from the provider's published price list with source + date, or leave null
-modes:                      # per risk; gating requires a valid promotion record, else the risk is DEFERRED
+    pricing: null              # set from a published price with source + date, or leave null
+  - id: comparator-deepseek-v4-pro
+    role: comparator
+    providerId: openai-responses
+    model: deepseek-v4-pro
+    reasoningEffort: high      # kept only if the S10 probe shows the gateway accepts it for this model
+    maxOutputTokens: 16000
+    packetBudgetBytes: 400000
+    pricing: null
+runtime:
+  comparatorInShadowRounds: false
+modes:                         # the Phase 4 loader accepts only not-required | shadow | deferred
   R0: not-required
   R1: shadow
-  R2: gating
+  R2: deferred                 # admission keeps R2 DEFERRED (Phase 2), so it is never reached
   R3: deferred
   R4: deferred
+independentReviewSatisfiedBy:  # D-2 (user decision); inactive until promotion exists (DF-2, DF-5)
+  R1: [human, promoted-model]
+  R2: [human]
 maxRounds:          { R1: 2, R2: 2 }
 blockingSeverities: { R1: [CRITICAL, HIGH], R2: [CRITICAL, HIGH, MEDIUM] }
 groundingMinChars:  { evidence: 40, requiredFix: 20 }
 repairOrderLimits:  { perFieldBytes: 4096, totalBytes: 65536 }
+egress:
+  enabledProjects: []          # explicit per-project opt-in; empty → reviewer never called
+  denyPathGlobs: ['**/.env', '**/.env.*', '**/*.pem', '**/*.key', '**/*.p12', '**/*.pfx',
+                  '**/id_rsa*', '**/id_ed25519*', '**/secrets/**', '**/*credential*']
+  excerptBytesPerStream: 4096
+  excerptBytesTotal: 65536
+credential:
+  maxCredentialAgeMs: 900000
 ```
 
-All numeric values are proposals pending decision D-7. A parity test asserts the TypeScript loader and this
-file agree, and that `approval-matrix.yaml`/`verification-matrix.yaml` are unchanged.
+Values are experimental starting values (D-7). Parity test: the TypeScript loader and this file agree; the loader
+rejects `gating`; `approval-matrix.yaml` and `verification-matrix.yaml` stay byte-identical.
 
-## 7. Corpus and scorecard data (Lane B owned, `evals/`)
+## 7. Corpus, preregistration and scorecard data (Lane B owned, `evals/`)
 
 ### 7.1 Corpus item (`evals/review-corpus/self-history/items/<id>.json`)
 
@@ -415,36 +741,44 @@ file agree, and that `approval-matrix.yaml`/`verification-matrix.yaml` are uncha
 |---|---|
 | `id` | `<findingId>@<reviewedSha7>` |
 | `findingId`, `phase`, `cycle`, `reviewKind` (`final, rereview`) | |
-| `reviewedSha` | full 40-hex; `reviewedShaSource` (`recorded-in-review`, `derived`, `unknown`) |
-| `reachable` | from advertised refs at freeze time |
-| `fixCommits[]`, `postFixSha` | commits whose subject carries the id |
-| `confirmation` | `{doc, status: RESOLVED|PARTIAL|REGRESSED|null}` from the later re-review |
-| `severity`, `category`, `defectClass` (`code, test-adequacy, gate-config, claim-integrity, build`) | |
-| `locations[]` | `{file, lineStart, lineEnd}` as cited at `reviewedSha` |
-| `labelSource` | `codex-gpt-5.6-sol`, `implementer-self-found`, `controller-paraphrase` |
+| `reviewedSha`, `reviewedShaSource` (`recorded-in-review, derived, unknown`) | full 40-hex |
+| `reachability` | `reachable` (advertised refs) / `object-store-only` / `bundle-only` / `unavailable` |
+| `fixCommits[]`, `postFixSha`, `negativeEligible` | post-fix negative pair when the post-fix tree is buildable |
+| `excerpts` | `[{side: reviewed|post-fix, path, sha256}]` → `blobs/<sha256>` |
+| `provenance` | `{doc, line}` for the label; `excerptSource: git|object-store|bundle`; `excerpt-only` flag |
+| `confirmation` | `{doc, status: RESOLVED|PARTIAL|REGRESSED|null}` |
+| `severity`, `category`, `defectClass` | |
+| `locations[]` | `{file, lineStart, lineEnd}` at `reviewedSha` |
+| `labelSource` | `codex-gpt-5.6-sol`, `implementer-self-found`, `controller-ai-paraphrase` |
 | `labelQuality` | `primary`, `secondhand` |
-| `labellerMiss` | true when found later at a tree an earlier cycle reviewed, or self-found |
-| `instanceKind` | `first-occurrence`, `residual` |
-| `split` | `dev` (Phase 1), `test` (Phase 2) |
-| `provenance` | `{doc, line}` for the label text |
-| `excluded` | null or `{reason: tree-unreachable | not-in-packet | plan-defect | ...}` |
-| `humanVerified` | null or `{by, at, agrees}` |
+| `labellerMiss`, `instanceKind` (`first-occurrence, residual`) | |
+| `set` | `prompt-development` (Phase 1) / `reporting` (Phase 2); reporting labels were visible to the prompt author |
+| `excluded` | null or `{reason: tree-unavailable | not-in-packet | excerpt-unpublishable | plan-defect | …}` |
+| `humanVerified` | null (DF-8) or `{by, at, agrees}` |
 
-The manifest (`manifest.json`) lists item ids, the packet rule version, matcher parameters, split counts, the
-exclusion table and `corpusSha256`.
+`manifest.json`: item ids, packet rule versions, exclusion table, set counts, blob index, `corpusSha256`.
 
-### 7.2 Recorded run (`evals/review-benchmark/recorded/<runId>/`)
+### 7.2 Preregistration (`evals/review-benchmark/preregistration.json`, committed or hash-recorded by the controller)
 
-`run.json` (descriptor, protocol sha, corpus sha, split, k, started/finished timestamps) plus one file per
-(item, run index) holding the observation and raw response bytes (base64) with a `manifest.sha256`. Each file
-stays under the 500 KiB large-file limit (`scripts/large-file-scan.sh:16`); the recording is scanned by the
-secret and PII gates like any tracked file.
+`protocolSha256`, `matcher` (path equality, line tolerance ±10, category compatibility table version), `floors`
+(plan §7.4), `k`, `sets`, `corpusSha256`, `reviewers: [{reviewerConfigId, configSha256}]` for primary and
+comparator, `approvedBy` (controller), `approvalRef` (commit SHA or review-log entry).
 
-### 7.3 Scorecard (`evals/review-benchmark/scorecards/<runId>.json`)
+### 7.3 Recorded run (`evals/review-benchmark/recorded/<runId>/`)
 
-`scope` (`self-history`, `pilot-history`, `synthetic-injection`), hashes (corpus, protocol, descriptor,
-recordings), denominators (eligible, excluded by reason), per metric `{value, n, wilson95: [lo, hi]}` for:
-recall strict/lenient (all, first-occurrence, labeller-miss subset, per severity, per defect class), precision
-over adjudicated findings + unadjudicated count, stale-flag rate on post-fix trees, k-run stability, malformed
-/refusal/failure rates, tokens, cost (or null), latency; baselines (`null-reviewer`, `deterministic-only`);
-injection-suite deltas (separate scope). Keys sorted; no wall-clock fields inside the scored section.
+`run.json` (descriptor, preregistration sha, corpus sha, set, k, gateway host, timestamps) plus one file per
+(item, side, run index) with the observation and raw response bytes (base64) under a `manifest.sha256`. Each file
+stays under the 500 KiB large-file limit and passes the secret and PII gates; one that cannot is excluded with
+reason, never allowlisted.
+
+### 7.4 Scorecard (`evals/review-benchmark/scorecards/<runId>.json`)
+
+`scope` (`self-history`, `synthetic-injection`, `synthetic-false-green`), `eligibleForPromotion` (const `false` for
+these scopes), `circularityStatement`, `blindHoldout` (const `false` for self-history), hashes (corpus,
+preregistration, descriptor, recordings, gateway host), denominators (eligible, excluded by reason), per reviewer and
+per metric `{value, n, wilson95: [lo, hi], descriptiveOnly}` for: rediscovery recall strict/lenient (all,
+first-occurrence, labeller-miss subset, per severity, per defect class); stale-flag rate on post-fix negatives;
+precision over human-adjudicated findings plus the unadjudicated count; k-run stability; invalid-output rate;
+tokens; cost or null; latency; baselines (`null-reviewer`, `deterministic-only`); primary-vs-comparator overlap;
+`floorsMet` per floor; injection suite result (`MEETS_FLOOR | BELOW_FLOOR | INVALID_CONTROL`). Keys sorted; no
+wall-clock fields inside the scored section.

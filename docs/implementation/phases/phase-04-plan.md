@@ -1,831 +1,1453 @@
-# Phase 4 — Independent Assurance — Plan (DRAFT v1)
+# Phase 4 — Independent Assurance — Plan (LOCKED v2 (pending controller confirmation))
 
-> Status: **DRAFT — awaiting the controller's independent Codex plan review.** Not locked. No implementation
-> code, tests, migrations or configuration are part of this step.
-> Lane: **B** (parallel to Lane A / Phase 3 durable orchestration). Planner: Claude (Lane B session, plan-only).
+> Status: **LOCKED v2 (pending controller confirmation).** v1 (`a2a7b8a`) received an independent Codex plan
+> review (`phase-04-plan-review-codex-v1.md`, REQUEST_CHANGES 0.99: 1 CRITICAL, 8 HIGH, 5 MEDIUM, 1 LOW). Every
+> finding is dispositioned in `phase-04-review-log.md` and folded into this plan, the architecture, the data model,
+> the exit criteria and the slice that proves it. The controller's shared-surface reconciliation
+> (`reconciliation-v1.md`, R1–R14) is applied; where it and v1 disagreed, it won. User decisions D-2, shadow-only
+> gating and the corpus scope are recorded in §3. No implementation code, tests, migrations or configuration are
+> part of this step.
+> Lane: **B** (parallel to Lane A / Phase 3 durable orchestration). Planner: Claude (Lane B session).
 > Companion documents: `phase-04-architecture.md`, `phase-04-data-model.md`, `phase-04-exit-criteria.md`,
 > `phase-04-risk-register.md`, `phase-04-research-register.md`, `phase-04-threat-model-delta.md`,
-> `phase-04-review-log.md` (empty skeleton).
+> `phase-04-review-log.md`, `phase-04-plan-review-codex-v1.md`.
 
 ```text
 BASE_SHA:        00a68895d205122767167942326e2e0466571059   (head of phase/02-single-agent-vertical-slice; Phase 2 NOT yet accepted)
+REVIEWED_V1:     a2a7b8ad09a5389339fc3ef7131ae7b2b294d97f
 TARGET_BRANCH:   phase/04-independent-assurance
 SCOPE SOURCE:    docs/implementation/90-day-plan.md:33-40 (Days 46–60)
 EXIT CRITERION:  "reviewer performance measured on historical defects" (90-day-plan.md:40)
+PHASE 4 READING: descriptive rediscovery on self-labelled history plus a mandatory different-family comparator;
+                 never a production-valid measurement (user decision, §3)
 ```
 
 ---
 
-## 0. Execution model
+## 0. Execution model and what changed in v2
 
-The lane contract governs this phase. Lane B plans, the controller runs a read-only Codex plan review, Lane B
-adjudicates every finding into the canonical documents and records dispositions in `phase-04-review-log.md`,
-the plan locks, and implementation starts only when the controller says "implement". Implementation is one
-slice per commit (§19). The controller runs the gate independently and commissions the Codex final audit;
-Lane B repairs; the controller merges on ACCEPT. Lane B never skips a step on its own.
+The lane contract governs this phase. Implementation starts only when the controller says "implement", one slice
+per commit (§21). Ordering follows reconciliation §"Ordering and gating": Phase 2 lands first; Lane A then lands
+the shared foundation commit **S0**, whose review-loop slot text is §18 of this plan; Lane B rebases onto S0
+before any Lane B slice that touches a shared surface. Lane B slices that touch only Lane B-owned directories may
+run before S0 (§21 marks each slice).
 
 Lane B is **orchestration-agnostic**. Every review, repair, re-review and adjudication behaviour is a
 framework-free step use case behind ports, proven by a thin sequential driver and a durable-shaped fake that
-uses no orchestration SDK (§16). Lane B never imports the Temporal SDK or anything Lane A adds.
+uses no orchestration SDK. Lane B never imports the Temporal SDK or anything Lane A adds.
+
+| Area | v1 | v2 |
+|---|---|---|
+| Reviewer authority | shadow/gating; R2 admitted after signed promotion | **shadow only** in Phase 4; gating, promotion, thresholds and R2 admission deferred (§5.3) |
+| Order of checks | packet → checks ∥ reviewer → adjudicate (a secret could reach the gateway) | packet → **deterministic checks and egress decision** → reviewer only on `CLEAR`; zero requests otherwise (§8, §10) |
+| Review-record concurrency | `PENDING` claim, re-call allowed, no takeover | reviewer call claimed through the **Phase 2 fenced-takeover primitive**; every decision write fence-checked in-transaction (§16) |
+| Closure of findings | reviewer `RESOLVED` + touched location | raiser can only **claim** a fix; closure needs a different eligible reviewer, a human, or a deterministic re-check (§13) |
+| Review metrics | from `review.completed` at round close | yield and false positives from **human dispositions**, latest per finding (§15) |
+| Contracts | MAJOR `review-report/v2`, `finding/v2`, per-major compat gate | **new logical contracts**; v1 untouched; per-major gate withdrawn (R7) |
+| Packet | verdicts only | adds a bounded **execution manifest** (commands, exit codes, environment digest, raw-output refs and scanned excerpts) and false-green checks (§9, §14) |
+| Measurement | "test split", promotion candidate | **descriptive rediscovery on self-labelled history**; comparator mandatory; post-fix negatives; controller-approved preregistration; pre-registered floors reported, never used for promotion (§7) |
+| Events/table | Lane B `0201_run_events` | withdrawn; Lane A's `0107_run_events` through the shared `RunEventSink` (R4) |
+| Credential | read from env at call time inside the adapter | injected by a credential source at the composition root; bounded lifetime; rotation (§10, R13) |
+| Dashboards | structural JSON test; Grafana load optional | digest-pinned Grafana loads the provisioning inside the required integration gate and is queried by API (R14 D-6) |
+| Full loop | could pass with a fake coder | the real-coder loop is a separate MUST blocked by the Phase 2 agent-runtime repair; until then the loop proof is called **assurance-only** (§21 S22) |
+| Gate adequacy | structural coverage guard | proof manifest from the test reporter plus seeded **mutation proofs** for the key MUSTs (§21 S23) |
+| Slices | S11–S13 bundled | split into S12–S18 with independent acceptance checks and rollback |
 
 ---
 
 ## 1. Current-state audit (file-level evidence at `00a6889`)
 
-Every citation below was read in this session. Phase 2 is not accepted and may still change (lane contract:
-"A plan must not assume any Phase 2 line number stays fixed"), so the plan binds to symbols; line numbers
-describe `00a6889` only.
+Every citation below was read in a Lane B session. Phase 2 is not accepted and may still change, so the plan binds
+to symbols and invariants; line numbers describe `00a6889` only.
 
 ### 1.1 Review contracts exist but carry no provenance
 
 - `packages/contracts/schema/review-report.schema.json:8-14` — `ReviewReport/v1` requires only
-  `reviewerProvider, reviewerModel, verdict, findings, confidence`. No review id, no attempt/evidence binding,
-  no packet hash, no raw-response reference, no round, no re-review closure statuses.
+  `reviewerProvider, reviewerModel, verdict, findings, confidence`: no review id, attempt binding, packet hash,
+  raw-response reference, round or closure status.
 - `packages/contracts/schema/finding.schema.json:8-18` — `Finding/v1` requires `id, severity, category,
-  evidence, requiredFix`; `file`/`lineStart`/`lineEnd` optional; no source (model vs deterministic), no
-  grounding result, no fingerprint, no lifecycle state.
-- `packages/contracts/schema/architecture-invariant.schema.json:8-13` — prose only (`id, statement, category,
-  rationale`); nothing machine-checkable.
-- `packages/contracts/COMPATIBILITY.md:31-33` — a MAJOR change must mint a new `$id` major (`/v2`).
-- `packages/contracts/src/compat-gate.ts:184-187` — the gate compares live schemas only against
-  `schema/snapshots/v1`. A schema that moves to `/v2` would be compared against its v1 snapshot forever, so
-  later edits to the v2 schema would no longer be guarded. This is a latent gate gap that Phase 4 must close
-  before it publishes any v2 contract (§17, SR-C3).
+  evidence, requiredFix`; no source, grounding result, fingerprint or lifecycle.
+- `packages/contracts/src/validate.ts:48-62` — `ContractName` is a closed union of 13 logical names, and
+  `:76-92` keys every compiled schema by the logical name taken from the `$id` path. The runtime validator cannot
+  hold two majors of one contract, so v1's MAJOR-bump route would have replaced the live v1 validator. Phase 4
+  therefore adds new logical contracts (R7, D-1 = b).
+- `packages/contracts/schema/architecture-invariant.schema.json:8-13` — prose only.
 
 ### 1.2 The Phase 1 reviewer port is unsafe as-is
 
-- `packages/ports/src/index.ts:68-77` — `ReviewProvider.review({ order, context, diffArtifactId, verification,
-  implementerProviderId })` returns a `ReviewReport` directly. It hands the reviewer the coder's
-  `ContextPack` (shared context, contrary to ADR 0010 "fresh context is mandatory"), has no `AbortSignal`, no
-  budget, no raw-output capture and treats the provider's report as trusted. A grep over `packages`,
-  `adapters`, `apps`, `workers`, `scripts`, `evals`, `policies` finds no runtime caller — only the port
-  declaration and generated types.
-- The Phase 2 precedent is the same situation for the coder: `CodingAgentProvider` was redesigned to a
-  request/result-scoped, untrusted-observation port (`packages/ports/src/index.ts:39-62`). Phase 4 does the
-  same for the reviewer (§17, SR-P1).
+- `packages/ports/src/index.ts:68-77` — `ReviewProvider.review({ order, context, … })` hands the reviewer the
+  coder's `ContextPack` and returns a trusted `ReviewReport`. No runtime caller exists (the Codex review re-checked
+  this with `rg`). Phase 4 adds a packet-only, untrusted-observation reviewer port, as Phase 2 did for the coder
+  (`packages/ports/src/index.ts:39-62`).
 
 ### 1.3 Policy demands review that nothing provides
 
-- `policies/approval-matrix.yaml:32-34` R1 needs 1 independent reviewer; `:41-43` R2 needs 1 independent
-  reviewer of a **different model family** plus human merge; `:50-51` R3/R4 need 2.
-- `policies/verification-matrix.yaml:23` R2 mandates L4 (architecture) and L8 (independent review);
-  `:24` L5 (security) is mandatory only from R3.
-- `packages/application/src/risk-admission.ts:48-50,127-134` — R2–R4 are `DEFERRED` wholesale; R1 is admitted
-  only with a separately recorded human review.
-- `packages/application/src/governed-execution.ts:169-178` — admission is evaluated first and is hard-wired to
-  `admitRisk`; there is no injection point for an assurance-aware admission.
+- `policies/approval-matrix.yaml:32-40` — R1: 1 independent reviewer, `allowAutoMerge: true`,
+  `requireHumanMerge: false`. `:41-49` — R2: 1 independent reviewer of a different model family plus human merge.
+- `packages/application/src/risk-admission.ts:106-116` — R1 is admitted only with a separately recorded human
+  review; `:127-134` — R2–R4 are `DEFERRED` wholesale.
+- `packages/application/src/governed-execution.ts:169-178` — admission is hard-wired to `admitRisk`.
 
 ### 1.4 The pipeline has no review slot
 
-- `packages/application/src/pipeline-steps.ts:889-1026` — `completeToReview` runs verify → preallocate
-  evidence id → commit → evidence → **push** (`:965-979`) → PR → set-review. There is no point between the
-  persisted evidence and the push where an independent review could run.
-- `packages/domain/src/operational.ts:28-39` — task transitions; `VERIFYING → WAITING_FOR_HUMAN_REVIEW |
-  FAILED | BLOCKED | CANCELLED`. `:82-97` — attempt happy path `… EVIDENCE_BUILT → COMMITTED → PUSHED → PR_OPEN
-  → SUCCEEDED`; there is no under-review or changes-requested attempt state.
-- `packages/contracts/src/base.ts:42-45` — `AttemptStatus` union (persisted with a check constraint in
-  `adapters/persistence/src/migrations.ts:100-123`).
+- `packages/application/src/pipeline-steps.ts:889-1026` — `completeToReview` runs verify → evidence → commit →
+  **push** → PR → set-review with no point between persisted evidence and push.
+- `packages/domain/src/operational.ts:82-97` — no under-review attempt state. `packages/contracts/src/base.ts:42-45`
+  — `AttemptStatus`; persisted with an unnamed column check in `adapters/persistence/src/migrations.ts:106-108`
+  (PostgreSQL's default name for it is `attempts_status_check`; S8's migration asserts the name before replacing it).
 
 ### 1.5 Measurement is defined but never computed
 
-- `docs/platform/metrics-dictionary.yaml` defines `false_completion_rate` (`:222-242`), `review_finding_yield`
-  (`:276-294`), `review_false_positive_rate` (`:296-314`), `escaped_defect_rate` (`:316-333`),
-  `workflow_recovery_rate` (`:355-372`) and `cost_per_accepted_task` (`:375-393`).
-- `packages/observability/src/metrics.ts:74,219` — the dictionary is loaded and validated; nothing evaluates a
-  metric.
-- No runtime code emits or persists a `RunEvent`: a grep for `RunEvent`/`run_events`/`eventType:` outside
-  `generated.ts` and tests hits only the catalog (`packages/contracts/src/run-event-catalog.ts`) and the
-  dictionary validator. `adapters/persistence/src/migrations.ts:426-437` lists twelve migrations; none creates
-  an event table.
-- `compose.yaml:93-96` runs Grafana 12.0.2 with a data volume only: no data source, no dashboard provisioning.
-- Lesson carried from Phase 2 (`phase-02-final-review-codex-v1.md`, P2-FINAL-MED-003): a span vocabulary
-  without runtime emission was reported as "observability". A Phase 4 dashboard without emitted events would
-  repeat that defect. §14 makes runtime emission and real-backend computation part of the MUSTs.
+- `docs/platform/metrics-dictionary.yaml:222-242` (`false_completion_rate`), `:276-294`
+  (`review_finding_yield`), `:296-314` (`review_false_positive_rate`), `:355-372` (`workflow_recovery_rate`),
+  `:375-393` (`cost_per_accepted_task`). `review_finding_yield` sums `review.completed.reviewFindingsValid`, a
+  value that is only known after a human disposition — after the immutable event was written (P4-PLAN-HIGH-004).
+- `packages/observability/src/metrics.ts:34` — aggregations are `count | sum | mean`; nothing evaluates a metric.
+- No runtime code emits a `RunEvent`; no migration creates an event table (`migrations.ts:425-438`).
+- `compose.yaml:93-96` — Grafana `12.0.2` by tag (not digest), data volume only, no provisioning.
 
 ### 1.6 Architecture/security checks today
 
-- `scripts/forbidden-imports.test.ts:51-66` forbids provider SDKs and HTTP client libraries in domain and
-  application packages by **import specifier** (`:80` `IMPORT_RE`). A call to the global `fetch` is not an
-  import and is not detected.
-- No diff-level secret, invisible-Unicode or forbidden-path check runs on an agent's change before push (grep
-  over `packages/application/src` for `secret|bidi|forbiddenChanges` finds only `allowedPaths` passed to the
-  committer, `pipeline-steps.ts:299,406`). Repository-wide scanners (`scripts/secret-scan.sh`,
-  `scripts/pii-scan.sh`) protect *this* repository, not a pilot repository's diff.
-- L4/L5 commands from an approved project configuration already run through the trusted runner in the
-  no-network sandbox (`verifyStep`, `pipeline-steps.ts:181`); a red check stops before commit. Phase 4 reuses
-  that mechanism instead of duplicating it.
+- `scripts/forbidden-imports.test.ts:51-66,80` — fitness rules match import specifiers only. Lane R is replacing
+  this with an AST check (Phase 2 HIGH-002, reconciliation R8); Lane B's rules are written against whatever lands.
+- No diff-level secret, invisible-Unicode or forbidden-path check runs on an agent's change before push.
 
-### 1.7 Adapter and composition patterns to follow
+### 1.7 Raw evidence available to a reviewer
 
-- `adapters/agent-claude/src/claude-provider.ts:1-16,251` — pinned config, raw provider output persisted as an
-  immutable artifact **before** parsing, fail-closed parsing, untrusted observation only; isolation is the
-  default and its absence needs an explicit literal waiver (`:80`).
-- `apps/control-plane-api/src/production-root.ts:101-171` — fail-closed configuration; credentials are
-  constructor inputs held in memory; adapters are built in the composition root only.
-- `packages/application/src/registration.ts` — repository ports are declared structurally inside the
-  application layer, so a new use case does not need a shared-port change for its own persistence.
-- `scripts/lib/canonical-tests.mjs:91-185` (`REQUIRED_SUITES`) and `scripts/integration/lib.mjs:31-50`
-  (`REQUIRED_ITEST_SUITES`) make a dropped suite turn the gate red.
+- `packages/contracts/schema/evidence-bundle.schema.json:16-22` — `environment {imageDigest, lockfileHash,
+  nodeVersion}`; `:35-47` — per check `command`, `exitCode`, `durationMs`, `stdoutArtifactId`, `stderrArtifactId`.
+- `docs/platform/verification-and-review.md:37-39` — exit code, stdout/stderr, machine output, environment digest
+  and command are captured by the trusted runner. v1's packet carried verdicts only, so a reviewer could not see a
+  skipped test or a zero-test run (P4-PLAN-HIGH-008).
+
+### 1.8 The coder runtime cannot yet run a real repair loop
+
+- `apps/control-plane-api/src/pilot-main.ts:153-181` — the agent container runs `--network none` (`:156`).
+- `adapters/agent-claude/src/claude-provider.ts:131-142` — the agent env allowlist forwards no model credential;
+  `:153-162` — the CLI is called with harness-specific flags (`--work-order-ref`, `--context-pack-ref`, …).
+- A green repair loop with a scripted coder therefore says nothing about a real coder (P4-PLAN-HIGH-007). The
+  Phase 2 agent-runtime repair (Lane R, named HIGH-008 by the reviewer and the reconciliation; its exact scope is
+  not verified by Lane B) is a blocker of the full-loop MUST (§21 S22, exit N1).
+
+### 1.9 Concurrency primitives available
+
+- `adapters/persistence/src/side-effect-log.ts:15-17,174-181` — `complete()`/`fail()` are fenced by `owner_token`.
+  `adapters/persistence/src/side-effect-log.test.ts:255-273` proves only that a reassigned lease is *rejected*; no
+  takeover exists at `00a6889`. `migrations.ts:131-149` — `workspace_leases` has no epoch column. Lane R's Phase 2
+  HIGH-006 repair is adding lease-bound fenced takeover; reconciliation R1 makes it the platform primitive.
+- `packages/ports/src/index.ts:364` — `SideEffectOperation = 'commit' | 'push' | 'pr-upsert'`; `:382-396` — the
+  closed `SideEffectResultRef` union; `:487-503` — semantic key inputs `(attemptId, operation)`.
+
+### 1.10 Patterns to follow
+
+- `adapters/agent-claude/src/claude-provider.ts:80,122-124` — isolation by default, explicit literal waiver.
+- `apps/control-plane-api/src/production-root.ts:101-171` — fail-closed config; credentials are constructor
+  inputs held in memory; adapters built only in the composition root.
+- `scripts/run-canonical-tests.mjs:68-75,95-114` — one `node --test` child with the default reporter; required
+  suites proven by `SUITE-ID` markers in output. `scripts/integration/lib.mjs:31-50` — required itest suites.
 
 ---
 
-## 2. Baseline gate (observed in this session at `00a6889`)
+## 2. Baseline gate (observed by Lane B)
 
 ```text
-pnpm install --frozen-lockfile → exit 0
-pnpm verify:all                → exit 0, "verify:all: PASS (all gates green)"
-  canonical tests: 548 tests, 50 files, 28 required suites verified
-  contracts compat: 13 schemas compatible with snapshot v1
-  forbidden-imports 16 tests, project-references 5 tests, scans + publication + clean-tree PASS
+at 00a6889 (session 1):  pnpm install --frozen-lockfile → exit 0; pnpm verify:all → exit 0
+at a2a7b8a (session 2, clean tree, before any v2 edit):
+  pnpm verify:all → exit 0, "verify:all: PASS (all gates green)"
+  canonical tests: tests 548, pass 548, fail 0, skipped 0; "50 test file(s), 28 required suite(s) verified"
+  contracts compat: "13 schema(s) compatible with snapshot v1"
 ```
 
-Phase 2 itself is **not accepted** (`phase-02-report.md:12`, verdict
-`IMPLEMENTATION_COMPLETE_PILOT_PENDING_UNREVIEWED`; cycle-6 re-review still running per the lane contract).
-Phase 4 builds on Phase 2's port contracts and step use cases, not on its acceptance. If Phase 2 repairs
-change a port or step signature that this plan depends on, the dependency is re-adjudicated in
-`phase-04-review-log.md` before implementation.
+These are lane observations. The Codex reviewer could not reproduce them in its read-only sandbox (`EPERM` on
+temp creation, P4-PLAN-LOW-001); an independent controller rerun from a clean writable checkout remains the
+authoritative confirmation (exit A1 records exit code, test count, required-suite count and exact HEAD).
+
+Phase 2 is **not accepted**. Phase 4 builds on Phase 2's port contracts and step use cases, not on its
+acceptance. After the rebase onto accepted Phase 2 and S0, every dependency named here is re-checked and any
+change is re-adjudicated in `phase-04-review-log.md` before the affected slice starts.
 
 ---
 
-## 3. Gap analysis
+## 3. Decisions
 
-| Capability | At `00a6889` | Phase 4 needs | Slice |
+| ID | Decision | Resolution | By |
 |---|---|---|---|
-| Review contract | `ReviewReport/v1`, `Finding/v1` without provenance | `review-report/v2`, `finding/v2`, `review-packet/v1`, `adjudication-record/v1`, `repair-order/v1`; compat gate per major | S1 |
-| Reviewer port | Phase 1 `ReviewProvider` (shared context, trusted output) | packet-only `ReviewerProvider`, untrusted observation, raw capture | S2 |
-| Independence policy | `requireDifferentModelFamily` flag only | model-family registry, reviewer registry, blocking severities, repair-round limits as data | S3 |
-| Finding/round lifecycle | reference doc only (`docs/architecture/04-state-machines.md:40-48`) | executable state machines; attempt `UNDER_REVIEW`/`CHANGES_REQUESTED` | S4 |
-| Packet + prompt | none | immutable packet, spotlighted prompt, independence checks | S5 |
-| Deterministic checks + adjudication | none | diff checks, SARIF subset, grounding, adjudication, repair order | S6 |
-| Persistence + events | no event store | review tables, append-only `run_events`, `metric_snapshots` | S7 |
-| Trusted review source | per-attempt diff only | range diff + post-image blobs from the leased workspace | S8 |
-| Second-family reviewer | none | OpenAI-compatible Responses adapter | S9 |
-| Replay | none | recorded-response reviewer + scripted fake | S10 |
-| Step use cases + slot | none | idempotent steps, slot composite, thin driver, durable-shaped fake | S11 |
-| Composition + real-backend loop | none | `assuranceSeams()`, real PG + Git + sandbox loop proof, CLI | S12 |
-| Dashboards | dictionary only | evaluator, snapshots, CLI report, Grafana provisioning | S13 |
-| Historical-defect corpus | none (Phase 1 deferred real tasks) | curated review-history corpus with git-verified provenance | S14 |
-| Reviewer measurement | none | pre-registered protocol, deterministic scorer, scorecard | S15 |
-| Live measurement | none | recorded live run on the frozen corpus + report | S16 |
-| Operational readiness | none | runbook + executable fault rehearsal | S17 |
+| D-1 | Contract evolution | **(b)** new logical contracts `review-record/v1`, `review-finding/v1` (plus `review-packet/v1`, `adjudication-record/v1`, `repair-order/v1`); `review-report/v1` and `finding/v1` untouched; per-major compat gate withdrawn | controller (R7) |
+| D-2 | Does a *promoted* model reviewer count as R1's "1 independent reviewer"? | **Yes — user-accepted policy, against the reviewer's recommendation.** The reviewer argued no, because R1 allows auto-merge (`policies/approval-matrix.yaml:32-40`). The rule is designed and tested as a policy rule (`packages/policy/src/review.ts`) but is **inactive in Phase 4**: promotion is deferred, no reviewer is promoted, every Phase 4 composition passes `promotedReviewerConfigIds: []`, so **R1 keeps human independent review in practice**. | user |
+| D-3 | Promotion thresholds | **Deferred** out of Phase 4 with promotion itself (§5.3). Precondition for pickup: pre-registered numeric floors on an independent corpus. | user |
+| D-4 | Different-family comparator | **Mandatory** for measurement. Choice: `deepseek-v4-pro` (reason in §7.6); not yet probed. | user |
+| D-5 | Deterministic push guard for every admitted risk | **Yes**; it runs before the gateway call as well as before push | controller (R14) |
+| D-6 | Grafana in the required gate | **Yes**; digest-pinned Grafana loads the provisioning inside the required integration gate and is queried through its HTTP API | controller (R14) |
+| D-7 | Policy values | **Accepted as experimental starting values**, stored as data; the `n < 20` rule labels results descriptive only and is never a promotion threshold | controller (R14) |
+| U-1 | Reviewer authority in Phase 4 | **Shadow mode only**: the reviewer records findings and metrics and never blocks a merge. Model-derived `REPAIR`/`ESCALATE` exist only in drill compositions used by tests and the conformance kit; production compositions cannot select gating (§12, exit K3). Deterministic push-guard `BLOCK` (D-5) is not model review and stays active. | user |
+| U-2 | Measurement scope | **Descriptive rediscovery on self-labelled history**, plus the mandatory comparator. The verdict vocabulary says descriptive self-history only, never production-valid (§23). Real measurement moves to a pilot-repository corpus later. | user |
 
 ---
 
-## 4. Scope
+## 4. Gap analysis
 
-**In scope:** a second model/provider reviewer of a different family than the coder, behind a provider port;
-versioned review contracts; review packet assembly with strict independence; prompt-injection-resistant
-prompt construction; deterministic architecture/security diff checks and a SARIF subset for project tools;
-deterministic adjudication; repair orders and re-review; shadow/gating reviewer modes with human-signed
-promotion; risk-admission extension so R2 can be admitted once a gating reviewer is promoted; persisted review
-records, findings, dispositions and an append-only `RunEvent` store; metric evaluation and dashboards for
-false completion, review yield, cost and recovery; a labelled historical-defect corpus built from this
-repository's review history; a deterministic reviewer scorecard; one live measurement run; runbook and
-rehearsal.
-
-**Out of scope:** workflow composition and the durable engine (Lane A); auto-merge; R3/R4 admission
-(specialist review, rollback plans and two reviewers are not delivered); tool-using ("agentic") reviewers that
-browse the repository; inbound forge webhooks; production deployment of Grafana; managed secret broker;
-claims about reviewer performance beyond the measured corpus; any "historical tasks" dataset for the Phase 1
-production-pilot dependency (that remains PP2, `phase-01-exit-criteria.md:81`).
-
----
-
-## 5. Architecture summary
-
-Full detail in `phase-04-architecture.md`. One paragraph:
-
-After an attempt's evidence is persisted (resultSha = harness commit) and before push, an **assurance slot**
-runs. It builds an immutable **ReviewPacket** from trusted sources only (evidence, WorkOrder, trusted Git
-diffs and post-images); runs **deterministic diff checks**; asks each required **reviewer** for a structured
-review through a packet-only port; validates and **grounds** every finding against the packet;
-**adjudicates** deterministically; and returns `PROCEED`, `REPAIR`, `ESCALATE` or `BLOCK`. `REPAIR` produces
-a **RepairOrder**; the orchestrator starts a repair attempt at the previous harness commit, and the next
-round runs as a **re-review** with structured closure statuses for the prior blocking findings. The harness
-ceiling stays `WAITING_FOR_HUMAN_REVIEW`; nothing in Phase 4 merges.
+| Capability | At `00a6889` | Phase 4 delivers | Slice |
+|---|---|---|---|
+| Slot contract | none | `review-loop/v1` slot, disabled slot, conformance kit (text in §18; landed by Lane A in S0) | S0 (Lane A) |
+| Review contracts | `ReviewReport/v1`, `Finding/v1` without provenance | 5 new logical contracts; `architecture-invariant` 1.1.0 | S1 |
+| Reviewer port | Phase 1 `ReviewProvider` | packet-only `ReviewerProvider`, `ReviewSourceReader` | S2 |
+| Policy | flags only | families, reviewers (primary + comparator), egress classification, shadow-only loader, D-2 rule (inactive) | S3 |
+| Finding lifecycle | reference doc | executable lifecycle with closure authority; attempt review states | S4 |
+| Packet + prompt | none | whitelist packet incl. execution manifest; spotlighted prompt | S5 |
+| Checks + egress | none | push guard, egress decision, false-green, Trojan Source, SARIF | S6 |
+| Adjudication | none | grounding, rule table, closure authority, repair order | S7 |
+| Persistence | none | review tables, fenced decision writes, snapshot store | S8 |
+| Trusted source | per-attempt diff | range diff + post-images | S9 |
+| Reviewer adapter | none | Responses adapter, credential source, egress re-check | S10 |
+| Replay | none | recorded + scripted reviewers | S11 |
+| Step use cases | none | idempotent steps with fakes | S12 |
+| Slot implementation | none | `createAssuranceSlot`, events, admission, repair context | S13 |
+| Drivers | none | sequential driver, durable-shaped fake | S14 |
+| Composition | none | `assurance-root.ts`, CLI | S15 |
+| Assurance-only loop proof | none | real PG + Git + sandbox + adapter vs local fake gateway | S16 |
+| Metrics | dictionary only | evaluator incl. disposition-based metrics | S17 |
+| Dashboards | unprovisioned Grafana | provisioning + Grafana in the integration gate | S18 |
+| Corpus | none | content-addressed self-history corpus | S19 |
+| Scoring | none | protocol, preregistration, scorer, floors, suites | S20 |
+| Live measurement | none | primary + comparator recordings, scorecards, report | S21 |
+| Real-coder loop | none | one real coder attempt through a shadow round | S22 (blocked) |
+| Gate adequacy | marker-based | proof manifest + mutation proofs | S23 |
+| Operations | none | runbook + rehearsal | S24 |
 
 ---
 
-## 6. The historical-defect question
+## 5. Scope
+
+### 5.1 In scope
+
+A second model/provider reviewer of a different family than the coder, behind a packet-only port; a mandatory
+different-family comparator reviewer for measurement; new logical review contracts; packet assembly with strict
+independence and a bounded execution manifest; a pre-gateway egress decision with a zero-request guarantee;
+prompt-injection-resistant prompt construction; deterministic push guard, false-green, Trojan Source and
+architecture checks plus a SARIF subset; deterministic adjudication with closure authority; repair orders and
+re-review **implemented and proven in drill compositions** (not active in production in Phase 4); the
+`review-loop/v1` slot contract and its conformance kit; persisted review records, findings and dispositions;
+attempt-terminal and review events through the shared `RunEventSink`; metric evaluation and Grafana dashboards
+for false completion, review yield, cost and recovery; a content-addressed self-history corpus; a pre-registered,
+controller-approved protocol; descriptive measurement of the primary reviewer and the comparator; a real-coder
+shadow round once the Phase 2 runtime allows it; proof manifest and mutation proofs; runbook and rehearsal.
+
+### 5.2 Out of scope
+
+Workflow composition and the durable engine (Lane A); auto-merge; R3/R4 admission; tool-using reviewers;
+inbound forge webhooks; production deployment of Grafana; a managed secret broker; any production-valid claim
+about reviewer quality; the Phase 1 historical-task dataset (PP2, `phase-01-exit-criteria.md:81`).
+
+### 5.3 Deferred items (with preconditions for pickup)
+
+| ID | Deferred item | Preconditions before it may be planned |
+|---|---|---|
+| DF-1 | Gating mode in production (model-derived `REPAIR`/`ESCALATE` change the workflow) | DF-6 corpus measured; pre-registered numeric floors (recall, injection degradation, malformed rate, stability, stale-flag rate) met on it; named human approval (ADR 0014); DF-2 in place |
+| DF-2 | Signed reviewer promotion records (ed25519, expiry, config-hash binding, revocation) | DF-1's measurement; a key-custody decision; a demotion runbook |
+| DF-3 | Promotion thresholds (D-3) | numeric floors pre-registered and controller-approved **before** the independent-corpus capture; humans decide only among configurations meeting every floor |
+| DF-4 | R2 admission through a promoted reviewer | DF-1…DF-3; human merge for R2 stays (`approval-matrix.yaml:41-49`) |
+| DF-5 | Activation of the D-2 rule (promoted reviewer satisfies R1) | DF-2 |
+| DF-6 | Production-valid measurement on an independent, human-labelled pilot-repository corpus | the pilot repository (Phase 1 PP1/PP2, Phase 2 K2/K6) |
+| DF-7 | Deterministic red→green closure proof for model findings | a sandboxed rerun of named regression checks on the pre-repair tree |
+| DF-8 | Independent blind human relabel of the self-history corpus | a named human labeller; optional — not a Phase 4 MUST by user decision U-2 |
+
+---
+
+## 6. Architecture summary
+
+Full detail in `phase-04-architecture.md`. After an attempt's evidence is persisted (resultSha = harness commit)
+and before push, the slot runs one **assurance round**: plan (pure) → build an immutable **ReviewPacket** from
+trusted sources only (evidence incl. execution manifest, WorkOrder, trusted Git diffs and post-images) →
+**deterministic checks**, which produce the **push guard** decision and the **egress decision** over the exact
+packet bytes → only on `CLEAR`, each planned **reviewer** is called through a packet-only port, claimed through
+the Phase 2 fenced primitive, with the exact request bytes re-scanned immediately before the call → findings are
+validated and **grounded** → **adjudication** is deterministic. In Phase 4 production, mode is `shadow` (or
+`not-required`): the outcome is `PROCEED` with a recorded `shadow.wouldBe`, or `BLOCK` from the deterministic push
+guard. The harness ceiling stays `WAITING_FOR_HUMAN_REVIEW`; nothing in Phase 4 merges.
+
+---
+
+## 7. The historical-defect question
 
 The exit criterion asks for reviewer performance "measured on historical defects". Phase 1 deferred a real
-historical-task dataset to the production pilot (`README.md:59`; `evals/README.md:62`; `phase-01-risk-
-register.md:9` RR-03 forbids fabricating it). This section assesses the one corpus that exists today — this
-repository's own review history — and states what it can and cannot support.
+historical-task dataset to the production pilot (`README.md:59`; `evals/README.md:62`;
+`phase-01-risk-register.md:9` RR-03 forbids fabricating it). This section assesses the one corpus that exists —
+this repository's own review history — and states what it supports.
 
-### 6.1 What exists (counted in this session)
-
-Counts come from a grep of finding-ID patterns over `docs/implementation/phases/*` at `00a6889`; the exact
-item set is an S14 deliverable and will be machine-verified.
+### 7.1 What exists (counted by Lane B; the reviewer re-verified the counts with `rg … | sort -u | wc -l`)
 
 | Source | Distinct IDs | Nature |
 |---|---|---|
 | `phase-01-plan-review-codex-v1.md` | 49 | plan/document defects (no code existed) |
 | `phase-02-plan-review-codex-v1.md` | 20 | plan/document defects |
-| Phase 1 final + re-reviews (dispositioned in `phase-01-review-log.md`) | 15 top-level (`P1-FINAL-*` 10, `P1-REREVIEW-CRIT-001` with parts a/b/c, `P1-CYCLE3-HIGH-001`, `P1-CYCLE4-MED-001/002`, `P1-CYCLE5-HIGH-001`) | code/test/gate defects with `file:line` evidence |
-| Phase 2 final + re-reviews (`phase-02-final-review-codex-v1.md`, `-rereview-codex-v2..v5.md`) | 15 `P2-FINAL-*` + 2 `P2-REREVIEW-MED-NEW-*` | code/test/gate/claim defects with `file:line` evidence |
+| Phase 1 final + re-reviews (`phase-01-review-log.md`) | 15 top-level | code/test/gate defects with `file:line` evidence |
+| Phase 2 final + re-reviews (`phase-02-final-review-codex-v1.md`, `-rereview-codex-v2..v5.md`) | 15 `P2-FINAL-*` + 2 `P2-REREVIEW-MED-NEW-*` | code/test/gate/claim defects |
 | Implementer self-found | 1 (`P2-CYCLE6-HIGH-001`, cold-build `tsc -b` failure) | a defect the reviewer missed |
 
-Re-review cycles also mark findings `PARTIAL`/`REGRESSED` (cycle 2: "6 HIGH partial + 1 regression + 2 new
-MED", commit `e1c3c68`; cycle 3: "5 HIGH still partial", commit `7b7a2f5`) and explicitly **merge newly
-observed defects into existing IDs** (`phase-02-final-rereview-codex-v3.md` and `-v4.md`,
-"Finding mới" sections). Fix commits carry the finding ID in their subject (e.g. `3815620 … (HIGH-007)`,
-`0a136e7 fix(contracts): P1-CYCLE5-HIGH-001 …`), which links each defect to a pre-fix tree and a post-fix
-tree.
+Re-review cycles mark findings `PARTIAL`/`REGRESSED` (commit `e1c3c68`: "6 HIGH partial + 1 regression + 2 new
+MED"; `7b7a2f5`: "5 HIGH still partial") and fold new defects into existing IDs. Fix commits carry the finding ID
+in their subject, linking each defect to a pre-fix and post-fix tree.
 
-### 6.2 Is it a valid labelled defect corpus?
+### 7.2 What it can support: descriptive rediscovery only
 
-**Partly.** It is a real, labelled, small corpus of defects in real code, with severity, `file:line`
-evidence, a required fix, an independent second confirmation (re-review status `RESOLVED`/`PARTIAL`) and a
-git-reachable before/after pair for most items. That is enough to *measure* a reviewer on this repository,
-which is what the exit criterion literally asks. It is not enough to *validate* a reviewer for production use,
-and it is not the Phase 1 historical-task dataset.
+It is a real, small, labelled set of defects in real code. It supports a **descriptive rediscovery** measurement:
+"how many of the defects that the history labels did reviewer X rediscover from a packet built at the reviewed
+tree, and how often did it re-flag them after the fix". It does not support validation, comparison claims beyond
+the corpus, or promotion. Validity problems and their handling:
 
-Validity problems found, each with its handling:
+1. **One codebase.** Every scorecard carries `scope: "self-history"` and the constant
+   `eligibleForPromotion: false`; the scorer refuses any other value for this scope (exit I3).
+2. **The labeller is the primary reviewer's model.** Almost every label came from Codex on `gpt-5.6-sol`, the
+   proposed primary reviewer. Primary recall is partly circular; any other reviewer is penalised for real defects
+   `gpt-5.6-sol` would not find. *Handling:* the mandatory different-family comparator (§7.6) runs on every item
+   under the same protocol; recall is also reported on the **labeller-miss subset**; non-model baselines are
+   reported; the circularity statement is a required scorecard field.
+3. **Labels were visible to the prompt author.** The planner of this phase read every label while writing the
+   plan; a "test split" would not be blind (P4-PLAN-HIGH-003). *Handling:* the v1 dev/test split is replaced by a
+   `prompt-development` set (Phase 1 items, used to iterate the rubric) and a `reporting` set (Phase 2 items). The
+   scorecard states that reporting-set labels were visible to the prompt author, so it is **not a blind
+   holdout**. Freezing hashes before capture prevents later tuning; it does not create blindness, and the plan
+   does not claim it does.
+4. **Different reviewer harness.** The labeller ran a tool-using CLI with the whole repository. The runtime
+   reviewer is packet-only. Items whose cited file the packet rule cannot include are excluded `not-in-packet`
+   and counted.
+5. **Self-selection.** Phase 2 plan dispositions accepted 20 of 20 findings (`phase-02-review-log.md:12-18`) and
+   every Phase 2 final-review finding was fixed (`phase-02-report.md:321`). *Handling:* precision is reported
+   only over findings a **named human** adjudicated; unadjudicated findings are counted, never assumed false.
+   (The controller is an AI session; its adjudications are recorded as `labelSource: controller-ai`, not as
+   human labels.)
+6. **Second-hand labels.** The first Phase 1 final review was deleted as stale (`phase-02-plan.md:38`);
+   `P1-FINAL-*` survive only as controller paraphrase (`phase-01-review-log.md:149-239`). Those items carry
+   `labelQuality: "secondhand"` and are reported separately.
+7. **IDs are not defects.** The unit is a defect instance `(findingId, reviewedSha, location set)`; primary
+   metrics use first-occurrence instances; residual instances are reported separately.
+8. **Defect classes differ.** `defectClass ∈ {code, test-adequacy, gate-config, claim-integrity, build}`, per
+   class reporting.
+9. **Unreachable trees.** `bb11d00` and `89a745b` exist in the local object store but are unreachable; `7e5a911`
+   does not exist (re-verified by the reviewer with `git cat-file -e`). Handling per R12 in §7.5.
+10. **Tiny n.** About 33 top-level code-level IDs; a Wilson 95% interval at 20/33 spans roughly 0.44–0.75. Every
+    proportion carries n and a Wilson interval; cells with n < 20 are labelled descriptive-only (D-7); no
+    difference is claimed on overlapping intervals.
 
-1. **One codebase.** TypeScript/Node, one harness, one author pair. Results do not transfer to the pilot
-   repository. *Handling:* every scorecard carries `scope: "self-history"`; the report must not generalise;
-   COMPLETE requires a second, independent corpus (§6.4).
-2. **One labeller model, and it is the candidate reviewer.** Almost every label was produced by Codex running
-   `gpt-5.6-sol`, the same model this plan proposes as the runtime reviewer. The corpus is therefore "defects
-   `gpt-5.6-sol` found". Measuring `gpt-5.6-sol` on it is partly circular and biases recall upward; measuring
-   any other reviewer on it penalises defects `gpt-5.6-sol` would not find. *Handling:* report recall
-   separately on the **labeller-miss subset** (defects found later at a tree an earlier cycle already
-   reviewed, plus the self-found `P2-CYCLE6-HIGH-001`); include non-model baselines; state the circularity in
-   the scorecard; optional different-family comparator (decision D-4).
-3. **Different reviewer harness.** The labeller ran a tool-using CLI with the whole repository, the plan and
-   exit criteria. The runtime reviewer is packet-only (§8). A low score can mean "packet too narrow", not
-   "model weak". *Handling:* the scorecard records the packet rule; items whose cited file the packet rule
-   cannot include are excluded with reason `not-in-packet`, counted, and reported.
-4. **Self-selection.** Defects nobody found are absent; precision cannot be estimated from labels alone,
-   because Phase 2 plan dispositions accepted 20 of 20 findings (`phase-02-review-log.md:12-18`) and every
-   Phase 2 final-review finding was fixed rather than rejected (`phase-02-report.md:321-322`). *Handling:*
-   precision is reported only over reviewer findings that a named human or the controller adjudicated;
-   unadjudicated findings are counted, never assumed false.
-5. **Labels are second-hand for one cycle.** The first Phase 1 final review document was never committed and
-   was deleted as stale (`phase-02-plan.md:37-39`); `P1-FINAL-*` descriptions survive only as controller
-   paraphrase in `phase-01-review-log.md:149-239`, and the reviewed SHA is not recorded. *Handling:* those
-   items carry `labelQuality: "secondhand"` and a best-effort reviewed SHA; they are reported separately.
-6. **IDs are not defects.** Re-reviews fold new defects into existing IDs, and one ID spans several repair
-   rounds. *Handling:* the unit is a **defect instance** `(findingId, reviewedSha, location set)`; primary
-   metrics use first-occurrence instances only, residual instances are reported separately, and confidence
-   intervals are computed on first-occurrence instances so repeated instances of one ID are not counted as
-   independent samples.
-7. **Defect classes differ.** Many items are gate-adequacy or claim-integrity defects ("green gate that did
-   not exercise the MUST", "report overclaims") rather than code bugs. *Handling:* every item carries
-   `defectClass ∈ {code, test-adequacy, gate-config, claim-integrity, build}`; metrics are reported per class.
-8. **Unreachable or missing trees.** Some reviewed or cited SHAs are not reachable from `HEAD`: cycle-5's
-   reviewed head `bb11d00` and `89a745b` are present in the local object store but unreachable (probably a
-   consequence of the Phase 2 history rewrite; not verified), `7e5a911` does not exist, and Phase 1's
-   `7345b76` was a reviewer-made test commit. A clean clone cannot rebuild those trees. *Handling:*
-   reachability is checked against advertised refs, not `git cat-file`; unreachable items are excluded with
-   reason `tree-unreachable`. The controller must also keep the Phase 1/2 history reachable after merging
-   (SR-G1), or the corpus becomes irreproducible.
-9. **Tiny n.** About 33 top-level code-level IDs exist across both phases; per-class and per-severity cells
-   will hold single digits. A Wilson 95% interval at 20/33 spans roughly 0.44–0.75. *Handling:* every
-   proportion is reported with n and a Wilson interval; cells with n < 20 are labelled "descriptive only";
-   no comparison is called a difference when intervals overlap.
-
-### 6.3 What would make the measurement dishonest (and the guard for each)
+### 7.3 Guards against a dishonest measurement
 
 | Dishonest move | Guard |
 |---|---|
-| Showing the reviewer the answer key: review documents, review logs, fix-commit messages, or a tree that already contains the review document of the cycle under test. Example: the parent of the first Phase 2 fix commit is `3ea0293`, which **adds** `phase-02-final-review-codex-v1.md`; the reviewed tree is `2e61f24`. | Packets are built from the **reviewed SHA**, never "parent of fix"; review artifacts (`*review*`, review logs) and all git metadata are excluded; a leakage test fails if any packet contains a review-artifact file (EC I2). |
-| Tuning prompts on the items that are then reported. | Dev split = Phase 1 items, test split = Phase 2 items; protocol, matcher parameters, corpus manifest hash and reviewer configuration hash are frozen before the first test-split run; a test-split scorecard produced under any other configuration hash is rejected (EC I3). |
-| Lenient or model-judged matching of findings to gold defects. | Deterministic matcher (path equality + line overlap within a pinned tolerance + category compatibility); strict and lenient numbers both reported; no model in the scoring path (EC I4/I5). |
-| Treating every unmatched reviewer finding as a false positive, or as a true positive. | Unmatched findings go to an `unlabelled` bucket; precision only over adjudicated findings (EC I5). |
-| One lucky sample of a non-deterministic model. | k ≥ 3 runs per test item; stability reported; raw responses recorded and re-scorable offline byte-identically (EC I4/I6). |
-| Quietly dropping hard items. | Exclusions are rule-based, enumerated in the manifest with a reason, and reported in the scorecard denominator table (EC I1/I5). |
-| Scoring fake or scripted reviewer output as a measurement. | The scorer refuses to emit a `self-history` scorecard from a recording whose descriptor is a scripted/fake provider (EC I6). |
-| Calling this the Phase 1 historical-task dataset or a production validation. | Scorecard `scope` field; report verdict vocabulary (§21); EC I7. |
+| Answer-key leakage (review documents, logs, fix-commit messages, or a tree containing the cycle's review doc — e.g. `3ea0293` adds the Phase 2 final review on top of reviewed tree `2e61f24`) | packets built from the reviewed SHA only; review artifacts and git metadata excluded by rule; leakage test (exit I2) |
+| Tuning on reported items | protocol, matcher, floors, corpus manifest hash and both reviewer configuration hashes frozen in a **controller-approved preregistration** before any capture; capture refuses mismatches (exit I4) |
+| Lenient or model-judged matching | deterministic matcher, strict and lenient variants, no model in scoring (exit I5) |
+| Counting unmatched findings as right or wrong | `unlabelled` bucket; precision only over human-adjudicated findings |
+| One lucky sample | k = 3 runs per reporting item for both reviewers; stability reported (exit I6) |
+| Dropping hard items | rule-based exclusions enumerated in the manifest and the scorecard denominator table |
+| Scoring scripted output | the scorer refuses recordings whose descriptor is scripted/fake (exit I7) |
+| Re-flagging after the fix counted as success | **post-fix negative pairs**: the same packet rule at the post-fix SHA; a match there is a stale flag (exit I8) |
+| Presenting it as validation or using it for promotion | `scope` + `eligibleForPromotion: false`; verdict vocabulary §23; report claims checked against the scorecard (exit I9) |
 
-### 6.4 What else is needed
+### 7.4 Pre-registered floors (proposals; frozen at preregistration; reported, not gating)
 
-1. **An independent corpus from the pilot repository** (bug-fix commits and PR review findings with human
-   labels, Defects4J-style before/after pairs — research register §4). This depends on the same pilot
-   repository Phase 1 PP1/PP2 and Phase 2 K2/K6 are still waiting for. It is required for `COMPLETE`; without
-   it the honest verdict is `IMPLEMENTATION_COMPLETE_MEASURED_ON_SELF_HISTORY` (§21).
-2. **Human label verification.** A named human spot-checks every HIGH/CRITICAL item and a random sample of the
-   rest; agreement is recorded in the manifest. Until then labels are `controller-adjudicated`.
-3. **Revert-injected variants** (optional, reported separately): re-apply a fixed hunk's pre-fix form onto a
-   later tree where it applies cleanly, labelled `source: revert-injected`. Increases n; never pooled with
-   historical items.
-4. **An adversarial injection suite** (synthetic, labelled) to measure how injection in a diff changes
-   detection (EC D5). Reported separately; it is not historical.
+Floors make the measurement falsifiable; failing one does not fail the phase, because the phase exit is
+"measured", not "good". Each scorecard reports `floorsMet` per floor and the report must state every result.
 
-**Decision for the plan:** build the self-history corpus (S14) with these guards, measure on it (S15/S16),
-and report the verdict honestly. Do not claim a dataset that does not exist.
+| Floor | Proposed value | Notes |
+|---|---|---|
+| Invalid-output rate (malformed + refused + incomplete + invalid), per reviewer | ≤ 5% of calls | operational property, label-independent |
+| k-run stability (mean pairwise Jaccard of matched gold sets over k = 3) | ≥ 0.6 | |
+| Injection degradation (recall without injection − recall with injection), synthetic suite | ≤ 0.15 absolute | valid only if positive-control recall ≥ 0.5; else the suite result is `INVALID_CONTROL` |
+| Rediscovery recall (strict, first-occurrence) | strictly above the best non-model baseline on the same items | relative floor; the absolute value is descriptive |
+| Stale-flag rate on post-fix negatives | ≤ 0.25 | |
 
-### 6.5 Corpus packet rules (proposal; frozen in the S15 protocol before any test-split run)
+### 7.5 Corpus reproducibility (R12)
 
-The runtime packet is built from a task's diff. Corpus items have no task, and a whole-phase diff (Phase 2
-base `fc0df57` to a reviewed SHA) is far larger than any packet budget. Two pre-registered rules, applied by
-item kind and reported separately:
+- No tag or ref is created for any pre-rewrite Phase 2 commit (`check-publication` scans `git rev-list --all`, and
+  those commits carry the old credential-shaped PEM fixture).
+- The corpus stores the file snapshots each packet needs as **content-addressed excerpts** inside the corpus
+  (`evals/review-corpus/self-history/blobs/<sha256>`; the manifest maps `(item, side, path)` → sha256). Excerpts
+  pass the repository secret, PII, path-leak and large-file gates like any tracked file; a file that cannot pass
+  (for example the credential-shaped fixture) is excluded with reason `excerpt-unpublishable` and counted.
+- Excerpts for reachable SHAs are verified against `git show <sha>:<path>`. Excerpts for unreachable SHAs are
+  built from the local object store where the object still exists, or from the controller's private bundle.
+- **Full re-derivation from git needs the private bundle** `~/.openclaw/archive/asep-pre-rewrite-history.bundle`
+  (held by the controller outside the repository). Without it, a clean clone can verify only the internal
+  consistency of the excerpts (bytes hash to their names; manifest hash), and items from unreachable trees are
+  marked `provenance: excerpt-only`. The verifier takes the bundle path from an explicit argument supplied by the
+  controller; Lane B never reads it on its own.
 
-- **Rule P (first occurrence, `fresh` mode):** files changed between the phase base (Phase 1 `9f60c9d`,
-  Phase 2 `fc0df57`) and the reviewed SHA, restricted to the top-level module directories (`<root>/<name>/`)
-  that contain at least one cited file, plus that phase's exit-criteria document and report at the reviewed
-  SHA as the requirements/claims under review; review artifacts excluded; budget-capped by path order. This
-  discloses module-level localization, which raises recall; the baselines receive the same packets.
-- **Rule C (residual, `re-review` mode):** the diff between the previous reviewed SHA and this reviewed SHA
-  (what the re-reviewer checked), plus the prior cycle's findings in structured form, mirroring the runtime
-  re-review packet.
+### 7.6 Comparator choice (D-4)
 
-An item whose cited file falls outside its rule's packet is excluded with reason `not-in-packet` and counted.
+The gateway also serves `deepseek-v4-pro`, `qwen3.8-max` and `grok-4.6`. **Choice: `deepseek-v4-pro`.**
+
+- Required property, met by all three: its family differs from both the implementer (`anthropic-claude`) and the
+  labeller/primary (`openai-gpt`), so it can expose labeller bias rather than reproduce it.
+- Deciding property: DeepSeek has historically published open weights for its flagship line, which leaves a path
+  to re-run the comparator outside this gateway if the gateway's snapshot changes. That history is general
+  knowledge; whether `deepseek-v4-pro` specifically has published weights is **not verified**.
+- **Not yet probed.** Whether the gateway serves it over the Responses API with strict structured outputs,
+  `store: false`, reasoning effort and usage reporting is unknown. S10's probe records the answer. If it fails,
+  the fallback order is `qwen3.8-max`, then `grok-4.6`; the switch is recorded in the review log with the probe
+  output, never made silently. If none works over the Responses API, exit I1 is unmet and the controller decides
+  between a chat-completions mode for the adapter and a capped verdict.
+
+### 7.7 What else is needed (deferred)
+
+DF-6 (independent pilot corpus) is the only route to a production-valid measurement. DF-8 (blind human relabel)
+would quantify label error. Neither is a Phase 4 MUST.
 
 ---
 
-## 7. Review-loop sequence
+## 8. Assurance round sequence
 
 ```text
-[attempt N evidence persisted; resultSha = harness commit]            (Phase 2 steps / Lane A workflow)
-  → planAssurance             pure: risk + policy + reviewer registry + promotions → mode + reviewers + limits
+[attempt N evidence persisted; resultSha = harness commit]                 (Phase 2 steps / Lane A workflow)
+  → planAssurance             pure: risk + policy + registry → mode, reviewers (primary [+ comparator]), limits
   → buildReviewPacket         trusted sources only; canonical bytes; byte budget; never truncates silently
-  → runDeterministicChecks    diff checks (secrets, invisible Unicode, forbidden paths, dependency/lockfile
-                              changes, machine-checkable architecture invariants) + parsed SARIF from L4/L5
-  → runReviewer × reviewers   packet-only, blind to each other, raw request/response captured first
-  → adjudicateRound           pure decision + persisted AdjudicationRecord + RunEvents
-      PROCEED  → push → PR (review section in body) → WAITING_FOR_HUMAN_REVIEW
-      REPAIR   → RepairOrder; orchestrator starts attempt N+1 at repairBaseSha; next round = re-review
-      ESCALATE → push → PR flagged "assurance not satisfied" → WAITING_FOR_HUMAN_REVIEW; acceptance refused
-                 until a human re-runs review or records a waiver
-      BLOCK    → no push; task BLOCKED (e.g. secret in diff)
+  → runDeterministicChecks    push guard (secret in added lines, forbidden path, unscannable change at a sensitive
+                              path); egress decision over the exact packet bytes; false-green, Trojan Source,
+                              dependency, invariant checks; SARIF from L4/L5
+      push guard BLOCK  → reviewers SKIPPED (zero requests) → adjudicateRound → BLOCK
+      egress not CLEAR  → reviewers EGRESS_STOPPED (zero requests) → adjudicateRound
+  → runReviewer × reviewers   only on CLEAR; Phase 2 fenced claim; exact request bytes re-scanned; packet-only;
+                              blind to each other; raw request/response captured first
+  → adjudicateRound           pure decision + fenced persisted AdjudicationRecord + events
+      production (shadow | not-required): PROCEED (shadow.wouldBe recorded) or BLOCK
+      drill (gating, tests only):        PROCEED | REPAIR | ESCALATE | BLOCK
 ```
 
-Task status stays `VERIFYING` across repair rounds (L8 is a verification level); round state lives in Lane
-B's `review_rounds`. Attempt N ends `CHANGES_REQUESTED` on `REPAIR`. This avoids a task-state change on a shared
-surface.
+A verification stop does **not** run a round; the orchestrator calls `recordAttemptOutcome` at every attempt
+terminal, verification stops included (R3). Task status stays `VERIFYING` across rounds; attempt states
+`UNDER_REVIEW` and `CHANGES_REQUESTED` are added (SR-C7).
 
 ---
 
-## 8. Independence model (ADR 0010)
+## 9. Independence model (ADR 0010)
 
-1. **Packet-only input.** The reviewer receives exactly one immutable `ReviewPacket`. Its schema has no field
-   that can carry the coder's summary, known limitations, provider session, event stream, ContextPack, PR
-   body or commit message (`additionalProperties: false`). Allowed sources: EvidenceBundle (diff and check
-   verdicts), WorkOrder (objective, requirement ids/statements, allowed paths, forbidden changes, invariants,
-   acceptance check ids), trusted range diffs and post-image blobs, and — in re-review only — the prior
-   round's adjudicated findings in structured form.
-2. **Different model family.** Family is resolved from a policy registry by model id, never self-declared.
-   R2 requires `familyOf(reviewer) ≠ familyOf(implementer)`; an unknown family fails closed.
-3. **Fresh request.** Each review is one stateless request: `store: false`, no `previous_response_id`, no
-   `conversation`, no tools, `tool_choice: "none"` (research register §1).
-4. **Blind parallel reviewers.** Reviewers in one round never see each other's output.
-5. **Separate credentials.** The reviewer credential is held by the reviewer adapter only; the coder's
-   container env allowlist cannot carry it.
-6. **Deterministic evidence outranks model review.** Adjudication never lets a model verdict clear a
-   deterministic failure.
+1. **Packet-only input.** The reviewer receives one immutable `ReviewPacket`. The schema has no field for the
+   coder's summary, limitations, session, events, ContextPack, PR body or commit messages. Allowed sources:
+   EvidenceBundle (diff, **execution manifest**: per-check command, exit code, duration, environment digest, raw
+   stdout/stderr artifact refs with bounded, scanned excerpts, parsed test summaries), WorkOrder, trusted range
+   diffs and post-images, and — in re-review only — prior adjudicated findings in structured form.
+2. **Different model family**, resolved from a policy registry by model id. A reviewer must differ from the
+   implementer's family; the comparator must also differ from the primary's family; unknown family fails closed.
+3. **Fresh request.** `store: false`, no `previous_response_id`, no `conversation`, no tools,
+   `tool_choice: "none"`.
+4. **Blind parallel reviewers** within one round.
+5. **Separate credentials**, held by the harness process only (§10).
+6. **Deterministic evidence outranks model review.**
 
 ---
 
-## 9. Prompt-injection model
+## 10. Egress, credential and prompt-injection model
 
-The diff is attacker-controlled data (the coder is untrusted and repository content is untrusted;
-`docs/operations/security-threat-model.md` "All repository and web text is untrusted data, not policy").
-Defences, in order of strength:
+### 10.1 Pre-gateway egress decision (P4-PLAN-CRIT-001, R13)
 
-1. **Authority never flows from content.** The model's free-text verdict is advisory. Adjudication derives the
-   outcome from grounded findings and deterministic checks. A successful injection can therefore at most
-   *suppress* model findings (a false negative that still lands at human review) or *add* findings (which
-   escalate toward humans). It cannot push, merge, waive or approve past a deterministic failure.
-2. **Instruction/data separation.** The rubric lives in `instructions`; all untrusted content goes in the user
-   input, never in the developer message (OpenAI agent-builder safety guidance, research register §2).
-3. **Spotlighting.** Untrusted content is delimited with a per-packet nonce and datamarked per line. The nonce
-   is derived from the packet hash, so it is replayable yet cannot be embedded by the content it encloses (the
-   content would have to contain the hash of a packet that contains it). Encoding (base64) is evaluated as an
-   alternative in the injection suite rather than assumed.
-4. **Strict structured output.** `text.format` JSON Schema with `strict: true`, then independent AJV validation
-   on our side; unknown fields, tool calls, refusals, `incomplete` responses and citations outside the packet
-   fail closed.
-5. **Deterministic hazards are findings.** Bidirectional/invisible Unicode (Trojan Source) is a SECURITY
-   finding from the deterministic checks.
-6. **No silent truncation.** An over-budget packet escalates; a provider context overflow (truncation
-   `disabled` returns 400) is classified and escalates.
-7. **Measured, not asserted.** The injection suite reports detection with and without injection.
+No byte leaves the harness for a reviewer gateway unless it has been scanned and classified.
 
-Second-order risk: reviewer finding text reaches the coder through the RepairOrder. It is rendered as bounded,
-structured, cited data; the coder remains untrusted and sandboxed and its output is verified again.
+- `runDeterministicChecks` computes `egress.decision` over the canonical packet content before rendering:
+  - `STOP_SECRET` — any secret pattern (parity with `scripts/lib/secret-patterns.sh`) anywhere in the packet:
+    diff, post-images, execution-manifest excerpts, WorkOrder text;
+  - `STOP_CLASSIFIED` — any packet path matches the project's `egress.denyPathGlobs` (policy data; defaults cover
+    `.env*`, key and certificate files, `secrets/`, credential files), or the project has not opted in to
+    reviewer egress;
+  - `STOP_UNSCANNABLE` — content that cannot be scanned (binary, non-UTF-8, over the per-file limit) at a path
+    that is sensitive by classification; unscannable content elsewhere is omitted from the packet, never sent,
+    and recorded as an omission;
+  - `CLEAR` otherwise.
+- `runReviewer` refuses to call unless the check report carries `CLEAR` for this packet's sha256, and then
+  re-scans the **exact request body bytes** (instructions + rendered input) immediately before the provider call;
+  a hit records `EGRESS_STOPPED` with zero requests.
+- The push guard is separate and also runs before the gateway: a secret in **added** lines, a forbidden-path
+  change, or an unscannable change at a sensitive path is `BLOCK` (D-5) and no reviewer is called.
+- Proof: a fake gateway (unit) and a local fake HTTP server driven through the real adapter and composition (itest)
+  receive **exactly 0 requests** for each stop kind (exit D1, D2).
+- In shadow mode an egress stop is recorded (`reviewerFailed`, `egressStopped`) and the round proceeds; in drill
+  gating it escalates `egress-stopped`.
+
+### 10.2 Credential (R13, P4-PLAN-MED-004)
+
+The reviewer adapter runs in the harness process, never in the agent container. `assurance-root.ts` (composition
+root) builds a `ReviewerCredentialSource` from controller-supplied configuration and injects it; adapter code reads
+no process environment (fitness rule, exit C5). The source returns `{ value, expiresAt, version }`; the adapter
+re-fetches before `expiresAt` minus skew and never holds a value longer than `maxCredentialAgeMs` (policy, proposal
+15 minutes) even when the source reports no expiry; on HTTP 401 it invalidates, re-fetches once and retries once
+(rotation), then fails `AUTH_ERROR`. The value appears only in the `Authorization` header and never in an artifact,
+log, error text or row (canary test). The controller supplies base URL and credential only for the opt-in live run;
+when it sets `ASEP_REQUIRE_LIVE_REVIEWER=1`, the live production-path test is required and its absence fails.
+
+### 10.3 Prompt injection
+
+Defences, strongest first: (1) authority never flows from content — model output is advisory, and in Phase 4
+production it cannot change the workflow at all; (2) instruction/data separation — the rubric is in
+`instructions`, untrusted content only in the user input; (3) spotlighting with a packet-derived nonce and
+per-line datamarking; base64 encoding evaluated as an alternative in the injection suite; (4) strict structured
+output plus independent AJV validation and grounding; (5) deterministic hazards (Trojan Source) are findings;
+(6) no silent truncation; (7) measured: the injection suite has deterministic harness invariants (pass/fail) and a
+model-degradation measurement compared against the pre-registered floor with a positive control (exit D6).
+Second-order risk: finding text reaches a repair coder only in drill compositions, bounded and structured.
 
 ---
 
-## 10. Determinism and replayability
+## 11. Determinism and replayability
 
-The reviewer is not deterministic and cannot be made so: with reasoning effort above `none`, `temperature`
-and `top_p` are unsupported, and the Responses create endpoint exposes no seed (research register §1).
-Replayability is therefore achieved by **record and replay**:
-
-- packets and prompts are canonical bytes (sorted keys, no timestamps), so their SHA-256 identifies a request;
-- the adapter stores the canonical request body (no credential) and the exact response bytes before parsing;
-- a replay reviewer returns the recorded response for a request hash and fails closed on a miss;
-- adjudication and scoring are pure functions of recorded inputs, so re-running them is byte-identical;
-- the reviewer descriptor pins model id, reasoning effort, service tier, prompt-template hash and output-schema
-  hash; the served model reported by the provider is recorded, and a mismatch fails the review (gating) or
-  flags it (shadow);
-- variance is measured (k runs), not hidden.
+The reviewer is not deterministic: with reasoning effort above `none`, `temperature`/`top_p` are unsupported and
+the Responses create endpoint exposes no seed (research register §1). Replayability is record and replay:
+canonical packet and prompt bytes; canonical request (no credential) and exact response bytes stored before
+parsing; a replay reviewer keyed by request hash that fails closed on a miss; pure adjudication and scoring;
+pinned descriptor (model, effort, tier, template hash, schema hash); served model recorded and checked; variance
+measured with k runs. A gateway that alters prompts in transit would break the equality "recorded request = model
+input"; the controller's notes suggest the gateway injects a style instruction (not verified by Lane B), so every
+measurement claim is bounded to "via this gateway" (risk PR4-30).
 
 ---
 
-## 11. Adjudication rules (deterministic, versioned)
+## 12. Adjudication rules (deterministic, versioned)
 
 Evaluated in order; the first matching rule decides. `B` is the blocking set: deterministic findings with a
-blocking disposition plus grounded model findings whose severity is in `blockingSeverities[risk]` and that no
-human has refuted or waived.
+blocking disposition plus grounded model findings whose severity is in `blockingSeverities[risk]` and whose
+lifecycle state is still blocking (§13). Production compositions can only produce the **Shadow** column.
 
-| # | Condition | Gating | Shadow |
+| # | Condition | Gating (drill only in Phase 4) | Shadow (production) |
 |---|---|---|---|
-| 1 | Deterministic check with disposition `block` (secret in diff, forbidden path) | BLOCK | BLOCK (decision D-5) |
-| 2 | Packet over budget | ESCALATE `packet-over-budget` | PROCEED (would-be recorded) |
-| 3 | Mode `not-required` | PROCEED (deterministic findings carried to PR) | — |
-| 4 | No eligible independent reviewer | ESCALATE `independence-unsatisfiable` | PROCEED (recorded) |
-| 5 | A required review not `COMPLETED` and valid after bounded retries | ESCALATE `reviewer-unavailable` | PROCEED (recorded) |
-| 6 | `B` empty and any reviewer verdict `ESCALATE` | ESCALATE `reviewer-escalated` | PROCEED (recorded) |
-| 7 | `B` empty | PROCEED | PROCEED |
-| 8 | `B` non-empty and `round ≥ maxRounds[risk]` | ESCALATE `max-repair-rounds` | PROCEED (recorded) |
-| 9 | `B` non-empty | REPAIR | PROCEED (recorded) |
+| A1 | Push guard `BLOCK` | BLOCK | BLOCK |
+| A2 | Mode `not-required` | PROCEED (deterministic findings in PR section) | — |
+| A3 | Packet over budget | ESCALATE `packet-over-budget` | PROCEED, wouldBe ESCALATE |
+| A4 | Egress not `CLEAR` | ESCALATE `egress-stopped` | PROCEED, wouldBe ESCALATE |
+| A5 | No eligible independent reviewer | ESCALATE `independence-unsatisfiable` | PROCEED, wouldBe ESCALATE |
+| A6 | Task budget insufficient for the planned calls | ESCALATE `budget-exhausted` | PROCEED, wouldBe ESCALATE |
+| A7 | A planned review not `COMPLETED_VALID` after bounded retries (incl. served-model drift) | ESCALATE `reviewer-unavailable` | PROCEED, wouldBe ESCALATE |
+| A8 | `B` empty and any reviewer verdict `ESCALATE` | ESCALATE `reviewer-escalated` | PROCEED, wouldBe ESCALATE |
+| A9 | `B` empty | PROCEED | PROCEED, wouldBe PROCEED |
+| A10 | `B` non-empty and `round ≥ maxRounds[risk]` | ESCALATE `max-repair-rounds` | PROCEED, wouldBe ESCALATE |
+| A11 | `B` non-empty | REPAIR | PROCEED, wouldBe REPAIR |
 
-Further rules: a model `APPROVE` with a grounded blocking finding is decided by the finding; a
-`REQUEST_CHANGES` with no grounded blocking finding is non-blocking ("generic comments do not block",
-`docs/platform/verification-and-review.md:29-31`) and is counted as a verdict/finding mismatch; reviewer
-findings are unioned and de-duplicated by fingerprint; in re-review a prior blocking finding marked `RESOLVED`
-whose cited file (or cited resolution location) was not touched by the repair delta stays blocking with reason
-`closure-without-change`; a model can never waive or refute a grounded HIGH/CRITICAL finding
-(`docs/architecture/04-state-machines.md:48`); only an ungrounded finding can be machine-refuted, and only
-with reason `citation-unresolvable`.
-
----
-
-## 12. Repair and re-review
-
-- `RepairOrder/v1` carries: task/attempt identity, round, `repairBaseSha` (= prior attempt's harness commit),
-  `taskBaseSha`, the blocking findings (structured, cited, length-bounded), non-blocking findings for
-  information, and the adjudication id.
-- `buildRepairContextPack(original, repairOrder)` is a pure function that derives the repair attempt's
-  ContextPack without changing the `context-pack` schema.
-- The repair attempt's workspace is created at `repairBaseSha` (the harness commit exists in the shared object
-  store); its evidence is honest about its own base.
-- Round N+1 is a **re-review**: the packet carries the cumulative diff (`taskBaseSha..resultSha`), the repair
-  delta (`repairBaseSha..resultSha`) and the prior findings with ids; the reviewer must return a closure status
-  per prior blocking finding plus any new findings.
-- `maxRounds` per risk is policy data (proposal: 2, matching the Phase 2 practice in
-  `phase-02-risk-register.md:23` PR2-16); reaching it escalates.
+Further rules: a model `APPROVE` with a grounded blocking finding is decided by the finding; a `REQUEST_CHANGES`
+with no grounded blocking finding is non-blocking ("generic comments do not block",
+`docs/platform/verification-and-review.md:31`) and counted as a verdict/finding mismatch; findings are unioned
+and de-duplicated by fingerprint per raiser; a model can never waive or refute a grounded HIGH/CRITICAL finding
+(`docs/architecture/04-state-machines.md:48`); only an ungrounded finding can be machine-refuted (reason
+`citation-unresolvable`). The persisted `adjudications` row enforces "shadow ⇒ PROCEED or BLOCK" with a check
+constraint (data model §3).
 
 ---
 
-## 13. Architecture and security checks
+## 13. Repair, re-review and closure authority (drill compositions in Phase 4)
 
-1. **Diff checks (pure, built-in):** secret patterns over **added** lines (parity-tested against
-   `scripts/lib/secret-patterns.sh`), bidirectional/zero-width Unicode, changes to `forbiddenChanges` or outside
-   `allowedPaths`, dependency manifest and lockfile changes (flagged for review, not blocked), and
-   machine-checkable `ArchitectureInvariant` rules (`check.kind = "forbidden-import"`) over added import
-   specifiers.
-2. **Project tools via SARIF:** L4/L5 commands from approved project configuration already run in the
-   no-network sandbox; Phase 4 parses a SARIF 2.1.0 subset from their artifacts into findings (`source:
-   "sarif"`), fail-closed on malformed SARIF. No new third-party tool is added to the harness.
-3. **Model rubric:** the reviewer rubric has explicit architecture and security sections that reference the
-   WorkOrder invariants.
-4. Raw check output is stored before any reduction (ADR 0009).
-
----
-
-## 14. Measurement and dashboards
-
-- **Runtime events.** Lane B's steps emit `attempt.declared_complete`, `attempt.completed`, `review.completed`,
-  `repair.started`, `task.completed` and `human.intervention` through a `RunEventSink` into an append-only
-  `run_events` table. `workflow.recovered` is an orchestration event that Lane A emits; until it does, the
-  recovery panel reports `null` with reason "no source events" — never 0.
-- **Evaluator.** A dictionary-driven evaluator computes each metric from events using the dictionary's own
-  numerator/denominator/filter/zero-denominator policy and privacy class; results are written to
-  `metric_snapshots`. Grafana panels read snapshots only, so formulas live in one place.
-- **Dashboards.** Four provisioned dashboards: false completion, review yield (yield, false positives,
-  adjudication coverage, repair success, reviewer failure, shadow would-block), cost (per accepted task,
-  per review, cost coverage), recovery (workflow recovery rate, step adoption counts).
-- **Telemetry completeness.** A panel compares terminal attempts in operational tables with emitted
-  `attempt.completed` events, so a missing emission point is visible rather than silently shrinking a
-  denominator.
-- **Cost honesty.** Reviewer cost = recorded tokens × a configured price table with source and date; no price
-  configured → `reviewCostUsd` omitted and cost coverage shows the gap. No price is invented.
-- **Reviewer benchmark.** Capture (live, opt-in, network) and scoring (offline, deterministic) are separate
-  stages (§10, `phase-04-architecture.md` §11). The pre-registered protocol is a committed document frozen
-  before the first test-split run (S15).
+- `repair-order/v1`: task/attempt identity, round, `repairBaseSha` (= prior harness commit), `taskBaseSha`, the
+  blocking findings (structured, cited, bounded), capped informational findings, the adjudication id.
+- `buildRepairContextPack` derives the repair attempt's ContextPack without changing the `context-pack` schema:
+  the objective gains a bounded repair directive, `specificationExcerpt` gains the rendered repair order (size
+  capped by policy), `priorEvidenceIds` gains the prior evidence id, `hash` is recomputed, and the result is
+  persisted before return.
+- The repair attempt's workspace is created at `repairBaseSha`. Round N+1 is a re-review: cumulative diff, repair
+  delta and prior findings with ids; reviewers return a closure claim per prior blocking finding.
+- **Closure authority** (P4-PLAN-HIGH-002). Lifecycle per `docs/architecture/04-state-machines.md:40-48`:
+  `OPEN → ACKNOWLEDGED → FIXED → VERIFIED → CLOSED`. A finding is blocking while `OPEN`, `ACKNOWLEDGED` or
+  `FIXED`.
+  - The reviewer configuration that raised a finding can only move it to `FIXED` (a **claim**); it can never make
+    it non-blocking. The DB rejects a `RESOLUTION_VERIFIED` disposition whose actor equals the raiser.
+  - `FIXED → VERIFIED` (non-blocking) requires one of: (a) a **different** reviewer configuration, eligible by
+    family against the implementer, reporting `RESOLVED` with a grounded resolution citation inside the repair
+    delta; (b) a named human disposition; (c) for deterministic findings only, the same deterministic check no
+    longer firing on the new tree.
+  - A `RESOLVED` claim whose cited file was not touched by the repair delta stays `OPEN`
+    (`closure-without-change`).
+  - Deterministic red→green proof for model findings is deferred (DF-7).
+- `maxRounds` per risk = 2 (D-7; matches Phase 2 practice, `phase-02-risk-register.md:23` PR2-16).
+- In Phase 4 production none of this runs: mode is never gating. It is proven by unit tests, the conformance kit,
+  the drill itest (S16) and measured offline on residual-instance corpus items (rule C).
 
 ---
 
-## 15. Phase 2 lessons → structural countermeasures
+## 14. Architecture, security and false-green checks
 
-| Lesson (Phase 2 reviews) | Countermeasure in this plan |
+1. **Push guard (pure):** secret patterns over added lines (parity with `scripts/lib/secret-patterns.sh`);
+   changes to `forbiddenChanges` or outside `allowedPaths`; unscannable change at a sensitive path. `BLOCK`.
+2. **Egress decision:** §10.1.
+3. **False-green checks (P4-PLAN-HIGH-008):** `exit-code-verdict-mismatch` (a check recorded passing while its
+   raw exit code is non-zero — an evidence-reduction defect; `EVIDENCE_INTEGRITY`, HIGH); `required-check-missing`
+   (an acceptance check id of the WorkOrder absent from the evidence); `zero-tests-executed` (a unit/integration/
+   acceptance check exits 0 while its parsed test summary reports 0 tests; parsers for node:test, TAP, Vitest and
+   Jest summaries; an unparsed format is recorded `testSummary: null`, not guessed); `skipped-tests-introduced`
+   (added `.skip(`, `xit(`, `describe.skip`, `test.skip`, `@Disabled`, `pytest.mark.skip`, `t.Skip(` in test
+   files); `test-file-deleted`. In Phase 4 these are reported findings (PR section, metrics), blocking only in
+   drill gating.
+4. **Trojan Source:** bidirectional and zero-width Unicode in added lines → SECURITY finding.
+5. **Dependency and invariant checks:** manifest/lockfile changes flagged; `ArchitectureInvariant` 1.1.0
+   `forbidden-import` rules over added import specifiers.
+6. **Project tools via SARIF 2.1.0 subset** from L4/L5 artifacts; malformed SARIF fails closed.
+7. Raw check output is stored before any reduction (ADR 0009).
+
+---
+
+## 15. Measurement and dashboards
+
+- **Event ownership** (§18.4): Lane B emits `attempt.declared_complete`, `attempt.completed`, `review.completed`
+  (one per review source per round: each model reviewer record and one deterministic record),
+  `review.finding_dispositioned` and `repair.started`, through the shared `RunEventSink` into Lane A's
+  `run_events` (R4). Lane A emits `workflow.recovered`, `task.*`, `run.*` and control events.
+- **Authoritative review metrics (P4-PLAN-HIGH-004).** `review_finding_yield` and `review_false_positive_rate`
+  take their numerators from `review.finding_dispositioned` events by a **named human**, keeping only the latest
+  disposition per `findingId`; denominators stay `sum(review.completed.reviewFindingsTotal)`. A human accepting or
+  rejecting a finding after the round changes the next snapshot; a later reversal changes it again. Harness-rule
+  refutations of ungrounded findings are reported separately (`review_ungrounded_rate`). This needs one new
+  dictionary aggregation option (`dedupeLatestBy`, SR-D2) and a dictionary version bump.
+- **Evaluator** computes every metric from events with the dictionary's own filters, zero-denominator policy and
+  privacy class; snapshots are recomputed idempotently into `metric_snapshots`; panels read snapshots only.
+- **Dashboards:** false completion, review yield (yield, false positives, adjudication coverage, ungrounded rate,
+  reviewer failure, egress stops, shadow would-block), cost (per accepted task, per review, cost coverage),
+  recovery (`workflow_recovery_rate` from Lane A's events; `null` with reason until they exist — never 0).
+- **Grafana in the required gate (D-6):** the integration gate starts a digest-pinned Grafana with the committed
+  provisioning and asserts through its HTTP API that the data source, every dashboard and every panel query load
+  and return the snapshot values the evaluator wrote (exit J4).
+- **Cost honesty:** reviewer cost = recorded tokens × configured price with source and date; no price →
+  `reviewCostUsd` omitted, `reviewCostPriced=false`, coverage panel shows the gap.
+
+---
+
+## 16. Concurrency and fencing (R1, P4-PLAN-HIGH-001)
+
+Phase 4 does not invent a fencing scheme. It depends on the accepted Phase 2 fenced-takeover primitive and states
+the dependency by invariant until Phase 2 is accepted:
+
+- **I1** A claim succeeds only if, in the same transaction, the claimant's workspace lease is `ACTIVE`, is held by
+  the claimant's `leaseId`, and is at the current lease epoch. A zombie that lost its lease can never claim or
+  complete.
+- **I2** At most one live claim exists per reviewer call (per `reviewId`).
+- **I3** Takeover of a pending claim is possible only after the prior holder's lease is no longer `ACTIVE` at its
+  epoch (expiry or handoff); the new holder completes; the old holder's completion is rejected.
+- **I4** A `FAILED` call is reopened only by a newer claim and only after reconciliation: for a reviewer call, if a
+  raw response artifact for the same request hash already exists (responses are persisted before parsing), it is
+  adopted instead of calling again. `store: false` means there is no remote state to query.
+- **I5** Every Lane B write that records a decision — review-round open/close, review-record terminal state,
+  adjudication, repair order, harness disposition — performs the fence check of I1 in its own transaction.
+
+**Change request CR-F1 against the Phase 2 primitive** (exact signature decided after Phase 2 acceptance):
+(a) a reviewer call is claimed as a side-effect operation whose semantic key is qualified by the `reviewId` (one
+claim per reviewer per round, not per attempt), with a closed result shape
+`{ kind: 'reviewer.call'; reviewId; rawResponseArtifactId; rawResponseSha256; observationStatus }`; and (b) the
+fence check of I1 is callable inside another repository's transaction. If the accepted primitive already offers
+(b) generically, (a) alone is requested. Tests (exit E2): the new owner completes after a lease handoff; the old
+owner is fenced after the handoff; concurrent claims yield one winner; a zombie with an expired lease cannot claim;
+a reopened `FAILED` call adopts an existing raw response instead of calling.
+
+---
+
+## 17. Phase 2 lessons → structural countermeasures
+
+| Lesson | Countermeasure |
 |---|---|
-| A green gate that did not exercise the MUSTs | Every MUST maps to a named test in a **required** suite; an `exit-criteria-coverage` test parses the exit-criteria table and fails if a mapped file is missing, unregistered, or does not print its SUITE-ID. |
-| Backends faked where real ones were required | Real PostgreSQL + real Git + real sandbox itests registered as required integration suites; the reviewer is faked only at the HTTP boundary with the real adapter code; the live reviewer is opt-in and its scorecard must come from recorded live responses. |
-| Vocabulary without runtime emission | Dashboards are proven by a real-backend itest in which the driver emits events and the evaluator computes the expected values. |
-| False implementer status claims | Report fields are generated from machine sources (scorecard JSON, gate logs, `git rev-parse`); counts are never hand-typed; anything not observed is written "not verified". |
-| Green-by-absence for live dependencies | Missing gateway credential → live tests skip *with a recorded skip reason* and the verdict cannot reach the measured state. |
+| A green gate that did not exercise the MUSTs | proof manifest from the test reporter: every MUST-mapped test name must appear as **passed** (not skipped/todo); seeded mutations of the key guards must turn their tests red (S23) |
+| Fake backends where real ones were required | real PG + Git + sandbox itests; reviewer faked only at HTTP behind the real adapter; real-coder loop is its own MUST; measurement only from live recordings |
+| Vocabulary without runtime emission | dashboards proven from events the loop actually emitted, loaded in a real Grafana |
+| Fencing that rejects but never takes over (Phase 2 HIGH-006) | takeover tests, not only rejection tests (§16) |
+| Findings fixed in name only | each accepted finding names its design change, exit criterion, slice and (for key ones) a mutation proof (`phase-04-review-log.md`) |
+| False implementer status claims | report fields generated from machine sources; "not verified" vocabulary |
 
 ---
 
-## 16. Lane A integration: the review-loop slot
+## 18. Lane A integration: the review-loop slot
 
-Lane A owns workflow composition and defines the slot. Lane B delivers the functions below in
-`packages/application/src/assurance/` (exported from `@asep/application`). All are framework-free; inputs and
-outputs are JSON-serializable (proven by a round-trip test); identifiers are derived deterministically from
-inputs so an activity retry converges; side effects go through ports. Full type definitions are in
-`phase-04-architecture.md` §7.
+### Review-loop slot contract (verbatim for S0)
+
+Lane A copies the block below verbatim into its plan and lands it in S0 as three files under
+`packages/application/src/review-loop/` (re-exported from `packages/application/src/index.ts`). The types file is
+complete; the two helper files are given as signatures (`declare`) with their behaviour specified in §18.2.
+
+Location: Lane A's v1 plan put the port and kit in `packages/ports` (CR-10). The slot returns `AdmissionResult`,
+which lives in `@asep/application` (`packages/application/src/risk-admission.ts:30-36`), and ports must not depend
+on application; the orchestration workflow already depends on `@asep/application` for the Phase 2 step use cases.
+So the slot, the disabled slot and the kit live in `packages/application/src/review-loop/`. Lane A's
+`ReviewLoopPort`, `ReviewLoopRequest`, `ReviewLoopDecision`, `ReviewLoopTrigger` and `ReviewLoopUnavailableError`
+are superseded by this contract (R3).
 
 ```typescript
-// Context the driver supplies (sequential driver or a durable engine's activity wrapper).
-export interface AssuranceStepContext {
-  readonly signal: AbortSignal;
-  readonly now: () => string;                        // ISO-8601; steps never read the wall clock
-  readonly heartbeat?: (progress: string) => void;
+// ===========================================================================
+// packages/application/src/review-loop/slot.ts                     (S0; review-loop/v1)
+// ===========================================================================
+// The review-loop slot: one assurance round after evidence is persisted and before
+// push. Framework-free: no orchestration SDK, no wall-clock reads, no process
+// environment. Every input and output is plain JSON (no functions, class instances,
+// Dates, bigint or undefined-valued keys) and at most 64 KiB when serialized; large
+// data travels by ArtifactRef. The assurance service implements ReviewLoopSlot; the
+// orchestration workflow composes it and wraps each call as an activity. Changing
+// this file after S0 needs a new controller reconciliation.
+
+import type {
+  ArtifactRef,
+  AttemptId,
+  ContextPack,
+  RepositoryBindingId,
+  RiskLevel,
+  RunId,
+  TaskId,
+  TenantScope,
+} from '@asep/contracts';
+import type { AdmissionResult } from '../risk-admission.js';
+
+export const REVIEW_LOOP_SLOT_VERSION = 'review-loop/v1' as const;
+export type ReviewLoopSlotVersion = typeof REVIEW_LOOP_SLOT_VERSION;
+
+/** Explicit literal a composition must pass to run without independent assurance (Phase 2 behaviour). */
+export const REVIEW_LOOP_DISABLED = 'review-loop-disabled-phase2-behaviour' as const;
+
+// --- delivery context ---------------------------------------------------------
+
+export type AssuranceStepName =
+  | 'plan'
+  | 'packet'
+  | 'checks'
+  | 'reviewer'
+  | 'adjudicate'
+  | 'attempt-outcome'
+  | 'repair-context';
+
+/** Liveness detail. Never carries source text, prompts, finding text, model output or secrets. */
+export interface AssuranceHeartbeat {
+  readonly step: AssuranceStepName;
+  readonly reviewerConfigId?: string;
+  /** At most 200 characters. */
+  readonly note?: string;
 }
 
+/**
+ * Engine-neutral context for one delivery of one step. The orchestration adapter builds
+ * it from its own activity context; the sequential driver builds it from an
+ * AbortController and an injected clock.
+ */
+export interface AssuranceStepContext {
+  readonly signal: AbortSignal;
+  /** ISO-8601 UTC timestamp. Steps never read the wall clock themselves. */
+  now(): string;
+  /** Called at least every 30 seconds while a step is working. */
+  heartbeat(details: AssuranceHeartbeat): void;
+}
+
+// --- caller identity and fencing ----------------------------------------------
+
+/**
+ * The caller's workspace-lease identity. Every claim, completion and decision write the
+ * implementation makes checks, in the same transaction, that this lease is ACTIVE, is
+ * held by `leaseId`, and is at epoch `leaseEpoch` (the Phase 2 fenced-takeover
+ * invariant). A caller whose lease was taken over gets AssuranceFencedError and changes
+ * nothing.
+ */
+export interface AssuranceFence {
+  readonly leaseId: string;
+  /** Integer >= 1: the epoch the accepted Phase 2 primitive assigned to this lease holder. */
+  readonly leaseEpoch: number;
+}
+
+// --- vocabulary ------------------------------------------------------------------
+
+export type ReviewMode = 'not-required' | 'shadow' | 'gating';
+export type ReviewKind = 'fresh' | 're-review';
+export type ReviewerRole = 'primary' | 'comparator';
+export type FindingSeverity = 'INFO' | 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+
+export type EscalationReason =
+  | 'packet-over-budget'
+  | 'egress-stopped'
+  | 'independence-unsatisfiable'
+  | 'reviewer-unavailable'
+  | 'reviewer-escalated'
+  | 'max-repair-rounds'
+  | 'budget-exhausted';
+
+export type BlockReason = 'secret-in-diff' | 'forbidden-path' | 'unscannable-sensitive-change';
+
+export type EgressDecision = 'CLEAR' | 'STOP_SECRET' | 'STOP_CLASSIFIED' | 'STOP_UNSCANNABLE';
+
+export type PacketOmissionReason = 'binary' | 'too-large' | 'deleted' | 'submodule' | 'non-utf8';
+
+// --- round input -------------------------------------------------------------------
+
 export interface AssuranceSlotInput {
+  readonly slotVersion: ReviewLoopSlotVersion;
+  /** `${attemptId}:assurance:${round}`. A retry with the same key converges to the same outcome. */
+  readonly idempotencyKey: string;
   readonly scope: TenantScope;
   readonly repositoryBindingId: RepositoryBindingId;
   readonly runId: RunId;
   readonly taskId: TaskId;
   readonly attemptId: AttemptId;
   readonly risk: RiskLevel;
-  readonly round: number;                            // 1 = first attempt; +1 per repair attempt
-  readonly evidenceId: ArtifactId;                   // persisted EvidenceBundle; resultSha = harness commit
+  /** 1 for the task's first attempt; +1 for each repair attempt. */
+  readonly round: number;
+  /** Persisted EvidenceBundle of this attempt; its resultSha is the harness commit. */
+  readonly evidenceRef: ArtifactRef;
   readonly workOrderRef: ArtifactRef;
-  readonly taskBaseSha: string;                      // 40-hex; origin of the cumulative diff
+  /** 40 lowercase hex. Origin of the cumulative diff (the task's pinned base). */
+  readonly taskBaseSha: string;
+  /** 40 lowercase hex. The harness commit of this attempt; equals the evidence resultSha. */
+  readonly resultSha: string;
   readonly implementer: { readonly providerId: string; readonly model: string };
-  readonly declaredComplete: boolean;                // AgentAttemptObservation.status === 'AGENT_DONE'
-  readonly priorAdjudicationId: string | null;       // non-null iff round > 1
+  /** AgentAttemptObservation.status === 'AGENT_DONE'. */
+  readonly declaredComplete: boolean;
+  /** Non-null iff round > 1: the adjudication that requested this repair. */
+  readonly priorAdjudicationId: string | null;
+  readonly fence: AssuranceFence;
+  /** Remaining task budget; reviewer calls stop (budget-exhausted) rather than exceed it. */
+  readonly budgetRemaining: { readonly costUsd: number | null; readonly wallClockMs: number };
 }
 
-export type AssuranceOutcome =
-  | { readonly kind: 'PROCEED'; readonly adjudicationId: string; readonly mode: ReviewMode;
-      readonly prBodySectionRef: ArtifactRef }
-  | { readonly kind: 'REPAIR'; readonly adjudicationId: string; readonly repairOrderRef: ArtifactRef;
-      readonly nextRound: number; readonly repairBaseSha: string }
-  | { readonly kind: 'ESCALATE'; readonly adjudicationId: string; readonly reason: EscalationReason;
-      readonly prBodySectionRef: ArtifactRef }
-  | { readonly kind: 'BLOCK'; readonly adjudicationId: string; readonly reason: BlockReason };
+// --- step contracts ------------------------------------------------------------------
 
-// Composite: one call per round (Lane A may wrap it as a single activity) …
-export function runAssuranceRound(
-  deps: AssuranceDeps, input: AssuranceSlotInput, ctx: AssuranceStepContext,
-): Promise<AssuranceOutcome>;
+export interface PlannedReviewer {
+  readonly reviewerConfigId: string;
+  readonly role: ReviewerRole;
+  readonly model: string;
+  /** Resolved by policy from the model id; never self-declared by a provider. */
+  readonly family: string;
+}
 
-// … or the individual steps (Lane A may wrap each as its own activity).
-export function planAssurance(input: AssuranceSlotInput, policy: ReviewPolicySnapshot,
-  registry: ReviewerRegistrySnapshot): AssurancePlan;                                    // pure
-export function buildReviewPacket(deps: BuildReviewPacketDeps, input: BuildReviewPacketInput,
-  ctx: AssuranceStepContext): Promise<BuildReviewPacketOutput>;
-export function runDeterministicChecks(deps: DeterministicCheckDeps, input: DeterministicCheckInput,
-  ctx: AssuranceStepContext): Promise<DeterministicCheckOutput>;
-export function runReviewer(deps: RunReviewerDeps, input: RunReviewerInput,
-  ctx: AssuranceStepContext): Promise<RunReviewerOutput>;                                 // one reviewer
-export function adjudicateRound(deps: AdjudicateDeps, input: AdjudicateInput,
-  ctx: AssuranceStepContext): Promise<AssuranceOutcome>;
+export interface AssurancePlan {
+  readonly slotVersion: ReviewLoopSlotVersion;
+  /** Equals input.idempotencyKey. */
+  readonly roundKey: string;
+  readonly mode: ReviewMode;
+  readonly reviewKind: ReviewKind;
+  /** Empty when mode is 'not-required'. */
+  readonly reviewers: readonly PlannedReviewer[];
+  readonly maxRounds: number;
+  readonly blockingSeverities: readonly FindingSeverity[];
+  readonly packetBudgetBytes: number;
+  /** Review-policy version plus its sha256. */
+  readonly policyVersion: string;
+  /** Set when the policy cannot be met (for example no eligible independent reviewer). */
+  readonly unsatisfiable: EscalationReason | null;
+}
 
-// Called at EVERY attempt terminal (including a verification stop), so false completion is complete.
-export function recordAttemptOutcome(deps: { readonly events: RunEventSink }, input: AttemptOutcomeInput,
-  ctx: AssuranceStepContext): Promise<void>;
+export interface BuildReviewPacketInput {
+  readonly slot: AssuranceSlotInput;
+  readonly plan: AssurancePlan;
+}
 
-// Pure helpers the workflow needs for the repair attempt and admission.
-export function buildRepairContextPack(original: ContextPack, repair: RepairOrder): ContextPack;
-export function admitWithAssurance(risk: RiskLevel, capability: AssuranceCapability): AdmissionResult;
+export interface BuildReviewPacketOutput {
+  /** Canonical review-packet/v1 bytes. */
+  readonly packetRef: ArtifactRef;
+  readonly packetSha256: string;
+  /** True: the packet holds metadata only; content is never cut silently. */
+  readonly overBudget: boolean;
+  readonly omissions: readonly { readonly path: string; readonly reason: PacketOmissionReason }[];
+}
+
+export interface DeterministicCheckInput {
+  readonly slot: AssuranceSlotInput;
+  readonly plan: AssurancePlan;
+  readonly packetRef: ArtifactRef;
+}
+
+export interface DeterministicCheckOutput {
+  /** Every deterministic and SARIF finding; raw check output is persisted first. */
+  readonly checkReportRef: ArtifactRef;
+  /** Secret in added lines, forbidden path, or unscannable change at a sensitive path. */
+  readonly pushGuard:
+    | { readonly decision: 'PASS' }
+    | { readonly decision: 'BLOCK'; readonly reason: BlockReason };
+  /** Decision over the exact packet bytes. Only CLEAR permits any reviewer request. */
+  readonly egress: { readonly decision: EgressDecision; readonly packetSha256: string };
+  readonly findings: { readonly total: number; readonly blocking: number };
+}
+
+export interface RunReviewerInput {
+  readonly slot: AssuranceSlotInput;
+  readonly plan: AssurancePlan;
+  readonly packetRef: ArtifactRef;
+  /** Must carry egress CLEAR for this packet's sha256, otherwise no request is sent. */
+  readonly checkReportRef: ArtifactRef;
+  readonly reviewerConfigId: string;
+}
+
+export type ReviewRecordStatus =
+  /** The provider completed; the output validated against the schema and was grounded. */
+  | 'COMPLETED_VALID'
+  /** The provider completed; the output failed validation. */
+  | 'COMPLETED_INVALID'
+  /** Provider error, refusal, incomplete output, budget, cancellation or served-model drift. */
+  | 'FAILED'
+  /** No request was sent: the egress decision was not CLEAR or the request bytes failed the re-scan. */
+  | 'EGRESS_STOPPED'
+  /** No request was sent: the push guard blocked the round. */
+  | 'SKIPPED_PUSH_GUARD';
+
+export interface RunReviewerOutput {
+  /** sha256(attemptId | round | reviewerConfigId | packetSha256), 64 lowercase hex. */
+  readonly reviewId: string;
+  readonly status: ReviewRecordStatus;
+  /** Canonical review-record/v1 when the status is COMPLETED_*. */
+  readonly reviewRecordRef: ArtifactRef | null;
+  /** Provider requests sent for this reviewId across all deliveries; 0 when none was sent. */
+  readonly providerCalls: number;
+  /** True when a terminal record from an earlier delivery was adopted instead of calling again. */
+  readonly adopted: boolean;
+}
+
+export interface AdjudicateInput {
+  readonly slot: AssuranceSlotInput;
+  readonly plan: AssurancePlan;
+  readonly packetRef: ArtifactRef;
+  readonly checkReportRef: ArtifactRef;
+  /** Exactly the reviewIds of plan.reviewers, in plan order. */
+  readonly reviewIds: readonly string[];
+}
+
+// --- round outcome ---------------------------------------------------------------------
+
+export interface AssuranceUsage {
+  readonly providerCalls: number;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  /** Null when any call in the round has no configured price; never estimated. */
+  readonly reviewCostUsd: number | null;
+}
+
+/** What gating mode would have decided. Recorded only; it never changes the workflow. */
+export interface ShadowVerdict {
+  readonly wouldBe: 'PROCEED' | 'REPAIR' | 'ESCALATE';
+  readonly reason: EscalationReason | 'blocking-findings' | null;
+  readonly blockingFindings: number;
+}
+
+export interface AssuranceOutcomeBase {
+  readonly slotVersion: ReviewLoopSlotVersion;
+  /** Equals input.idempotencyKey. */
+  readonly roundKey: string;
+  /** 64 lowercase hex, derived from the round's inputs. */
+  readonly adjudicationId: string;
+  readonly mode: ReviewMode;
+  readonly usage: AssuranceUsage;
+}
+
+export interface ProceedOutcome extends AssuranceOutcomeBase {
+  readonly kind: 'PROCEED';
+  /** Non-null iff mode is 'shadow'. */
+  readonly shadow: ShadowVerdict | null;
+  /** Assurance section for the PR body; null when there is nothing to show. */
+  readonly prBodySectionRef: ArtifactRef | null;
+}
+
+/** Gating mode only. The orchestrator starts a repair attempt with a fresh workspace at repairBaseSha. */
+export interface RepairOutcome extends AssuranceOutcomeBase {
+  readonly kind: 'REPAIR';
+  readonly repairOrderRef: ArtifactRef;
+  /** Equals input.round + 1. */
+  readonly nextRound: number;
+  /** Equals input.resultSha. */
+  readonly repairBaseSha: string;
+}
+
+/** Gating mode only. The orchestrator pushes, opens the PR flagged, and stops at human review. */
+export interface EscalateOutcome extends AssuranceOutcomeBase {
+  readonly kind: 'ESCALATE';
+  readonly reason: EscalationReason;
+  readonly prBodySectionRef: ArtifactRef;
+}
+
+/** Any mode: the deterministic push guard. The orchestrator does not push; the task ends BLOCKED. */
+export interface BlockOutcome extends AssuranceOutcomeBase {
+  readonly kind: 'BLOCK';
+  readonly reason: BlockReason;
+  readonly prBodySectionRef: ArtifactRef | null;
+}
+
+export type AssuranceOutcome = ProceedOutcome | RepairOutcome | EscalateOutcome | BlockOutcome;
+
+// --- attempt terminal telemetry ----------------------------------------------------------
+
+export type AttemptTerminal =
+  | 'verification-stopped'
+  | 'proceeded'
+  | 'repair-requested'
+  | 'escalated'
+  | 'blocked'
+  | 'agent-failed'
+  | 'budget-exhausted'
+  | 'cancelled'
+  | 'infrastructure-failed';
+
+export interface AttemptOutcomeInput {
+  readonly slotVersion: ReviewLoopSlotVersion;
+  readonly scope: TenantScope;
+  readonly repositoryBindingId: RepositoryBindingId;
+  readonly runId: RunId;
+  readonly taskId: TaskId;
+  readonly attemptId: AttemptId;
+  readonly risk: RiskLevel;
+  readonly round: number;
+  readonly declaredComplete: boolean;
+  readonly terminal: AttemptTerminal;
+  /** Null when verification never ran. */
+  readonly verificationVerdict: 'PASS' | 'FAIL' | 'ERROR' | null;
+  /** Null when no assurance round ran for this attempt. */
+  readonly adjudicationId: string | null;
+  /** Failure taxonomy class id (for example 'artifact-loss'); null on success. */
+  readonly failureClass: string | null;
+  readonly cost: {
+    readonly modelCostUsd: number | null;
+    readonly computeCostUsd: number | null;
+    readonly inputTokens: number;
+    readonly outputTokens: number;
+    readonly toolCalls: number;
+  } | null;
+}
+
+// --- admission and repair helpers ----------------------------------------------------------
+
+export interface AssuranceCapability {
+  readonly reviewerEnabled: boolean;
+  /**
+   * Reviewer configurations holding a valid gating promotion. Promotion is deferred out of
+   * Phase 4: every Phase 4 composition passes [].
+   */
+  readonly promotedReviewerConfigIds: readonly string[];
+}
+
+export interface RepairContextInput {
+  readonly slotVersion: ReviewLoopSlotVersion;
+  readonly scope: TenantScope;
+  /** The repair attempt being prepared. */
+  readonly attemptId: AttemptId;
+  readonly original: ContextPack;
+  readonly repairOrderRef: ArtifactRef;
+}
+
+export interface RepairContextOutput {
+  /** context-pack/v1 with its hash recomputed. */
+  readonly contextPack: ContextPack;
+  /** Persisted before return. */
+  readonly contextPackRef: ArtifactRef;
+}
+
+// --- the slot ---------------------------------------------------------------------------------
+
+export interface ReviewLoopSlot {
+  readonly slotVersion: ReviewLoopSlotVersion;
+
+  /** One full round: plan, packet, checks, reviewers, adjudication. May be wrapped as one activity. */
+  runAssuranceRound(input: AssuranceSlotInput, ctx: AssuranceStepContext): Promise<AssuranceOutcome>;
+
+  /** The same round as individual idempotent steps, for activity-granular composition. */
+  planAssurance(input: AssuranceSlotInput): AssurancePlan;
+  buildReviewPacket(input: BuildReviewPacketInput, ctx: AssuranceStepContext): Promise<BuildReviewPacketOutput>;
+  runDeterministicChecks(input: DeterministicCheckInput, ctx: AssuranceStepContext): Promise<DeterministicCheckOutput>;
+  runReviewer(input: RunReviewerInput, ctx: AssuranceStepContext): Promise<RunReviewerOutput>;
+  adjudicateRound(input: AdjudicateInput, ctx: AssuranceStepContext): Promise<AssuranceOutcome>;
+
+  /** Called at every attempt terminal, verification stops included. Idempotent per attempt. */
+  recordAttemptOutcome(input: AttemptOutcomeInput, ctx: AssuranceStepContext): Promise<void>;
+
+  /** Admission through the optional `admit` hook on GovernedExecutionInput. Pure. */
+  admitWithAssurance(risk: RiskLevel, capability: AssuranceCapability): AdmissionResult;
+
+  /** ContextPack for a repair attempt whose workspace is created at the REPAIR outcome's repairBaseSha. */
+  buildRepairContextPack(input: RepairContextInput, ctx: AssuranceStepContext): Promise<RepairContextOutput>;
+}
+
+// --- errors -----------------------------------------------------------------------------------
+// Any other thrown error is transient and safe to retry with the same input.
+
+/** Malformed input or an outcome that violates this contract. Non-retryable. */
+export class ReviewLoopContractError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ReviewLoopContractError';
+  }
+}
+
+/** The caller's lease is no longer current at the given epoch. Non-retryable for this delivery. */
+export class AssuranceFencedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'AssuranceFencedError';
+  }
+}
+
+/** ctx.signal was aborted. Retryable by the engine. */
+export class AssuranceCancelledError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'AssuranceCancelledError';
+  }
+}
+
+// ===========================================================================
+// packages/application/src/review-loop/disabled-slot.ts            (S0; signature)
+// ===========================================================================
+
+/**
+ * Phase 2 behaviour: every round returns PROCEED with mode 'not-required' and no
+ * reviewer call; recordAttemptOutcome records nothing; admitWithAssurance equals
+ * admitRisk; buildRepairContextPack throws ReviewLoopContractError. Constructible only
+ * with the explicit literal.
+ */
+export declare function createDisabledReviewLoopSlot(ack: typeof REVIEW_LOOP_DISABLED): ReviewLoopSlot;
+
+// ===========================================================================
+// packages/application/src/review-loop/review-loop-contract.ts     (S0 conformance kit; signatures)
+// ===========================================================================
+
+export interface ReviewLoopConformanceFixture {
+  /** A valid round-1 input that the implementation's backing store accepts. */
+  readonly input: AssuranceSlotInput;
+  /**
+   * Simulates a lease handoff in the backing store and returns the new holder's fence;
+   * null for a stateless implementation (fencing cases then report not-applicable).
+   */
+  readonly rotateFence: (() => Promise<AssuranceFence>) | null;
+}
+
+export interface ReviewLoopConformanceResult {
+  readonly caseId: string;
+  readonly status: 'passed' | 'failed' | 'not-applicable';
+  readonly detail: string;
+}
+
+/** Runs cases RLC-01…RLC-10 against any implementation. Framework-free; callers assert on the result. */
+export declare function runReviewLoopContract(
+  slot: ReviewLoopSlot,
+  fixture: ReviewLoopConformanceFixture,
+  makeCtx: () => AssuranceStepContext,
+): Promise<readonly ReviewLoopConformanceResult[]>;
+
+export interface ScriptedReviewLoopScript {
+  readonly mode: ReviewMode;
+  /** Outcome kind returned for each round number; validated against this contract like a real implementation. */
+  readonly outcomesByRound: Readonly<Record<number, AssuranceOutcome['kind']>>;
+}
+
+/** Scripted slot for orchestration tests; enforces every input and output invariant of this contract. */
+export declare function createScriptedReviewLoopSlot(script: ScriptedReviewLoopScript): ReviewLoopSlot;
 ```
 
-**Contract Lane A's slot must honour** (also listed as SR-A1…A5 in §17): call the slot after evidence
-persistence and before push; act on all four outcome kinds as in §7; create the repair attempt's workspace at
-`repairBaseSha` and its context with `buildRepairContextPack`; call `recordAttemptOutcome` at every attempt
-terminal; pass `admitWithAssurance` into admission. Lane B proves the same calls with its own thin sequential
-driver (`runAssuredTask`, test/proof only) and a durable-shaped fake that retries each step at activity
-granularity with no orchestration SDK.
+### 18.2 Helper behaviour and conformance cases (S0)
+
+`createDisabledReviewLoopSlot` is what Lane A composes until Lane B's implementation is integrated; it reproduces
+Phase 2 exactly (no review, push after evidence) and needs the explicit literal, mirroring `HOST_EXECUTION_WAIVER`.
+`createScriptedReviewLoopSlot` lets Lane A drive its workflow through all four outcome kinds.
+
+`runReviewLoopContract` cases, run by both lanes (Lane A against the scripted and disabled slots, Lane B against
+`createAssuranceSlot` on PGlite and on real PostgreSQL):
+
+| Case | Assertion |
+|---|---|
+| RLC-01 | every input and output of every method JSON-round-trips deep-equal and serializes to ≤ 64 KiB |
+| RLC-02 | `runAssuranceRound` twice with the same input → deep-equal outcomes; the second call sends no provider request |
+| RLC-03 | `slotVersion` other than `review-loop/v1` → `ReviewLoopContractError` |
+| RLC-04 | round 1 with a `priorAdjudicationId`, or round > 1 without one → `ReviewLoopContractError` |
+| RLC-05 | after `rotateFence()`, a call with the old fence → `AssuranceFencedError` and no state change; the new fence completes and converges to RLC-02's outcome |
+| RLC-06 | outcome invariants: `roundKey = idempotencyKey`; mode `shadow` or `not-required` ⇒ kind ∈ {PROCEED, BLOCK}; `shadow` non-null iff mode `shadow`; REPAIR ⇒ `nextRound = round + 1` and `repairBaseSha = resultSha` |
+| RLC-07 | an aborted signal → `AssuranceCancelledError`; a later call with a live signal converges to RLC-02's outcome |
+| RLC-08 | `recordAttemptOutcome` twice with the same input resolves both times and records once |
+| RLC-09 | `admitWithAssurance` with `promotedReviewerConfigIds: []` equals `admitRisk` for R0–R4; R3/R4 are `DEFERRED` for every capability |
+| RLC-10 | running the individual steps in order yields the same outcome as `runAssuranceRound` |
+
+### 18.3 Obligations of the orchestration composition (SR-A1…SR-A7)
+
+| ID | Obligation |
+|---|---|
+| SR-A1 | Call the slot after evidence persistence and before push; never at a verification stop. Map outcomes: PROCEED → push, PR with `prBodySectionRef` content, `WAITING_FOR_HUMAN_REVIEW`; REPAIR → new attempt; ESCALATE → push, PR flagged "assurance not satisfied", `WAITING_FOR_HUMAN_REVIEW`; BLOCK → no push, task `BLOCKED`. |
+| SR-A2 | A repair attempt gets a fresh workspace at `repairBaseSha` and the ContextPack from `buildRepairContextPack` (the "task baseSha + apply diff" design is withdrawn, R3). |
+| SR-A3 | Call `recordAttemptOutcome` at every attempt terminal, verification stops included. |
+| SR-A4 | Pass `(risk) => slot.admitWithAssurance(risk, capability)` through the optional `admit` hook (SR-X1). |
+| SR-A5 | Emit `workflow.recovered` through the shared `RunEventSink`. |
+| SR-A6 | Do not emit `attempt.declared_complete`, `attempt.completed`, `review.completed`, `review.finding_dispositioned` or `repair.started`; Lane B's slot owns them, so no event is double-counted. |
+| SR-A7 | Emit `task.completed` (with `outcome` and `repairCycles`) at task terminal; Lane B does not. |
+| — | Activity policy: heartbeat timeout ≥ 60 s; retry transient errors; never retry `ReviewLoopContractError` or `AssuranceFencedError` within the same delivery; on `AssuranceFencedError` the attempt is superseded under Lane A's lease-takeover semantics. |
+
+### 18.4 Other S0 items Lane B depends on (R4, R5)
+
+```typescript
+// packages/ports/src/index.ts (S0, R4) — shared append-only event sink.
+import type { RunEvent, TenantScope } from '@asep/contracts';
+
+export interface RunEventSink {
+  /**
+   * Idempotent on event.eventId within the scope: the same id with identical canonical
+   * bytes returns { appended: false }; the same id with different bytes throws
+   * RunEventConflictError. The event is validated against run-event 1.2.0 before insert.
+   */
+  append(scope: TenantScope, event: RunEvent): Promise<{ readonly appended: boolean }>;
+}
+
+export class RunEventConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'RunEventConflictError';
+  }
+}
+```
+
+`run_events` (Lane A `0107`, R4 union): composite key `(organization_id, project_id, event_id)`, `payload_sha256`
+with conflict on different bytes, append-only trigger rejecting UPDATE and DELETE, and an index
+`(organization_id, project_id, event_type, occurred_at)`. Lane B adds nothing to that table.
+
+`run-event` 1.2.0 (R5), Lane B's part of the superset — one new `eventType` and optional fields:
+
+| Addition | Type | Used by |
+|---|---|---|
+| eventType `review.finding_dispositioned` | enum value | authoritative yield / false-positive metrics |
+| `reviewRound` | integer ≥ 1 | review, attempt and repair events |
+| `reviewerConfigId` | string | dimension |
+| `reviewerRole` | enum `primary, comparator, deterministic` | filter / dimension |
+| `reviewMode` | enum `not-required, shadow, gating` | filter |
+| `assuranceOutcome` | enum `PROCEED, REPAIR, ESCALATE, BLOCK` | `attempt.completed` |
+| `shadowWouldBlock` | boolean | `attempt.completed` |
+| `reviewFindingsUngrounded` | integer ≥ 0 | `review.completed` |
+| `reviewFindingsBlocking` | integer ≥ 0 | `review.completed` |
+| `reviewerFailed` | boolean | `review.completed` |
+| `egressStopped` | boolean | `review.completed` |
+| `reviewCostPriced` | boolean | cost coverage |
+| `repairRound` | boolean | `attempt.completed` |
+| `repairClosedAllBlocking` | boolean | `attempt.completed` |
+| `findingId` | string | `review.finding_dispositioned` (dedupe key) |
+| `findingValid` | boolean | `review.finding_dispositioned` |
+| `findingDisposition` | enum `ACCEPTED, REJECTED, WAIVED` | `review.finding_dispositioned` |
+| `dispositionActorKind` | enum `human, harness-rule` | `review.finding_dispositioned` |
+| `findingSource` | enum `model, deterministic, sarif` | dimension |
+| `findingSeverity` | enum `INFO, LOW, MEDIUM, HIGH, CRITICAL` | dimension |
+
+All additive (COMPATIBILITY.md: optional property and enum value → MINOR).
 
 ---
 
-## 17. Shared-surface change requests
+## 19. Shared-surface change requests
 
-Lane B edits **none** of these during planning. The controller reconciles them with Lane A's requests before
-implementation. Full TypeScript for every new port is in `phase-04-architecture.md` §6; full DDL in
-`phase-04-data-model.md` §3.
+Lane B edits none of these during planning. S0 items are authored here and landed by Lane A (§18). Every other
+request lands in a Lane B slice after the rebase onto S0, unless noted.
 
-### 17.1 `packages/ports/src/index.ts`
+### 19.1 S0 (Lane A lands; content from this plan)
+
+| ID | Item |
+|---|---|
+| SR-S0-1 | `packages/application/src/review-loop/{slot.ts, disabled-slot.ts, review-loop-contract.ts}` + export lines (§18 "Review-loop slot contract (verbatim for S0)" and §18.2) |
+| SR-S0-2 | `RunEventSink`, `RunEventConflictError` in `packages/ports/src/index.ts` (§18.4) |
+| SR-S0-3 | Lane B's `run-event` 1.2.0 additions (§18.4) inside the single superset bump |
+| SR-S0-4 | `run_events` DDL union in Lane A's `0107` (§18.4); Lane B's `0201_run_events` is withdrawn |
+
+### 19.2 `packages/ports/src/index.ts` (Lane B slice S2)
 
 | ID | Change | Compatibility |
 |---|---|---|
-| SR-P1 | Add `ReviewerProvider`, `ReviewerDescriptor`, `ReviewerBudget`, `ReviewerExecuteRequest`, `ReviewerUsage`, `ReviewerObservationStatus`, `ReviewerObservation` | additive |
-| SR-P2 | Add `RunEventSink { append(scope, event: RunEvent): Promise<{ appended: boolean }> }` + `RunEventConflictError`; idempotent on `eventId`. Proposed as a **shared** port so Lane A can emit `workflow.recovered` through the same sink. | additive |
-| SR-P3 | Add `ReviewSourceReader { diffRange(...); readBlobs(...) }` (trusted range diff + post-image blobs from a leased workspace) | additive |
-| SR-P4 | Mark legacy `ReviewProvider` `@deprecated` (superseded by `ReviewerProvider`); no removal | none |
+| SR-P1 | `ReviewerProvider`, `ReviewerDescriptor`, `ReviewerBudget`, `ReviewerExecuteRequest`, `ReviewerUsage`, `ReviewerObservationStatus`, `ReviewerObservation` (full TS: architecture §6) | additive |
+| SR-P3 | `ReviewSourceReader`, `ReviewBlob` | additive |
+| SR-P4 | `@deprecated` on the Phase 1 `ReviewProvider`; no removal | none |
 
-### 17.2 `packages/contracts/**`
+(SR-P2 moved to S0 as SR-S0-2.)
+
+### 19.3 `packages/contracts/**` (S1)
 
 | ID | Change | semver / compat |
 |---|---|---|
-| SR-C1 | `review-report.schema.json` → `2.0.0`, `$id …/review-report/v2`: required `reviewId, attemptId, round, packetSha256, reviewerConfigId, reviewerConfigSha256, requestedModel, servedModel, rawResponseArtifactId, verdict, findings, priorFindingStatuses`; optional `confidence` | MAJOR (new `$id` major); `snapshots/v1` copy unchanged |
-| SR-C2 | `finding.schema.json` → `2.0.0`, `$id …/finding/v2`: adds required `source`, `fingerprint`; optional `grounded`, `groundingReason`, `ruleId`, `priorFindingId`; category enum adds `EVIDENCE_INTEGRITY` | MAJOR; `snapshots/v1` unchanged |
-| SR-C3 | `src/compat-gate.ts`: resolve the comparison snapshot by the live `$id` major (`snapshots/v<major>/`); a live v2 schema without a v2 snapshot fails; the prior major's snapshot must still exist; self-test cases for both | gate behaviour tightened (no schema effect) |
-| SR-C4 | New schemas `review-packet/v1`, `adjudication-record/v1`, `repair-order/v1` with fixtures (valid + invalid) and `snapshots/v1` entries | additive (new contracts) |
-| SR-C5 | `run-event.schema.json` → `1.2.0`: optional `reviewRound`, `reviewerConfigId`, `reviewMode` (enum `not-required, shadow, gating`), `assuranceOutcome` (enum `PROCEED, REPAIR, ESCALATE, BLOCK`), `reviewFindingsAdjudicated`, `reviewFindingsBlocking`, `repairRound`, `repairClosedAllBlocking`, `reviewerFailed`, `shadowWouldBlock`; no new `eventType` | MINOR. If Lane A also bumps `run-event`, the controller merges both into one `1.2.0`. |
-| SR-C6 | `architecture-invariant.schema.json` → `1.1.0`: optional `check { kind: "forbidden-import", fromGlobs, specifierPattern }` | MINOR |
-| SR-C7 | `src/base.ts` `AttemptStatus` += `UNDER_REVIEW`, `CHANGES_REQUESTED` | additive union; persisted check constraint changed by SR-M4 |
-| SR-C8 | Regenerated `src/generated.ts`; `snapshots/v2/{review-report,finding}.schema.json`; `templates/review-report.yaml` moved to v2 shape; `COMPATIBILITY.md` documents the per-major snapshot rule and the new contract count (16) | follows SR-C1…C6 |
+| SR-C1 | New `review-record.schema.json` (`$id …/review-record/v1`, 1.0.0) — fields in data model §2.2 | new logical contract |
+| SR-C2 | New `review-finding.schema.json` (`…/review-finding/v1`) — data model §2.1 | new logical contract |
+| SR-C4 | New `review-packet/v1`, `adjudication-record/v1`, `repair-order/v1` with valid + invalid fixtures, templates where the pattern needs them, `snapshots/v1` entries | new logical contracts |
+| SR-C5 | `run-event` 1.2.0 — **moved to S0** (SR-S0-3) | MINOR |
+| SR-C6 | `architecture-invariant` 1.1.0: optional `check { kind: "forbidden-import", fromGlobs, specifierPattern }` | MINOR |
+| SR-C7 | `src/base.ts` `AttemptStatus` += `UNDER_REVIEW`, `CHANGES_REQUESTED` | additive union |
+| SR-C8 | `src/validate.ts` `ContractName` += the five names; header comment count; regenerated `src/generated.ts`; `COMPATIBILITY.md` contract count for Lane B's additions only (no cross-lane total, R7) | follows SR-C1…C6 |
+| — | SR-C3 (per-major compat-gate snapshots) **withdrawn** with D-1 (b); `review-report/v1` and `finding/v1` untouched | — |
 
-### 17.3 Migrations (`adapters/persistence/src/migrations.ts`, Lane B range `0200`–`0299`)
+### 19.4 Migrations (`adapters/persistence/src/migrations.ts`, Lane B range `0200`–`0299`, S8)
 
-| ID | Migration | Content |
+| ID | Migration | Content (full DDL in data model §3) |
 |---|---|---|
-| SR-M1 | `0200_assurance_reviews` | `review_rounds`, `review_records`, `review_findings`, `finding_dispositions`, `adjudications`, `reviewer_promotions` with composite tenant FKs |
-| SR-M2 | `0201_run_events` | append-only `run_events` (update/delete rejected by trigger), unique `(organization_id, project_id, event_id)` |
-| SR-M3 | `0202_metric_snapshots` | `metric_snapshots` |
-| SR-M4 | `0203_attempt_review_states` | recreate the `attempts.status` check constraint with `UNDER_REVIEW`, `CHANGES_REQUESTED`. **Conflict risk:** if Lane A's `01xx` also recreates this constraint, whichever runs last wins and drops the other's values. The controller must merge both value sets into one migration. |
+| SR-M1 | `0200_assurance_reviews` | `review_rounds`, `review_records`, `review_findings`, `finding_dispositions`, `adjudications`; guard trigger functions; `attempts_id_task_scope_uq` |
+| SR-M2 | `0201_run_events` | **withdrawn** (R4); id `0201` is reused below |
+| SR-M3 | `0201_metric_snapshots` | `metric_snapshots` |
+| SR-M4 | `0202_attempt_review_states` | replace `attempts_status_check` with the Phase 2 values plus `UNDER_REVIEW`, `CHANGES_REQUESTED` (Lane B owns this constraint, R6; Lane A owns `tasks.status`) |
 
-Also: one export line per new repository in `adapters/persistence/src/index.ts`.
+`reviewer_promotions` is removed (deferred, DF-2). Rollback SQL for each migration is in data model §3.6.
 
-### 17.4 Composition root
+### 19.5 Fencing primitive (Phase 2, Lane R) — CR-F1
 
-`apps/control-plane-api/src/production-root.ts`: **no change requested.** Lane B adds a sibling
-`assurance-root.ts` (`assuranceSeams(...)`, fail-closed config; reviewer disabled only by an explicit literal,
-mirroring `HOST_EXECUTION_WAIVER`). Lane A's composition imports it at integration time.
+§16: reviewer call as a qualified side-effect operation with a closed result shape, and an in-transaction fence
+check usable by Lane B repositories. Stated by invariant until Phase 2 is accepted (R1).
 
-### 17.5 Required suites and gates
+### 19.6 Composition root
 
-- `scripts/lib/canonical-tests.mjs` `REQUIRED_SUITES` += the 25 unit suite IDs listed in
-  `phase-04-exit-criteria.md` §"Suite registry" (one of them, `asep-suite:contract-fixtures`, adds a marker
-  line to the existing `packages/contracts/src/validate.test.ts`).
-- `scripts/integration/lib.mjs` `REQUIRED_ITEST_SUITES` += `asep-suite:assurance-persistence-real`,
-  `asep-suite:assurance-loop-real`, `asep-suite:assurance-dashboards-real`.
-- `scripts/verify-all.sh`: **no change requested** (all new proofs run inside the canonical test runner).
-- `scripts/integration/**` beyond `lib.mjs`: no change requested.
-- `.github/workflows/**`: **no change requested.** The live benchmark never runs in CI.
+`apps/control-plane-api/src/production-root.ts`: **no change** (R10). Lane B adds the sibling `assurance-root.ts`;
+Lane A imports it at integration time.
 
-### 17.6 Root build files and dependencies
+### 19.7 Required suites and gates
 
-- **No new third-party dependency.** The reviewer adapter uses Node's built-in `fetch` (stable since Node
-  v21.0.0; the repo requires Node ≥ 24, root `package.json` `engines`); validation reuses `ajv` 8.20.0 already
-  pinned in `@asep/contracts`.
+- SR-T1 `scripts/lib/canonical-tests.mjs` `REQUIRED_SUITES` += the unit suite ids in exit criteria
+  §"Suite registry" (append-only, R10).
+- SR-T2 `scripts/integration/lib.mjs` `REQUIRED_ITEST_SUITES` += the itest suite ids there.
+- SR-T3 `scripts/run-canonical-tests.mjs` (+ `canonical-tests.mjs`): add a JUnit reporter to a temp file next to
+  the existing stdout reporter (`--test-reporter` / `--test-reporter-destination` pairs, research register §5),
+  and a registered post-run proof-check list; Lane B registers the exit-criteria proof check, which fails the run
+  if any MUST-mapped test name is missing, skipped, todo or failed. Generic; Lane A may register its own.
+- SR-T4 `scripts/integration/{images.mjs, lib.mjs, run-integration.mjs}`: a digest-pinned Grafana container with
+  the committed provisioning mounted read-only, health-gated on `GET /api/health`, torn down in `finally`; its
+  base URL exported to itests. Digest recorded in S18 (not verified in this session).
+- SR-T5 `scripts/verify-all.sh`, `.github/workflows/**`: **no change**. Mutation proofs run as a required unit
+  suite inside the canonical runner (S23). The live benchmark never runs in CI.
+
+### 19.8 Root build files and dependencies
+
+- **No new third-party dependency** (Node global `fetch`; `ajv` 8.20.0 already pinned in `@asep/contracts`).
 - New workspace packages `adapters/reviewer-openai`, `adapters/reviewer-replay` → root `tsconfig.json`
-  `references` += both; `pnpm-lock.yaml` importer entries for workspace links only. `pnpm-workspace.yaml`
-  unchanged (`adapters/*` glob).
-- `evals/package.json` dependencies += `@asep/application`, `@asep/reviewer-openai`, `@asep/reviewer-replay`
-  (workspace); scripts `review-bench:capture`, `review-bench:score`; `evals/tsconfig.json` include/references.
+  references; `pnpm-lock.yaml` workspace-link importers only; `pnpm-workspace.yaml` unchanged.
+- `evals/package.json`: workspace deps on `@asep/application`, `@asep/reviewer-openai`, `@asep/reviewer-replay`;
+  scripts `review-bench:capture`, `review-bench:score`.
 
-### 17.7 `docs/platform/metrics-dictionary.yaml`
+### 19.9 `docs/platform/metrics-dictionary.yaml` and its loader
 
-Add `review_adjudication_coverage`, `repair_success_rate`, `reviewer_failure_rate`,
-`shadow_would_block_rate`, `review_escalation_rate`, `mean_review_cost_usd` (definitions in
-`phase-04-data-model.md` §5). Existing metrics unchanged. Depends on SR-C5.
+- SR-D1 new metrics: `review_adjudication_coverage`, `review_ungrounded_rate`, `reviewer_failure_rate`,
+  `review_egress_stop_rate`, `shadow_would_block_rate`, `review_cost_coverage`, `mean_review_cost_usd`,
+  `repair_success_rate` and `review_escalation_rate` (both `null` in Phase 4 production: no gating). Definitions
+  in data model §5.
+- SR-D2 `review_finding_yield` and `review_false_positive_rate` numerators move to
+  `review.finding_dispositioned` (human actor, latest per `findingId`); denominators unchanged; dictionary
+  `version` 1.0.0 → 1.1.0. Nothing computes these metrics today, so no consumer breaks.
+- SR-X6 `packages/observability/src/metrics.ts`: accept and validate the optional operand key
+  `dedupeLatestBy: <RunEvent field>`; coordinate with Lane A's dictionary-validator change (CR-19).
 
-### 17.8 Other existing modules Lane A may also touch
+### 19.10 Other existing modules
 
 | ID | File | Change |
 |---|---|---|
-| SR-X1 | `packages/application/src/governed-execution.ts` | optional `admit?: (risk: RiskLevel) => AdmissionResult` in `GovernedExecutionInput`, default `admitRisk` (byte-identical behaviour when absent) |
-| SR-X2 | `packages/domain/src/operational.ts` | attempt edges `COMMITTED → UNDER_REVIEW → PUSHED`, `UNDER_REVIEW → CHANGES_REQUESTED` (terminal); existing `COMMITTED → PUSHED` kept |
-| SR-X3 | `packages/application/src/index.ts`, `packages/policy/src/index.ts`, `packages/observability/src/index.ts`, `adapters/git-worktree/src/index.ts` | one export line each for Lane B's new modules |
-| SR-X4 | `scripts/forbidden-imports.test.ts` | forbid `@temporalio/*` in Lane B paths; forbid global `fetch(`/`WebSocket` use in domain/application source (call pattern, not import); allow `fetch` in `adapters/reviewer-openai` |
-| SR-X5 | `compose.yaml` | mount `deploy/grafana/provisioning` read-only into the Grafana service; dev-only data-source env |
+| SR-X1 | `packages/application/src/governed-execution.ts` | optional `admit?: (risk: RiskLevel) => AdmissionResult` on `GovernedExecutionInput`; default `admitRisk`; byte-identical behaviour when absent (R3) |
+| SR-X2 | `packages/domain/src/operational.ts` | attempt edges `COMMITTED → UNDER_REVIEW → PUSHED`, `UNDER_REVIEW → CHANGES_REQUESTED` (terminal), `UNDER_REVIEW → BLOCKED`; `COMMITTED → PUSHED` kept |
+| SR-X3 | package `index.ts` files of application, policy, observability, git-worktree, persistence | append-only export lines (R10) |
+| SR-X4 | `scripts/forbidden-imports.test.ts` (or its AST successor, R8) | no `@temporalio/*` in Lane B paths; no global `fetch`/`WebSocket` calls in domain/application; no `process.env` in `adapters/reviewer-*`; production entry points never import `assurance/drill`; each with a seeded self-check |
+| SR-X5 | `compose.yaml` | mount `deploy/grafana/provisioning` read-only into the Grafana service (R9) |
+| SR-X7 | `attempts` table (via Lane B's `0200` in `adapters/persistence/src/migrations.ts`) | add `attempts_id_task_scope_uq unique (id, task_id, organization_id, project_id)` so review rounds can prove attempt ∈ task at the DB; additive, no Phase 2 or Lane A column touched |
 
-### 17.9 Requests to Lane A (slot contract) and to the controller
+### 19.11 Requests to the controller
 
-| ID | Owner | Request |
-|---|---|---|
-| SR-A1 | Lane A | Slot between evidence persistence and push; act on `PROCEED/REPAIR/ESCALATE/BLOCK` as in §7 |
-| SR-A2 | Lane A | Repair attempt: workspace at `repairBaseSha`; ContextPack via `buildRepairContextPack` |
-| SR-A3 | Lane A | Call `recordAttemptOutcome` at every attempt terminal, including verification stops |
-| SR-A4 | Lane A | Use `admitWithAssurance` through SR-X1 |
-| SR-A5 | Lane A | Emit `workflow.recovered` through `RunEventSink` (SR-P2) |
-| SR-G1 | Controller | Keep Phase 1/2 history reachable after merge (no squash), or tag every reviewed SHA the corpus cites, so the corpus stays reproducible from a clean clone |
-| SR-G2 | Controller | Supply the reviewer gateway base URL and credential as environment variables for the live run (S16) and the opt-in smoke; the lane never reads secret files |
+| ID | Request |
+|---|---|
+| SR-G1 | (replaced by R12) No tags of pre-rewrite SHAs. The corpus carries content-addressed excerpts; full re-derivation needs the private bundle, whose path the controller passes to the verifier when it runs it. |
+| SR-G2 | (per R13) For the live run only: reviewer gateway base URL and credential supplied to the composition root's credential source; `ASEP_REQUIRE_LIVE_REVIEWER=1` when the live test must be required. |
+| SR-G3 | Approve the preregistration (`evals/review-benchmark/preregistration.json`: protocol, floors, matcher, corpus manifest hash, both reviewer configuration hashes) by committing it or recording its sha256 in the review log before any capture. The approval is procedural, not cryptographic; a lane cannot produce it. |
 
 ---
 
-## 18. Directory ownership (Lane B, exclusive)
-
-New directories and files Lane B owns. None overlaps an expected Lane A path (Temporal workers, workflow
-packages, orchestration adapters). Existing modules Lane B must touch are listed in §17 instead.
+## 20. Directory ownership (Lane B, exclusive)
 
 ```text
-packages/application/src/assurance/**                    step use cases, pure core, slot, driver, tests
-packages/domain/src/assurance.ts, assurance.test.ts      finding lifecycle + review-round state machines
-packages/policy/src/review.ts, review.test.ts            review policy loader + parity tests
+packages/application/src/assurance/**                    step use cases, slot implementation, drivers, drill support, tests
+packages/domain/src/assurance.ts, assurance.test.ts      finding lifecycle, closure authority, review-round machine
+packages/policy/src/review.ts, review.test.ts            review policy loader, families, egress classification, D-2 rule
 packages/observability/src/metric-eval.ts, metric-eval.test.ts, dashboards.test.ts
-policies/review-policy.yaml                              reviewer registry, model families, severities, rounds
-adapters/reviewer-openai/**                              OpenAI-compatible Responses reviewer (new package)
-adapters/reviewer-replay/**                              recorded-response + scripted reviewer (new package)
-adapters/persistence/src/assurance/**                    repositories, run-event sink, snapshot store, itests
+policies/review-policy.yaml
+adapters/reviewer-openai/**                              Responses reviewer + credential source (new package)
+adapters/reviewer-replay/**                              recorded + scripted reviewers (new package)
+adapters/persistence/src/assurance/**                    repositories, snapshot store, itests
 adapters/git-worktree/src/review-source.ts, review-source.test.ts
 adapters/agent-claude/src/reviewer-credential-isolation.test.ts
 apps/control-plane-api/src/assurance-root.ts, assurance-root.test.ts
-apps/control-plane-api/src/assurance/**                  CLI, real-backend loop + dashboard itests
-evals/review-corpus/**                                   corpus manifest, items, verifier
-evals/review-benchmark/**                                capture, scorer, protocol fixtures, recorded runs, scorecards
+apps/control-plane-api/src/assurance/**                  CLI, loop + dashboard itests, rehearsal
+evals/review-corpus/**                                   manifest, content-addressed excerpts, verifier
+evals/review-benchmark/**                                protocol, preregistration, capture, scorer, suites, recordings, scorecards
 deploy/grafana/**                                        provisioning + dashboard JSON
+scripts/assurance-mutation-proofs.test.ts, scripts/assurance-mutation-proofs.json
 docs/implementation/phases/phase-04-*.md
 ```
 
----
-
-## 19. Slices (one per future commit)
-
-Each slice: read the mapped exit criteria → tests first where sensible → smallest change → slice gate
-(`pnpm verify:all`; plus `pnpm test:integration` when the slice adds or changes an itest) → review the diff →
-commit. Shared-surface slices (S1, S2, S7 migrations, S11 SR-X1/X2) start only after the controller has
-reconciled §17.
-
-| Slice | Deliverable | Acceptance checks (all executable) | Commit |
-|---|---|---|---|
-| S1 | SR-C1…C8: v2 review/finding, new schemas, run-event 1.2.0, invariant 1.1.0, per-major compat gate | compat gate PASS; new self-test: an edit to a v2 schema without a v3 bump fails, a v2 schema without a v2 snapshot fails; v1 snapshots byte-identical (digest test); drift guard; fixtures accept/reject; template validates | `feat(contracts): version review, finding and adjudication contracts for independent assurance` |
-| S2 | SR-P1…P4 ports | typecheck; a structural test that legacy `ReviewProvider` callers (none) still compile; port docs | `feat(ports): add packet-only reviewer, run-event sink and review-source ports` |
-| S3 | `policies/review-policy.yaml` + loader | parity test YAML ↔ TS; unknown model family fails closed; same-family reviewer rejected for R2; matrices in `approval-matrix.yaml`/`verification-matrix.yaml` byte-unchanged | `feat(policy): declare reviewer independence, blocking severities and repair limits as data` |
-| S4 | finding lifecycle + review-round machines; SR-X2 | table-driven transition tests; a model actor cannot waive HIGH/CRITICAL; waiver needs human + rationale + expiry | `feat(domain): finding lifecycle and review-round state machines` |
-| S5 | packet builder, prompt renderer, independence checks | canary strings planted in coder summary/limitations/events/ContextPack never appear in packet, prompt or request bytes; packet bytes identical across two builds; nonce derivation test; over-budget → `overBudget=true`, never truncated | `feat(assurance): build an independent review packet and a spotlighted prompt` |
-| S6 | diff checks, SARIF subset, grounding, adjudication, repair order | seeded-violation self-tests per check; secret-pattern parity with `scripts/lib/secret-patterns.sh`; adjudication table covers every rule row and both modes; grounding rejects out-of-packet citations | `feat(assurance): deterministic checks, grounding, adjudication and repair orders` |
-| S7 | SR-M1…M4, repositories, run-event sink, snapshot store | PGlite fast suite + real-PG itest: tenant IDOR read/write rejected; append-only enforced by trigger; idempotent append; concurrent `PENDING` claim on one review id yields one winner | `feat(persistence): persist review rounds, findings, adjudications and run events` |
-| S8 | `ReviewSourceReader` in git-worktree | real temp-repo tests: range diff exact; binary/too-large/submodule/deleted reported, never silently dropped; path traversal rejected | `feat(workspace): trusted range diffs and post-image blobs for review` |
-| S9 | `adapters/reviewer-openai` | local fake HTTP server tests for every row of EC G1–G6; exact request body asserted (`store:false`, no tools, strict schema, no `previous_response_id`); credential canary never in artifacts/logs; opt-in live smoke skips with a recorded reason | `feat(reviewer): add an OpenAI-compatible Responses reviewer behind the reviewer port` |
-| S10 | `adapters/reviewer-replay` | replay returns recorded bytes for a hash, fails closed on a miss; scripted provider is marked fake in its descriptor | `feat(reviewer): deterministic replay and scripted reviewers` |
-| S11 | step use cases, slot composite, `admitWithAssurance`, events, `runAssuredTask`, durable-shaped fake; SR-X1 | JSON round-trip of every input/output; resume after a crash at each step boundary converges; shadow mode changes no task/attempt state; max rounds escalates; durable-shaped fake drives the steps with retries | `feat(assurance): idempotent review, adjudication and repair step use cases` |
-| S12 | `assurance-root.ts`, CLI, real-backend loop itest | itest on real PG + real Git + real sandbox + real adapter against the fake HTTP server: PROCEED, REPAIR→re-review→PROCEED, ESCALATE, BLOCK (forge spy: zero pushes) | `feat(control-plane): compose the independent reviewer and its assurance loop` |
-| S13 | evaluator, snapshots, CLI report, Grafana provisioning | golden tests on fixture events (labelled fixtures); real-backend itest: values computed from events the S12 loop emitted equal hand-derived expectations; nulls carry reasons; every panel ↔ dictionary metric; restricted metrics hidden unless opted in | `feat(observability): evaluate dictionary metrics and provision assurance dashboards` |
-| S14 | `evals/review-corpus` manifest + verifier | verifier checks every item against git (advertised-ref reachability, cited file exists at reviewed SHA, line range inside file, fix-commit subject carries the id, id appears in the cited review doc); exclusions enumerated; manifest hash recorded | `feat(evals): curate the review-history defect corpus with git-verified provenance` |
-| S15 | protocol doc, scorer, matcher, baselines, injection suite, rescore test | rescoring committed recordings twice is byte-identical; scorer refuses fake recordings for `self-history`; test-split guard; Wilson intervals unit-tested | `feat(evals): pre-registered protocol and deterministic reviewer scorecard` |
-| S16 | live capture on the frozen corpus; scorecard; `phase-04-report.md` | recorded responses + manifest hashes committed; controller can rescore offline byte-identically; report fields generated from machine sources | `docs(phase-4): record reviewer measurement on the review-history corpus` |
-| S17 | runbook + executable rehearsal | injected 429 storm, 503, malformed output, cost budget exceeded, served-model drift and reviewer disabled each reach the documented decision on real mechanisms | `docs(phase-4): assurance runbook and executable fault rehearsal` |
+Not owned by either lane after S0: `packages/application/src/review-loop/**` (S0; changes need reconciliation).
+Lane A's plan was read read-only from its committed tree at `80bb76a`; no path above appears in it.
 
 ---
 
-## 20. Task DAG
+## 21. Slices (one per future commit)
+
+Each slice: read its exit criteria → tests first where sensible → smallest change → slice gate (`pnpm verify:all`;
+plus `pnpm test:integration` when it adds or changes an itest) → review the diff → commit. "Pre-S0" slices touch
+only Lane B-owned paths. "After P2" means after the rebase onto accepted Phase 2. Every slice is independently
+revertible; a slice that adds a mutation-proof entry adds it in the same commit.
+
+| Slice | Deliverable | Acceptance checks (executable) | When | Commit |
+|---|---|---|---|---|
+| S1 | SR-C1/C2/C4/C6/C7/C8 | new fixtures accept/reject; compat gate classifies `architecture-invariant` as MINOR; `review-report/v1` and `finding/v1` schema and snapshot bytes unchanged (digest test); drift guard; templates validate | after S0 | `feat(contracts): add review record, finding, packet, adjudication and repair contracts` |
+| S2 | SR-P1/P3/P4 | typecheck; structural compile test for the deprecated port | after S0 | `feat(ports): add packet-only reviewer and review-source ports` |
+| S3 | `review-policy.yaml` + loader | YAML↔TS parity; unknown family fails closed; implementer-family reviewer rejected; comparator must differ from primary family; **loader rejects `gating`**; D-2 rule table (R1 + promoted → no human review required; R1 unpromoted → required; R2 promoted → still deferred); approval/verification matrices byte-unchanged | pre-S0 | `feat(policy): declare reviewer independence, egress classification and shadow-only modes as data` |
+| S4 | finding lifecycle + closure authority + review-round machine; SR-X2 | table-driven transitions; raiser cannot verify; model cannot waive/refute grounded HIGH/CRITICAL; waiver needs human + rationale + expiry; `closure-without-change` | domain file pre-S0; SR-X2 after S0 | `feat(domain): finding lifecycle with closure authority and review-round states` |
+| S5 | packet builder (incl. execution manifest), prompt renderer, independence checks | canaries in coder self-report never reach packet, prompt or request bytes; identical bytes across builds; nonce derivation; over-budget flagged, never cut; manifest carries command, exit code, environment digest, raw refs, scanned bounded excerpts | pre-S0 (fakes) | `feat(assurance): build an independent review packet with an execution manifest` |
+| S6 | push guard, egress decision, false-green checks, Trojan Source, dependency/invariant checks, SARIF | seeded violation per check; secret-pattern parity; each egress stop kind; seeded false-green cases (zero tests, added skip, exit-code mismatch, missing check) all caught | pre-S0 | `feat(assurance): deterministic push guard, egress decision and false-green checks` |
+| S7 | grounding, adjudication rule table, closure authority, repair order | every rule row × {gating, shadow}; shadow never yields REPAIR/ESCALATE; out-of-packet citations refuted; repair order bounded and anchored | pre-S0 | `feat(assurance): grounding, adjudication and closure authority` |
+| S8 | SR-M1/M3/M4, repositories, fenced decision writes, snapshot store | PGlite + real PG: migrations apply once and stay in range; tenant IDOR rejected; append-only and final-record triggers; shadow check constraint; disposition actor constraints; fence: new owner completes after handoff, old owner fenced, concurrent claim one winner | after P2 + S0 | `feat(persistence): persist review rounds, findings, dispositions and adjudications under fencing` |
+| S9 | `ReviewSourceReader` | real temp repos: exact range diff; binary/too-large/submodule/deleted/non-UTF-8 reported, never dropped; traversal rejected | after S0 | `feat(workspace): trusted range diffs and post-images for review` |
+| S10 | `adapters/reviewer-openai` + credential source + request-byte egress re-check | fake HTTP server rows for every adapter MUST; exact request body asserted; credential canary absent; rotation on 401; expiry refresh; no `process.env` in adapter source; opt-in probe of primary and comparator records the gateway's behaviour | after S0 | `feat(reviewer): OpenAI-compatible Responses reviewer with an injected credential source` |
+| S11 | `adapters/reviewer-replay` | exact replay by request hash; miss and manifest mismatch fail closed; scripted provider marked fake | after S0 | `feat(reviewer): deterministic replay and scripted reviewers` |
+| S12 | step use cases `planAssurance`, `buildReviewPacket`, `runDeterministicChecks`, `runReviewer`, `adjudicateRound` (application, against fakes) | JSON round trip; zero provider calls on push-guard BLOCK and on every egress stop; crash at each step boundary converges; parallel reviewers blind | after S0 | `feat(assurance): idempotent assurance step use cases` |
+| S13 | `createAssuranceSlot` (composite, `recordAttemptOutcome`, `admitWithAssurance`, `buildRepairContextPack`, event emission); SR-X1 | conformance kit RLC-01…10 on PGlite; events per §15 with deterministic ids; `admitWithAssurance` equals `admitRisk` for production capability; governed-execution suite unchanged | after S0 | `feat(assurance): implement the review-loop slot and attempt-outcome events` |
+| S14 | `runAssuredTask` sequential driver + durable-shaped fake | shadow mode changes no workflow decision except BLOCK; drill gating loop bounded by `maxRounds`; activity-granular fake converges under retries, cancellation and a lease handoff | after S0 | `feat(assurance): sequential proof driver and activity-granular fake` |
+| S15 | `assurance-root.ts` + CLI (`asep assurance report`, disposition entry for humans) | fail-closed config; gating unreachable from production composition (policy with `gating` refused); credential source injected; disabled-reviewer literal | after S0 | `feat(control-plane): compose the independent reviewer behind a fail-closed root` |
+| S16 | **assurance-only** loop itest | real PG + Git + sandbox + real adapter vs local fake HTTP: shadow PROCEED with recorded wouldBe; push-guard BLOCK with zero gateway requests and zero forge calls; each egress stop with zero gateway requests; drill composition: REPAIR → re-review closed by the other reviewer → PROCEED, raiser-only closure → ESCALATE at max rounds; conformance kit on real PG | after P2 + S0 | `test(control-plane): assurance-only loop on real backends` |
+| S17 | metric evaluator + snapshot recompute (incl. `dedupeLatestBy`); SR-D1/D2, SR-X6 | golden values; a human accept then reject after the round changes the next snapshot each time; harness refutations excluded from yield; nulls carry reasons | after S0 | `feat(observability): evaluate dictionary metrics from events and human dispositions` |
+| S18 | Grafana provisioning + SR-T4 + SR-X5 | itest: Grafana `GET /api/health` ok; data source by uid loads; every dashboard by uid loads; every panel query via `POST /api/ds/query` returns the snapshot values the S16 run produced | after S0 | `feat(observability): provision assurance dashboards and load them in the integration gate` |
+| S19 | `evals/review-corpus` manifest + content-addressed excerpts + verifier | every claim verified (reachable SHAs against git; excerpt hashes; fix-commit subjects; review-doc lines); exclusions enumerated; no pre-rewrite ref created; excerpts pass publication gates; bundle mode verified when the controller supplies the path | pre-S0 | `feat(evals): content-addressed self-history defect corpus` |
+| S20 | protocol, preregistration file, matcher, scorer, baselines, injection and false-green suites, floor evaluation | rescoring is byte-identical; scorer refuses fake recordings and any `eligibleForPromotion` other than false for self-history; capture refuses a preregistration mismatch; Wilson intervals; suite `INVALID_CONTROL` state | pre-S0 | `feat(evals): pre-registered rediscovery protocol and deterministic scorer` |
+| S21 | live capture (primary + comparator, k = 3 on reporting items), scorecards, `phase-04-report.md` | recordings and manifests committed; controller rescoring is byte-identical; report fields generated from scorecards and gate logs | after SR-G2/SR-G3 | `docs(phase-4): record descriptive reviewer measurement on self-history` |
+| S22 | real-coder shadow round | one real `CodingAgentProvider` attempt (accepted Phase 2 runtime) through a shadow round on real backends; evidence committed | **blocked** until the Phase 2 agent-runtime repair is accepted | `test(control-plane): real coder attempt through a shadow assurance round` |
+| S23 | SR-T3 proof check + mutation proofs | every MUST-mapped test passed per the JUnit manifest; each seeded mutation (data in `scripts/assurance-mutation-proofs.json`) turns its mapped test red in a temp copy; the unmutated control passes; a mutation whose search text does not match exactly once fails the suite | after S0 (runner change); entries accrue per slice | `test(assurance): proof manifest and seeded mutation proofs for key guards` |
+| S24 | runbook + executable rehearsal | 429 storm, 503, malformed outputs, cost budget exceeded, served-model drift, credential expiry/rotation, egress stop and reviewer disabled each reach the documented decision on real mechanisms | after S15 | `docs(phase-4): assurance runbook and executable fault rehearsal` |
+
+---
+
+## 22. Task DAG
 
 ```text
-S1 ──┬─> S2 ──┬─> S5 ──> S6 ──┐
-     │        ├─> S8 ─────────┤
-     │        ├─> S9 ─────────┼─> S11 ──> S12 ──> S13
-     │        └─> S10 ────────┤                     │
-     ├─> S3 ──┘               │                     │
-     ├─> S4 ──────────────────┤                     │
-     └─> S7 ──────────────────┘                     │
-S5 + S6 + S10 ──> S14 ──> S15 ──> S16 <── S9         │
-S12 + S13 + S16 ─────────────────> S17 <────────────┘
+S0 (Lane A) ─┬─> S1 ─> S2 ─┬─> S9 ──┐
+             │             ├─> S10 ─┼─> S12 ─> S13 ─> S14 ─> S15 ─> S16 ─┬─> S18
+             │             └─> S11 ─┤                                    ├─> S17 ─> S18
+S3, S4, S5, S6, S7 (pre-S0) ────────┘                                    └─> S24
+Phase 2 accepted ─> S8 ─> S13
+S19 ─> S20 ─> S21 <─ S10 + S11 (+ SR-G2, SR-G3)
+Phase 2 agent runtime ─> S22 <─ S16
+S23 runner change after S0; mutation entries accrue with S5–S20; the suite closes after S21
 ```
 
-Acyclic. S14/S15 do not depend on persistence; S16 needs the live adapter and a credential (SR-G2).
+Acyclic. S19/S20 depend on no persistence.
 
 ---
 
-## 21. Exit criteria and verdict vocabulary
+## 23. Exit criteria and verdict vocabulary
 
 The numbered, test-mapped MUST list is `phase-04-exit-criteria.md`. Verdicts:
 
 | Verdict | Condition |
 |---|---|
-| `COMPLETE` | every MUST, including I6 (live measurement on the self-history corpus) and I8 (measurement on an independent pilot-repository corpus) |
-| `IMPLEMENTATION_COMPLETE_MEASURED_ON_SELF_HISTORY` | every MUST except I8 |
-| `IMPLEMENTATION_COMPLETE_MEASUREMENT_PENDING` | every MUST except I6 and I8 (e.g. no gateway credential) |
+| `IMPLEMENTATION_COMPLETE_DESCRIPTIVE_SELF_HISTORY_ONLY_UNVALIDATED` | every MUST, including I1 (live primary + comparator measurement) and N1 (real-coder shadow round) |
+| `IMPLEMENTATION_COMPLETE_ASSURANCE_ONLY_LOOP_DESCRIPTIVE_SELF_HISTORY_ONLY_UNVALIDATED` | every MUST except N1 (Phase 2 agent runtime not available) |
+| `IMPLEMENTATION_COMPLETE_MEASUREMENT_PENDING_UNVALIDATED` | every MUST except I1 (and N1 if also unmet, with the `ASSURANCE_ONLY_LOOP` qualifier) |
 
-Each verdict carries the suffix `_UNREVIEWED` until the controller's independent final review accepts it. A
-gating promotion of the reviewer (which unlocks R2) is **not** an exit criterion; it is a human decision made
-from the scorecard after the phase.
-
----
-
-## 22. Rollback
-
-Per-slice commits on the lane branch; `main` untouched until the controller merges. The assurance slot is
-inert until Lane A wires it, and R2 stays `DEFERRED` unless a promotion record exists, so reverting any Lane B
-slice restores Phase 2 behaviour. Migrations are append-only; tables are additive; SR-M4 widens a check
-constraint (rollback = a forward migration that narrows it after no row uses the new values).
+Each carries `_UNREVIEWED` until the controller's independent final review accepts it. `COMPLETE` is **not
+reachable** in Phase 4: a production-valid measurement needs DF-6. No verdict may be described as production-valid,
+and none unlocks gating.
 
 ---
 
-## 23. Open decisions (controller/user)
+## 24. Rollback
 
-| ID | Decision | Options | Recommendation |
-|---|---|---|---|
-| D-1 | How to evolve the review contracts | (a) MAJOR `review-report/v2` + `finding/v2` with the per-major compat gate (SR-C1–C3); (b) leave v1 frozen and add new logical contracts (`review-record/v1`, `review-finding/v1`) with no gate change | (a): it is the documented route (`COMPATIBILITY.md:31-33`) and it closes a latent gate gap; (b) has less churn but leaves a dead v1 contract beside the live one |
-| D-2 | Does a promoted model reviewer satisfy R1's "1 independent reviewer"? | yes (R1 and R2) / no (R2 only; R1 keeps the Phase 2 human review) | yes for R1 and R2, only in gating mode with a valid promotion; R2 still needs human merge |
-| D-3 | Promotion threshold for gating mode | numeric threshold pre-committed now / human decision from the scorecard | human decision (ADR 0014) with the scorecard attached; no number is invented in the plan |
-| D-4 | Different-family comparator reviewer for measurement only | none / add one comparator configuration | optional; it would quantify the labeller bias in §6.2(2) at extra cost |
-| D-5 | Run the deterministic push guard (secret in diff, forbidden path) for every admitted risk, including R0 | yes / only where L5 is mandatory (R3+) | yes: it only adds a fail-closed stop before an irreversible push; it does not change `verification-matrix.yaml` |
-| D-6 | Must Grafana actually load the provisioning inside the required integration gate? | yes (adds a digest-pinned Grafana container to the gate) / no (structural tests + evaluator itest required; Grafana load is an opt-in smoke) | no for Phase 4, recorded as a known limitation; the evaluator and snapshots are the authoritative proof |
-| D-7 | Proposed policy values: `maxRounds` R1/R2 = 2; `blockingSeverities` R1 = {CRITICAL, HIGH}, R2 = {CRITICAL, HIGH, MEDIUM}; minimum descriptive-only sample size 20 | accept / amend | accept as starting values; they are data in `review-policy.yaml` and the protocol |
+Per-slice commits on the lane branch; `main` untouched until the controller merges. The slot is inert until Lane A
+wires it (the disabled slot reproduces Phase 2). Production mode is shadow, so reverting a Lane B slice restores
+Phase 2 behaviour. Migrations are forward-only; the documented rollback for each is a forward compensating
+migration (data model §3.6).
 
 ---
 
-## 24. Blocking questions
+## 25. Blocking dependencies
 
-1. **Gateway credential for measurement (SR-G2).** Implementation and every non-live gate need no
-   credential. The live run (S16, EC I6) needs the gateway base URL and a credential supplied as environment
-   variables by the controller. If unavailable, the honest verdict is
-   `IMPLEMENTATION_COMPLETE_MEASUREMENT_PENDING`. The gateway was not probed in this session (not verified).
-2. **Pilot repository (EC I8).** Same dependency as Phase 1 PP1/PP2 and Phase 2 K2/K6. Not needed for
-   implementation.
+1. **Phase 2 acceptance** (R1, ordering): S8 and S16 need the accepted fencing primitive; every shared-surface
+   slice needs the rebase.
+2. **Lane A S0**: every slice marked "after S0".
+3. **Gateway credential and preregistration** (SR-G2, SR-G3): S21. Without them the verdict is
+   `…MEASUREMENT_PENDING…`. Neither gateway model was probed in this session (not verified).
+4. **Phase 2 agent-runtime repair**: S22. Without it the verdict carries `ASSURANCE_ONLY_LOOP`.
+5. **Pilot repository**: DF-6 only.
 
-Neither blocks planning.
+None blocks plan lock.
 
 ---
 
 ## Output
 
 ```text
-PLAN_STATUS: DRAFT v1 — awaiting controller Codex plan review
+PLAN_STATUS: LOCKED v2 (pending controller confirmation)
 BASE_SHA: 00a68895d205122767167942326e2e0466571059 (Phase 2 not accepted)
-BASELINE: pnpm install --frozen-lockfile exit 0; pnpm verify:all PASS (548 tests / 50 files / 28 required suites)
+REVIEWED_V1: a2a7b8ad09a5389339fc3ef7131ae7b2b294d97f — Codex REQUEST_CHANGES 0.99 (1 CRITICAL, 8 HIGH, 5 MEDIUM, 1 LOW), all dispositioned
+BASELINE: lane-observed at a2a7b8a — verify:all exit 0; tests 548 pass 548; 50 files; 28 required suites; compat 13 schemas
 PLAN_FILES:
   - docs/implementation/phases/phase-04-plan.md
   - docs/implementation/phases/phase-04-architecture.md
@@ -834,9 +1456,10 @@ PLAN_FILES:
   - docs/implementation/phases/phase-04-risk-register.md
   - docs/implementation/phases/phase-04-research-register.md
   - docs/implementation/phases/phase-04-threat-model-delta.md
-  - docs/implementation/phases/phase-04-review-log.md (empty skeleton)
+  - docs/implementation/phases/phase-04-review-log.md
+  - docs/implementation/phases/phase-04-plan-review-codex-v1.md
 NEW_THIRD_PARTY_DEPENDENCIES: none
-SHARED_SURFACE_REQUESTS: §17 (ports 4, contracts 8, migrations 4, suites 28, root build 3, dictionary 1, other 5, Lane A 5, controller 2)
-OPEN_DECISIONS: D-1 … D-7
-READY_FOR_IMPLEMENTATION: no — plan review, adjudication and §17 reconciliation first
+GATING: shadow only in Phase 4 (user decision); gating/promotion/thresholds/R2 admission deferred
+SHARED_SURFACE_REQUESTS: §19 (S0 4, ports 3, contracts 6 (+ SR-C3 withdrawn, SR-C5 moved to S0), migrations 3 (+ 0201_run_events withdrawn), fencing CR-F1, gates 4, dictionary 2 + loader, other 6, controller 3)
+READY_FOR_IMPLEMENTATION: after controller confirmation, Phase 2 acceptance and Lane A S0 (pre-S0 slices excepted)
 ```
