@@ -239,6 +239,11 @@ export const REQUIRED_SUITES = Object.freeze({
   // content spotlighted outside the instructions.
   'asep-suite:review-packet': 'packages/application/src/assurance/packet.test.ts',
   'asep-suite:review-prompt': 'packages/application/src/assurance/prompt.test.ts',
+  // Nothing reaches a reviewer gateway unless the push guard passed and the egress
+  // decision over the exact packet bytes is clear; deterministic checks catch each
+  // seeded violation and false-green evidence.
+  'asep-suite:assurance-checks': 'packages/application/src/assurance/checks.test.ts',
+  'asep-suite:assurance-egress': 'packages/application/src/assurance/egress.test.ts',
 });
 
 /** The machine-readable marker a suite prints at module load: `SUITE-ID: <id>`. */

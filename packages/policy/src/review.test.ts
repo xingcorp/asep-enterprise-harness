@@ -273,6 +273,10 @@ test('egress classification is policy data and fails closed', () => {
   assert.equal(matchesPathGlob('src/?.ts', 'src/ab.ts'), false);
   assert.equal(matchesPathGlob('**/secrets/**', 'secrets/x'), true);
   assert.equal(matchesPathGlob('a.b', 'aXb'), false);
+  // Deny lists match case-insensitively; grants can ask for an exact-case match.
+  assert.equal(matchesPathGlob('src/**', 'SRC/a.ts'), true);
+  assert.equal(matchesPathGlob('src/**', 'SRC/a.ts', { caseSensitive: true }), false);
+  assert.equal(matchesPathGlob('src/**', 'src/a.ts', { caseSensitive: true }), true);
 });
 
 test('malformed review policy fails closed', () => {

@@ -520,7 +520,7 @@ export function isNormalizedRepoPath(path: string): boolean {
 
 const GLOB_CACHE = new Map<string, RegExp>();
 
-function globToRegExp(glob: string): RegExp {
+function globToRegExp(glob: string, caseSensitive: boolean): RegExp {
   let source = '';
   for (let i = 0; i < glob.length; ) {
     if (glob.startsWith('**/', i)) {
@@ -535,18 +535,22 @@ function globToRegExp(glob: string): RegExp {
       i += 1;
     }
   }
-  return new RegExp(`^${source}$`, 'i');
+  return new RegExp(`^${source}$`, caseSensitive ? '' : 'i');
 }
 
 /**
- * Case-insensitive glob match over a repo-relative POSIX path: `**` spans directories
- * (`**\/` also matches zero of them); `*` and `?` stay within one segment.
+ * Glob match over a repo-relative POSIX path: `**` spans directories (`**\/` also
+ * matches zero of them); `*` and `?` stay within one segment. Case-insensitive by
+ * default, which is the conservative choice for deny lists; pass `caseSensitive` where
+ * a match grants something (an allowed path).
  */
-export function matchesPathGlob(glob: string, path: string): boolean {
-  let re = GLOB_CACHE.get(glob);
+export function matchesPathGlob(glob: string, path: string, options: { readonly caseSensitive?: boolean } = {}): boolean {
+  const caseSensitive = options.caseSensitive ?? false;
+  const key = `${caseSensitive ? 's' : 'i'}:${glob}`;
+  let re = GLOB_CACHE.get(key);
   if (re === undefined) {
-    re = globToRegExp(glob);
-    GLOB_CACHE.set(glob, re);
+    re = globToRegExp(glob, caseSensitive);
+    GLOB_CACHE.set(key, re);
   }
   return re.test(path);
 }

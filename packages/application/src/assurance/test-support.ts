@@ -5,6 +5,7 @@
 import { createHash } from 'node:crypto';
 import type { ArtifactId, ArtifactRef, AttemptId, OrganizationId, ProjectId, RepositoryBindingId, RunId, TaskId } from '@asep/contracts';
 import type { PacketLimits, PacketSources } from './packet.js';
+import type { ChangedFile, PacketOmissionReason, ReviewBlob } from './local-types.js';
 
 export function utf8(text: string): Uint8Array {
   return new TextEncoder().encode(text);
@@ -77,11 +78,35 @@ export interface FixtureWorld {
   readonly limits: PacketLimits;
 }
 
+export interface FixtureFile {
+  readonly path: string;
+  readonly status: 'A' | 'M' | 'D' | 'R';
+  readonly binary?: boolean;
+  /** Post-image text; omitted files have none. */
+  readonly content?: string;
+  readonly omittedReason?: PacketOmissionReason;
+  readonly artifactId?: string;
+}
+
+/** The changed files of the default diff. */
+export const DEFAULT_FILES: readonly FixtureFile[] = [
+  { path: 'src/util.ts', status: 'M', content: UTIL_TS, artifactId: 'art-util' },
+  { path: 'assets/logo.png', status: 'M', binary: true },
+  { path: 'src/feature.ts', status: 'A', content: FEATURE_TS, artifactId: 'art-feature' },
+  { path: 'src/old.ts', status: 'D' },
+];
+
 export interface FixtureOptions {
   readonly diff?: string;
+  /** Changed files; must agree with `diff`. */
+  readonly files?: readonly FixtureFile[];
   readonly unitStdout?: string;
   readonly unitExitCode?: number;
   readonly round?: number;
+  readonly objective?: string;
+  readonly allowedPaths?: readonly string[];
+  readonly forbiddenChanges?: readonly string[];
+  readonly acceptanceCheckIds?: readonly string[];
 }
 
 /** A complete, consistent attempt: fresh review of round 1 unless `round` says otherwise. */
@@ -98,8 +123,23 @@ export function fixtureWorld(options: FixtureOptions = {}): FixtureWorld {
   const diffText = options.diff ?? DIFF;
   const diffRef = store('review-diff', 'art-diff', diffText);
   const deltaRef = reReview ? store('review-diff', 'art-delta', diffText) : null;
-  const featureRef = store('review-blob', 'art-feature', FEATURE_TS);
-  const utilRef = store('review-blob', 'art-util', UTIL_TS);
+  const changedFiles: ChangedFile[] = [];
+  const postImages: ReviewBlob[] = [];
+  (options.files ?? DEFAULT_FILES).forEach((file, i) => {
+    const binary = file.binary ?? false;
+    changedFiles.push({ path: file.path, status: file.status, binary });
+    const omittedReason: PacketOmissionReason | null =
+      file.status === 'D' ? 'deleted' : binary ? 'binary' : (file.omittedReason ?? null);
+    const content = file.content ?? '';
+    const lineCount = content === '' ? 0 : content.replace(/\n$/, '').split('\n').length;
+    if (omittedReason === null) {
+      const blob = store('review-blob', file.artifactId ?? `art-file-${i}`, content);
+      postImages.push({ path: file.path, blob, bytes: utf8(content).byteLength, lineCount, omittedReason: null });
+    } else {
+      const bytes = omittedReason === 'deleted' ? 0 : binary ? 2048 : utf8(content).byteLength;
+      postImages.push({ path: file.path, blob: null, bytes, lineCount: 0, omittedReason });
+    }
+  });
   const unitStdout = store('raw-output', 'art-unit-stdout', options.unitStdout ?? NODE_TEST_STDOUT);
   const unitStderr = store('raw-output', 'art-unit-stderr', '');
   const typecheckStdout = store('raw-output', 'art-typecheck-stdout', 'tsc: no errors\n');
@@ -125,13 +165,13 @@ export function fixtureWorld(options: FixtureOptions = {}): FixtureWorld {
     workOrder: {
       id: 'task-1' as TaskId,
       runId: 'run-1' as RunId,
-      objective: 'Add a greeting helper',
+      objective: options.objective ?? 'Add a greeting helper',
       requirementIds: ['REQ-2', 'REQ-1'],
       baseSha: TASK_BASE_SHA,
-      allowedPaths: ['src/**', 'assets/**'],
-      forbiddenChanges: ['infra/**'],
+      allowedPaths: [...(options.allowedPaths ?? ['src/**', 'assets/**'])],
+      forbiddenChanges: [...(options.forbiddenChanges ?? ['infra/**'])],
       architectureInvariants: ['domain imports nothing from adapters'],
-      acceptanceCheckIds: ['unit', 'typecheck'],
+      acceptanceCheckIds: [...(options.acceptanceCheckIds ?? ['unit', 'typecheck'])],
       risk: 'R1',
       requiredSkills: [],
       budget: { maxTurns: 10, maxToolCalls: 50, maxCostUsd: 5, maxWallClockMinutes: 30 },
@@ -149,23 +189,13 @@ export function fixtureWorld(options: FixtureOptions = {}): FixtureWorld {
         ref: diffRef,
         bytes: utf8(diffText).byteLength,
         overLimit: false,
-        changedFiles: [
-          { path: 'src/util.ts', status: 'M', binary: false },
-          { path: 'assets/logo.png', status: 'M', binary: true },
-          { path: 'src/feature.ts', status: 'A', binary: false },
-          { path: 'src/old.ts', status: 'D', binary: false },
-        ],
+        changedFiles,
       },
       repairDelta:
         deltaRef === null
           ? null
           : { ref: deltaRef, bytes: utf8(diffText).byteLength, overLimit: false, changedFiles: [] },
-      postImages: [
-        { path: 'src/feature.ts', blob: featureRef, bytes: utf8(FEATURE_TS).byteLength, lineCount: 3, omittedReason: null },
-        { path: 'src/util.ts', blob: utilRef, bytes: utf8(UTIL_TS).byteLength, lineCount: 2, omittedReason: null },
-        { path: 'assets/logo.png', blob: null, bytes: 2048, lineCount: 0, omittedReason: 'binary' },
-        { path: 'src/old.ts', blob: null, bytes: 0, lineCount: 0, omittedReason: 'deleted' },
-      ],
+      postImages,
     },
     execution: {
       verdict: 'PASS',
@@ -203,4 +233,55 @@ export function fixtureWorld(options: FixtureOptions = {}): FixtureWorld {
   };
 
   return { sources, contents, limits: { maxBytes: 400000, excerptBytesPerStream: 4096, excerptBytesTotal: 65536 } };
+}
+
+export interface DiffEntry {
+  readonly path: string;
+  readonly status: 'A' | 'M' | 'D' | 'R';
+  readonly oldPath?: string;
+  readonly binary?: boolean;
+  /** Unchanged lines at the top of the hunk. */
+  readonly context?: readonly string[];
+  readonly removed?: readonly string[];
+  readonly added?: readonly string[];
+}
+
+/** A git-style unified diff for the given entries. */
+export function gitDiff(entries: readonly DiffEntry[]): string {
+  const out: string[] = [];
+  for (const e of entries) {
+    const oldPath = e.oldPath ?? e.path;
+    out.push(`diff --git a/${oldPath} b/${e.path}`);
+    if (e.status === 'A') out.push('new file mode 100644');
+    if (e.status === 'D') out.push('deleted file mode 100644');
+    if (e.status === 'R') out.push('similarity index 90%', `rename from ${oldPath}`, `rename to ${e.path}`);
+    if (e.binary) {
+      out.push(`Binary files ${e.status === 'A' ? '/dev/null' : `a/${oldPath}`} and ${e.status === 'D' ? '/dev/null' : `b/${e.path}`} differ`);
+      continue;
+    }
+    const context = e.context ?? [];
+    const removed = e.removed ?? [];
+    const added = e.added ?? [];
+    if (context.length + removed.length + added.length === 0) continue;
+    out.push(e.status === 'A' ? '--- /dev/null' : `--- a/${oldPath}`);
+    out.push(e.status === 'D' ? '+++ /dev/null' : `+++ b/${e.path}`);
+    const oldCount = context.length + removed.length;
+    const newCount = context.length + added.length;
+    out.push(`@@ -${oldCount === 0 ? 0 : 1},${oldCount} +${newCount === 0 ? 0 : 1},${newCount} @@`);
+    for (const line of context) out.push(` ${line}`);
+    for (const line of removed) out.push(`-${line}`);
+    for (const line of added) out.push(`+${line}`);
+  }
+  return `${out.join('\n')}\n`;
+}
+
+/** A fixture whose diff and changed files both come from `entries`. */
+export function worldFromDiff(entries: readonly DiffEntry[], options: Omit<FixtureOptions, 'diff' | 'files'> = {}): FixtureWorld {
+  const files: FixtureFile[] = entries.map((e) => ({
+    path: e.path,
+    status: e.status,
+    ...(e.binary ? { binary: true } : {}),
+    ...(e.status === 'D' || e.binary ? {} : { content: [...(e.context ?? []), ...(e.added ?? [])].map((l) => `${l}\n`).join('') }),
+  }));
+  return fixtureWorld({ ...options, diff: gitDiff(entries), files });
 }

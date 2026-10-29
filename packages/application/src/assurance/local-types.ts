@@ -9,6 +9,8 @@ import type { FindingLifecycleState, FindingSeverity, FindingSource } from '@ase
 
 export type ReviewKind = 'fresh' | 're-review';
 export type PacketOmissionReason = 'binary' | 'too-large' | 'deleted' | 'submodule' | 'non-utf8';
+export type BlockReason = 'secret-in-diff' | 'forbidden-path' | 'unscannable-sensitive-change';
+export type EgressDecision = 'CLEAR' | 'STOP_SECRET' | 'STOP_CLASSIFIED' | 'STOP_UNSCANNABLE';
 
 // --- trusted review source port (@asep/ports: ReviewSourceReader) ----------------------
 
@@ -28,7 +30,22 @@ export interface ReviewBlob {
   readonly omittedReason: PacketOmissionReason | null;
 }
 
-// --- review contracts (@asep/contracts: review-finding/v1, review-packet/v1) -----------
+// --- review contracts (@asep/contracts: review-finding/v1, review-packet/v1,
+//     architecture-invariant 1.1.0) -----------------------------------------------------
+
+export interface ArchitectureInvariantRecord {
+  readonly id: string;
+  readonly statement: string;
+  readonly category: 'DEPENDENCY' | 'LAYERING' | 'SECURITY' | 'DATA' | 'NAMING' | 'OTHER';
+  readonly rationale?: string;
+  /** Optional machine check; invariants without one are judged by reviewers only. */
+  readonly check?: {
+    readonly kind: 'forbidden-import';
+    readonly fromGlobs: readonly string[];
+    /** JavaScript regular expression over the import specifier. */
+    readonly specifierPattern: string;
+  };
+}
 
 export type FindingCategory =
   | 'SPEC'
