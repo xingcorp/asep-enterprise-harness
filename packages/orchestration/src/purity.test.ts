@@ -25,8 +25,10 @@
 //      locale-dependent ones, and the error members that expose host paths), whether as an identifier, with
 //      unicode escapes, or as a literal key; a string holding a reflective or denied member name is a literal key
 //      wherever it appears. A computed member access must have a key whose type is a finite union of literals, and
-//      those literals are checked too. Math is allowed only as Math.<member> for a fixed set of pure members, and
-//      Symbol only as a call or a member other than its registry reads.
+//      those literals are checked too; a type assertion inside a computed key is refused, because it gives a key
+//      built at run time a literal type it does not have, and so is a double cast through `unknown` or `any`. Math
+//      is allowed only as Math.<member> for a fixed set of pure members, and Symbol only as a call or a member other
+//      than its registry reads.
 //
 // The suite asks the TypeScript checker, as the Phase 2 fitness guard does: it
 // loads the package's own project with TypeScript 7's native API and overlays
@@ -55,6 +57,7 @@ import { API } from 'typescript/unstable/sync';
 import type { Checker, Symbol as CheckerSymbol, Type } from 'typescript/unstable/sync';
 import {
   SyntaxKind,
+  isAsExpression,
   isBindingElement,
   isBreakOrContinueStatement,
   isCallExpression,
@@ -78,6 +81,7 @@ import {
   isNamedExports,
   isNamedImports,
   isNoSubstitutionTemplateLiteral,
+  isParenthesizedExpression,
   isPropertyAccessExpression,
   isPropertyAssignment,
   isPropertyDeclaration,
@@ -87,6 +91,7 @@ import {
   isShorthandPropertyAssignment,
   isStringLiteral,
   isTypeAliasDeclaration,
+  isTypeAssertion,
   isTypeNode,
 } from 'typescript/unstable/ast';
 import type { ExportDeclaration, Identifier, ImportDeclaration, Node, SourceFile } from 'typescript/unstable/ast';
@@ -191,7 +196,9 @@ export interface PurityViolation {
     | 'ambient-declaration'
     | 'reflective-member'
     | 'denied-member'
-    | 'computed-access';
+    | 'computed-access'
+    | 'asserted-key'
+    | 'double-cast';
   readonly detail: string;
 }
 
@@ -224,6 +231,30 @@ function exportIsTypeOnly(node: ExportDeclaration): boolean {
   const clause = node.exportClause;
   if (clause === undefined || !isNamedExports(clause)) return false;
   return clause.elements.length > 0 && clause.elements.every((e) => e.isTypeOnly);
+}
+
+/** True for an `x as T` or `<T>x` assertion. */
+function isAssertion(node: Node): boolean {
+  return isAsExpression(node) || isTypeAssertion(node);
+}
+
+/** True when the subtree holds a type assertion anywhere. */
+function holdsAssertion(node: Node): boolean {
+  if (isAssertion(node)) return true;
+  let found = false;
+  node.forEachChild((child) => {
+    found ||= holdsAssertion(child);
+  });
+  return found;
+}
+
+/** True for an assertion whose operand, parentheses aside, is itself asserted to `unknown` or `any`. */
+function isDoubleCast(node: Node): boolean {
+  if (!isAsExpression(node) && !isTypeAssertion(node)) return false;
+  let inner: Node = node.expression;
+  while (isParenthesizedExpression(inner)) inner = inner.expression;
+  return (isAsExpression(inner) || isTypeAssertion(inner))
+    && (inner.type.kind === SyntaxKind.UnknownKeyword || inner.type.kind === SyntaxKind.AnyKeyword);
 }
 
 function literalText(node: Node | undefined): string | null {
@@ -292,8 +323,15 @@ class FileCheck {
     if (!local && !ALLOWED_GLOBALS.has(name)) this.add('ambient-global', name);
   }
 
-  /** The key of a computed member access or a computed property name: a finite union of literals, each allowed. */
+  /**
+   * The key of a computed member access or a computed property name: a finite union of literals, each allowed, and
+   * no type assertion inside it, since the checker would then report the asserted type, not the value's.
+   */
   private computedKey(whole: Node, key: Node): void {
+    if (holdsAssertion(key)) {
+      this.add('asserted-key', this.textOf(whole));
+      return;
+    }
     const keys = literalKeys(this.checker.getTypeAtLocation(key));
     if (keys === null) this.add('computed-access', this.textOf(whole));
     else for (const k of keys) this.literalKey(k);
@@ -376,6 +414,9 @@ class FileCheck {
       this.computedKey(node, node.argumentExpression);
     } else if (isComputedPropertyName(node)) {
       this.computedKey(node, node.expression);
+    } else if (isDoubleCast(node)) {
+      // `x as unknown as T` drops every type relation between the value and what the code then treats it as.
+      this.add('double-cast', this.textOf(node));
     } else if (isShorthandPropertyAssignment(node)) {
       // `{ name }` reads the value `name` refers to, not a property.
       if (!typeOnly && isIdentifier(node.name)) this.reference(node.name.text, this.checker.getShorthandAssignmentValueSymbol(node));
@@ -554,6 +595,26 @@ const SEEDED: readonly { name: string; source: string; rule: PurityViolation['ru
   { name: 'stack trace with host paths', source: 'const where = new Error("x").stack;', rule: 'denied-member', detail: 'stack' },
   { name: 'global symbol registry', source: 'const key = Symbol.for("x");', rule: 'denied-member', detail: 'Symbol.for' },
   { name: 'global symbol registry through an alias', source: 'const S = Symbol;\nconst key = S.keyFor(S("x"));', rule: 'banned-global', detail: 'Symbol' },
+  // The v6 re-audit's E12: the key is built at run time and asserted to a harmless literal type.
+  {
+    name: 'Function constructor through an asserted computed key',
+    source: 'export const reviewClock = ((() => {})[("constr" + "uctor") as "name"] as unknown as (body: string) => () => number)("return Date.now()")();',
+    rule: 'asserted-key',
+    detail: '(() => {})[("constr" + "uctor") as "name"]',
+  },
+  {
+    name: 'the same expression is a double cast too',
+    source: 'export const reviewClock = ((() => {})[("constr" + "uctor") as "name"] as unknown as (body: string) => () => number)("return Date.now()")();',
+    rule: 'double-cast',
+    detail: '(() => {})[("constr" + "uctor") as "name"] as unknown as (body: string) => () => number',
+  },
+  { name: 'angle-bracket assertion in a computed key', source: 'declare const k: string;\nconst f = (() => {})[<"name">k];', rule: 'asserted-key', detail: '(() => {})[<"name">k]' },
+  { name: 'assertion in a computed property name', source: 'declare const k: string;\nconst o = { [k as "a"]: 1 };', rule: 'asserted-key', detail: '[k as "a"]' },
+  { name: 'assertion nested deep in a computed key', source: 'declare const k: string;\nconst f = (() => {})[(`${k}` as "name")];', rule: 'asserted-key', detail: '(() => {})[(`${k}` as "name")]' },
+  { name: 'double cast through unknown', source: 'const f = (() => 1) as unknown as (body: string) => number;', rule: 'double-cast', detail: '(() => 1) as unknown as (body: string) => number' },
+  { name: 'double cast through any', source: 'const f = (() => 1) as any as (body: string) => number;', rule: 'double-cast', detail: '(() => 1) as any as (body: string) => number' },
+  { name: 'angle-bracket double cast', source: 'const f = <(body: string) => number><unknown>(() => 1);', rule: 'double-cast', detail: '<(body: string) => number><unknown>(() => 1)' },
+  { name: 'double cast through parentheses', source: 'const f = ((() => 1) as unknown) as (body: string) => number;', rule: 'double-cast', detail: '((() => 1) as unknown) as (body: string) => number' },
 ];
 
 const seedFile = (i: number) => `purity-seed-${String(i).padStart(2, '0')}.ts`;
@@ -611,6 +672,9 @@ test('clean constructs are not flagged (no false positives)', () => {
     '  return [record["status"], table[kind], list[0]] as const;',
     '}',
     "const keyed = { ['fixed']: 1 };",
+    'const widened = 1 as number;',
+    'const narrowed = { kind: "a" } as { readonly kind: Kind };',
+    'const unknownOnly = JSON.parse("1") as unknown;',
     'const globals = [',
     '  Object.keys({ a: 1 }), Array.from([1]), Number.isFinite(1), String(1), Boolean(0), BigInt(1),',
     '  new Map<string, number>(), new Set<number>(), JSON.stringify({}), new Error("x").message,',
@@ -619,7 +683,7 @@ test('clean constructs are not flagged (no false positives)', () => {
     'const shorthand = { label, t };',
     'const { status } = { status: "ok" };',
     'export { label as text };',
-    'export { decideTask, label, t, counted, m, n, fields, keyed, globals, shorthand, status };',
+    'export { decideTask, label, t, counted, m, n, fields, keyed, widened, narrowed, unknownOnly, globals, shorthand, status };',
     'export type { TaskId, RunId, Id, Contracts, WorkflowEngine, TaskState, Types };',
   ].join('\n');
   const scan = scanCore({ 'purity-clean.ts': clean });
