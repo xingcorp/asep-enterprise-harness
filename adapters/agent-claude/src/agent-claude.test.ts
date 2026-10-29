@@ -63,6 +63,8 @@ const POLICY: ToolPolicyProfile = {
   allowedTools: ['read', 'write'], disallowedTools: ['bash'], networkProfile: 'restricted-egress',
 };
 const BUDGET = { maxTurns: 5, maxToolCalls: 10, maxCostUsd: 1, maxWallClockMinutes: 1 };
+const ATTEMPT = 'D'.repeat(26) as AttemptId;
+const BINDING = 'E'.repeat(26);
 
 // --- the fake model API -----------------------------------------------------------
 
@@ -105,6 +107,16 @@ function database(): Promise<{ db: PgliteClient; objects: string }> {
     await db.query('insert into organizations (id, name) values ($1, $2)', [scope.organizationId, 'Acme']);
     await db.query('insert into projects (id, organization_id, name, default_branch) values ($1,$2,$3,$4)',
       [scope.projectId, scope.organizationId, 'web', 'main']);
+    // The attempt the requests name: the provider links its artifacts to it.
+    await db.query(`insert into repository_bindings
+      (id, organization_id, project_id, forge, github_host, github_owner, github_repo, default_base_branch)
+      values ($1, $2, $3, 'github', 'github.com', 'acme', 'web', 'main')`, [BINDING, scope.organizationId, scope.projectId]);
+    await db.query(`insert into runs (id, organization_id, project_id, repository_binding_id, status, risk)
+      values ($1, $2, $3, $4, 'EXECUTING', 'R0')`, ['F'.repeat(26), scope.organizationId, scope.projectId, BINDING]);
+    await db.query(`insert into tasks (id, organization_id, project_id, run_id, repository_binding_id, status, risk)
+      values ($1, $2, $3, $4, $5, 'EXECUTING', 'R0')`, ['G'.repeat(26), scope.organizationId, scope.projectId, 'F'.repeat(26), BINDING]);
+    await db.query(`insert into attempts (id, organization_id, project_id, task_id, repository_binding_id, status)
+      values ($1, $2, $3, $4, $5, 'AGENT_RUNNING')`, [ATTEMPT, scope.organizationId, scope.projectId, 'G'.repeat(26), BINDING]);
     return { db, objects: await mkdtemp(join(tmpdir(), 'claude-provider-objects-')) };
   })();
   return shared;
@@ -200,7 +212,7 @@ async function harness(opts: { echoKey?: boolean; workOrder?: unknown } = {}): P
 
 function request(h: Harness, over: Partial<AgentExecuteRequest> = {}): AgentExecuteRequest {
   return {
-    attemptId: 'D'.repeat(26) as AttemptId,
+    attemptId: ATTEMPT,
     workOrderRef: h.workRef,
     contextPackRef: h.ctxRef,
     workspace: { workspaceId: 'W'.repeat(26) as WorkspaceId, leaseId: 'lease-1' },
@@ -283,6 +295,11 @@ test('a contained attempt: internal network, proxy, agent, teardown — and an u
     assert.deepEqual(manifest.inputs.map((i: { sha256: string }) => i.sha256), [h.workRef.sha256, h.ctxRef.sha256],
       'the manifest records the hashes of the inputs the agent was given');
     assert.deepEqual(manifest.teardown, []);
+    // Every artifact is linked to the attempt it was produced for.
+    const { db } = await database();
+    const linked = await db.query('select id from artifacts where attempt_id = $1', [ATTEMPT]);
+    const linkedIds = new Set(linked.rows.map((r) => r['id']));
+    for (const ref of obs.eventArtifactRefs) assert.ok(linkedIds.has(ref.artifactId), `${ref.kind} is linked to the attempt`);
     // G5: no harness-owned fact comes from the provider.
     for (const k of ['attemptId', 'resultSha', 'changedFiles']) {
       assert.equal((obs as unknown as Record<string, unknown>)[k], undefined);

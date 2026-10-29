@@ -188,7 +188,25 @@ async function store(dir: string) {
   await db.query('insert into organizations (id, name) values ($1, $2)', [scope.organizationId, 'Acme']);
   await db.query('insert into projects (id, organization_id, name, default_branch) values ($1,$2,$3,$4)',
     [scope.projectId, scope.organizationId, 'web', 'main']);
+  await db.query(`insert into repository_bindings
+    (id, organization_id, project_id, forge, github_host, github_owner, github_repo, default_base_branch)
+    values ($1, $2, $3, 'github', 'github.com', 'acme', 'web', 'main')`, [BINDING, scope.organizationId, scope.projectId]);
   return { db, store: new ContentAddressedArtifactStore(db, new FilesystemObjectStore(join(dir, 'objects'))) };
+}
+
+const BINDING = 'E'.repeat(26);
+
+// The attempt a request names, so the artifacts the provider links to it have
+// a row to reference.
+async function seedAttempt(db: PgliteClient, attemptId: string): Promise<void> {
+  const run = `R${attemptId.slice(1)}`;
+  const task = `T${attemptId.slice(1)}`;
+  await db.query(`insert into runs (id, organization_id, project_id, repository_binding_id, status, risk)
+    values ($1, $2, $3, $4, 'EXECUTING', 'R0')`, [run, scope.organizationId, scope.projectId, BINDING]);
+  await db.query(`insert into tasks (id, organization_id, project_id, run_id, repository_binding_id, status, risk)
+    values ($1, $2, $3, $4, $5, 'EXECUTING', 'R0')`, [task, scope.organizationId, scope.projectId, run, BINDING]);
+  await db.query(`insert into attempts (id, organization_id, project_id, task_id, repository_binding_id, status)
+    values ($1, $2, $3, $4, $5, 'AGENT_RUNNING')`, [attemptId, scope.organizationId, scope.projectId, task, BINDING]);
 }
 
 async function put(s: ContentAddressedArtifactStore, kind: string, value: unknown): Promise<ArtifactRef> {
@@ -250,6 +268,7 @@ test('the agent container has no route out, reaches the model only through the p
     });
     const contextPackRef = await put(s, 'context-pack', { relevantFiles: [] });
     const req = request(workOrderRef, contextPackRef);
+    await seedAttempt(db, req.attemptId);
     const obs = await (await provider(w, s, 'canary')).execute(req);
     assert.equal(obs.status, 'AGENT_DONE', obs.knownLimitations.join('; '));
     const r = JSON.parse(obs.summary) as Record<string, any>;
@@ -327,6 +346,7 @@ test('a hung agent is removed by the wall-clock budget, and so is everything els
     const req = request(workOrderRef, contextPackRef, {
       budget: { maxTurns: 5, maxToolCalls: 10, maxCostUsd: 1, maxWallClockMinutes: 0.15 },
     });
+    await seedAttempt(db, req.attemptId);
     const started = Date.now();
     const obs = await (await provider(w, s, 'hang')).execute(req);
     assert.equal(obs.status, 'BUDGET_EXHAUSTED', obs.knownLimitations.join('; '));

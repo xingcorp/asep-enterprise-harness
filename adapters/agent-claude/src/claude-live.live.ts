@@ -88,6 +88,17 @@ async function storeIn(dir: string) {
   await db.query('insert into organizations (id, name) values ($1, $2)', [scope.organizationId, 'Acme']);
   await db.query('insert into projects (id, organization_id, name, default_branch) values ($1,$2,$3,$4)',
     [scope.projectId, scope.organizationId, 'web', 'main']);
+  // One attempt row: the provider links the artifacts it records to it.
+  const ids = { binding: 'E'.repeat(26), run: 'F'.repeat(26), task: 'G'.repeat(26) };
+  await db.query(`insert into repository_bindings
+    (id, organization_id, project_id, forge, github_host, github_owner, github_repo, default_base_branch)
+    values ($1, $2, $3, 'github', 'github.com', 'acme', 'web', 'main')`, [ids.binding, scope.organizationId, scope.projectId]);
+  await db.query(`insert into runs (id, organization_id, project_id, repository_binding_id, status, risk)
+    values ($1, $2, $3, $4, 'EXECUTING', 'R0')`, [ids.run, scope.organizationId, scope.projectId, ids.binding]);
+  await db.query(`insert into tasks (id, organization_id, project_id, run_id, repository_binding_id, status, risk)
+    values ($1, $2, $3, $4, $5, 'EXECUTING', 'R0')`, [ids.task, scope.organizationId, scope.projectId, ids.run, ids.binding]);
+  await db.query(`insert into attempts (id, organization_id, project_id, task_id, repository_binding_id, status)
+    values ($1, $2, $3, $4, $5, 'AGENT_RUNNING')`, [ATTEMPT, scope.organizationId, scope.projectId, ids.task, ids.binding]);
   const store = new ContentAddressedArtifactStore(db, new FilesystemObjectStore(join(dir, 'objects')));
   const put = async (kind: string, value: unknown): Promise<ArtifactRef> => {
     const bytes = new TextEncoder().encode(JSON.stringify(value));
@@ -98,9 +109,11 @@ async function storeIn(dir: string) {
   return { db, store, put };
 }
 
+const ATTEMPT = `L${randomUUID().replace(/-/g, '').slice(0, 25).toUpperCase()}` as AttemptId;
+
 function request(workOrderRef: ArtifactRef, contextPackRef: ArtifactRef): AgentExecuteRequest {
   return {
-    attemptId: `L${randomUUID().replace(/-/g, '').slice(0, 25).toUpperCase()}` as AttemptId,
+    attemptId: ATTEMPT,
     workOrderRef, contextPackRef,
     workspace: { workspaceId: 'W'.repeat(26) as WorkspaceId, leaseId: 'lease-live' },
     budget: { maxTurns: 8, maxToolCalls: 20, maxCostUsd: 0.5, maxWallClockMinutes: 5 },

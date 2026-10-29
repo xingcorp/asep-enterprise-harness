@@ -213,34 +213,49 @@ function modelCall(path = '/v1/messages?beta=true', method = 'POST') {
   });
 }
 
+// Reads the work order and, for an `add <file>` objective, writes the file.
+function workTheOrder() {
+  const { workOrder } = inputsFromPrompt();
+  if (!workOrder) {
+    result({ subtype: 'error_during_execution', is_error: true, result: 'no work order in the prompt' });
+    process.exit(1);
+  }
+  const bytes = readFileSync(workOrder.path);
+  assistant([{ type: 'tool_use', id: 'toolu_1', name: 'Read', input: { file_path: workOrder.path } }]);
+  toolResult('toolu_1', bytes.toString('utf8'));
+  if (sha256(bytes) !== workOrder.sha256) {
+    result({ subtype: 'error_during_execution', is_error: true, result: 'work order hash mismatch' });
+    process.exit(1);
+  }
+  let objective = '';
+  try {
+    objective = String(JSON.parse(bytes.toString('utf8')).objective ?? '');
+  } catch { /* not JSON */ }
+  const add = /^add (\S+)$/.exec(objective);
+  if (add) {
+    writeFileSync(join(process.cwd(), add[1]), 'written by the fake claude CLI\n');
+    assistant([{ type: 'tool_use', id: 'toolu_2', name: 'Edit', input: { file_path: add[1] } }]);
+    toolResult('toolu_2', 'ok');
+  }
+  assistant([{ type: 'text', text: 'did the thing' }]);
+  result();
+}
+
 async function main() {
   switch (SCENARIO) {
-    case 'ok': {
+    case 'ok':
       init();
-      const { workOrder } = inputsFromPrompt();
-      if (!workOrder) {
-        result({ subtype: 'error_during_execution', is_error: true, result: 'no work order in the prompt' });
+      workTheOrder();
+      return;
+    case 'ok-model': {
+      // Asks the model first, through ANTHROPIC_BASE_URL, as the real CLI does.
+      init();
+      const r = await modelCall();
+      if (r.status !== 200) {
+        result({ subtype: 'error_during_execution', is_error: true, result: `model call failed: ${r.status}` });
         process.exit(1);
       }
-      const bytes = readFileSync(workOrder.path);
-      assistant([{ type: 'tool_use', id: 'toolu_1', name: 'Read', input: { file_path: workOrder.path } }]);
-      toolResult('toolu_1', bytes.toString('utf8'));
-      if (sha256(bytes) !== workOrder.sha256) {
-        result({ subtype: 'error_during_execution', is_error: true, result: 'work order hash mismatch' });
-        process.exit(1);
-      }
-      let objective = '';
-      try {
-        objective = String(JSON.parse(bytes.toString('utf8')).objective ?? '');
-      } catch { /* not JSON */ }
-      const add = /^add (\S+)$/.exec(objective);
-      if (add) {
-        writeFileSync(join(process.cwd(), add[1]), 'written by the fake claude CLI\n');
-        assistant([{ type: 'tool_use', id: 'toolu_2', name: 'Edit', input: { file_path: add[1] } }]);
-        toolResult('toolu_2', 'ok');
-      }
-      assistant([{ type: 'text', text: 'did the thing' }]);
-      result();
+      workTheOrder();
       return;
     }
     case 'echo': {

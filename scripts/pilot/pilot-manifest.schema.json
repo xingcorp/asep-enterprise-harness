@@ -36,7 +36,7 @@
         "baseSha": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
         "resultSha": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
         "providerSessionId": { "type": "string", "minLength": 1 },
-        "providerId": { "type": "string", "minLength": 1 },
+        "providerId": { "type": "string", "minLength": 1, "pattern": "^claude:[^\\s@]+@cli-[^\\s@]+$" },
         "pullRequestUrl": {
           "type": "string",
           "pattern": "^https://github\\.com/[^/]+/[^/]+/pull/[0-9]+$"

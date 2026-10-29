@@ -19,6 +19,12 @@
 //   resolvePullRequest        → the `pull_requests` row (url, owning attempt)
 //   resolveLivePullRequest    → the PR as the FORGE reports it now, through the
 //                               forge port, including the commit its head is at
+//   resolveAgentRun           → the artifacts the real Claude adapter recorded
+//                               for the attempt (invocation manifest, CLI event
+//                               stream, egress-proxy log), fetched, re-hashed and
+//                               parsed for what they say about the run
+//   pinnedAgent               → the pilot's pinned Claude configuration, which
+//                               those artifacts are checked against
 //   resolveHumanAuthorization → the `human_authorizations` row, WITH its ed25519
 //                               signature verified against the reviewer public
 //                               key (migration 0010). `signatureValid` is the
@@ -52,8 +58,113 @@ export const OBJECT_STORE_DIR_ENV = 'ASEP_OBJECT_STORE_DIR';
 export const GITHUB_APP_ID_ENV = 'ASEP_GITHUB_APP_ID';
 export const GITHUB_PRIVATE_KEY_ENV = 'ASEP_GITHUB_PRIVATE_KEY_PATH';
 export const GITHUB_INSTALLATION_ENV = 'ASEP_GITHUB_INSTALLATION_ID';
+// The pilot's pinned Claude configuration — the same variables the pilot
+// entrypoint reads — so an agent run is accepted only for what the pilot pinned.
+export const CLAUDE_MODEL_ENV = 'ASEP_CLAUDE_MODEL';
+export const CLAUDE_CLI_VERSION_ENV = 'ASEP_CLAUDE_CLI_VERSION';
+export const AGENT_IMAGE_ENV = 'ASEP_AGENT_IMAGE_DIGEST';
+export const PROXY_IMAGE_ENV = 'ASEP_EGRESS_PROXY_IMAGE_DIGEST';
+export const MODEL_BASE_URL_ENV = 'ASEP_ANTHROPIC_BASE_URL';
+export const DEFAULT_MODEL_BASE_URL = 'https://api.anthropic.com';
+
+// The artifacts the real Claude adapter writes for an attempt that reached the
+// agent container (adapters/agent-claude/src/claude-provider.ts).
+export const AGENT_RUN_KINDS = Object.freeze({
+  invocation: 'claude-invocation', events: 'claude-event-stream', egress: 'claude-egress-log',
+});
+const DIGEST_PINNED = /@sha256:[0-9a-f]{64}$/;
+// An egress-proxy log line for a model call it forwarded and the model answered.
+const FORWARDED_MODEL_CALL = /^\S+ POST \/v1\/messages -> 2\d\d$/;
 
 const sha256Hex = (bytes) => createHash('sha256').update(bytes).digest('hex');
+
+/** The model origin exactly as the Claude adapter records it (no trailing slash). */
+export function normalizeModelBaseUrl(raw) {
+  const url = new URL(raw);
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') throw new Error(`model base URL must be http(s), got '${url.protocol}'`);
+  if (url.username !== '' || url.password !== '' || url.search !== '' || url.hash !== '') {
+    throw new Error('model base URL must not carry userinfo, a query or a fragment');
+  }
+  return url.toString().replace(/\/+$/, '');
+}
+
+/** Validate the pinned Claude configuration a resolver checks agent runs against. */
+export function pinnedAgentConfig(agent) {
+  const out = {};
+  for (const k of ['model', 'cliVersion', 'agentImage', 'proxyImage', 'modelBaseUrl']) {
+    const v = agent?.[k];
+    if (typeof v !== 'string' || v.trim() === '') {
+      throw new Error(`the pinned Claude configuration lacks ${k} — refusing to accept an agent run without knowing what the real one is`);
+    }
+    out[k] = v.trim();
+  }
+  for (const k of ['agentImage', 'proxyImage']) {
+    if (!DIGEST_PINNED.test(out[k])) throw new Error(`the pinned ${k} '${out[k]}' is not digest-pinned (…@sha256:<64hex>)`);
+  }
+  out.modelBaseUrl = normalizeModelBaseUrl(out.modelBaseUrl);
+  return Object.freeze(out);
+}
+
+const utf8 = (bytes) => new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+
+function parseJsonObject(bytes) {
+  try {
+    const v = JSON.parse(utf8(bytes));
+    return v && typeof v === 'object' && !Array.isArray(v) ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+// What the adapter's invocation manifest says it ran.
+function invocationFacts(bytes) {
+  const m = parseJsonObject(bytes);
+  if (!m) return null;
+  return {
+    providerId: m.providerId, model: m.model, cliVersion: m.cliVersion,
+    image: m.image, proxyImage: m.proxyImage,
+    upstream: m.network && typeof m.network === 'object' ? m.network.upstream : undefined,
+  };
+}
+
+// The CLI's first init event and last result event, from its stream-json output.
+function eventFacts(bytes) {
+  let text;
+  try {
+    text = utf8(bytes);
+  } catch {
+    return { init: null, result: null };
+  }
+  let init = null;
+  let result = null;
+  for (const line of text.split('\n')) {
+    if (line.trim() === '') continue;
+    let ev;
+    try {
+      ev = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!ev || typeof ev !== 'object') continue;
+    if (init === null && ev.type === 'system' && ev.subtype === 'init') {
+      init = { sessionId: ev.session_id, model: ev.model, cliVersion: ev.claude_code_version };
+    } else if (ev.type === 'result') {
+      result = { sessionId: ev.session_id, subtype: ev.subtype, isError: ev.is_error };
+    }
+  }
+  return { init, result };
+}
+
+// How many model calls the egress proxy forwarded and the model answered 2xx.
+function egressFacts(bytes) {
+  let text;
+  try {
+    text = utf8(bytes);
+  } catch {
+    return { modelCalls: 0 };
+  }
+  return { modelCalls: text.split('\n').filter((l) => FORWARDED_MODEL_CALL.test(l.trim())).length };
+}
 
 /**
  * Read artifact bytes from a filesystem object store rooted at `root` — the
@@ -113,7 +224,10 @@ export function sqlBindingReader(db) {
  *     human-authorization signatures;
  *   objects — reads artifact bytes by storage key, so evidence is re-hashed
  *     rather than taken from its metadata row;
- *   forge — the forge port's PR lookup, so a PR is checked as it is now.
+ *   forge — the forge port's PR lookup, so a PR is checked as it is now;
+ *   agent — the pilot's pinned Claude configuration { model, cliVersion,
+ *     agentImage, proxyImage, modelBaseUrl }, so only a run of the real adapter
+ *     under those pins is accepted.
  *   All REQUIRED: without any one of them a check would silently not run, so
  *   the factory refuses to build.
  */
@@ -138,12 +252,54 @@ export function createSqlAuthorityResolver(db, opts) {
   if (!forge || typeof forge.findPullRequest !== 'function') {
     throw new Error('createSqlAuthorityResolver requires the forge port — refusing to trust a PR record without its live state');
   }
+  const agent = pinnedAgentConfig(opts?.agent);
 
   // Scope every lookup by the trace's tenant pair. A manifest that names another
   // tenant's attempt resolves to zero rows and fails closed.
   const scopeOf = (trace) => [trace?.organizationId ?? '', trace?.projectId ?? ''];
 
+  // Fetch and re-hash one artifact's bytes; null when they cannot be read.
+  const bytesOf = async (key) => {
+    try {
+      return await objects.get(key);
+    } catch {
+      return null;
+    }
+  };
+
   return {
+    pinnedAgent() {
+      return agent;
+    },
+
+    // The artifacts the real adapter recorded for this attempt, each re-hashed
+    // from its bytes and parsed. Every recorded artifact of a kind is returned,
+    // so the verifier can refuse an attempt with none or with several.
+    async resolveAgentRun(trace) {
+      const r = await db.query(
+        `select kind, sha256, storage_key
+         from artifacts
+         where attempt_id = $1 and organization_id = $2 and project_id = $3
+           and kind in ($4, $5, $6)
+         order by created_at, id`,
+        [trace?.attemptId ?? '', ...scopeOf(trace),
+          AGENT_RUN_KINDS.invocation, AGENT_RUN_KINDS.events, AGENT_RUN_KINDS.egress],
+      );
+      const run = { invocation: [], events: [], egress: [] };
+      for (const row of r.rows) {
+        const bytes = await bytesOf(row['storage_key']);
+        const base = { sha256: row['sha256'], bytesSha256: bytes === null ? null : sha256Hex(bytes) };
+        if (row['kind'] === AGENT_RUN_KINDS.invocation) {
+          run.invocation.push({ ...base, manifest: bytes === null ? null : invocationFacts(bytes) });
+        } else if (row['kind'] === AGENT_RUN_KINDS.events) {
+          run.events.push({ ...base, ...(bytes === null ? { init: null, result: null } : eventFacts(bytes)) });
+        } else if (row['kind'] === AGENT_RUN_KINDS.egress) {
+          run.egress.push({ ...base, modelCalls: bytes === null ? 0 : egressFacts(bytes).modelCalls });
+        }
+      }
+      return run;
+    },
+
     async resolveAttempt(trace) {
       // `run_id` lives on TASKS, not on attempts (see the attempts DDL: it
       // carries task_id + repository_binding_id and reaches its run THROUGH the
@@ -200,12 +356,7 @@ export function createSqlAuthorityResolver(db, opts) {
       );
       if (r.rowCount === 0) return null;
       const row = r.rows[0];
-      let bytes = null;
-      try {
-        bytes = await objects.get(row['storage_key']);
-      } catch {
-        bytes = null;
-      }
+      const bytes = await bytesOf(row['storage_key']);
       let bundle = null;
       if (bytes !== null) {
         try {
@@ -295,8 +446,8 @@ export function createSqlAuthorityResolver(db, opts) {
  * connection. Returns { resolver, close }.
  *
  * Fail-closed by construction: a missing ASEP_PG_URL, a missing/unreadable
- * ASEP_REVIEWER_PUBLIC_KEY, a missing object-store directory or missing GitHub
- * App settings THROW before any connection is opened. The CLI turns that into a
+ * ASEP_REVIEWER_PUBLIC_KEY, a missing object-store directory, missing GitHub
+ * App settings or missing Claude pins THROW before any connection is opened. The CLI turns that into a
  * non-zero exit with the reason, so an operator who forgets to point the gate at
  * the authoritative state gets a REJECTED verdict — never an accidental "OK"
  * computed from the manifest's own claims.
@@ -343,6 +494,7 @@ export async function createResolverFromEnv(env = process.env) {
   }
   if (!isDir) throw new Error(`${OBJECT_STORE_DIR_ENV} "${objectDir}" is not a directory`);
   const github = githubAppFromEnv(env);
+  const agent = agentPinsFromEnv(env);
 
   const { Pool } = await import('pg');
   const pool = new Pool({ connectionString: pgUrl });
@@ -356,7 +508,7 @@ export async function createResolverFromEnv(env = process.env) {
     const forge = await createGitHubForgePort(db, github);
     return {
       resolver: createSqlAuthorityResolver(db, {
-        reviewerPublicKeyPem, objects: filesystemObjectReader(objectDir), forge,
+        reviewerPublicKeyPem, objects: filesystemObjectReader(objectDir), forge, agent,
       }),
       close: () => pool.end(),
     };
@@ -364,6 +516,34 @@ export async function createResolverFromEnv(env = process.env) {
     await pool.end().catch(() => undefined);
     throw e;
   }
+}
+
+// The pilot's Claude pins from the same variables the pilot entrypoint reads.
+// The model origin defaults to the public API and, as for the pilot, must be
+// https.
+function agentPinsFromEnv(env) {
+  const need = (name) => {
+    const v = (env[name] ?? '').trim();
+    if (v.length === 0) {
+      throw new Error(`${name} is not set — the verifier accepts only runs of the real Claude adapter under the pilot's pins`);
+    }
+    return v;
+  };
+  const rawBase = (env[MODEL_BASE_URL_ENV] ?? '').trim() || DEFAULT_MODEL_BASE_URL;
+  let modelBaseUrl;
+  try {
+    modelBaseUrl = normalizeModelBaseUrl(rawBase);
+  } catch (e) {
+    throw new Error(`${MODEL_BASE_URL_ENV} is not a usable model origin: ${e.message}`);
+  }
+  if (!modelBaseUrl.startsWith('https://')) throw new Error(`${MODEL_BASE_URL_ENV} must be https://`);
+  return pinnedAgentConfig({
+    model: need(CLAUDE_MODEL_ENV),
+    cliVersion: need(CLAUDE_CLI_VERSION_ENV),
+    agentImage: need(AGENT_IMAGE_ENV),
+    proxyImage: need(PROXY_IMAGE_ENV),
+    modelBaseUrl,
+  });
 }
 
 function positiveIntEnv(env, name) {

@@ -732,10 +732,14 @@ export class ClaudeCodingProvider implements CodingAgentProvider {
 
     const refs: ArtifactRef[] = [];
     let eventsStored = true;
+    // Linked to the attempt, so the pilot verifier can find what the real
+    // adapter recorded for it; a double records nothing of the kind.
     const put = async (kind: string, text: string, contentType: string): Promise<boolean> => {
       const bytes = new TextEncoder().encode(text);
       try {
-        refs.push(await this.artifacts.put(this.scope, { kind, content: bytes, sha256: sha256Hex(bytes), contentType }));
+        refs.push(await this.artifacts.put(this.scope, {
+          kind, content: bytes, sha256: sha256Hex(bytes), contentType, attemptId: req.attemptId,
+        }));
         return true;
       } catch {
         return false;

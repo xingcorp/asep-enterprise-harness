@@ -17,7 +17,7 @@
 //        - taskIds are unique (no duplicate task counted twice — K5 count);
 //        - workOrderSha256 are unique (no single work order replayed to pad the
 //          count — RETRY / REPLAY INFLATION);
-//        - the provider is REAL, not a fake/mock/stub/fixture adapter (K6);
+//        - the provider id has the real Claude adapter's shape (K6);
 //        - baseSha != resultSha (the agent actually produced a change);
 //        - the trace chain is internally consistent (trace.taskId == taskId)
 //          and end-to-end resolvable (every hierarchy id present — K3).
@@ -34,6 +34,13 @@
 //          attempt, the attempt's result commit and the manifest's base;
 //        - asks the FORGE, through the forge port, which commit the PR's head
 //          points at now, and requires it to be the attempt's result commit;
+//        - accepts only the provider id the real Claude adapter produces for the
+//          pilot's pinned model and CLI version, and only with the evidence
+//          that adapter writes for the attempt and a double cannot: the
+//          invocation manifest naming the pinned images and model origin, the
+//          CLI's own init event reporting the pinned version, model and the
+//          manifest's session, and the egress proxy's log of model calls it
+//          forwarded;
 //        - requires the signed human authorization to bind this attempt, this
 //          result commit and this PR — a valid signature over another
 //          attempt's decision proves nothing about this one.
@@ -56,9 +63,16 @@ import {
 // IMPLEMENTATION_COMPLETE_PILOT_PENDING.
 export const MIN_PILOT_TASKS = 10;
 
-// providerId prefixes that mark a NON-real adapter. A COMPLETE verdict wired to
-// any of these is a fake pilot and is rejected (exit K6: real Claude).
-const FAKE_PROVIDER_PREFIXES = ['fake:', 'mock:', 'stub:', 'fixture:', 'test:', 'inmemory:'];
+// The provider id the real Claude adapter reports: `claude:<model>@cli-<version>`
+// (ClaudeCodingProvider). Anything else — a local double, a mock, an id with
+// the right prefix but no version — is not the real adapter. The authority
+// check below then requires the exact id for the pilot's pins.
+const REAL_PROVIDER_SHAPE = /^claude:[^\s@]+@cli-[^\s@]+$/;
+
+/** The provider id the real Claude adapter produces for these pins. */
+export function realClaudeProviderId(pins) {
+  return `claude:${pins.model}@cli-${pins.cliVersion}`;
+}
 
 // Structural rules, kept dependency-free (the repo favours a minimal root
 // dependency tree; ajv lives only under packages/contracts). These mirror
@@ -76,6 +90,7 @@ const DISPOSITIONS = new Set(['ACCEPTED', 'REJECTED', 'CHANGES_REQUESTED', 'PEND
 const EVIDENCE_KIND = 'evidence-bundle';
 const RESOLVER_METHODS = [
   'resolveAttempt', 'resolveEvidence', 'resolvePullRequest', 'resolveLivePullRequest', 'resolveHumanAuthorization',
+  'pinnedAgent', 'resolveAgentRun',
 ];
 const TRACE_IDS = [
   'pullRequestId', 'evidenceArtifactId', 'attemptId', 'taskId',
@@ -123,6 +138,7 @@ function structuralErrors(m) {
     if (typeof t.resultSha !== 'string' || !SHA1.test(t.resultSha)) bad(`${p}/resultSha`, 'must be a 40-hex git sha');
     if (typeof t.providerSessionId !== 'string' || t.providerSessionId.length < 1) bad(`${p}/providerSessionId`, 'required non-empty string');
     if (typeof t.providerId !== 'string' || t.providerId.length < 1) bad(`${p}/providerId`, 'required non-empty string');
+    else if (!REAL_PROVIDER_SHAPE.test(t.providerId)) bad(`${p}/providerId`, 'must be a Claude adapter id (claude:<model>@cli-<version>)');
     if (typeof t.pullRequestUrl !== 'string' || !PR_URL.test(t.pullRequestUrl)) bad(`${p}/pullRequestUrl`, 'must be a github PR url');
     if (typeof t.evidenceChecksum !== 'string' || !EVIDENCE_CHECKSUM.test(t.evidenceChecksum)) bad(`${p}/evidenceChecksum`, 'must be sha256:<hex>');
     if (typeof t.humanDisposition !== 'string' || !DISPOSITIONS.has(t.humanDisposition)) bad(`${p}/humanDisposition`, 'must be a known disposition');
@@ -191,17 +207,6 @@ export function verifyManifest(manifest) {
     }
     seenSessions.add(t.providerSessionId);
 
-    // Real adapter, not a fake.
-    const lowerProvider = String(t.providerId).toLowerCase();
-    for (const prefix of FAKE_PROVIDER_PREFIXES) {
-      if (lowerProvider.startsWith(prefix)) {
-        reasons.push(
-          `task "${t.taskId}" used non-real provider "${t.providerId}" — a COMPLETE pilot must use real Claude (exit K6)`,
-        );
-        break;
-      }
-    }
-
     // The agent must have actually produced a change.
     if (t.baseSha === t.resultSha) {
       reasons.push(
@@ -231,7 +236,11 @@ export function verifyManifest(manifest) {
 // The resolver is injected (real DB-backed in production, a fake in tests) so
 // this file stays dependency-free.
 //
-// The resolver contract (all methods async, all return null when not found):
+// The resolver contract (all methods async except pinnedAgent, all return null
+// when not found):
+//   pinnedAgent() -> { model, cliVersion, agentImage, proxyImage, modelBaseUrl }
+//     the pilot's pinned Claude configuration (the pilot entrypoint's own
+//     settings), against which every attempt's agent run is checked;
 //   resolveAttempt(trace) -> {
 //     attemptId, taskId, runId, repositoryBindingId,
 //     resultSha, evidenceArtifactId, evidenceSha256, providerId
@@ -246,6 +255,13 @@ export function verifyManifest(manifest) {
 //   resolvePullRequest(scopeTrace, pullRequestId) -> { number, url, headBranch, attemptId } | null
 //   resolveLivePullRequest(scopeTrace, { repositoryBindingId, headBranch }) ->
 //     { number, url, headBranch, headSha } | null      (from the forge, now)
+//   resolveAgentRun(scopeTrace) -> {     the attempt's agent artifacts, by kind
+//     invocation: [{ sha256, bytesSha256, manifest: { providerId, model, cliVersion,
+//                    image, proxyImage, upstream } | null }],
+//     events:     [{ sha256, bytesSha256, init: { sessionId, model, cliVersion } | null,
+//                    result: { sessionId, subtype, isError } | null }],
+//     egress:     [{ sha256, bytesSha256, modelCalls }],   forwarded 2xx model calls
+//   }
 //   resolveHumanAuthorization(taskId, scopeTrace) -> {
 //     disposition, signedBy, signatureValid, attemptId, reviewedResultSha, pullRequestId
 //   } | null
@@ -289,6 +305,20 @@ export async function verifyManifestAgainstAuthority(manifest, resolver) {
   if (base.reasons.some((r) => r.startsWith('schema:'))) {
     return { ok: false, reasons };
   }
+  // The real agent is defined by the pilot's pins, not by the manifest.
+  let pins;
+  try {
+    pins = resolver.pinnedAgent();
+  } catch (e) {
+    pins = undefined;
+    reasons.push(`the resolver cannot report the pinned Claude configuration — fail closed (${e && e.message ? e.message : e})`);
+  }
+  const pinProblem = pinsProblem(pins);
+  if (pinProblem !== undefined) {
+    if (pins !== undefined) reasons.push(`the pinned Claude configuration is unusable: ${pinProblem}`);
+    return { ok: false, reasons };
+  }
+  const realProviderId = realClaudeProviderId(pins);
 
   const tasks = Array.isArray(manifest.tasks) ? manifest.tasks : [];
   for (const t of tasks) {
@@ -324,17 +354,25 @@ export async function verifyManifestAgainstAuthority(manifest, resolver) {
     }
 
     // The provider is read from the PERSISTED attempt, not the manifest's own
-    // providerId — a manifest cannot self-certify it used real Claude.
-    const persistedProvider = String(attempt.providerId ?? '').toLowerCase();
-    for (const prefix of FAKE_PROVIDER_PREFIXES) {
-      if (persistedProvider.startsWith(prefix)) {
-        reasons.push(`${label}: persisted provider "${attempt.providerId}" is a non-real adapter (exit K6, authoritative)`);
-        break;
-      }
-    }
-    if (persistedProvider.length === 0) {
+    // providerId — a manifest cannot self-certify it used real Claude. Only the
+    // id the real adapter produces for the pinned model and CLI is accepted…
+    if (typeof attempt.providerId !== 'string' || attempt.providerId.length === 0) {
       reasons.push(`${label}: persisted attempt has no providerId — cannot certify a real agent ran`);
+    } else if (attempt.providerId !== realProviderId) {
+      reasons.push(`${label}: persisted provider "${attempt.providerId}" is not the real Claude adapter for the pinned model and CLI ("${realProviderId}") (exit K6, authoritative)`);
     }
+    if (t.providerId !== attempt.providerId) {
+      reasons.push(`${label}: manifest providerId "${t.providerId}" != persisted provider "${attempt.providerId}"`);
+    }
+    // …and only with the evidence that adapter writes and a double cannot.
+    let run;
+    try {
+      run = await resolver.resolveAgentRun(trace);
+    } catch (e) {
+      run = undefined;
+      reasons.push(`${label}: resolver failed to resolve the agent run — fail closed (${e && e.message ? e.message : e})`);
+    }
+    if (run !== undefined) reasons.push(...agentRunReasons(label, t, pins, realProviderId, run));
 
     // Evidence: the artifact named in the trace must EXIST in the store and its
     // authoritative sha256 must match the manifest's declared evidenceChecksum
@@ -474,6 +512,97 @@ export async function verifyManifestAgainstAuthority(manifest, resolver) {
   return { ok: reasons.length === 0, reasons };
 }
 
+const PIN_FIELDS = ['model', 'cliVersion', 'agentImage', 'proxyImage', 'modelBaseUrl'];
+
+function pinsProblem(pins) {
+  if (!isObject(pins)) return 'no pins';
+  const missing = PIN_FIELDS.filter((k) => typeof pins[k] !== 'string' || pins[k].trim() === '');
+  return missing.length > 0 ? `missing ${missing.join(', ')}` : undefined;
+}
+
+// One artifact of each kind, whose stored bytes still hash to what was
+// recorded. Returns the artifact, or undefined after recording why not.
+function soleIntact(label, what, list, reasons) {
+  if (!Array.isArray(list) || list.length === 0) {
+    reasons.push(`${label}: no ${what} recorded for the attempt — not a run of the real Claude adapter`);
+    return undefined;
+  }
+  if (list.length > 1) {
+    reasons.push(`${label}: ${list.length} ${what} artifacts recorded for one attempt — ambiguous agent evidence`);
+    return undefined;
+  }
+  const a = list[0];
+  if (!isObject(a) || a.bytesSha256 !== a.sha256) {
+    const got = isObject(a) && a.bytesSha256 ? `"${a.bytesSha256}"` : 'nothing (they could not be read)';
+    reasons.push(`${label}: the stored ${what} bytes hash to ${got}, not the recorded sha256 — tampered or missing agent evidence`);
+    return undefined;
+  }
+  return a;
+}
+
+/**
+ * The agent evidence a real Claude run leaves behind, checked against the pins:
+ *   - the adapter's invocation manifest names the expected provider id, model,
+ *     CLI version, both pinned images and the pinned model origin;
+ *   - the CLI's own init event reports the pinned version and model, and its
+ *     session is the manifest's providerSessionId; the run ended in success;
+ *   - the egress proxy forwarded at least one model call that succeeded.
+ * A local double writes none of these; a run through the real adapter against
+ * another model origin, image or CLI version fails the comparison.
+ */
+function agentRunReasons(label, t, pins, realProviderId, run) {
+  const reasons = [];
+  if (!isObject(run)) {
+    reasons.push(`${label}: no agent artifacts recorded for the attempt — not a run of the real Claude adapter`);
+    return reasons;
+  }
+  const invocation = soleIntact(label, 'invocation manifest', run.invocation, reasons);
+  if (invocation) {
+    const m = invocation.manifest;
+    if (!isObject(m)) {
+      reasons.push(`${label}: the invocation manifest is not the Claude adapter's manifest`);
+    } else {
+      const expect = [
+        ['providerId', realProviderId], ['model', pins.model], ['cliVersion', pins.cliVersion],
+        ['image', pins.agentImage], ['proxyImage', pins.proxyImage], ['upstream', pins.modelBaseUrl],
+      ];
+      for (const [k, want] of expect) {
+        if (m[k] !== want) reasons.push(`${label}: the invocation manifest records ${k} "${m[k]}", not the pinned "${want}"`);
+      }
+    }
+  }
+  const events = soleIntact(label, 'event stream', run.events, reasons);
+  if (events) {
+    const init = events.init;
+    if (!isObject(init)) {
+      reasons.push(`${label}: the event stream holds no init event from the CLI`);
+    } else {
+      if (init.cliVersion !== pins.cliVersion) {
+        reasons.push(`${label}: the CLI reported version "${init.cliVersion}", not the pinned "${pins.cliVersion}"`);
+      }
+      if (init.model !== pins.model) {
+        reasons.push(`${label}: the CLI reported model "${init.model}", not the pinned "${pins.model}"`);
+      }
+      if (init.sessionId !== t.providerSessionId) {
+        reasons.push(`${label}: the CLI session is "${init.sessionId}", not the manifest providerSessionId "${t.providerSessionId}"`);
+      }
+    }
+    const result = events.result;
+    if (!isObject(result)) {
+      reasons.push(`${label}: the event stream holds no result event — the agent run did not finish`);
+    } else if (result.subtype !== 'success' || result.isError !== false) {
+      reasons.push(`${label}: the agent run ended with result "${result.subtype}"${result.isError ? ' (is_error)' : ''}, not success`);
+    } else if (isObject(init) && result.sessionId !== init.sessionId) {
+      reasons.push(`${label}: the result event belongs to session "${result.sessionId}", not "${init.sessionId}"`);
+    }
+  }
+  const egress = soleIntact(label, 'egress log', run.egress, reasons);
+  if (egress && !(Number.isInteger(egress.modelCalls) && egress.modelCalls > 0)) {
+    reasons.push(`${label}: the egress proxy forwarded no successful model call — no evidence the model was ever reached`);
+  }
+  return reasons;
+}
+
 /** Read + JSON-parse a manifest file. Returns { parsed } or { reasons }. */
 function loadManifest(path) {
   let raw;
@@ -538,6 +667,9 @@ const USAGE =
   'By default the manifest is cross-checked against AUTHORITATIVE persistence:\n' +
   `  ${PG_URL_ENV}              postgres connection string (required)\n` +
   `  ${REVIEWER_KEY_ENV}  path to the reviewer ed25519 public-key PEM (required)\n` +
+  '  ASEP_OBJECT_STORE_DIR, the GitHub App settings and the Claude pins the pilot\n' +
+  '  ran with (ASEP_CLAUDE_MODEL, ASEP_CLAUDE_CLI_VERSION, ASEP_AGENT_IMAGE_DIGEST,\n' +
+  '  ASEP_EGRESS_PROXY_IMAGE_DIGEST, optional ASEP_ANTHROPIC_BASE_URL) — see the runbook\n' +
   '\n' +
   '--self-check-only skips that cross-check and validates ONLY self-declared\n' +
   'fields. A COMPLETE verdict is REJECTED in that mode by design.\n';

@@ -99,11 +99,26 @@ A COMPLETE verdict is gated by `scripts/pilot/verify-pilot-manifest.mjs`. Run
 ASEP_PG_URL=… ASEP_REVIEWER_PUBLIC_KEY=<reviewer public key PEM> \
 ASEP_OBJECT_STORE_DIR=<the pilot's object store> \
 ASEP_GITHUB_APP_ID=… ASEP_GITHUB_PRIVATE_KEY_PATH=… ASEP_GITHUB_INSTALLATION_ID=… \
+ASEP_CLAUDE_MODEL=… ASEP_CLAUDE_CLI_VERSION=… \
+ASEP_AGENT_IMAGE_DIGEST=… ASEP_EGRESS_PROXY_IMAGE_DIGEST=… [ASEP_ANTHROPIC_BASE_URL=…] \
   node scripts/pilot/verify-pilot-manifest.mjs <manifest.json>
 ```
 
-Every variable is required; a missing one is a rejection, not a downgrade. For
-each task the verifier, besides matching the manifest against the database rows:
+Every variable is required except `ASEP_ANTHROPIC_BASE_URL` (the public API by
+default, https only); a missing one is a rejection, not a downgrade. The Claude
+variables must hold the values the pilot ran with. For each task the verifier,
+besides matching the manifest against the database rows:
+
+- accepts the agent only if the attempt records exactly the provider id the real
+  Claude adapter produces for the pinned model and CLI version
+  (`claude:<model>@cli-<version>`), the manifest claims the same id, and the
+  attempt carries the evidence that adapter writes and a double cannot: one
+  invocation manifest naming that id, the pinned images and the pinned model
+  origin; one event stream whose CLI init event reports the pinned version and
+  model and the manifest's `providerSessionId`, and which ends in success; and
+  one egress-proxy log with at least one forwarded `POST /v1/messages` the model
+  answered 2xx. Each is re-hashed from the object store. A run through a local
+  agent double records none of these and is refused;
 
 - fetches the evidence bytes from the object store, requires them to hash to
   the sha256 the artifact row records, and requires the bundle they hold to name

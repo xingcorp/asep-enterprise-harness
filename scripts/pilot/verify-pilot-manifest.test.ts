@@ -17,6 +17,7 @@ import { fileURLToPath } from 'node:url';
 import {
   verifyManifest,
   verifyManifestAgainstAuthority,
+  realClaudeProviderId,
   MIN_PILOT_TASKS,
   // @ts-expect-error - .mjs sibling has no type declarations; runtime import is fine under tsx.
 } from './verify-pilot-manifest.mjs';
@@ -37,6 +38,16 @@ console.log('SUITE-ID: asep-suite:pilot-manifest');
 
 const SHA64 = 'a'.repeat(64);
 const SHA40 = '0'.repeat(40);
+// The pilot's pinned Claude configuration, and the id the real adapter reports
+// for it.
+const PINS = Object.freeze({
+  model: 'claude-sonnet',
+  cliVersion: '1.2.3',
+  agentImage: `asep-agent@sha256:${'1'.repeat(64)}`,
+  proxyImage: `node@sha256:${'2'.repeat(64)}`,
+  modelBaseUrl: 'https://api.anthropic.com',
+});
+const REAL_ID = 'claude:claude-sonnet@cli-1.2.3';
 
 // A single well-formed pilot task, parameterised so each test can perturb one
 // field. The defaults describe a genuine, real-provider, changed, traceable task.
@@ -127,15 +138,21 @@ test('a reused provider session is rejected', () => {
   assert.ok(res.reasons.some((r: string) => /reused providerSessionId "sess-0"/.test(r)));
 });
 
-test('K6: a fake/mock provider is rejected on a COMPLETE verdict', () => {
-  for (const fake of ['fake:claude', 'mock:agent', 'stub:x', 'fixture:y', 'inmemory:z']) {
+test('K6: a provider id that is not the real Claude adapter\'s is rejected, whatever it is called', () => {
+  // Not a list of known fakes: anything without the real adapter's shape fails,
+  // including the local doubles' ids.
+  for (const other of [
+    'fake:claude', 'mock:agent', 'stub:x', 'fixture:y', 'inmemory:z', 'fake-claude', 'seam-test-agent',
+    'claude', 'claude:model', 'claude:model@cli-', 'claude:@cli-1.2.3', 'Claude:model@cli-1.2.3', ' claude:m@cli-1',
+  ]) {
     const m = makeManifest(MIN_PILOT_TASKS);
     const tasks = m.tasks as Record<string, unknown>[];
-    tasks[0]!.providerId = fake;
+    tasks[0]!.providerId = other;
     const res = verifyManifest(m);
-    assert.equal(res.ok, false, `provider ${fake} should be rejected`);
-    assert.ok(res.reasons.some((r: string) => /non-real provider/.test(r)));
+    assert.equal(res.ok, false, `provider ${JSON.stringify(other)} should be rejected`);
+    assert.ok(res.reasons.some((r: string) => /providerId must be a Claude adapter id/.test(r)), res.reasons.join('; '));
   }
+  assert.equal(realClaudeProviderId(PINS), REAL_ID, 'the shape the real adapter reports');
 });
 
 test('a no-op change (baseSha == resultSha) is rejected', () => {
@@ -192,6 +209,8 @@ test('an unknown verdict is rejected by the schema enum', () => {
 // pristine manifest cross-checks cleanly. Tests perturb either the manifest or
 // this authority to drive a specific mismatch.
 function genuineAuthority(over: {
+  pins?: () => unknown;
+  agentRun?: (i: number, base: Record<string, any>) => unknown;
   attempt?: (i: number, base: Record<string, unknown>) => Record<string, unknown> | null;
   evidence?: (i: number, base: Record<string, unknown>) => Record<string, unknown> | null;
   pr?: (i: number, base: Record<string, unknown>) => Record<string, unknown> | null;
@@ -202,6 +221,31 @@ function genuineAuthority(over: {
   const SHA64local = 'a'.repeat(64);
   const resultOf = (i: number) => (i + 1).toString(16).padStart(40, '0');
   return {
+    pinnedAgent() {
+      return over.pins ? over.pins() : PINS;
+    },
+    // What the real adapter recorded for this attempt: its invocation
+    // manifest, the CLI's event stream and the egress proxy's log, each intact.
+    async resolveAgentRun(trace: Record<string, unknown>) {
+      const i = idxOf(trace.taskId as string);
+      const intact = (n: string) => ({ sha256: n.repeat(64), bytesSha256: n.repeat(64) });
+      const base = {
+        invocation: [{
+          ...intact('3'),
+          manifest: {
+            providerId: REAL_ID, model: PINS.model, cliVersion: PINS.cliVersion,
+            image: PINS.agentImage, proxyImage: PINS.proxyImage, upstream: PINS.modelBaseUrl,
+          },
+        }],
+        events: [{
+          ...intact('4'),
+          init: { sessionId: `sess-${i}`, model: PINS.model, cliVersion: PINS.cliVersion },
+          result: { sessionId: `sess-${i}`, subtype: 'success', isError: false },
+        }],
+        egress: [{ ...intact('5'), modelCalls: 2 }],
+      };
+      return over.agentRun ? over.agentRun(i, base) : base;
+    },
     async resolveAttempt(trace: Record<string, unknown>) {
       const i = idxOf(trace.taskId as string);
       const base = {
@@ -212,7 +256,7 @@ function genuineAuthority(over: {
         resultSha: resultOf(i),
         evidenceArtifactId: `ev-${i}`,
         evidenceSha256: SHA64local,
-        providerId: 'claude:claude-sonnet@cli-1.2.3',
+        providerId: REAL_ID,
       };
       return over.attempt ? over.attempt(i, base) : base;
     },
@@ -288,12 +332,25 @@ test('HIGH-009: a forged resultSha (disagrees with persisted attempt) is rejecte
 });
 
 test('HIGH-009: a manifest claiming real Claude but backed by a FAKE persisted provider is rejected (K6 authoritative)', async () => {
-  const authority = genuineAuthority({
-    attempt: (i, base) => ({ ...base, providerId: 'fake:claude' }),
-  });
-  const res = await verifyManifestAgainstAuthority(makeManifest(MIN_PILOT_TASKS), authority);
+  // The local doubles' ids, a deny-list name, and real-shaped ids for another
+  // model or CLI version than the pilot pinned.
+  for (const persisted of [
+    'fake-claude', 'seam-test-agent', 'fake:claude', 'claude:claude-sonnet@cli-1.2.4', 'claude:claude-opus@cli-1.2.3', '',
+  ]) {
+    const authority = genuineAuthority({ attempt: (i, base) => ({ ...base, providerId: persisted }) });
+    const res = await verifyManifestAgainstAuthority(makeManifest(MIN_PILOT_TASKS), authority);
+    assert.equal(res.ok, false, `persisted provider ${JSON.stringify(persisted)} must be rejected`);
+    assert.ok(res.reasons.some((r: string) => /is not the real Claude adapter for the pinned model and CLI|has no providerId/.test(r)),
+      res.reasons.join('; '));
+  }
+});
+
+test('a manifest providerId that disagrees with the persisted provider is rejected', async () => {
+  const m = makeManifest(MIN_PILOT_TASKS);
+  (m.tasks as Record<string, unknown>[])[0]!.providerId = 'claude:claude-sonnet@cli-9.9.9';
+  const res = await verifyManifestAgainstAuthority(m, genuineAuthority());
   assert.equal(res.ok, false);
-  assert.ok(res.reasons.some((r: string) => /non-real adapter/.test(r)));
+  assert.ok(res.reasons.some((r: string) => /manifest providerId .* != persisted provider/.test(r)), res.reasons.join('; '));
 });
 
 test('HIGH-009: a forged evidence checksum (disagrees with the stored artifact) is rejected', async () => {
@@ -424,6 +481,89 @@ test('a signed authorization for another attempt, commit or PR is rejected', asy
     /authorization was signed for pull request "pr-other"/);
 });
 
+// --- the agent run: only the real adapter, under the pilot's pins ----------------
+
+test('an attempt the real adapter recorded nothing for (a local double ran) is rejected', async () => {
+  const res = await verifyManifestAgainstAuthority(makeManifest(MIN_PILOT_TASKS),
+    genuineAuthority({ agentRun: () => ({ invocation: [], events: [], egress: [] }) }));
+  assert.equal(res.ok, false);
+  for (const what of [/no invocation manifest recorded/, /no event stream recorded/, /no egress log recorded/]) {
+    assert.ok(res.reasons.some((r: string) => what.test(r)), `${what} not among: ${res.reasons.join('; ')}`);
+  }
+  await rejectsWith(genuineAuthority({ agentRun: () => null }), /no agent artifacts recorded/);
+});
+
+test('agent evidence whose bytes changed or vanished, or that is ambiguous, is rejected', async () => {
+  for (const kind of ['invocation', 'events', 'egress'] as const) {
+    await rejectsWith(genuineAuthority({
+      agentRun: (i, b) => ({ ...b, [kind]: [{ ...b[kind][0], bytesSha256: 'f'.repeat(64) }] }),
+    }), /bytes hash to .*tampered or missing agent evidence/);
+    await rejectsWith(genuineAuthority({
+      agentRun: (i, b) => ({ ...b, [kind]: [{ ...b[kind][0], bytesSha256: null }] }),
+    }), /hash to nothing \(they could not be read\)/);
+    await rejectsWith(genuineAuthority({
+      agentRun: (i, b) => ({ ...b, [kind]: [b[kind][0], b[kind][0]] }),
+    }), /2 .* artifacts recorded for one attempt/);
+  }
+});
+
+test('an invocation manifest that does not name the pinned provider, model, CLI, images and model origin is rejected', async () => {
+  const fields: Array<[string, string]> = [
+    ['providerId', 'fake-claude'], ['model', 'claude-opus'], ['cliVersion', '1.2.4'],
+    ['image', `asep-agent@sha256:${'9'.repeat(64)}`], ['proxyImage', `node@sha256:${'9'.repeat(64)}`],
+    ['upstream', 'http://127.0.0.1:8080'],
+  ];
+  for (const [k, v] of fields) {
+    await rejectsWith(genuineAuthority({
+      agentRun: (i, b) => ({ ...b, invocation: [{ ...b.invocation[0], manifest: { ...b.invocation[0].manifest, [k]: v } }] }),
+    }), new RegExp(`invocation manifest records ${k} "`));
+  }
+  await rejectsWith(genuineAuthority({
+    agentRun: (i, b) => ({ ...b, invocation: [{ ...b.invocation[0], manifest: null }] }),
+  }), /not the Claude adapter's manifest/);
+});
+
+test('an event stream whose CLI init or result is not the pinned, successful session of the manifest is rejected', async () => {
+  const withInit = (init: unknown) => genuineAuthority({
+    agentRun: (i, b) => ({ ...b, events: [{ ...b.events[0], init }] }),
+  });
+  await rejectsWith(withInit(null), /holds no init event/);
+  await rejectsWith(withInit({ sessionId: 'sess-0', model: PINS.model, cliVersion: '9.9.9' }), /CLI reported version "9.9.9"/);
+  await rejectsWith(withInit({ sessionId: 'sess-0', model: 'claude-opus', cliVersion: PINS.cliVersion }), /CLI reported model "claude-opus"/);
+  await rejectsWith(genuineAuthority({
+    agentRun: (i, b) => ({ ...b, events: [{ ...b.events[0], init: { ...b.events[0].init, sessionId: 'someone-else' } }] }),
+  }), /CLI session is "someone-else", not the manifest providerSessionId/);
+  const withResult = (result: unknown) => genuineAuthority({
+    agentRun: (i, b) => ({ ...b, events: [{ ...b.events[0], result }] }),
+  });
+  await rejectsWith(withResult(null), /holds no result event/);
+  await rejectsWith(withResult({ sessionId: 'sess-0', subtype: 'error_max_turns', isError: true }), /ended with result "error_max_turns"/);
+  await rejectsWith(withResult({ sessionId: 'sess-0', subtype: 'success', isError: true }), /ended with result "success" \(is_error\)/);
+  await rejectsWith(genuineAuthority({
+    agentRun: (i, b) => ({ ...b, events: [{ ...b.events[0], result: { ...b.events[0].result, sessionId: 'other' } }] }),
+  }), /result event belongs to session "other"/);
+});
+
+test('an egress log with no forwarded model call is rejected', async () => {
+  for (const modelCalls of [0, -1, 1.5, undefined]) {
+    await rejectsWith(genuineAuthority({
+      agentRun: (i, b) => ({ ...b, egress: [{ ...b.egress[0], modelCalls }] }),
+    }), /forwarded no successful model call/);
+  }
+});
+
+test('the verifier refuses to judge agent runs without usable pins', async () => {
+  await rejectsWith(genuineAuthority({ pins: () => ({ ...PINS, cliVersion: '' }) }), /pinned Claude configuration is unusable: missing cliVersion/);
+  await rejectsWith(genuineAuthority({ pins: () => null }), /pinned Claude configuration is unusable/);
+  await rejectsWith(genuineAuthority({ pins: () => { throw new Error('no pins here'); } }), /cannot report the pinned Claude configuration/);
+  for (const drop of ['pinnedAgent', 'resolveAgentRun'] as const) {
+    const { [drop]: _gone, ...partial } = genuineAuthority();
+    const res = await verifyManifestAgainstAuthority(makeManifest(MIN_PILOT_TASKS), partial);
+    assert.equal(res.ok, false);
+    assert.ok(res.reasons.some((r: string) => new RegExp(`lacks ${drop}`).test(r)), res.reasons.join('; '));
+  }
+});
+
 test('HIGH-009: a structurally malformed manifest never reaches the resolver', async () => {
   let resolverCalled = false;
   const authority = {
@@ -535,7 +675,7 @@ const REVIEWER_PRIV = keys.privateKey.export({ type: 'pkcs8', format: 'pem' }).t
 const NO_OBJECTS = { get: async (key: string) => { throw new Error(`no object at ${key}`); } };
 const NO_FORGE = { findPullRequest: async () => null };
 const resolverOpts = (over: Record<string, unknown> = {}) => ({
-  reviewerPublicKeyPem: REVIEWER_PUB, objects: NO_OBJECTS, forge: NO_FORGE, ...over,
+  reviewerPublicKeyPem: REVIEWER_PUB, objects: NO_OBJECTS, forge: NO_FORGE, agent: PINS, ...over,
 });
 
 function signedAuthRow(over: Record<string, unknown> = {}) {
@@ -597,8 +737,9 @@ test('HIGH-009 (resolver): every lookup is tenant-scoped and fully parameter-bou
   await resolver.resolveEvidence(trace, 'ev-1');
   await resolver.resolvePullRequest(trace, 'pr-1');
   await resolver.resolveHumanAuthorization('task-1', trace);
+  await resolver.resolveAgentRun(trace);
 
-  assert.equal(db.calls.length, 4);
+  assert.equal(db.calls.length, 5);
   for (const call of db.calls) {
     assert.match(call.text, /organization_id = \$\d/, `scoped by org: ${call.text}`);
     assert.match(call.text, /project_id = \$\d/, `scoped by project: ${call.text}`);
@@ -621,6 +762,90 @@ test('a resolver cannot be built without the evidence bytes or the forge', () =>
   const db = fakeDb(() => []);
   assert.throws(() => createSqlAuthorityResolver(db, resolverOpts({ objects: undefined })), /evidence object reader/);
   assert.throws(() => createSqlAuthorityResolver(db, resolverOpts({ forge: undefined })), /forge/);
+});
+
+test('a resolver cannot be built without usable Claude pins', () => {
+  const db = fakeDb(() => []);
+  assert.throws(() => createSqlAuthorityResolver(db, resolverOpts({ agent: undefined })), /lacks model/);
+  for (const k of Object.keys(PINS)) {
+    assert.throws(() => createSqlAuthorityResolver(db, resolverOpts({ agent: { ...PINS, [k]: ' ' } })), new RegExp(`lacks ${k}`));
+  }
+  assert.throws(() => createSqlAuthorityResolver(db, resolverOpts({ agent: { ...PINS, agentImage: 'asep-agent:latest' } })),
+    /agentImage .* is not digest-pinned/);
+  assert.throws(() => createSqlAuthorityResolver(db, resolverOpts({ agent: { ...PINS, proxyImage: 'node:20' } })),
+    /proxyImage .* is not digest-pinned/);
+  assert.throws(() => createSqlAuthorityResolver(db, resolverOpts({ agent: { ...PINS, modelBaseUrl: 'ftp://x' } })), /http\(s\)/);
+  // The origin is compared the way the adapter records it.
+  const pinned = createSqlAuthorityResolver(db, resolverOpts({ agent: { ...PINS, modelBaseUrl: 'https://api.anthropic.com/' } }))
+    .pinnedAgent();
+  assert.equal(pinned.modelBaseUrl, 'https://api.anthropic.com');
+});
+
+// The three artifacts the real adapter records, as the store holds them.
+function agentArtifacts() {
+  const sessionId = 'sess-1';
+  const invocation = Buffer.from(JSON.stringify({
+    providerId: REAL_ID, model: PINS.model, cliVersion: PINS.cliVersion, image: PINS.agentImage,
+    proxyImage: PINS.proxyImage, network: { internal: 'asep-agent-net-x', egress: 'bridge', upstream: PINS.modelBaseUrl },
+    teardown: [],
+  }));
+  const events = Buffer.from([
+    { type: 'system', subtype: 'init', session_id: sessionId, model: PINS.model, claude_code_version: PINS.cliVersion },
+    { type: 'assistant', session_id: sessionId, message: { content: [] } },
+    'not json at all',
+    { type: 'result', subtype: 'success', is_error: false, session_id: sessionId },
+  ].map((e) => (typeof e === 'string' ? e : JSON.stringify(e))).join('\n') + '\n');
+  const egress = Buffer.from([
+    '2026-10-29T00:00:00.000Z POST /v1/messages -> 200',
+    '2026-10-29T00:00:01.000Z POST /v1/messages/count_tokens -> 200',
+    '2026-10-29T00:00:02.000Z POST /v1/messages -> 529',
+    '2026-10-29T00:00:03.000Z GET /v1/models -> 403',
+    '2026-10-29T00:00:04.000Z POST /v1/messages -> 201',
+    '',
+  ].join('\n'));
+  const sha = (b: Buffer) => createHash('sha256').update(b).digest('hex');
+  const rows = [
+    { kind: 'claude-invocation', sha256: sha(invocation), storage_key: 'k/inv' },
+    { kind: 'claude-event-stream', sha256: sha(events), storage_key: 'k/ev' },
+    { kind: 'claude-egress-log', sha256: sha(egress), storage_key: 'k/eg' },
+  ];
+  const bytes: Record<string, Buffer> = { 'k/inv': invocation, 'k/ev': events, 'k/eg': egress };
+  return { rows, bytes, sessionId };
+}
+
+test('the resolver reads the agent artifacts linked to the attempt, re-hashes them and parses what they say', async () => {
+  const { rows, bytes, sessionId } = agentArtifacts();
+  const db = fakeDb(() => rows);
+  const objects = { get: async (key: string) => new Uint8Array(bytes[key]!) };
+  const run = await createSqlAuthorityResolver(db, resolverOpts({ objects }))
+    .resolveAgentRun({ organizationId: 'org-1', projectId: 'proj-1', attemptId: 'att-1' });
+  assert.match(db.calls[0]!.text, /attempt_id = \$1/);
+  assert.deepEqual([...db.calls[0]!.params], ['att-1', 'org-1', 'proj-1', 'claude-invocation', 'claude-event-stream', 'claude-egress-log']);
+  assert.equal(run.invocation.length, 1);
+  assert.equal(run.invocation[0].bytesSha256, run.invocation[0].sha256);
+  assert.deepEqual(run.invocation[0].manifest, {
+    providerId: REAL_ID, model: PINS.model, cliVersion: PINS.cliVersion,
+    image: PINS.agentImage, proxyImage: PINS.proxyImage, upstream: PINS.modelBaseUrl,
+  });
+  assert.deepEqual(run.events[0].init, { sessionId, model: PINS.model, cliVersion: PINS.cliVersion });
+  assert.deepEqual(run.events[0].result, { sessionId, subtype: 'success', isError: false });
+  assert.equal(run.egress[0].modelCalls, 2, 'only forwarded, answered POST /v1/messages calls count');
+});
+
+test('agent artifacts whose bytes changed or vanished are reported as such, and none is an empty run', async () => {
+  const { rows, bytes } = agentArtifacts();
+  const trace = { organizationId: 'org-1', projectId: 'proj-1', attemptId: 'att-1' };
+  const changed = await createSqlAuthorityResolver(fakeDb(() => rows),
+    resolverOpts({ objects: { get: async (key: string) => new Uint8Array(Buffer.concat([bytes[key]!, Buffer.from('x')])) } }))
+    .resolveAgentRun(trace);
+  for (const k of ['invocation', 'events', 'egress'] as const) assert.notEqual(changed[k][0].bytesSha256, changed[k][0].sha256);
+  const vanished = await createSqlAuthorityResolver(fakeDb(() => rows), resolverOpts()).resolveAgentRun(trace);
+  assert.equal(vanished.invocation[0].bytesSha256, null);
+  assert.equal(vanished.invocation[0].manifest, null);
+  assert.equal(vanished.events[0].init, null);
+  assert.equal(vanished.egress[0].modelCalls, 0);
+  const none = await createSqlAuthorityResolver(fakeDb(() => []), resolverOpts()).resolveAgentRun(trace);
+  assert.deepEqual(none, { invocation: [], events: [], egress: [] });
 });
 
 // The evidence row as the database holds it, for a bundle of `bytes`.
@@ -746,6 +971,24 @@ test('HIGH-009 (resolver): createResolverFromEnv fails closed on missing env', a
     () => createResolverFromEnv({ ...withObjects, ASEP_GITHUB_APP_ID: 'one', ASEP_GITHUB_PRIVATE_KEY_PATH: pub, ASEP_GITHUB_INSTALLATION_ID: '2' }),
     /ASEP_GITHUB_APP_ID must be a positive integer/,
   );
+  // The Claude pins the pilot ran under, from the pilot's own variables.
+  const withApp = { ...withObjects, ASEP_GITHUB_APP_ID: '1', ASEP_GITHUB_PRIVATE_KEY_PATH: pub, ASEP_GITHUB_INSTALLATION_ID: '2' };
+  const pins = {
+    ASEP_CLAUDE_MODEL: PINS.model, ASEP_CLAUDE_CLI_VERSION: PINS.cliVersion,
+    ASEP_AGENT_IMAGE_DIGEST: PINS.agentImage, ASEP_EGRESS_PROXY_IMAGE_DIGEST: PINS.proxyImage,
+  };
+  for (const name of Object.keys(pins)) {
+    const { [name as keyof typeof pins]: _gone, ...rest } = pins;
+    await assert.rejects(() => createResolverFromEnv({ ...withApp, ...rest }), new RegExp(`${name} is not set`));
+  }
+  await assert.rejects(
+    () => createResolverFromEnv({ ...withApp, ...pins, ASEP_ANTHROPIC_BASE_URL: 'http://api.anthropic.com' }),
+    /ASEP_ANTHROPIC_BASE_URL must be https/,
+  );
+  await assert.rejects(
+    () => createResolverFromEnv({ ...withApp, ...pins, ASEP_AGENT_IMAGE_DIGEST: 'asep-agent:latest' }),
+    /not digest-pinned/,
+  );
 });
 
 // The verifier's forge is the real GitHub App adapter behind the forge port: a
@@ -797,11 +1040,20 @@ test('createResolverFromEnv builds the resolver over the real GitHub App forge p
     ASEP_GITHUB_APP_ID: '1',
     ASEP_GITHUB_PRIVATE_KEY_PATH: appKey,
     ASEP_GITHUB_INSTALLATION_ID: '2',
+    ASEP_CLAUDE_MODEL: PINS.model,
+    ASEP_CLAUDE_CLI_VERSION: PINS.cliVersion,
+    ASEP_AGENT_IMAGE_DIGEST: PINS.agentImage,
+    ASEP_EGRESS_PROXY_IMAGE_DIGEST: PINS.proxyImage,
   });
   try {
-    for (const m of ['resolveAttempt', 'resolveEvidence', 'resolvePullRequest', 'resolveLivePullRequest', 'resolveHumanAuthorization']) {
+    for (const m of [
+      'resolveAttempt', 'resolveEvidence', 'resolvePullRequest', 'resolveLivePullRequest', 'resolveHumanAuthorization',
+      'pinnedAgent', 'resolveAgentRun',
+    ]) {
       assert.equal(typeof handle.resolver[m], 'function', m);
     }
+    // No base URL set: the public API, as for the pilot.
+    assert.deepEqual({ ...handle.resolver.pinnedAgent() }, PINS);
   } finally {
     await handle.close();
   }

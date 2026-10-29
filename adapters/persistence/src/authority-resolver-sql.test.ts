@@ -31,7 +31,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { generateKeyPairSync } from 'node:crypto';
+import { createHash, generateKeyPairSync } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -40,6 +40,7 @@ import { PgliteClient } from './pglite-client.js';
 import { migrate } from './migrator.js';
 import { FilesystemObjectStore } from './object-store.js';
 import { ContentAddressedEvidenceStore } from './evidence-store.js';
+import { ContentAddressedArtifactStore } from './artifact-store.js';
 // One resolver, one copy of the SQL. Reaching across packages is the point: the
 // resolver's queries must be executed against the schema THIS package migrates,
 // and PGlite is only resolvable from here.
@@ -123,6 +124,10 @@ function resolverFor(client: PgliteClient, objectRoot = '/nonexistent-object-roo
     reviewerPublicKeyPem: REVIEWER_PUB,
     objects: filesystemObjectReader(objectRoot),
     forge: { findPullRequest: async () => null },
+    agent: {
+      model: 'claude-sonnet-4-20250514', cliVersion: '2.1.185', agentImage: `agent@sha256:${'1'.repeat(64)}`,
+      proxyImage: `node@sha256:${'2'.repeat(64)}`, modelBaseUrl: 'https://api.anthropic.com',
+    },
   });
 }
 
@@ -376,5 +381,73 @@ test('the forge binding reader runs against the real schema and stays in its ten
     );
   } finally {
     await client.close?.();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 5 — the agent run is the attempt's OWN artifacts. The real artifact store
+//     links what the Claude adapter writes to its attempt; the resolver reads
+//     exactly those rows, in the trace's tenant, and re-hashes their bytes.
+// ---------------------------------------------------------------------------
+
+test('resolveAgentRun reads the artifacts linked to this attempt only, and re-hashes their bytes', async () => {
+  const client = await PgliteClient.create();
+  const root = await mkdtemp(join(tmpdir(), 'asep-resolver-agent-'));
+  try {
+    await migrate(client);
+    await seed(client);
+    // A sibling attempt in the same tenant, with agent artifacts of its own.
+    const OTHER_ATTEMPT = 'W'.repeat(26);
+    await client.query(
+      `insert into attempts (id, organization_id, project_id, task_id, repository_binding_id, status)
+       values ($1, $2, $3, $4, $5, 'AGENT_DONE')`, [OTHER_ATTEMPT, ORG, PROJ, TASK, BINDING],
+    );
+    const scope: TenantScope = { organizationId: ORG as never, projectId: PROJ as never };
+    const store = new ContentAddressedArtifactStore(client, new FilesystemObjectStore(root));
+    const put = (attemptId: string, kind: string, text: string) => {
+      const content = new TextEncoder().encode(text);
+      return store.put(scope, {
+        kind, content, contentType: 'application/octet-stream', attemptId: attemptId as never,
+        sha256: createHash('sha256').update(content).digest('hex'),
+      });
+    };
+    await put(ATTEMPT, 'claude-invocation', JSON.stringify({ providerId: 'claude:m@cli-1', network: { upstream: 'https://api.anthropic.com' } }));
+    await put(ATTEMPT, 'claude-event-stream',
+      '{"type":"system","subtype":"init","session_id":"s-1","model":"m","claude_code_version":"1"}\n' +
+      '{"type":"result","subtype":"success","is_error":false,"session_id":"s-1"}\n');
+    const egress = await put(ATTEMPT, 'claude-egress-log', '2026-10-29T00:00:00.000Z POST /v1/messages -> 200\n');
+    await put(OTHER_ATTEMPT, 'claude-invocation', JSON.stringify({ providerId: 'claude:other@cli-9' }));
+    await put(OTHER_ATTEMPT, 'claude-egress-log', 'other attempt\n');
+    // An artifact of another kind on the same attempt is not agent evidence.
+    await put(ATTEMPT, 'command-stdout', 'not agent evidence');
+
+    const resolver = resolverFor(client, root);
+    const run = await resolver.resolveAgentRun(trace);
+    assert.equal(run.invocation.length, 1);
+    assert.equal(run.invocation[0].manifest.providerId, 'claude:m@cli-1', "this attempt's manifest, not the sibling's");
+    assert.equal(run.invocation[0].manifest.upstream, 'https://api.anthropic.com');
+    assert.deepEqual(run.events[0].init, { sessionId: 's-1', model: 'm', cliVersion: '1' });
+    assert.deepEqual(run.events[0].result, { sessionId: 's-1', subtype: 'success', isError: false });
+    assert.equal(run.egress.length, 1);
+    assert.equal(run.egress[0].modelCalls, 1);
+    for (const k of ['invocation', 'events', 'egress'] as const) {
+      assert.equal(run[k][0].bytesSha256, run[k][0].sha256, `${k} bytes hash to the recorded sha256`);
+    }
+
+    // The sibling's run is its own; another tenant sees nothing.
+    const sibling = await resolver.resolveAgentRun({ ...trace, attemptId: OTHER_ATTEMPT });
+    assert.equal(sibling.invocation[0].manifest.providerId, 'claude:other@cli-9');
+    assert.deepEqual(sibling.events, []);
+    assert.deepEqual(await resolver.resolveAgentRun({ ...trace, organizationId: 'Z'.repeat(26) }),
+      { invocation: [], events: [], egress: [] });
+
+    // Rewritten bytes are seen.
+    const key = (await client.query('select storage_key from artifacts where id = $1', [egress.artifactId])).rows[0]!['storage_key'] as string;
+    await writeFile(join(root, key), 'rewritten POST /v1/messages -> 200\n');
+    const tampered = await resolver.resolveAgentRun(trace);
+    assert.notEqual(tampered.egress[0].bytesSha256, tampered.egress[0].sha256);
+  } finally {
+    await client.close?.();
+    await rm(root, { recursive: true, force: true });
   }
 });
