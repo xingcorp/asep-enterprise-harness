@@ -72,6 +72,9 @@ export const ACTIVITY_OPTIONS: Readonly<Record<ActivityName, ActivityOptions>> =
   recordAttemptOutcome: options(30, null, retry(10), false),
   publishBranch: options(300, 30, retry(20, 300), false),
   upsertPullRequest: options(300, 30, retry(20, 300), false),
+  // A read of the remote after an unknown publication effect; it continues the
+  // publication unit, so a cancel waits for it.
+  reconcilePublication: options(60, null, retry(20, 300), false),
   projectTaskState: options(30, null, retry(50, 60), false),
   projectAttemptState: options(30, null, retry(50, 60), false),
   recordUsage: options(30, null, retry(10), false),
@@ -93,8 +96,10 @@ export const ACTIVITY_OPTIONS: Readonly<Record<ActivityName, ActivityOptions>> =
  * The critical units: each operation that needs reconciliation, in order. A
  * cancel that arrives inside a unit is processed once the unit has reconciled,
  * and once a push has started the PR upsert runs too, so the remote ends with no
- * ASEP branch or with the branch and its PR. Everything else, including the
- * assurance round, repair planning and approval waits, is cancellable at once.
+ * ASEP branch or with the branch and its PR. A push or PR upsert whose effect is
+ * unknown reconciles inside its unit (reconcilePublication). Everything else,
+ * including the assurance round, repair planning and approval waits, is
+ * cancellable at once.
  */
 export const CRITICAL_UNITS: readonly (readonly TaskRequestKind[])[] = [
   ['commitAttempt', 'persistEvidence'],

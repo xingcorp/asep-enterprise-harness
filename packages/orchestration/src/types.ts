@@ -232,6 +232,14 @@ export type TaskRequest =
       readonly flagged: boolean;
       /** Null when the assurance round was unavailable; the PR body then says so. */
       readonly prBodySectionRef: ArtifactRef | null;
+    }
+  | {
+      /** A read-only look at the remote after a publication effect reported `unknown`. */
+      readonly kind: 'reconcilePublication';
+      readonly attemptNumber: number;
+      readonly remoteBranch: string;
+      /** The attempt's commit: the push applied exactly when the branch head is this commit. */
+      readonly expectedHeadSha: string;
     };
 
 export type TaskRequestKind = TaskRequest['kind'];
@@ -358,8 +366,24 @@ export type TaskResult =
       readonly decision: ApprovalDecisionValue | null;
       readonly extensionUsd: number | null;
     }
-  | { readonly kind: 'publishBranch' }
-  | { readonly kind: 'upsertPullRequest'; readonly prNumber: number };
+  | { readonly kind: 'publishBranch'; readonly effect: 'applied' }
+  | { readonly kind: 'upsertPullRequest'; readonly effect: 'applied'; readonly prNumber: number }
+  | {
+      readonly kind: 'reconcilePublication';
+      /** The remote branch head, or null when the branch does not exist. */
+      readonly branchHeadSha: string | null;
+      /** The open PR whose head is the branch, or null when there is none. */
+      readonly prNumber: number | null;
+    };
+
+/**
+ * Whether a publication activity's external effect (the push, the PR upsert)
+ * happened. `none` only when the activity proves it failed before the forge
+ * call, or a reconciliation read shows the effect absent. Anything after the
+ * call started (a fencing error raised after it, a timeout) is `unknown`,
+ * whatever the error's retryability.
+ */
+export type PublicationEffect = 'applied' | 'none' | 'unknown';
 
 export type TaskMessage =
   | { readonly type: 'pauseRequested'; readonly requestId: string; readonly principalId: string }
@@ -383,8 +407,11 @@ export type TaskEvent =
       readonly failureClass: FailureClass;
       /** True when the engine gave up because heartbeats stopped (worker death). */
       readonly timedOut: boolean;
-      /** True when the engine stopped on a non-retryable error, not because retries or time ran out. */
-      readonly nonRetryable: boolean;
+      /**
+       * For a publication activity, the effect its failure reported; `unknown` when it reported none. Retryability
+       * is deliberately absent: it says nothing about what the remote holds. Other activities ignore it.
+       */
+      readonly effect: PublicationEffect;
     }
   | { readonly type: 'timerFired'; readonly timerId: string }
   | TaskMessage;

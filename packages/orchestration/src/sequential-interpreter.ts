@@ -12,6 +12,7 @@ import { decideTask, startTask } from './task-core.js';
 import type {
   ControlReceipt,
   FailureClass,
+  PublicationEffect,
   TaskCommand,
   TaskCoreInput,
   TaskDecision,
@@ -28,8 +29,8 @@ export type ActivityFailure = {
   readonly failureClass: FailureClass;
   /** True when the engine gave up because heartbeats stopped (worker death). */
   readonly timedOut: boolean;
-  /** True for a non-retryable error; absent or false means retries or time ran out. */
-  readonly nonRetryable?: boolean;
+  /** For a publication activity, what its failure reported about the remote; absent means `unknown`. */
+  readonly effect?: PublicationEffect;
 };
 
 export type Answer = TaskResult | ActivityFailure;
@@ -122,7 +123,7 @@ export function runTaskSequentially(input: TaskCoreInput, env: TaskEnvironment, 
           activity: pending.request.kind,
           failureClass: answer.failureClass,
           timedOut: answer.timedOut,
-          nonRetryable: answer.nonRetryable ?? false,
+          effect: answer.effect ?? 'unknown',
         }
       : { type: 'result', seq: pending.seq, result: answer });
   }

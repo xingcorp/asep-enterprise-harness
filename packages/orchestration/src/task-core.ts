@@ -30,6 +30,7 @@ import type {
   FailureClass,
   OpenApproval,
   ProjectedTaskStatus,
+  PublicationEffect,
   RepairLineage,
   RunEventDetail,
   RunEventType,
@@ -85,6 +86,7 @@ const PHASE_OF: Readonly<Record<TaskRequestKind, TaskPhase>> = {
   verifyApprovalDecision: 'AWAITING_APPROVAL',
   publishBranch: 'PUBLISHING',
   upsertPullRequest: 'PUBLISHING',
+  reconcilePublication: 'PUBLISHING',
 };
 
 const ACCEPTED: ControlReceipt = { accepted: true, duplicate: false, reason: null };
@@ -157,7 +159,7 @@ export function decideTask(state: TaskState, event: TaskEvent): TaskDecision {
         }
         onResult(step, event.result);
       } else {
-        onActivityFailed(step, request, event.failureClass, event.timedOut, event.nonRetryable);
+        onActivityFailed(step, request, event.failureClass, event.timedOut, event.effect);
       }
       return finish(step);
     }
@@ -261,6 +263,7 @@ function baseOf(s: Draft, lineage: RepairLineage | null): string {
 function completesStartedUnit(s: Draft, request: TaskRequest): boolean {
   return request.kind === 'persistEvidence'
     || request.kind === 'findAttempt'
+    || request.kind === 'reconcilePublication'
     || (request.kind === 'upsertPullRequest' && s.pushRequested);
 }
 
@@ -643,12 +646,13 @@ function onResult(step: Step, result: TaskResult): void {
       approvalVerified(step, result);
       return;
     case 'publishBranch':
-      s.pushConfirmed = true;
-      upsertPullRequest(step);
+      pushApplied(step);
       return;
     case 'upsertPullRequest':
-      s.prNumber = result.prNumber;
-      handoff(step);
+      pullRequestUpserted(step, result.prNumber);
+      return;
+    case 'reconcilePublication':
+      publicationReconciled(step, result);
       return;
   }
 }
@@ -658,7 +662,7 @@ function onActivityFailed(
   request: TaskRequest,
   failureClass: FailureClass,
   timedOut: boolean,
-  nonRetryable: boolean,
+  effect: PublicationEffect,
 ): void {
   const s = step.s;
   switch (request.kind) {
@@ -697,13 +701,18 @@ function onActivityFailed(
       rejectApproval(step, ap.kind, 'unavailable');
       return;
     }
+    // Only the reported effect says what the remote holds; retryability never does.
     case 'publishBranch':
-      // A non-retryable failure is definite: nothing was pushed. Any other may
-      // have pushed, so the PR upsert runs as for a completed push.
-      if (nonRetryable) close(step, 'FAILED', 'publication-failed');
-      else upsertPullRequest(step);
+      if (effect === 'applied') pushApplied(step);
+      else if (effect === 'none') close(step, 'FAILED', 'publication-failed');
+      else reconcilePublication(step);
       return;
     case 'upsertPullRequest':
+      // Known absent: the branch is left without a PR. Otherwise the PR may exist and its number is unknown.
+      if (effect === 'none') publicationIncomplete(step);
+      else reconcilePublication(step);
+      return;
+    case 'reconcilePublication':
       publicationIncomplete(step);
       return;
   }
@@ -712,6 +721,43 @@ function onActivityFailed(
 function publication(s: Draft) {
   if (s.publication === null) throw new Error('no publication plan');
   return s.publication;
+}
+
+function pushApplied(step: Step): void {
+  step.s.pushConfirmed = true;
+  upsertPullRequest(step);
+}
+
+function pullRequestUpserted(step: Step, prNumber: number): void {
+  step.s.prNumber = prNumber;
+  handoff(step);
+}
+
+/** Read the remote before any terminal state: a push or PR upsert reported an unknown effect. */
+function reconcilePublication(step: Step): void {
+  const s = step.s;
+  const a = attempt(s, publication(s).attemptNumber);
+  if (a.branch === null || a.resultSha === null) throw new Error('publication without a remote branch or a commit');
+  issue(step, { kind: 'reconcilePublication', attemptNumber: a.attemptNumber, remoteBranch: a.branch, expectedHeadSha: a.resultSha });
+}
+
+/**
+ * Settle an unknown effect from what the remote holds. Before the push is
+ * confirmed this reconciles the push: the branch at the attempt's commit means
+ * it applied, an absent branch that nothing was pushed, and anything else
+ * cannot be reconciled. After it, this reconciles the PR upsert.
+ */
+function publicationReconciled(step: Step, result: Extract<TaskResult, { kind: 'reconcilePublication' }>): void {
+  const s = step.s;
+  if (!s.pushConfirmed) {
+    const a = attempt(s, publication(s).attemptNumber);
+    if (result.branchHeadSha === null) close(step, 'FAILED', 'publication-failed');
+    else if (result.branchHeadSha === a.resultSha) pushApplied(step);
+    else publicationIncomplete(step);
+    return;
+  }
+  if (result.prNumber !== null) pullRequestUpserted(step, result.prNumber);
+  else publicationIncomplete(step);
 }
 
 function upsertPullRequest(step: Step): void {
@@ -725,9 +771,10 @@ function upsertPullRequest(step: Step): void {
 }
 
 /**
- * The PR upsert failed after its retry policy while the branch may be on the
- * remote. The publication cannot reconcile, so the task fails, also over a
- * pending cancel, and the audit names the branch left without a PR for a human.
+ * The publication cannot reconcile: the PR upsert failed with the branch
+ * possibly on the remote, or the remote could not be read or holds another
+ * commit. The task fails, also over a pending cancel, and the audit names the
+ * branch for a human.
  */
 function publicationIncomplete(step: Step): void {
   const s = step.s;

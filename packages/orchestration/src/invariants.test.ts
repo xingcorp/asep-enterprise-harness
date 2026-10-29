@@ -117,8 +117,13 @@ function randomInput(rng: Rng): TaskCoreInput {
 }
 
 function failure(rng: Rng): Answer {
-  const timedOut = rng.chance(0.4);
-  return { kind: 'activityFailed', failureClass: rng.pick(CLASSES), timedOut, nonRetryable: !timedOut && rng.chance(0.4) };
+  return { kind: 'activityFailed', failureClass: rng.pick(CLASSES), timedOut: rng.chance(0.4) };
+}
+
+/** A publication failure: it reports the push or PR as applied, absent or unknown, or reports nothing (unknown). */
+function publicationFailure(rng: Rng): Answer {
+  const effect = rng.pick(['applied', 'none', 'unknown', null] as const);
+  return { kind: 'activityFailed', failureClass: rng.pick(CLASSES), timedOut: rng.chance(0.3), ...(effect === null ? {} : { effect }) };
 }
 
 function randomEnvironment(rng: Rng, input: TaskCoreInput): TaskEnvironment {
@@ -225,6 +230,15 @@ function randomEnvironment(rng: Rng, input: TaskCoreInput): TaskEnvironment {
               null,
             ]),
           };
+        }
+        case 'publishBranch':
+        case 'upsertPullRequest':
+          return rng.chance(0.3) ? publicationFailure(rng) : happyAnswer(request);
+        case 'reconcilePublication': {
+          // The remote holds the attempt's commit, nothing, or something else; the PR is there or not; or the read fails.
+          if (rng.chance(0.15)) return failure(rng);
+          const head = rng.pick([request.expectedHeadSha, null, 'f'.repeat(40)]);
+          return { kind: 'reconcilePublication', branchHeadSha: head, prNumber: head !== null && rng.chance(0.5) ? 11 : null };
         }
         case 'verifyApprovalDecision': {
           const sent = sentDecisions.get(request.decisionId);
@@ -518,13 +532,18 @@ function checkTrace(input: TaskCoreInput, trace: TaskTrace, label: string): void
   }
 
   // Once a push may have happened, the task never ends without a PR unless it says so: CANCELLED, review handoff and
-  // every other outcome after a push request have the PR, or the push failed definitely (non-retryable), or the
-  // task ends FAILED / publication-incomplete with an audit naming the attempt's branch.
+  // every other outcome after a push request have the PR, or the remote is known to hold nothing (the push failed
+  // with effect none, or the reconciliation read after it found no branch), or the task ends
+  // FAILED / publication-incomplete with an audit naming the attempt's branch. Retryability plays no part.
   const pushAt = requestIndex(commands, (r) => r.kind === 'publishBranch')[0];
   if (pushAt !== undefined && trace.summary.prNumber === null) {
     const push = commands[pushAt]!;
     assert.ok(push.type === 'request' && push.request.kind === 'publishBranch', `${label}: push request`);
-    const definite = trace.events.some((e) => e.type === 'activityFailed' && e.seq === push.seq && e.nonRetryable);
+    const upsertAt = requestIndex(commands, (r) => r.kind === 'upsertPullRequest')[0] ?? Infinity;
+    const pushReconciliations = commands.flatMap((c, i) =>
+      (c.type === 'request' && c.request.kind === 'reconcilePublication' && i < upsertAt ? [c.seq] : []));
+    const definite = trace.events.some((e) => (e.type === 'activityFailed' && e.seq === push.seq && e.effect === 'none')
+      || (e.type === 'result' && e.result.kind === 'reconcilePublication' && pushReconciliations.includes(e.seq) && e.result.branchHeadSha === null));
     if (!definite) {
       assert.deepEqual([trace.summary.outcome, trace.summary.reason], ['FAILED', 'publication-incomplete'], `${label}: branch left without a PR is reported`);
       const incident = effectsOf(commands, 'audit').find((a) => a.action === 'publication.incomplete');
@@ -575,6 +594,24 @@ function replaySteps(input: TaskCoreInput, trace: TaskTrace): ReplayedStep[] {
 /** True when the task waits for an opened approval with nothing in flight. */
 function waitsForApproval(state: TaskState): boolean {
   return state.outcome === null && state.pending === null && state.approval?.opened === true;
+}
+
+// Publication effects, step by step: a push or PR upsert failure whose effect is not known to be none (or a push
+// reported applied) is followed at once by a reconciliation read, never by a terminal state.
+function checkPublicationEffects(input: TaskCoreInput, trace: TaskTrace, label: string): void {
+  for (const { before, event, decision } of replaySteps(input, trace)) {
+    if (event.type !== 'activityFailed' || before.pending === null || before.pending.seq !== event.seq || before.outcome !== null) continue;
+    const kind = before.pending.request.kind;
+    if (kind !== 'publishBranch' && kind !== 'upsertPullRequest') continue;
+    const issued = requests(decision.commands).map((r) => r.kind);
+    const closed = decision.commands.some((c) => c.type === 'complete');
+    const mustReconcile = kind === 'publishBranch' ? event.effect === 'unknown' : event.effect !== 'none';
+    if (mustReconcile) {
+      assert.deepEqual([issued, closed], [['reconcilePublication'], false], `${label}: ${kind} effect ${event.effect} not reconciled first`);
+    } else {
+      assert.ok(!issued.includes('reconcilePublication'), `${label}: ${kind} effect ${event.effect} needs no reconciliation`);
+    }
+  }
 }
 
 // Pause checks, step by step: a pause takes effect at once when nothing is in flight, and never suspends an
@@ -652,6 +689,7 @@ test('generated task traces satisfy the orchestration safety invariants', () => 
     checkTrace(input, trace, `seed ${seed}`);
     checkPauses(input, trace, `seed ${seed}`);
     checkApprovalGates(input, trace, `seed ${seed}`);
+    checkPublicationEffects(input, trace, `seed ${seed}`);
     outcomes.set(trace.summary.outcome, (outcomes.get(trace.summary.outcome) ?? 0) + 1);
   }
   // The generator must actually reach every terminal outcome, or the invariants prove little.
@@ -682,6 +720,11 @@ test('the generator covers repair, replacement, approvals, pause and cancel path
     if (effectsOf(trace.commands, 'recordOverrun').some((o) => o.overrunWallClockMs > 0)) seen.add('wall-clock-overrun');
     if (effectsOf(trace.commands, 'recordOverrun').some((o) => o.overrunUsd === 0.000001)) seen.add('micro-overrun');
     if (trace.summary.reason === 'publication-incomplete') seen.add('publication-incomplete');
+    for (const e of trace.events) {
+      if (e.type === 'activityFailed' && (e.activity === 'publishBranch' || e.activity === 'upsertPullRequest')) seen.add(`${e.activity}-${e.effect}`);
+      if (e.type === 'result' && e.result.kind === 'reconcilePublication') seen.add(e.result.branchHeadSha === null ? 'reconciled-absent' : 'reconciled-present');
+      if (e.type === 'activityFailed' && e.activity === 'reconcilePublication') seen.add('reconciliation-failed');
+    }
     for (const { before, event, decision } of replaySteps(input, trace)) {
       if (event.type === 'pauseRequested' && waitsForApproval(before) && !before.paused && decision.receipt?.accepted) seen.add('paused-while-waiting');
       if (event.type === 'timerFired' && before.paused && event.timerId.startsWith('approval:')) seen.add('expired-while-paused');
@@ -711,8 +754,11 @@ test('the generator covers repair, replacement, approvals, pause and cancel path
     'abort', 'approval-expired', 'assurance-unavailable', 'budget-approval', 'exhausted', 'expired-while-paused',
     'expiry-during-verification', 'extension-granted', 'hostile-policy-failure', 'lineage-retry', 'micro-overrun', 'overrun',
     'pause-timeout', 'pause-timeout-in-flight', 'paused', 'paused-while-waiting', 'publication-incomplete',
-    'publish-approval', 'recovered', 'registration-absent', 'registration-found', 'registration-unknown',
-    'repair', 'retry', 'unconfirmed-approve', 'verification-stop', 'verified-within-grace', 'violation', 'wall-clock-overrun',
+    'publish-approval', 'publishBranch-applied', 'publishBranch-none', 'publishBranch-unknown', 'reconciled-absent',
+    'reconciled-present', 'reconciliation-failed',
+    'recovered', 'registration-absent', 'registration-found', 'registration-unknown',
+    'repair', 'retry', 'unconfirmed-approve', 'upsertPullRequest-applied', 'upsertPullRequest-none',
+    'upsertPullRequest-unknown', 'verification-stop', 'verified-within-grace', 'violation', 'wall-clock-overrun',
   ]);
 });
 

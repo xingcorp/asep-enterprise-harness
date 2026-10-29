@@ -116,9 +116,11 @@ export function happyAnswer(request: TaskRequest): Answer {
     case 'verifyApprovalDecision':
       return { kind: 'verifyApprovalDecision', verified: true, decision: 'approve', extensionUsd: null };
     case 'publishBranch':
-      return { kind: 'publishBranch' };
+      return { kind: 'publishBranch', effect: 'applied' };
     case 'upsertPullRequest':
-      return { kind: 'upsertPullRequest', prNumber: 7 };
+      return { kind: 'upsertPullRequest', effect: 'applied', prNumber: 7 };
+    case 'reconcilePublication':
+      return { kind: 'reconcilePublication', branchHeadSha: request.expectedHeadSha, prNumber: 7 };
   }
 }
 

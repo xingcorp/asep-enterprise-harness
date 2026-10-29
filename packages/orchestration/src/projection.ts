@@ -58,6 +58,7 @@ export function statusForRequest(kind: TaskRequestKind, workStatus: ProjectedTas
     case 'assuranceRound':
     case 'publishBranch':
     case 'upsertPullRequest':
+    case 'reconcilePublication':
       return 'VERIFYING';
   }
 }

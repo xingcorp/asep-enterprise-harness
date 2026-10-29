@@ -379,9 +379,8 @@ All in `workers/temporal-worker/src/e2e/controls.itest.ts` *(new)*, `asep-suite:
       process group is gone, no `asep-verify-<attemptId>-*` container remains, no verification process is
       running, no commit exists and the task is `CANCELLED`.
 - [ ] G13. **Incomplete publication (R21, R24).** A cancel never finalizes while a publication unit is
-      unreconciled, and the publication effect, never retryability, decides what is reconciled. For push and PR
-      upsert, each with and without a cancel pending, and with the same outcome whether the failure was retryable
-      or not:
+      unreconciled, and the publication effect, never retryability, decides what is reconciled: an activity failure
+      carries no retryability into the core at all. For push and PR upsert, each with and without a cancel pending:
       - a cancel during a successful push, then a PR upsert that fails with effect `none`, ends the task
         `FAILED / publication-incomplete`, never `CANCELLED`, with an audit row `publication.incomplete` naming the
         remote branch and `pushConfirmed: true`;
