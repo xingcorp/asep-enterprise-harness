@@ -20,8 +20,7 @@ export type CheckRuleId =
   | 'dependency-manifest-changed'
   | 'lockfile-changed'
   | 'forbidden-import'
-  | 'invariant-check-invalid'
-  | 'sarif-malformed';
+  | 'invariant-check-invalid';
 
 export const CHECK_RULES: Readonly<
   Record<CheckRuleId, { readonly severity: FindingSeverity; readonly category: FindingCategory; readonly summary: string }>
@@ -68,14 +67,13 @@ export const CHECK_RULES: Readonly<
     category: 'ARCHITECTURE',
     summary: 'an architecture invariant check cannot be evaluated',
   },
-  'sarif-malformed': { severity: 'HIGH', category: 'EVIDENCE_INTEGRITY', summary: 'tool output in SARIF cannot be read' },
 });
 
 export interface CheckFinding {
   readonly source: 'deterministic' | 'sarif';
-  /** `deterministic:<ruleId>` or `sarif:<tool>`. */
+  /** `deterministic:<ruleId>`, or `sarif:unparsed` for a SARIF log. */
   readonly raisedBy: string;
-  /** A CheckRuleId, `forbidden-import:<invariantId>`, or the SARIF rule id (null when absent). */
+  /** A CheckRuleId, `forbidden-import:<invariantId>`, or `sarif-unparsed` for a SARIF log. */
   readonly ruleId: string | null;
   readonly severity: FindingSeverity;
   readonly category: FindingCategory;
@@ -86,33 +84,19 @@ export interface CheckFinding {
   readonly evidence: string;
   readonly requiredFix: string;
   readonly fingerprint: string;
-  /**
-   * True only for a SARIF result whose rule or artifact reference could not be resolved: the
-   * unresolved part is null, the evidence names the reference, and the finding is never linked
-   * to a prior.
-   */
-  readonly unresolvedReference: boolean;
 }
 
 const LINE_BUCKET = 10;
 
-/**
- * sha256 of the tuple of category, path, line bucket (10 lines) and rule id. A SARIF result
- * with an unresolved reference passes the canonical JSON of its raw reference, which extends
- * the tuple with a marker and that reference, so it never shares a fingerprint with a
- * resolved finding and distinct references stay distinct.
- */
+/** sha256 of the tuple of category, path, line bucket (10 lines) and rule id. */
 export function findingFingerprint(input: {
   readonly category: FindingCategory;
   readonly file: string | null;
   readonly lineStart: number | null;
   readonly ruleId: string | null;
-  readonly unresolvedReference?: string | null;
 }): string {
   const bucket = input.lineStart === null ? null : Math.floor(input.lineStart / LINE_BUCKET);
-  const tuple = [input.category, input.file, bucket, input.ruleId];
-  const raw = input.unresolvedReference ?? null;
-  return tupleSha256(raw === null ? tuple : [...tuple, 'unresolved-reference', raw]);
+  return tupleSha256([input.category, input.file, bucket, input.ruleId]);
 }
 
 /** A path as finding text shows it: verbatim when normalized, JSON-quoted otherwise. */
@@ -160,7 +144,6 @@ export function ruleFinding(
       lineStart,
       ruleId: qualified,
     }),
-    unresolvedReference: false,
   };
 }
 

@@ -284,8 +284,8 @@ function closePrior(
     }
     return decision(current, 'unchanged');
   }
-  // Only a named human closes a SARIF finding: a log that no longer reports it is no proof
-  // that it is gone, and no reviewer's claim outranks the scanner.
+  // Only a named human closes a SARIF finding: it stands for a log nobody has read, so neither
+  // a later log nor a reviewer's claim says anything about it.
   if (F.source === 'sarif') return decision(current, 'unchanged');
   if (!isLifecycleBlocking(agg, asOf)) return decision(current, 'unchanged');
 
@@ -343,6 +343,9 @@ function sortBy<T>(items: readonly T[], key: (item: T) => string): T[] {
 export function adjudicate(input: AdjudicationInput): Adjudication {
   validate(input);
   const blockingSeverity = new Set(input.blockingSeverities);
+  // A SARIF finding is the one finding of an unparsed log: it blocks whatever the severity
+  // policy says, until a human closes it.
+  const blocksAt = (source: EvaluatedFinding['source'], severity: FindingSeverity) => source === 'sarif' || blockingSeverity.has(severity);
   const ctx: GroundingContext = {
     packet: input.packet,
     diff: input.diff,
@@ -367,8 +370,7 @@ export function adjudicate(input: AdjudicationInput): Adjudication {
     ...optional('file', f.file),
     ...optional('lineStart', f.lineStart),
     ...optional('lineEnd', f.lineEnd),
-    ...(f.unresolvedReference ? { unresolvedReference: true as const } : {}),
-    blocking: blockingSeverity.has(f.severity),
+    blocking: blocksAt(f.source, f.severity),
   }));
 
   // Model findings: each is grounded by the harness on its own first. Findings of one
@@ -441,8 +443,7 @@ export function adjudicate(input: AdjudicationInput): Adjudication {
   // prior is carried by the re-raise. The re-raise then stands for the pair at the higher
   // severity, so it never downgrades a prior it does not shield, and a linked prior is not
   // counted again below. An ungrounded finding links nothing, so it can never stand in for a
-  // prior that still blocks, and neither does a finding whose reference could not be resolved:
-  // it neither inherits a prior's shield nor takes its place.
+  // prior that still blocks.
   const priors = sortBy(input.priorFindings, (p) => p.record.id).map((prior) => ({
     prior,
     state: effectiveFindingState(persistedAggregate(prior, input.roundOpenedAt), input.roundOpenedAt),
@@ -450,7 +451,7 @@ export function adjudicate(input: AdjudicationInput): Adjudication {
   const linked = new Set<string>();
   const regressions = new Set<string>();
   for (const [i, f] of evaluated.entries()) {
-    if (!f.grounded || f.unresolvedReference === true) continue;
+    if (!f.grounded) continue;
     const matches = priors.filter((p) => persistedIdentity(p.prior.record) === persistedIdentity(f));
     if (matches.length === 0) continue;
     for (const m of matches) linked.add(m.prior.record.id);
@@ -467,7 +468,7 @@ export function adjudicate(input: AdjudicationInput): Adjudication {
       severity,
       priorFindingId: (settled ?? open[0]!).prior.record.id,
       lifecycleState: 'OPEN',
-      blocking: blockingSeverity.has(severity),
+      blocking: blocksAt(f.source, severity),
     };
   }
 
@@ -480,7 +481,7 @@ export function adjudicate(input: AdjudicationInput): Adjudication {
     const blocking =
       !linked.has(prior.record.id) &&
       prior.record.grounded &&
-      blockingSeverity.has(prior.record.severity) &&
+      blocksAt(prior.record.source, prior.record.severity) &&
       (['OPEN', 'ACKNOWLEDGED', 'FIXED'] as const).some((s) => s === state);
     evaluated.push({ ...prior.record, lifecycleState: state, ref: `prior:${prior.record.id}`, blocking });
   }

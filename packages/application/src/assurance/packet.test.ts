@@ -437,21 +437,20 @@ function sortKeys(value: unknown): unknown {
   return Object.fromEntries(Object.entries(value as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
 }
 
-test('a prior finding keeps exactly its review-finding fields, its unresolved flag included', () => {
+test('a prior finding keeps exactly its review-finding fields', () => {
   const world = fixtureWorld({ round: 2 });
   const prior: ReviewFindingRecord = {
     id: 'prior-sarif',
     source: 'sarif',
-    raisedBy: 'sarif:semgrep',
+    raisedBy: 'sarif:unparsed',
     fingerprint: 'a'.repeat(64),
     severity: 'HIGH',
-    category: 'SECURITY',
-    evidence: '[unresolved reference: artifactLocation.uriBaseId] [js.eval-use] eval() on user input',
-    requiredFix: 'Resolve the semgrep result js.eval-use reported by check semgrep',
+    category: 'EVIDENCE_INTEGRITY',
+    evidence: 'the SARIF log of check "semgrep" is not parsed in this phase, so its results are unread',
+    requiredFix: 'A human reads the SARIF log and records a disposition for this finding',
     grounded: true,
     lifecycleState: 'OPEN',
-    ruleId: 'js.eval-use',
-    unresolvedReference: true,
+    ruleId: 'sarif-unparsed',
   };
   // An adjudicated finding carries more than its record; the packet copies the record only.
   const adjudicated = { ...prior, ref: 'prior:prior-sarif', blocking: true };

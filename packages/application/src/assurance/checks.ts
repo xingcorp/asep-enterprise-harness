@@ -1,15 +1,14 @@
 // Deterministic checks over a built review packet: the push guard, false-green
 // evidence, Trojan Source characters, dependency flags, forbidden imports declared by
-// architecture invariants, and SARIF results. Together with the egress decision they
-// form the round's check result.
+// architecture invariants, and one finding per SARIF log, which is not parsed. Together
+// with the egress decision they form the round's check result.
 //
 // Pure: callers resolve artifacts and pass bytes in. A diff that cannot be read never
 // passes the push guard. Finding text never repeats a secret value.
 
 import type { ArtifactRef } from '@asep/contracts';
 import { isNormalizedRepoPath, isSensitivePath, matchesPathGlob, type ReviewPolicy } from '@asep/policy';
-import type { FindingSeverity } from '@asep/domain';
-import { canonicalJson, sha256Hex, tupleKey } from './canonical-json.js';
+import { sha256Hex, tupleKey } from './canonical-json.js';
 import { parseUnifiedDiff, type DiffFileChange } from './diff.js';
 import { decideEgress, type EgressResult } from './egress.js';
 import {
@@ -418,228 +417,38 @@ function forbiddenImportFindings(diff: DiffFileChange[] | null, invariants: read
   return findings;
 }
 
-// --- SARIF 2.1.0 subset --------------------------------------------------------------------------
+// --- SARIF logs (not parsed in this phase) ---------------------------------------------------------
 
-class SarifError extends Error {}
-
-const LEVEL_SEVERITY: Readonly<Record<string, FindingSeverity>> = {
-  error: 'HIGH',
-  warning: 'MEDIUM',
-  note: 'LOW',
-  none: 'INFO',
-};
-
-const EVIDENCE_LIMIT = 4000;
-
-function obj(value: unknown, what: string): Record<string, unknown> {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new SarifError(`${what} must be an object`);
-  return value as Record<string, unknown>;
-}
-
-function arr(value: unknown, what: string): unknown[] {
-  if (!Array.isArray(value)) throw new SarifError(`${what} must be a list`);
-  return value;
-}
-
-function line(value: unknown, what: string): number | null {
-  if (value === undefined) return null;
-  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) throw new SarifError(`${what} must be a positive integer`);
-  return value;
-}
-
-function repoPath(uri: string): string | null {
-  let path = uri;
-  if (/^[a-z][a-z0-9+.-]*:/i.test(path)) return null;
-  try {
-    path = decodeURIComponent(path);
-  } catch {
-    return null;
-  }
-  while (path.startsWith('./')) path = path.slice(2);
-  return isNormalizedRepoPath(path) ? path : null;
-}
-
-function clip(text: string): string {
-  return text.length <= EVIDENCE_LIMIT ? text : `${text.slice(0, EVIDENCE_LIMIT)} [truncated]`;
-}
-
-// References. A result names its rule and its file in several equivalent forms; every form
-// present must resolve to the same rule and file, or the reference is unresolved. An
-// unresolved reference never makes the log malformed: it is recorded in `unresolved` and the
-// part it names is left null.
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
-/** An index property: -1 (the SARIF default) or absent is no index; undefined when it names no element of `list`. */
-function indexInto(value: unknown, list: unknown): number | null | undefined {
-  if (value === undefined || value === -1) return null;
-  return typeof value === 'number' && Number.isInteger(value) && Array.isArray(list) && value >= 0 && value < list.length ? value : undefined;
-}
+/** The rule of the one finding a SARIF log yields: logs are not parsed in this phase. */
+export const SARIF_UNPARSED_RULE = 'sarif-unparsed';
 
 /**
- * The rule a result names, from `ruleId`, `rule.id`, `ruleIndex` and `rule.index`, the indexes
- * into `tool.driver.rules`. The ids must be equal, the indexes must be equal, and an indexed
- * rule's id must be the id or its leading hierarchical components (SARIF 2.1.0 §3.27.5). A
- * rule of a tool component, a rule named only by guid, an index that names no driver rule, or
- * forms that disagree cannot be resolved.
+ * The one finding of a SARIF log, built from the identity the check report records for the
+ * log: its check and the sha256 and size of its bytes. The log is never decoded, so nothing it
+ * holds can drop, downgrade or relabel a result, and only a human who reads it can close the
+ * finding. A new log of the same check is a new finding, so no disposition covers bytes it did
+ * not see.
  */
-function resultRule(result: Record<string, unknown>, rules: unknown, unresolved: string[]): string | null {
-  const fail = (what: string): null => {
-    unresolved.push(what);
-    return null;
+export function sarifLogFinding(log: { readonly checkId: string; readonly sha256: string; readonly bytes: number }): CheckFinding {
+  const category: FindingCategory = 'EVIDENCE_INTEGRITY';
+  return {
+    source: 'sarif',
+    raisedBy: 'sarif:unparsed',
+    ruleId: SARIF_UNPARSED_RULE,
+    severity: 'HIGH',
+    category,
+    file: null,
+    lineStart: null,
+    lineEnd: null,
+    evidence: `the SARIF log of check ${JSON.stringify(log.checkId)} (sha256 ${log.sha256}, ${log.bytes} bytes) is not parsed in this phase, so its results are unread`,
+    requiredFix: 'A human reads the SARIF log and records a disposition for this finding',
+    fingerprint: findingFingerprint({ category, file: tupleKey(['sarif-log', log.checkId, log.sha256]), lineStart: null, ruleId: SARIF_UNPARSED_RULE }),
   };
-  const rule = result['rule'] ?? {};
-  if (!isRecord(rule)) return fail('result.rule is not an object');
-  if (rule['toolComponent'] !== undefined) return fail('result.rule.toolComponent');
-  const ids = [result['ruleId'], rule['id']].filter((id) => id !== undefined);
-  if (ids.some((id) => typeof id !== 'string')) return fail('a rule id that is not text');
-  if (ids.length === 2 && ids[0] !== ids[1]) return fail('result.ruleId and result.rule.id differ');
-  const id = (ids[0] as string | undefined) ?? null;
-  const indexes = [result['ruleIndex'], rule['index']].map((index) => indexInto(index, rules));
-  if (indexes.includes(undefined)) return fail('a rule index that names no rule of tool.driver.rules');
-  const [byIndex, byRef] = indexes as (number | null)[];
-  if (byIndex !== null && byRef !== null && byIndex !== byRef) return fail('result.ruleIndex and result.rule.index differ');
-  const index = byIndex ?? byRef ?? null;
-  if (index === null) return id === null && rule['guid'] !== undefined ? fail('result.rule.guid') : id;
-  const descriptor = (rules as unknown[])[index];
-  const named = isRecord(descriptor) && typeof descriptor['id'] === 'string' && descriptor['id'] !== '' ? descriptor['id'] : null;
-  if (named === null) return fail(`tool.driver.rules entry ${index} has no id`);
-  if (id === null) return named;
-  return id === named || id.startsWith(`${named}/`) ? id : fail('the rule id and the rule index name different rules');
 }
 
-/**
- * The repository path of a result's artifact location, from its `uri` and its `index` into
- * `run.artifacts`, which must name the same file when both are present. Any `uriBaseId` is
- * unresolved: no base is bound to the repaired repository root. So is a nested artifact, an
- * index that names no artifact, and a URI that is not a repository path. `indexed` is the
- * location the index named, for the raw reference.
- */
-function resultFile(
-  location: Record<string, unknown>,
-  artifacts: unknown,
-  unresolved: string[],
-): { readonly file: string | null; readonly indexed: unknown } {
-  const fail = (what: string, indexed?: unknown) => {
-    unresolved.push(what);
-    return { file: null, indexed };
-  };
-  if (location['uriBaseId'] !== undefined) return fail('artifactLocation.uriBaseId');
-  const uri = location['uri'];
-  if (uri !== undefined && typeof uri !== 'string') return fail('artifactLocation.uri is not text');
-  const index = indexInto(location['index'], artifacts);
-  if (index === undefined) return fail('artifactLocation.index names no artifact of run.artifacts');
-  let indexed: unknown;
-  let indexedUri: string | undefined;
-  if (index !== null) {
-    const artifact = (artifacts as unknown[])[index];
-    indexed = isRecord(artifact) ? artifact['location'] : undefined;
-    if (!isRecord(artifact) || !isRecord(indexed)) return fail(`run.artifacts entry ${index} has no location`, indexed);
-    if (artifact['parentIndex'] !== undefined && artifact['parentIndex'] !== -1) return fail(`run.artifacts entry ${index} is nested`, indexed);
-    if (indexed['uriBaseId'] !== undefined) return fail(`run.artifacts entry ${index} has a uriBaseId`, indexed);
-    if (typeof indexed['uri'] !== 'string') return fail(`run.artifacts entry ${index} has no text uri`, indexed);
-    indexedUri = indexed['uri'];
-  }
-  const paths = [uri, indexedUri].filter((u) => u !== undefined).map((u) => repoPath(u));
-  if (paths.length === 0) return { file: null, indexed };
-  if (paths.includes(null)) return fail('artifactLocation.uri is not a repository path', indexed);
-  if (paths.length === 2 && paths[0] !== paths[1]) return fail('artifactLocation.uri and artifactLocation.index name different files', indexed);
-  return { file: paths[0]!, indexed };
-}
-
-/** Findings from one SARIF log. A log that is not a readable 2.1.0 subset yields one sarif-malformed finding. */
+/** The findings of one SARIF log: exactly one, whatever its bytes hold. */
 export function sarifFindings(input: SarifInput): CheckFinding[] {
-  try {
-    let doc: unknown;
-    try {
-      doc = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(input.content));
-    } catch {
-      throw new SarifError('not UTF-8 JSON');
-    }
-    const root = obj(doc, 'log');
-    if (root['version'] !== '2.1.0') throw new SarifError('version must be 2.1.0');
-    const findings: CheckFinding[] = [];
-    arr(root['runs'], 'runs').forEach((runValue, r) => {
-      const run = obj(runValue, `runs[${r}]`);
-      const driver = obj(obj(run['tool'], 'tool')['driver'], 'tool.driver');
-      const name = driver['name'];
-      if (typeof name !== 'string' || name.trim() === '') throw new SarifError(`runs[${r}].tool.driver.name is required`);
-      const tool = name.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, '-');
-      arr(run['results'], `runs[${r}].results`).forEach((resultValue, i) => {
-        const where = `runs[${r}].results[${i}]`;
-        const result = obj(resultValue, where);
-        const text = obj(result['message'], `${where}.message`)['text'];
-        if (typeof text !== 'string' || text === '') throw new SarifError(`${where}.message.text is required`);
-        const level = result['level'] ?? 'warning';
-        if (typeof level !== 'string' || !(level in LEVEL_SEVERITY)) throw new SarifError(`${where}.level is not a SARIF level`);
-        const tags = obj(result['properties'] ?? {}, `${where}.properties`)['tags'];
-        const category: FindingCategory =
-          Array.isArray(tags) && tags.some((t) => typeof t === 'string' && t.toLowerCase() === 'security') ? 'SECURITY' : 'CORRECTNESS';
-
-        const unresolved: string[] = [];
-        const ruleId = resultRule(result, driver['rules'], unresolved);
-        let artifactLocation: unknown;
-        let indexed: unknown;
-        let file: string | null = null;
-        let lineStart: number | null = null;
-        let lineEnd: number | null = null;
-        if (result['locations'] !== undefined) {
-          const first = arr(result['locations'], `${where}.locations`)[0];
-          if (first !== undefined) {
-            const physical = obj(obj(first, `${where}.locations[0]`)['physicalLocation'] ?? {}, `${where}.physicalLocation`);
-            artifactLocation = physical['artifactLocation'];
-            const region = physical['region'] === undefined ? {} : obj(physical['region'], `${where}.region`);
-            lineStart = line(region['startLine'], `${where}.region.startLine`);
-            lineEnd = line(region['endLine'], `${where}.region.endLine`) ?? lineStart;
-            if (lineStart !== null && lineEnd !== null && lineEnd < lineStart) throw new SarifError(`${where}.region ends before it starts`);
-            if (artifactLocation !== undefined) {
-              const resolved = resultFile(obj(artifactLocation, `${where}.artifactLocation`), run['artifacts'], unresolved);
-              file = resolved.file;
-              indexed = resolved.indexed;
-            }
-            if (file === null) {
-              lineStart = null;
-              lineEnd = null;
-            }
-          }
-        }
-        // A reference that cannot be resolved keeps the result: flagged, its raw reference in
-        // the fingerprint, so it stays distinct and is never mistaken for a resolved finding.
-        const raw =
-          unresolved.length === 0
-            ? null
-            : canonicalJson({ ruleId: result['ruleId'], ruleIndex: result['ruleIndex'], rule: result['rule'], artifactLocation, artifact: indexed });
-        const label = `[${ruleId ?? 'result'}] ${text}`;
-        findings.push({
-          source: 'sarif',
-          raisedBy: `sarif:${tool}`,
-          ruleId,
-          severity: LEVEL_SEVERITY[level]!,
-          category,
-          file,
-          lineStart,
-          lineEnd,
-          evidence: clip(raw === null ? label : `[unresolved reference: ${unresolved.join('; ')}] ${label}`),
-          requiredFix: `Resolve the ${name.trim()} result ${ruleId ?? ''} reported by check ${input.checkId}`.replace(/\s+/g, ' '),
-          fingerprint: findingFingerprint({ category, file: file ?? `check:${input.checkId}`, lineStart, ruleId, unresolvedReference: raw }),
-          unresolvedReference: raw !== null,
-        });
-      });
-    });
-    return findings;
-  } catch (err) {
-    if (!(err instanceof SarifError)) throw err;
-    return [
-      ruleFinding(
-        'sarif-malformed',
-        { file: null, lineStart: null, subject: `check:${input.checkId}` },
-        `the SARIF output of check "${input.checkId}" cannot be read: ${err.message}`,
-        'Produce a valid SARIF 2.1.0 log for the check',
-      ),
-    ];
-  }
+  return [sarifLogFinding({ checkId: input.checkId, sha256: sha256Hex(input.content), bytes: input.content.byteLength })];
 }
 
 // --- the round's deterministic checks -----------------------------------------------------------

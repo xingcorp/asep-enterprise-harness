@@ -9,16 +9,25 @@ import {
   isTestPath,
   runDeterministicCheckRules,
   sarifFindings,
+  type SarifInput,
   type DeterministicCheckSources,
   type RecordedCheckVerdict,
 } from './checks.js';
 import { parseUnifiedDiff } from './diff.js';
-import { canonicalBytes, canonicalJson, sha256Hex } from './canonical-json.js';
+import { canonicalBytes, sha256Hex } from './canonical-json.js';
 import { CheckReportError, buildCheckReport, checkReportSummary, parseCheckReport, reviewerClearance } from './check-report.js';
 import { CHECK_RULES, findingFingerprint, type CheckFinding } from './findings.js';
 import { SECRET_PATTERNS, findSecrets } from './secret-patterns.js';
 import type { ArchitectureInvariantRecord } from './local-types.js';
-import { fixtureWorld, utf8, worldFromDiff, type DiffEntry, type FixtureWorld } from './test-support.js';
+import {
+  SARIF_MESSAGE_ID_LOG,
+  SARIF_OMITTED_LEVEL_LOG,
+  fixtureWorld,
+  utf8,
+  worldFromDiff,
+  type DiffEntry,
+  type FixtureWorld,
+} from './test-support.js';
 
 console.log('SUITE-ID: asep-suite:assurance-checks');
 
@@ -360,192 +369,54 @@ test('false green counts executed tests and recorded failures', () => {
   assert.deepEqual(failure.map((f) => [f.severity, f.category]), [['HIGH', 'EVIDENCE_INTEGRITY']]);
 });
 
-test('sarif results become findings and malformed sarif fails closed', () => {
-  const sarif = {
-    version: '2.1.0',
-    runs: [
-      {
-        tool: { driver: { name: 'Semgrep OSS' } },
-        results: [
-          {
-            ruleId: 'js.eval-use',
-            level: 'error',
-            message: { text: 'eval() on user input' },
-            properties: { tags: ['Security'] },
-            locations: [{ physicalLocation: { artifactLocation: { uri: './src/feature.ts' }, region: { startLine: 2, endLine: 3 } } }],
-          },
-          { ruleId: 'style.note', level: 'note', message: { text: 'consider renaming' } },
-          {
-            message: { text: 'absolute location' },
-            locations: [{ physicalLocation: { artifactLocation: { uri: 'file:///etc/passwd' }, region: { startLine: 1 } } }],
-          },
-        ],
-      },
-    ],
-  };
-  const findings = sarifFindings({ checkId: 'semgrep', content: utf8(JSON.stringify(sarif)) });
-  assert.equal(findings.length, 3);
-  const [first, second, third] = findings;
-  assert.equal(first?.source, 'sarif');
-  assert.equal(first?.raisedBy, 'sarif:semgrep-oss');
-  assert.equal(first?.severity, 'HIGH');
-  assert.equal(first?.category, 'SECURITY');
-  assert.deepEqual([first?.file, first?.lineStart, first?.lineEnd], ['src/feature.ts', 2, 3]);
-  assert.equal(first?.ruleId, 'js.eval-use');
-  assert.equal(second?.severity, 'LOW');
-  assert.equal(second?.file, null);
-  assert.equal(third?.severity, 'MEDIUM');
-  assert.equal(third?.file, null);
-
-  const malformed: readonly (readonly [string, Uint8Array])[] = [
-    ['not json', utf8('{')],
-    ['not utf-8', new Uint8Array([0x7b, 0xff, 0x7d])],
-    ['wrong version', utf8(JSON.stringify({ ...sarif, version: '2.0.0' }))],
-    ['no runs', utf8(JSON.stringify({ version: '2.1.0' }))],
-    ['run without results', utf8(JSON.stringify({ version: '2.1.0', runs: [{ tool: { driver: { name: 'x' } } }] }))],
-    ['run without tool name', utf8(JSON.stringify({ version: '2.1.0', runs: [{ tool: { driver: {} }, results: [] }] }))],
-    [
-      'unknown level',
-      utf8(JSON.stringify({ version: '2.1.0', runs: [{ tool: { driver: { name: 'x' } }, results: [{ level: 'fatal', message: { text: 'm' } }] }] })),
-    ],
-    [
-      'result without text',
-      utf8(JSON.stringify({ version: '2.1.0', runs: [{ tool: { driver: { name: 'x' } }, results: [{ message: {} }] }] })),
-    ],
-    [
-      'bad region',
-      utf8(
-        JSON.stringify({
-          version: '2.1.0',
-          runs: [
-            {
-              tool: { driver: { name: 'x' } },
-              results: [
-                {
-                  message: { text: 'm' },
-                  locations: [{ physicalLocation: { artifactLocation: { uri: 'a.ts' }, region: { startLine: 0 } } }],
-                },
-              ],
-            },
-          ],
-        }),
-      ),
-    ],
-  ];
-  for (const [label, content] of malformed) {
-    const result = sarifFindings({ checkId: 'semgrep', content });
-    assert.equal(result.length, 1, label);
-    assert.equal(result[0]?.ruleId, 'sarif-malformed', label);
-    assert.equal(result[0]?.severity, 'HIGH', label);
-    assert.equal(result[0]?.category, 'EVIDENCE_INTEGRITY', label);
-  }
-
-  // SARIF findings flow through the aggregate check run.
-  const all = checksFor(fixtureWorld(), { sarif: [{ checkId: 'semgrep', content: utf8(JSON.stringify(sarif)) }] });
-  assert.equal(all.findings.filter((f) => f.source === 'sarif').length, 3);
-});
-
-test('sarif references resolve to one finding or are flagged, never dropped', () => {
-  // One result, semgrep's js.eval-use at src/feature.ts:2, written in each valid reference form.
-  const RULES = [{ id: 'js.eval-use' }, { id: 'js.xss' }];
-  const ARTIFACTS = [{ location: { uri: 'src/feature.ts' } }, { location: { uri: 'src/util.ts' } }];
-  const read = (result: Record<string, unknown>, run: Record<string, unknown> = {}) => {
-    const log = {
-      version: '2.1.0',
-      runs: [
-        {
-          tool: { driver: { name: 'semgrep', version: '1.90.0', rules: RULES } },
-          artifacts: ARTIFACTS,
-          ...run,
-          results: [{ level: 'warning', message: { text: 'eval() on user input' }, ...result }],
-        },
-      ],
+test('a SARIF log is one blocking finding a human must close, never parsed', () => {
+  // Stated independently of the reader: the one finding of a log, named by its check and digest.
+  const expected = (checkId: string, content: Uint8Array) => {
+    const sha256 = sha256Hex(content);
+    return {
+      source: 'sarif',
+      raisedBy: 'sarif:unparsed',
+      ruleId: 'sarif-unparsed',
+      severity: 'HIGH',
+      category: 'EVIDENCE_INTEGRITY',
+      file: null,
+      lineStart: null,
+      lineEnd: null,
+      fingerprint: sha256Hex(JSON.stringify(['EVIDENCE_INTEGRITY', JSON.stringify(['sarif-log', checkId, sha256]), null, 'sarif-unparsed'])),
+      cites: [`"${checkId}"`, sha256, `${content.byteLength} bytes`],
     };
-    const findings = sarifFindings({ checkId: 'semgrep', content: utf8(JSON.stringify(log)) });
-    assert.equal(findings.length, 1, 'one result is one finding');
-    assert.notEqual(findings[0]!.ruleId, 'sarif-malformed', 'a reference never makes the log malformed');
-    return findings[0]!;
   };
-  const at = (artifactLocation: Record<string, unknown>) => ({ locations: [{ physicalLocation: { artifactLocation, region: { startLine: 2 } } }] });
-  const direct = at({ uri: 'src/feature.ts' });
-  const expected = findingFingerprint({ category: 'CORRECTNESS', file: 'src/feature.ts', lineStart: 2, ruleId: 'js.eval-use' });
-
-  // The four forms of the review's probe, and their combinations, are one finding.
-  const forms: readonly (readonly [string, Record<string, unknown>])[] = [
-    ['ruleId and a uri', { ruleId: 'js.eval-use', ...direct }],
-    ['ruleIndex and a uri', { ruleIndex: 0, ...direct }],
-    ['rule.index and a uri', { rule: { index: 0 }, ...direct }],
-    ['ruleId and an artifact index', { ruleId: 'js.eval-use', ...at({ index: 0 }) }],
-    ['rule.id and a uri', { rule: { id: 'js.eval-use' }, ...direct }],
-    ['every rule form agreeing', { ruleId: 'js.eval-use', ruleIndex: 0, rule: { id: 'js.eval-use', index: 0 }, ...at({ uri: './src/feature.ts', index: 0 }) }],
-    ['an index of -1 is no index', { ruleId: 'js.eval-use', ruleIndex: -1, ...at({ uri: 'src/feature.ts', index: -1 }) }],
-    ['a guid beside the id', { rule: { id: 'js.eval-use', guid: '00000000-0000-0000-0000-000000000000' }, ...direct }],
-  ];
-  for (const [label, result] of forms) {
-    const f = read(result);
-    assert.deepEqual([f.ruleId, f.file, f.lineStart, f.unresolvedReference, f.fingerprint], ['js.eval-use', 'src/feature.ts', 2, false, expected], label);
-  }
-  // A hierarchical rule id extends its descriptor's id: the rule the index names, more precisely.
-  const sub = read({ ruleId: 'js.eval-use/dynamic', ruleIndex: 0, ...direct });
-  assert.deepEqual([sub.ruleId, sub.unresolvedReference], ['js.eval-use/dynamic', false]);
-
-  // Every reference that cannot be resolved keeps the result, flagged, with the unresolved part
-  // null, the reference named in the evidence and a fingerprint of its own.
-  const foreign = { originalUriBaseIds: { FOREIGN: { uri: 'file:///other-checkout/' } } };
-  const flagged: readonly (readonly [string, Record<string, unknown>, Record<string, unknown>, 'rule' | 'file'])[] = [
-    ['a rule of a tool component', { rule: { id: 'js.eval-use', toolComponent: { index: 0 } }, ...direct }, {}, 'rule'],
-    ['a rule named only by guid', { rule: { guid: '00000000-0000-0000-0000-000000000000' }, ...direct }, {}, 'rule'],
-    ['a rule index past the rules', { ruleIndex: 2, ...direct }, {}, 'rule'],
-    ['a rule index below -1', { rule: { index: -2 }, ...direct }, {}, 'rule'],
-    ['a rule index that is not an integer', { ruleIndex: '0', ...direct }, {}, 'rule'],
-    ['a rule index without driver rules', { ruleIndex: 0, ...direct }, { tool: { driver: { name: 'semgrep' } } }, 'rule'],
-    ['an id and an index naming different rules', { ruleId: 'js.xss', ruleIndex: 0, ...direct }, {}, 'rule'],
-    ['an id that only starts like the indexed rule', { ruleId: 'js.eval-used', ruleIndex: 0, ...direct }, {}, 'rule'],
-    ['ruleId and rule.id differing', { ruleId: 'js.eval-use', rule: { id: 'js.xss' }, ...direct }, {}, 'rule'],
-    ['ruleIndex and rule.index differing', { ruleIndex: 0, rule: { index: 1 }, ...direct }, {}, 'rule'],
-    ['a rule id that is not text', { ruleId: 7, ...direct }, {}, 'rule'],
-    ['the review probe: a uri under a foreign base', { ruleId: 'js.eval-use', ...at({ uri: 'src/feature.ts', uriBaseId: 'FOREIGN' }) }, foreign, 'file'],
-    ['a uri under any base', { ruleId: 'js.eval-use', ...at({ uri: 'src/feature.ts', uriBaseId: '%SRCROOT%' }) }, {}, 'file'],
-    ['an indexed artifact under a base', { ruleId: 'js.eval-use', ...at({ index: 0 }) }, { artifacts: [{ location: { uri: 'src/feature.ts', uriBaseId: 'SRC' } }] }, 'file'],
-    ['an artifact index past the artifacts', { ruleId: 'js.eval-use', ...at({ index: 2 }) }, {}, 'file'],
-    ['an artifact index without artifacts', { ruleId: 'js.eval-use', ...at({ index: 0 }) }, { artifacts: undefined }, 'file'],
-    ['a uri and an index naming different files', { ruleId: 'js.eval-use', ...at({ uri: 'src/feature.ts', index: 1 }) }, {}, 'file'],
-    ['a nested artifact', { ruleId: 'js.eval-use', ...at({ index: 1 }) }, { artifacts: [ARTIFACTS[0], { location: { uri: 'src/feature.ts' }, parentIndex: 0 }] }, 'file'],
-    ['a uri outside the repository', { ruleId: 'js.eval-use', ...at({ uri: 'file:///etc/passwd' }) }, {}, 'file'],
-    ['a uri that is not text', { ruleId: 'js.eval-use', ...at({ uri: 7 }) }, {}, 'file'],
-  ];
-  const fingerprints = new Set<string>([expected]);
-  for (const [label, result, run, part] of flagged) {
-    const f = read(result, run);
-    assert.equal(f.unresolvedReference, true, label);
-    assert.match(f.evidence, /^\[unresolved reference: [^\]]+\] /, label);
-    assert.equal(f.severity, 'MEDIUM', label);
-    if (part === 'rule') assert.deepEqual([f.ruleId, f.file, f.lineStart], [null, 'src/feature.ts', 2], label);
-    else assert.deepEqual([f.ruleId, f.file, f.lineStart, f.lineEnd], ['js.eval-use', null, null, null], label);
-    assert.ok(!fingerprints.has(f.fingerprint), `${label}: a fingerprint of its own`);
-    fingerprints.add(f.fingerprint);
-  }
-  // The flagged fingerprint is the tuple with the flag and the raw reference, computed here independently.
-  const probe = read({ ruleId: 'js.eval-use', ...at({ uri: 'src/feature.ts', uriBaseId: 'FOREIGN' }) }, foreign);
-  const raw = canonicalJson({ ruleId: 'js.eval-use', artifactLocation: { uri: 'src/feature.ts', uriBaseId: 'FOREIGN' } });
-  assert.equal(probe.fingerprint, sha256Hex(JSON.stringify(['CORRECTNESS', 'check:semgrep', null, 'js.eval-use', 'unresolved-reference', raw])));
-
-  // Through the round's checks every result is kept, the flagged ones included.
-  const both = {
-    version: '2.1.0',
-    runs: [
-      {
-        tool: { driver: { name: 'semgrep', rules: RULES } },
-        results: [
-          { ruleId: 'js.eval-use', level: 'error', message: { text: 'resolved' }, ...direct },
-          { ruleId: 'js.eval-use', level: 'error', message: { text: 'foreign' }, ...at({ uri: 'src/feature.ts', uriBaseId: 'FOREIGN' }) },
-        ],
-      },
-    ],
+  const observed = (f: CheckFinding, cites: readonly string[]) => {
+    for (const cite of cites) assert.ok(f.evidence.includes(cite), `evidence cites ${cite}`);
+    const { evidence: _evidence, requiredFix: _requiredFix, ...rest } = f;
+    return { ...rest, cites };
   };
-  const sarif = [{ checkId: 'semgrep', content: utf8(JSON.stringify(both)) }];
-  const all = checksFor(fixtureWorld(), { sarif }).findings.filter((f) => f.source === 'sarif');
-  assert.deepEqual(all.map((f) => [f.severity, f.unresolvedReference]).sort(), [['HIGH', false], ['HIGH', true]]);
+  const logs: readonly (readonly [string, Uint8Array])[] = [
+    ['a message reference', utf8(JSON.stringify(SARIF_MESSAGE_ID_LOG))],
+    ['an omitted level', utf8(JSON.stringify(SARIF_OMITTED_LEVEL_LOG))],
+    ['not JSON', utf8('{')],
+    ['not UTF-8', new Uint8Array([0x7b, 0xff, 0x7d])],
+    ['empty', new Uint8Array()],
+  ];
+  for (const [label, content] of logs) {
+    const findings = sarifFindings({ checkId: 'semgrep', content });
+    assert.equal(findings.length, 1, label);
+    const want = expected('semgrep', content);
+    assert.deepEqual(observed(findings[0]!, want.cites), want, label);
+  }
+
+  // Through the round's checks: two logs are two findings, whatever order they arrive in.
+  const two = logs.slice(0, 2).map(([, content], i) => ({ checkId: `scan-${i}`, content }));
+  const sarifOf = (inputs: readonly SarifInput[]) => checksFor(fixtureWorld(), { sarif: inputs }).findings.filter((f) => f.source === 'sarif');
+  const both = sarifOf(two);
+  assert.deepEqual(both.map((f) => f.fingerprint).sort(), two.map((t) => expected(t.checkId, t.content).fingerprint).sort());
+  assert.deepEqual(sarifOf([...two].reverse()), both);
+  assert.equal(checksFor(fixtureWorld(), { sarif: two }).findings.some((f) => f.ruleId === 'sarif-malformed'), false);
+  // The same bytes under two checks are two findings, and a new log of one check is a new finding.
+  const same = utf8(JSON.stringify(SARIF_MESSAGE_ID_LOG));
+  assert.equal(new Set(sarifOf([{ checkId: 'a', content: same }, { checkId: 'b', content: same }]).map((f) => f.fingerprint)).size, 2);
+  const again = sarifOf([{ checkId: 'scan-0', content: utf8(JSON.stringify({ ...SARIF_MESSAGE_ID_LOG, runs: [] })) }]);
+  assert.notEqual(again[0]!.fingerprint, both.find((f) => f.evidence.includes('"scan-0"'))!.fingerprint);
 });
 
 test('git diffs are read line by line', () => {
@@ -632,23 +503,6 @@ test('check findings are fingerprinted, de-duplicated and ordered', () => {
   );
   assert.deepEqual(again, result);
   for (const finding of result.findings) assert.match(finding.raisedBy, /^(deterministic|sarif):/);
-
-  // Two SARIF results of one rule in one line bucket are one finding at the higher
-  // severity, whichever order the log lists them in.
-  const sarifResult = (level: string, line: number) => ({
-    ruleId: 'r1',
-    level,
-    message: { text: `result at line ${line}` },
-    locations: [{ physicalLocation: { artifactLocation: { uri: 'src/feature.ts' }, region: { startLine: line } } }],
-  });
-  const logOf = (results: unknown[]) => [
-    { checkId: 'lint', content: utf8(JSON.stringify({ version: '2.1.0', runs: [{ tool: { driver: { name: 'lint' } }, results }] })) },
-  ];
-  const noteFirst = checksFor(fixtureWorld(), { sarif: logOf([sarifResult('note', 2), sarifResult('error', 3)]) }).findings;
-  const errorFirst = checksFor(fixtureWorld(), { sarif: logOf([sarifResult('error', 3), sarifResult('note', 2)]) }).findings;
-  const sarifOnly = (list: readonly CheckFinding[]) => list.filter((f) => f.source === 'sarif');
-  assert.deepEqual(sarifOnly(noteFirst).map((f) => f.severity), ['HIGH']);
-  assert.deepEqual(noteFirst, errorFirst);
 });
 
 test('check identity keys are canonical tuples and never collide', () => {
@@ -664,18 +518,6 @@ test('check identity keys are canonical tuples and never collide', () => {
   assert.notEqual(fp(null, null, 'r'), fp('', null, 'r'));
   assert.notEqual(fp('src/a.ts', 1, null), fp('src/a.ts', 1, ''));
   assert.notEqual(fp('x\n1', null, 'r'), fp('x', 10, '\nr'));
-
-  // Two SARIF results at one location, one without a rule id and one with an empty rule id,
-  // are two findings.
-  const result = (ruleId: string | undefined) => ({
-    ...(ruleId === undefined ? {} : { ruleId }),
-    level: 'warning',
-    message: { text: 'result' },
-    locations: [{ physicalLocation: { artifactLocation: { uri: 'src/feature.ts' }, region: { startLine: 2 } } }],
-  });
-  const log = utf8(JSON.stringify({ version: '2.1.0', runs: [{ tool: { driver: { name: 'lint' } }, results: [result(undefined), result('')] }] }));
-  const sarif = checksFor(fixtureWorld(), { sarif: [{ checkId: 'lint', content: log }] }).findings.filter((f) => f.source === 'sarif');
-  assert.deepEqual(sarif.map((f) => f.ruleId).sort(), ['', null].sort());
 
   // A diff whose one path joins two of the packet's paths with a line feed does not match the
   // packet, so nothing is scanned from it.
@@ -700,11 +542,7 @@ test('check identity keys are canonical tuples and never collide', () => {
 });
 
 test('the check report is canonical and fails closed when it is read back', () => {
-  const sarifLog = {
-    version: '2.1.0',
-    runs: [{ tool: { driver: { name: 'lint' } }, results: [{ ruleId: 'r1', level: 'warning', message: { text: 'unused' } }] }],
-  };
-  const sarif = [{ checkId: 'lint', content: utf8(JSON.stringify(sarifLog)) }];
+  const sarif = [{ checkId: 'lint', content: utf8(JSON.stringify(SARIF_OMITTED_LEVEL_LOG)) }];
   const reportFor = (world: FixtureWorld, inputs: typeof sarif = []) => ({
     result: checksFor(world, { sarif: inputs }),
     packetSha256: buildReviewPacket(world.sources, world.limits).sha256,
@@ -719,11 +557,21 @@ test('the check report is canonical and fails closed when it is read back', () =
   assert.deepEqual(Object.keys(report.report).sort(), ['egress', 'findings', 'packetSha256', 'pushGuard', 'reportVersion', 'sarifInputs']);
   assert.deepEqual(report.report.findings, result.findings);
   assert.deepEqual(report.report.sarifInputs, [{ checkId: 'lint', sha256: sha256Hex(sarif[0]!.content), bytes: sarif[0]!.content.byteLength }]);
+  // A log listed twice under its check is one finding, and its report still reads back.
+  const twice = [...sarif, ...sarif];
+  const repeated = reportFor(fixtureWorld(), twice);
+  const listedTwice = buildCheckReport(repeated.result, { packetSha256: repeated.packetSha256, sarif: twice });
+  assert.equal(listedTwice.report.findings.filter((f) => f.source === 'sarif').length, 1);
+  assert.deepEqual(parseCheckReport(listedTwice.bytes, listedTwice.sha256), listedTwice.report);
 
   // The step's summary counts and the clearance a reviewer request is checked against.
   const blocking = result.findings.filter((f) => f.severity === 'CRITICAL' || f.severity === 'HIGH').length;
   assert.ok(blocking > 0, 'the zero-test run must raise a blocking finding');
-  assert.ok(result.findings.length > blocking, 'the sarif warning must not block');
+  assert.deepEqual(
+    result.findings.filter((f) => f.source === 'sarif').map((f) => [f.ruleId, f.severity]),
+    [['sarif-unparsed', 'HIGH']],
+    'the log is one HIGH finding',
+  );
   assert.deepEqual(checkReportSummary(report.report, ['CRITICAL', 'HIGH']), { total: result.findings.length, blocking });
   assert.deepEqual(reviewerClearance(report.report), { pushGuard: { decision: 'PASS' }, egress: { decision: 'CLEAR', packetSha256 } });
 
@@ -736,30 +584,6 @@ test('the check report is canonical and fails closed when it is read back', () =
   });
   assert.equal(new TextDecoder().decode(blocked.bytes).includes(AWS_KEY), false, 'the report never carries the matched text');
 
-  // A flagged SARIF finding is carried and read back with its flag.
-  const foreign = {
-    version: '2.1.0',
-    runs: [
-      {
-        tool: { driver: { name: 'lint' } },
-        results: [
-          {
-            ruleId: 'r1',
-            message: { text: 'unused' },
-            locations: [{ physicalLocation: { artifactLocation: { uri: 'src/feature.ts', uriBaseId: 'FOREIGN' } } }],
-          },
-        ],
-      },
-    ],
-  };
-  const flaggedSarif = [{ checkId: 'lint', content: utf8(JSON.stringify(foreign)) }];
-  const flagged = reportFor(fixtureWorld(), flaggedSarif);
-  const flaggedReport = buildCheckReport(flagged.result, { packetSha256: flagged.packetSha256, sarif: flaggedSarif });
-  assert.deepEqual(
-    parseCheckReport(flaggedReport.bytes, flaggedReport.sha256).findings.filter((f) => f.source === 'sarif').map((f) => [f.file, f.unresolvedReference]),
-    [[null, true]],
-  );
-
   // A report for another packet is never built.
   assert.throws(() => buildCheckReport(result, { packetSha256: 'f'.repeat(64), sarif }), CheckReportError);
 
@@ -770,6 +594,9 @@ test('the check report is canonical and fails closed when it is read back', () =
   const cleanEgress = clean['egress'] as Record<string, unknown>;
   const stoppedEgress = stopped['egress'] as Record<string, unknown>;
   const firstFinding = result.findings[0]!;
+  const cleanFindings = clean['findings'] as Record<string, unknown>[];
+  const sarifFinding = cleanFindings.find((f) => f['source'] === 'sarif')!;
+  const withoutSarif = cleanFindings.filter((f) => f !== sarifFinding);
   const reread = (value: unknown) => {
     const bytes = canonicalBytes(value);
     return () => parseCheckReport(bytes, sha256Hex(bytes));
@@ -795,9 +622,12 @@ test('the check report is canonical and fails closed when it is read back', () =
     ['bad line range', reread({ ...clean, findings: [{ ...firstFinding, lineStart: null, lineEnd: 3 }] })],
     ['raiser of another source', reread({ ...clean, findings: [{ ...firstFinding, raisedBy: 'sarif:x' }] })],
     ['short fingerprint', reread({ ...clean, findings: [{ ...firstFinding, fingerprint: 'abc' }] })],
-    ['unresolved flag not a boolean', reread({ ...clean, findings: [{ ...firstFinding, unresolvedReference: 'true' }] })],
-    ['a deterministic finding flagged unresolved', reread({ ...clean, findings: [{ ...firstFinding, unresolvedReference: true }] })],
-    ['a finding without the unresolved flag', reread({ ...clean, findings: [Object.fromEntries(Object.entries(firstFinding).filter(([key]) => key !== 'unresolvedReference'))] })],
+    ['a listed SARIF log without its finding', reread({ ...clean, findings: withoutSarif })],
+    ['a SARIF finding for no listed log', reread({ ...clean, sarifInputs: [] })],
+    ['a SARIF finding at another severity', reread({ ...clean, findings: [...withoutSarif, { ...sarifFinding, severity: 'MEDIUM' }] })],
+    ['a SARIF finding of another log', reread({ ...clean, findings: [...withoutSarif, { ...sarifFinding, fingerprint: 'b'.repeat(64) }] })],
+    ['a SARIF finding twice', reread({ ...clean, findings: [...cleanFindings, sarifFinding] })],
+    ['a parsed SARIF result', reread({ ...clean, findings: [...withoutSarif, { ...sarifFinding, ruleId: 'js.eval-use', raisedBy: 'sarif:semgrep' }] })],
     ['negative sarif size', reread({ ...clean, sarifInputs: [{ checkId: 'lint', sha256: 'a'.repeat(64), bytes: -1 }] })],
     ['a scanner-run record', reread({ ...clean, scannerRuns: [] })],
   ];

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { AdjudicationInputError, adjudicate, type Adjudication, type AdjudicationInput, type ReviewInput } from './adjudication.js';
 import { sha256Hex } from './canonical-json.js';
 import { parseUnifiedDiff } from './diff.js';
-import { sarifFindings } from './checks.js';
+import { pickFindingRecord } from './packet.js';
 import { findingFingerprint, type CheckFinding } from './findings.js';
 import type { ReviewFindingRecord } from './local-types.js';
 import type { PriorFindingClaimOutput } from './prompt.js';
@@ -12,6 +12,8 @@ import {
   MODEL_EVIDENCE,
   MODEL_FIX,
   PRIMARY,
+  SARIF_MESSAGE_ID_LOG,
+  SARIF_OMITTED_LEVEL_LOG,
   adjudicationBase,
   completedReview,
   fixtureWorld,
@@ -558,61 +560,63 @@ test('closure authority decides which prior findings still block', () => {
   assert.equal(expired.outcome, 'REPAIR');
 });
 
-/** An OPEN HIGH SARIF finding of an earlier round: semgrep's js.eval-use at src/feature.ts:2. */
-const SARIF_PRIOR: ReviewFindingRecord = {
-  id: 'prior-sarif',
-  source: 'sarif',
-  raisedBy: 'sarif:semgrep',
-  fingerprint: findingFingerprint({ category: 'SECURITY', file: 'src/feature.ts', lineStart: 2, ruleId: 'js.eval-use' }),
-  severity: 'HIGH',
-  category: 'SECURITY',
-  evidence: '[js.eval-use] eval() on user input',
-  requiredFix: 'Resolve the Semgrep result js.eval-use reported by check semgrep',
-  grounded: true,
-  lifecycleState: 'OPEN',
-  ruleId: 'js.eval-use',
-  file: 'src/feature.ts',
-  lineStart: 2,
-  lineEnd: 2,
+const encode = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
+
+/** The record of the one finding a SARIF log raised in round 1, as round 2 reads it back. */
+function raisedInRoundOne(log: unknown): { readonly prior: ReviewFindingRecord; readonly first: Adjudication } {
+  const first = adjudicate(adjudicationBase({ sarif: [{ checkId: 'semgrep', content: encode(log) }] }));
+  const raised = first.findings.filter((f) => f.source === 'sarif' || f.ruleId === 'sarif-malformed');
+  assert.equal(raised.length, 1, 'one finding for the log');
+  return { prior: pickFindingRecord(raised[0]!), first };
+}
+
+/** The strongest claim a log can make that a result is gone: the rule ran over the file and reported nothing. */
+const CLEAN_LOG = {
+  version: '2.1.0',
+  runs: [
+    {
+      tool: { driver: { name: 'semgrep', version: '1.90.0', rules: [{ id: 'js.eval-use', defaultConfiguration: { enabled: true } }] } },
+      invocations: [{ executionSuccessful: true }],
+      artifacts: [{ location: { uri: 'src/feature.ts' }, roles: ['analysisTarget'] }],
+      results: [],
+    },
+  ],
 };
 
 test('a SARIF finding blocks until a human closes it', () => {
-  const base = reReview({ comparator: [{ ...RESOLVED, priorFindingId: 'prior-sarif' }] });
-  const round = (over: { readonly state?: ReviewFindingRecord['lifecycleState']; readonly findings?: readonly CheckFinding[] } = {}) =>
-    adjudicate({
+  // Round 1: the review's message-reference log is one blocking SARIF finding, never a
+  // deterministic diagnostic.
+  const { prior, first } = raisedInRoundOne(SARIF_MESSAGE_ID_LOG);
+  assert.deepEqual(
+    [prior.source, prior.raisedBy, prior.ruleId, prior.severity, prior.grounded],
+    ['sarif', 'sarif:unparsed', 'sarif-unparsed', 'HIGH', true],
+  );
+  assert.deepEqual([first.record.outcome, first.record.blocking.map((b) => b.source)], ['REPAIR', ['sarif']]);
+
+  const base = reReview({ comparator: [{ ...RESOLVED, priorFindingId: prior.id }] });
+  const round = (over: { readonly state?: ReviewFindingRecord['lifecycleState']; readonly logs?: readonly unknown[]; readonly mode?: Mode } = {}) => {
+    const checked = adjudicationBase({ round: 2, sarif: (over.logs ?? []).map((log) => ({ checkId: 'semgrep', content: encode(log) })) });
+    return adjudicate({
       ...base,
-      checks: { ...base.checks, findings: over.findings ?? base.checks.findings },
-      priorFindings: [{ record: { ...SARIF_PRIOR, lifecycleState: over.state ?? 'OPEN' }, waiverExpiresAt: null }],
+      mode: over.mode ?? 'gating',
+      checks: checked.checks,
+      priorFindings: [{ record: { ...prior, lifecycleState: over.state ?? 'OPEN' }, waiverExpiresAt: null }],
     }).record;
+  };
   const decided = (record: ReturnType<typeof round>) => [record.closureDecisions[0]!.effectiveState, record.closureDecisions[0]!.rule, record.outcome];
 
-  // An OPEN HIGH SARIF prior that this round does not report again still blocks. An
-  // independent reviewer's grounded RESOLVED claim on it changes nothing.
+  // A later round without the log changes nothing: no deterministic re-check closes it, and an
+  // independent reviewer's grounded RESOLVED claim on it decides nothing either.
   const absent = round();
   assert.deepEqual(decided(absent), ['OPEN', 'unchanged', 'REPAIR']);
-  assert.deepEqual(absent.blocking.map((b) => [b.findingRef, b.source, b.reason]), [['prior:prior-sarif', 'sarif', 'prior-finding']]);
+  assert.deepEqual(absent.blocking.map((b) => [b.findingRef, b.source, b.reason]), [[`prior:${prior.id}`, 'sarif', 'prior-finding']]);
   assert.equal(absent.ruleFired, 'A11');
-  const shadow = adjudicate({ ...base, mode: 'shadow', priorFindings: [{ record: SARIF_PRIOR, waiverExpiresAt: null }] }).record;
-  assert.equal(shadow.shadow?.wouldBe, 'REPAIR');
+  assert.equal(round({ mode: 'shadow' }).shadow?.wouldBe, 'REPAIR');
 
-  // The result is still reported: this round's finding blocks, and the prior is not counted twice.
-  const current: CheckFinding = {
-    source: 'sarif',
-    raisedBy: 'sarif:semgrep',
-    ruleId: 'js.eval-use',
-    severity: 'HIGH',
-    category: 'SECURITY',
-    file: 'src/feature.ts',
-    lineStart: 2,
-    lineEnd: 2,
-    evidence: '[js.eval-use] eval() on user input',
-    requiredFix: 'Resolve the Semgrep result js.eval-use reported by check semgrep',
-    fingerprint: SARIF_PRIOR.fingerprint,
-    unresolvedReference: false,
-  };
-  const stillThere = round({ findings: [current] });
-  assert.deepEqual(decided(stillThere), ['OPEN', 'unchanged', 'REPAIR']);
-  assert.deepEqual(stillThere.blocking.map((b) => b.findingRef), [`sarif:semgrep#${SARIF_PRIOR.fingerprint}`]);
+  // The same log again is the same finding: the re-raise carries the prior and the pair counts once.
+  const again = round({ logs: [SARIF_MESSAGE_ID_LOG] });
+  assert.deepEqual(decided(again), ['OPEN', 'unchanged', 'REPAIR']);
+  assert.deepEqual(again.blocking.map((b) => b.findingRef), [`sarif:unparsed#${prior.fingerprint}`]);
 
   // A reviewer's claim decides nothing about it, even one citing a file the repair did not
   // change: the finding is neither closed nor reopened.
@@ -620,7 +624,7 @@ test('a SARIF finding blocks until a human closes it', () => {
     'diff --git a/src/util.ts b/src/util.ts\n--- a/src/util.ts\n+++ b/src/util.ts\n@@ -1 +1,2 @@\n export const answer = 42;\n+export const other = 7;\n',
   );
   for (const state of ['OPEN', 'FIXED'] as const) {
-    const outside = adjudicate({ ...base, repairDelta: delta, priorFindings: [{ record: { ...SARIF_PRIOR, lifecycleState: state }, waiverExpiresAt: null }] }).record;
+    const outside = adjudicate({ ...base, repairDelta: delta, priorFindings: [{ record: { ...prior, lifecycleState: state }, waiverExpiresAt: null }] }).record;
     assert.deepEqual(decided(outside), [state, 'unchanged', 'REPAIR'], state);
   }
 
@@ -631,89 +635,39 @@ test('a SARIF finding blocks until a human closes it', () => {
 });
 
 test('a scanner log claiming a SARIF finding gone does not close it', () => {
-  // The strongest claim a log can make: the scanner the prior was raised by, at the version it
-  // was raised at, ran the rule over the file, every invocation completed, and nothing was
-  // reported. The log goes through the real check step; the prior still blocks.
-  const log = {
-    version: '2.1.0',
-    runs: [
-      {
-        tool: { driver: { name: 'semgrep', version: '1.90.0', rules: [{ id: 'js.eval-use', defaultConfiguration: { enabled: true } }] } },
-        invocations: [{ executionSuccessful: true }],
-        artifacts: [{ location: { uri: 'src/feature.ts' }, roles: ['analysisTarget'] }],
-        results: [],
-      },
-    ],
-  };
-  const checked = adjudicationBase({ round: 2, sarif: [{ checkId: 'semgrep', content: new TextEncoder().encode(JSON.stringify(log)) }] });
-  assert.deepEqual(checked.checks.findings.filter((f) => f.source === 'sarif' || f.ruleId === 'sarif-malformed'), []);
-  const raisedAt = { scannerVersion: '1.90.0' };
+  // The review's omitted-level log raised the finding; the next round's log of the same check
+  // claims the result is gone. The claim is never read: the new log is a finding of its own,
+  // and the prior still blocks.
+  const { prior } = raisedInRoundOne(SARIF_OMITTED_LEVEL_LOG);
+  const checked = adjudicationBase({ round: 2, sarif: [{ checkId: 'semgrep', content: encode(CLEAN_LOG) }] });
   const record = adjudicate({
-    ...reReview({ comparator: [{ ...RESOLVED, priorFindingId: 'prior-sarif' }] }),
+    ...reReview({ comparator: [{ ...RESOLVED, priorFindingId: prior.id }] }),
     checks: checked.checks,
-    priorFindings: [{ record: SARIF_PRIOR, waiverExpiresAt: null, ...raisedAt }],
+    priorFindings: [{ record: prior, waiverExpiresAt: null }],
   }).record;
+  const clean = checked.checks.findings.find((f) => f.source === 'sarif')!;
+  assert.notEqual(clean.fingerprint, prior.fingerprint);
   assert.deepEqual(
-    [record.closureDecisions[0]!.effectiveState, record.closureDecisions[0]!.rule, record.outcome, record.blocking.map((b) => b.findingRef)],
-    ['OPEN', 'unchanged', 'REPAIR', ['prior:prior-sarif']],
+    [record.closureDecisions[0]!.effectiveState, record.closureDecisions[0]!.rule, record.outcome],
+    ['OPEN', 'unchanged', 'REPAIR'],
   );
+  assert.deepEqual(record.blocking.map((b) => b.findingRef).sort(), [`prior:${prior.id}`, `sarif:unparsed#${clean.fingerprint}`].sort());
 });
 
-test('a finding with an unresolved reference is never linked to a prior', () => {
-  // A SARIF result whose file sits under a base the harness cannot bind, raised in an earlier
-  // round and again now: the same raiser and fingerprint, both flagged.
-  const fingerprint = sha256Hex(
-    JSON.stringify(['SECURITY', 'check:semgrep', null, 'js.eval-use', 'unresolved-reference', '{"artifactLocation":{"uri":"src/feature.ts","uriBaseId":"FOREIGN"},"ruleId":"js.eval-use"}']),
-  );
-  const evidence = '[unresolved reference: artifactLocation.uriBaseId] [js.eval-use] eval() on user input';
-  const current: CheckFinding = {
-    source: 'sarif',
-    raisedBy: 'sarif:semgrep',
-    ruleId: 'js.eval-use',
-    severity: 'HIGH',
-    category: 'SECURITY',
-    file: null,
-    lineStart: null,
-    lineEnd: null,
-    evidence,
-    requiredFix: 'Resolve the semgrep result js.eval-use reported by check semgrep',
-    fingerprint,
-    unresolvedReference: true,
-  };
-  const prior: ReviewFindingRecord = {
-    id: 'prior-flagged',
-    source: 'sarif',
-    raisedBy: 'sarif:semgrep',
-    fingerprint,
-    severity: 'HIGH',
-    category: 'SECURITY',
-    evidence,
-    requiredFix: current.requiredFix,
-    grounded: true,
-    lifecycleState: 'OPEN',
-    ruleId: 'js.eval-use',
-    unresolvedReference: true,
-  };
-  const round = (state: ReviewFindingRecord['lifecycleState'], waiverExpiresAt: string | null) => {
-    const base = reReview({});
-    return adjudicate({
-      ...base,
-      checks: { ...base.checks, findings: [...base.checks.findings, current] },
-      priorFindings: [{ record: { ...prior, lifecycleState: state }, waiverExpiresAt }],
-    });
-  };
-  const ref = `sarif:semgrep#${fingerprint}`;
-
-  // An open prior: the flagged finding does not carry it, so each blocks on its own.
-  const open = round('OPEN', null);
-  assert.deepEqual(open.record.blocking.map((b) => b.findingRef).sort(), ['prior:prior-flagged', ref].sort());
-  const evaluated = open.findings.find((f) => f.ref === ref)!;
-  assert.deepEqual([evaluated.priorFindingId, evaluated.unresolvedReference, evaluated.lifecycleState], [undefined, true, 'OPEN']);
-
-  // A waived prior shields nothing it is not linked to: the flagged finding still blocks.
-  const waived = round('WAIVED', '2026-12-01T00:00:00.000Z');
-  assert.deepEqual(waived.record.blocking.map((b) => b.findingRef), [ref]);
-  assert.equal(waived.record.outcome, 'REPAIR');
+test('a SARIF finding blocks whatever the severity policy says', () => {
+  // A policy whose blocking severities leave out HIGH still blocks on a SARIF log and on its
+  // open prior; without either the round proceeds.
+  const policy = { blockingSeverities: ['CRITICAL'] } as const;
+  const withLog = adjudicate({ ...adjudicationBase({ sarif: [{ checkId: 'semgrep', content: encode(SARIF_OMITTED_LEVEL_LOG) }] }), ...policy }).record;
+  assert.deepEqual([withLog.outcome, withLog.blocking.map((b) => [b.source, b.severity])], ['REPAIR', [['sarif', 'HIGH']]]);
+  assert.equal(adjudicate({ ...adjudicationBase(), ...policy }).record.outcome, 'PROCEED');
+  const { prior } = raisedInRoundOne(SARIF_OMITTED_LEVEL_LOG);
+  const later = adjudicate({ ...reReview({}), ...policy, priorFindings: [{ record: prior, waiverExpiresAt: null }] }).record;
+  assert.deepEqual([later.outcome, later.blocking.map((b) => b.findingRef)], ['REPAIR', [`prior:${prior.id}`]]);
+  // The same log again is the re-raise that carries the prior, and it blocks too.
+  const relisted = adjudicationBase({ round: 2, sarif: [{ checkId: 'semgrep', content: encode(SARIF_OMITTED_LEVEL_LOG) }] });
+  const again = adjudicate({ ...reReview({}), ...policy, checks: relisted.checks, priorFindings: [{ record: prior, waiverExpiresAt: null }] }).record;
+  assert.deepEqual([again.outcome, again.blocking.map((b) => b.findingRef)], ['REPAIR', [`sarif:unparsed#${prior.fingerprint}`]]);
 });
 
 test('a re-raised finding is reconciled with its prior before it blocks', () => {
@@ -896,69 +850,6 @@ test('a re-raise never downgrades a prior that still blocks', () => {
     priorFindings: [{ record: priorFinding({ lifecycleState: 'WAIVED' }), waiverExpiresAt: '2026-12-01T00:00:00.000Z' }],
   }).record;
   assert.deepEqual([waived.outcome, waived.blocking], ['PROCEED', []]);
-});
-
-test('a SARIF re-raise never downgrades a prior that still blocks', () => {
-  // The scanner reports again, at a lower level, the result it raised in an earlier round: the
-  // same raiser and fingerprint. The pair counts once, at the higher severity, and the prior
-  // stays open.
-  const reRaise = (priorSeverity: 'HIGH' | 'CRITICAL', level: 'warning' | 'note', mode: Mode = 'gating') => {
-    const log = {
-      version: '2.1.0',
-      runs: [
-        {
-          tool: { driver: { name: 'semgrep', rules: [{ id: 'js.eval-use' }] } },
-          results: [
-            {
-              ruleIndex: 0,
-              level,
-              message: { text: 'eval() on user input' },
-              properties: { tags: ['security'] },
-              locations: [{ physicalLocation: { artifactLocation: { uri: 'src/feature.ts' }, region: { startLine: 2 } } }],
-            },
-          ],
-        },
-      ],
-    };
-    const findings = sarifFindings({ checkId: 'semgrep', content: new TextEncoder().encode(JSON.stringify(log)) });
-    assert.deepEqual(
-      findings.map((f) => [f.raisedBy, f.fingerprint]),
-      [['sarif:semgrep', SARIF_PRIOR.fingerprint]],
-    );
-    const base = reReview({});
-    const adjudication = adjudicate({
-      ...base,
-      mode,
-      checks: { ...base.checks, findings: [...base.checks.findings, ...findings] },
-      priorFindings: [{ record: { ...SARIF_PRIOR, severity: priorSeverity }, waiverExpiresAt: null }],
-    });
-    const current = adjudication.findings.filter((f) => f.source === 'sarif' && !f.ref.startsWith('prior:'));
-    return {
-      outcome: adjudication.record.outcome,
-      wouldBe: adjudication.record.shadow?.wouldBe ?? null,
-      blocking: adjudication.record.blocking.map((b) => [b.findingRef.startsWith('prior:') ? b.findingRef : 'current', b.severity]),
-      current: current.map((f) => [f.priorFindingId ?? null, f.severity, f.lifecycleState, f.blocking]),
-      prior: adjudication.record.closureDecisions.map((d) => [d.priorFindingId, d.effectiveState, d.rule]),
-    };
-  };
-  const stillOpen = [['prior-sarif', 'OPEN', 'unchanged']];
-  assert.deepEqual(reRaise('HIGH', 'warning'), {
-    outcome: 'REPAIR',
-    wouldBe: null,
-    blocking: [['current', 'HIGH']],
-    current: [['prior-sarif', 'HIGH', 'OPEN', true]],
-    prior: stillOpen,
-  });
-  assert.deepEqual(reRaise('CRITICAL', 'note'), {
-    outcome: 'REPAIR',
-    wouldBe: null,
-    blocking: [['current', 'CRITICAL']],
-    current: [['prior-sarif', 'CRITICAL', 'OPEN', true]],
-    prior: stillOpen,
-  });
-  // Shadow mode records the same verdict.
-  const shadow = reRaise('HIGH', 'warning', 'shadow');
-  assert.deepEqual([shadow.outcome, shadow.wouldBe, shadow.blocking], ['PROCEED', 'REPAIR', [['current', 'HIGH']]]);
 });
 
 test('blocking records are in canonical tuple order', () => {

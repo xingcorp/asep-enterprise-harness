@@ -310,6 +310,32 @@ export function worldFromDiff(entries: readonly DiffEntry[], options: Omit<Fixtu
 
 // --- adjudication fixtures -------------------------------------------------------------------
 
+/** The review's SARIF logs: a result whose message is a reference, and one without a level whose rule is an error. */
+export const SARIF_MESSAGE_ID_LOG = {
+  version: '2.1.0',
+  runs: [
+    {
+      tool: { driver: { name: 'semgrep', rules: [{ id: 'js.eval-use', messageStrings: { M: { text: 'eval() on user input' } } }] } },
+      results: [{ ruleId: 'js.eval-use', level: 'error', message: { id: 'M' } }],
+    },
+  ],
+};
+export const SARIF_OMITTED_LEVEL_LOG = {
+  version: '2.1.0',
+  runs: [
+    {
+      tool: { driver: { name: 'semgrep', rules: [{ id: 'js.eval-use', defaultConfiguration: { level: 'error' } }] } },
+      results: [
+        {
+          ruleId: 'js.eval-use',
+          message: { text: 'eval() on user input' },
+          locations: [{ physicalLocation: { artifactLocation: { uri: 'src/feature.ts' }, region: { startLine: 2 } } }],
+        },
+      ],
+    },
+  ],
+};
+
 export const PRIMARY = 'primary-gpt';
 export const COMPARATOR = 'comparator-deepseek';
 export const MODEL_EVIDENCE = 'greet() interpolates the name without escaping it for HTML output';

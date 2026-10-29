@@ -2,16 +2,17 @@
 // decided, written once and re-read by content address by every later step.
 //
 // It carries the packet it covers, the push-guard decision, the egress decision with
-// its hits, every deterministic and SARIF finding, and the SARIF inputs the checks read.
-// There is no timestamp in it, so its sha256 depends only on what was checked.
+// its hits, every deterministic finding and the one finding of each SARIF log, and the SARIF
+// inputs the checks read. There is no timestamp in it, so its sha256 depends only on what was
+// checked.
 // The parser is strict: unknown keys, wrong types, a decision that does not follow from the
 // report's own findings and hits, or a digest mismatch fail closed, because a reviewer request
 // is cleared from this record.
 
 import type { FindingSeverity } from '@asep/domain';
 import { REVIEW_SEVERITIES } from '@asep/policy';
-import { canonicalBytes, sha256Hex } from './canonical-json.js';
-import { pushGuardDecision, type DeterministicCheckResult, type PushGuardResult, type SarifInput } from './checks.js';
+import { canonicalBytes, canonicalJson, sha256Hex, tupleKey } from './canonical-json.js';
+import { pushGuardDecision, sarifLogFinding, type DeterministicCheckResult, type PushGuardResult, type SarifInput } from './checks.js';
 import { egressDecisionFor, type EgressHit, type ReviewerClearance } from './egress.js';
 import type { CheckFinding } from './findings.js';
 import type { BlockReason, EgressDecision, FindingCategory } from './local-types.js';
@@ -25,7 +26,7 @@ export interface CheckReport {
   readonly pushGuard: PushGuardResult;
   readonly egress: { readonly decision: EgressDecision; readonly packetSha256: string; readonly hits: readonly EgressHit[] };
   readonly findings: readonly CheckFinding[];
-  /** The SARIF logs the checks parsed, by check id, with the digest of the exact bytes read. */
+  /** The SARIF logs the checks received, by check id, with the digest of the exact bytes; none is parsed. */
   readonly sarifInputs: readonly { readonly checkId: string; readonly sha256: string; readonly bytes: number }[];
 }
 
@@ -170,7 +171,6 @@ const FINDING_KEYS = [
   'evidence',
   'requiredFix',
   'fingerprint',
-  'unresolvedReference',
 ] as const;
 
 function finding(value: unknown, at: string): CheckFinding {
@@ -182,9 +182,6 @@ function finding(value: unknown, at: string): CheckFinding {
   const lineStart = nullableLine(f['lineStart'], `${at}.lineStart`);
   const lineEnd = nullableLine(f['lineEnd'], `${at}.lineEnd`);
   if (lineEnd !== null && (lineStart === null || lineEnd < lineStart)) reject(`${at} has an invalid line range`);
-  const unresolvedReference = f['unresolvedReference'];
-  if (typeof unresolvedReference !== 'boolean') reject(`${at}.unresolvedReference must be a boolean`);
-  if (unresolvedReference && source !== 'sarif') reject(`${at}: only a SARIF finding has an unresolved reference`);
   return {
     source,
     raisedBy,
@@ -197,15 +194,14 @@ function finding(value: unknown, at: string): CheckFinding {
     evidence: text(f['evidence'], `${at}.evidence`),
     requiredFix: text(f['requiredFix'], `${at}.requiredFix`),
     fingerprint: digest(f['fingerprint'], `${at}.fingerprint`),
-    unresolvedReference,
   };
 }
 
 /**
  * Parse check-report bytes that must hash to `expectedSha256`. Throws CheckReportError on a
  * digest mismatch, non-UTF-8 or non-JSON bytes, unknown or missing keys, wrong types, an egress
- * decision for another packet, or a push-guard or egress decision that does not follow from
- * the report's own findings and hits.
+ * decision for another packet, a push-guard or egress decision that does not follow from the
+ * report's own findings and hits, or SARIF findings other than exactly one per listed log.
  */
 export function parseCheckReport(bytes: Uint8Array, expectedSha256: string): CheckReport {
   if (sha256Hex(bytes) !== expectedSha256) reject('bytes do not match the expected sha256');
@@ -242,6 +238,10 @@ export function parseCheckReport(bytes: Uint8Array, expectedSha256: string): Che
     if (typeof size !== 'number' || !Number.isInteger(size) || size < 0) reject(`sarifInputs[${i}].bytes must be a non-negative integer`);
     return { checkId: text(s['checkId'], `sarifInputs[${i}].checkId`), sha256: digest(s['sha256'], `sarifInputs[${i}].sha256`), bytes: size };
   });
+  // SARIF logs are not parsed: the SARIF findings are exactly the one finding of each listed log.
+  const expected = [...new Set(sarifInputs.map((s) => canonicalJson(sarifLogFinding(s))))].sort();
+  const recorded = findings.filter((f) => f.source === 'sarif').map((f) => canonicalJson(f)).sort();
+  if (tupleKey(recorded) !== tupleKey(expected)) reject('the SARIF findings do not follow from the listed SARIF logs');
   return {
     reportVersion: CHECK_REPORT_VERSION,
     packetSha256,
