@@ -1,10 +1,12 @@
-# Phase 3 — Research Register (DRAFT, pending plan review)
+# Phase 3 — Research Register (LOCKED v2, pending controller confirmation)
 
 > Dependency and design research for Phase 3 "Durable orchestration" (90-day plan, Days 31–45).
-> Every external fact below was observed in this planning session on **2026-10-29** unless a row says
-> otherwise. Sources are listed in §9. Anything not observed directly is marked **not verified** and has a
-> decision rule that resolves it during implementation.
-> Environment observed: Node **24.6.0**, pnpm **10.31.0**, TypeScript **7.0.2**, Docker server **29.6.1**.
+> Every external fact below was observed on **2026-10-29**: in workflow step 1 unless a row says otherwise, and
+> re-observed in step 3 where marked. Sources are listed in §9. Anything not observed directly is marked **not
+> verified** and has a decision rule that resolves it during implementation. v1 of this register is at
+> `80bb76a`. v2 adds the step-3 observations (P3-PLAN-LOW-001) and the reconciliation's decisions (R1, R14).
+> Environment observed: Node **24.6.0**, pnpm **10.31.0**, TypeScript **7.0.2**, Docker server **29.6.1**
+> (Docker re-observed in step 3).
 
 ## 1. Version snapshot (npm registry, queried 2026-10-29)
 
@@ -48,7 +50,7 @@ Decision rule for `unionfs` (risk PR3-10): after `pnpm install`, run `bash scrip
 reports `unionfs` as unknown, the fix is a reviewed, single-package license override that cites the upstream
 LICENSE file. The allowlist itself is never widened, and the license gate is never skipped.
 
-### 1.2 Install-time facts to re-verify at S6 (not verified yet)
+### 1.2 Install-time facts to re-verify at S7 (not verified yet)
 
 - `@temporalio/core-bridge` ships prebuilt native binaries (registry unpacked size of 1.25.0 is about 154 MB).
   pnpm 10 blocks dependency lifecycle scripts by default. This repo already shows
@@ -74,6 +76,25 @@ Docker Hub (`docker buildx imagetools inspect` returns `not found`). `pnpm infra
 Temporal service on a clean host. The tag is also mutable and not digest-pinned. Phase 3 replaces it (change
 request CR-15).
 
+**Step 3 re-observation (2026-10-29, P3-PLAN-LOW-001).** The Codex reviewer could not reach the Docker API from
+its sandbox, so Lane A re-ran the checks on the implementation host. Docker server `29.6.1`.
+
+| Command | Observed output (verbatim, trimmed to the relevant line) |
+|---|---|
+| `docker buildx imagetools inspect temporalio/temporal:1.9.1` | `Digest:    sha256:ad4c82c97bd12b417d1ea942610dbcd511afb250c4d5ed26c694009533df447e` (exit 0) |
+| `docker buildx imagetools inspect temporalio/auto-setup:1.31.0` | `ERROR: docker.io/temporalio/auto-setup:1.31.0: not found` (exit 1) |
+| `docker buildx imagetools inspect temporalio/server:1.32.1` | `Digest:    sha256:acecbab5b0b8ae9cf4012b508866ca97feda3709577bf157b537239f40029049` (exit 0) |
+| `docker buildx imagetools inspect temporalio/admin-tools:1.32.1` | `Digest:    sha256:9ef0dc5b063bf4ffd5c1512de72e0e73e225bd2c7006a18ce69bd592a8862a83` (exit 0) |
+| `docker buildx imagetools inspect temporalio/ui:2.54.1` | `Digest:    sha256:ff0943fe532b8e33c46cd28b29e81e0ce0b6f55b9ee50a38ef1b437cc4de3fa5` (exit 0) |
+| `docker run --rm temporalio/temporal@sha256:ad4c82c9… --version` | `temporal version 1.9.1 (Server 1.32.0, UI 2.54.1)` (exit 0; container removed) |
+| `docker run --rm temporalio/temporal@sha256:ad4c82c9… server start-dev --help` | lists `--ip`, `--headless`, `-n, --namespace`, `-f, --db-filename`, `-p, --port`, `--http-port`, `--ui-ip`, `--ui-port`, `--sqlite-pragma` |
+| `docker image inspect temporalio/temporal@sha256:ad4c82c9…` | entrypoint `["temporal"]`; size 155421701 bytes |
+
+The `start-dev --help` output does not list a namespace-retention flag. Retention is set through
+`temporal operator namespace` at gate setup. The exact flag is **not verified** and is decided at S8 (Q9). These
+observations are from a developer host, not CI. S8 makes the gate print the `--version` line into its log, and M3
+preserves it, so the controller's CI run records the same evidence.
+
 **Gate decision.** The mandatory integration gate provisions `temporalio/temporal@sha256:ad4c82c9…` and runs
 `temporal server start-dev` in it. This is the **real Temporal server binary** (OSS server 1.32.0), with its
 history persisted to a SQLite file on a container volume, so the server-restart chaos test can stop and start
@@ -86,10 +107,12 @@ it without losing history. It is not a test double. The two SDK test servers are
   It is not the production server and cannot prove recovery behavior. It may appear in unit tests only, and
   only with a label. No MUST may be satisfied by it.
 
-**Topology gap, stated honestly.** The gate's server persists to SQLite and not to PostgreSQL. Temporal's
-PostgreSQL persistence (the production shape: `temporalio/server` plus `admin-tools` schema setup) is **not**
-exercised in Phase 3. It is a pre-production dependency (risk PR3-26). This mirrors the Phase 2 position on
-OS-level sandboxing: the limitation is named, not hidden.
+**Topology gap, stated honestly, and how it is closed (R14).** The per-commit gate's server persists to SQLite
+and not to PostgreSQL. Temporal's PostgreSQL persistence (the production shape: `temporalio/server` plus
+`admin-tools` schema setup) is exercised by a separate **production-shaped pre-deployment smoke** (exit C9). It
+uses the two digests above and the repo's digest-pinned PostgreSQL, includes a real server restart, and runs
+before any deployment rather than on every commit. The Phase 3 report claims production readiness only if that
+smoke passed on the reported SHA (exit N5, risk PR3-26).
 
 ## 3. Workflow determinism vs this repo's fitness rules
 
@@ -109,12 +132,13 @@ calls from composition roots. Phase 3 extends them (CR-12) instead of creating a
 | Fact | Source | Consequence |
 |---|---|---|
 | Activity heartbeat `details` from the last heartbeat are available to the next retry as `Info.heartbeatDetails`. | `packages/activity/src/index.ts` (heartbeat JSDoc) | `ActivityExecutionContext.lastProgress` exposes the checkpoint. It is used only for non-authoritative progress. Authoritative recovery state lives in PostgreSQL and on the remote (side-effect log, workspace registry). |
-| When no heartbeat arrives within `heartbeatTimeout`, the server fails the attempt. The in-flight activity is cancelled with `CancelledFailure('TIMED_OUT')` once the worker can learn of it. | `packages/activity/src/index.ts`; `packages/worker/src/activity.ts` | Worker death is detected within `heartbeatTimeout`. A *paused* (zombie) worker learns of the cancellation only when it resumes. Fencing epochs (architecture §7) are therefore required. Cancellation alone is not a fence. |
+| When no heartbeat arrives within `heartbeatTimeout`, the server fails the attempt. The in-flight activity is cancelled with `CancelledFailure('TIMED_OUT')` once the worker can learn of it. | `packages/activity/src/index.ts`; `packages/worker/src/activity.ts` | Worker death is detected within `heartbeatTimeout`. A *paused* (zombie) worker learns of the cancellation only when it resumes. Lease-bound record fencing (architecture §7.1, the Phase 2 primitive) is therefore required. Cancellation alone is not a fence. |
 | `cancellationSignal` is an `AbortSignal` aborted with the `CancelledFailure`. | `packages/worker/src/activity.ts` | It is bridged into `ActivityExecutionContext.signal` and from there into the existing `AgentExecuteRequest.signal`. The Claude adapter already kills its child on abort (`claude-provider.ts:225-227`). |
 | `ActivityCancellationType` defaults to `WAIT_CANCELLATION_COMPLETED`. The activity counts as cancelled only after it throws `CancelledFailure`. | `packages/common/src/activity-options.ts`; `packages/worker/src/worker.ts` | Workflow cleanup waits for the agent container to be confirmed stopped before it quarantines the workspace. |
 | `startToCloseTimeout` or `scheduleToCloseTimeout` is required. Long activities must set `heartbeatTimeout` and heartbeat. | `packages/common/src/activity-options.ts` | Every activity has explicit timeouts (architecture §5 table). |
 | The default activity retry policy is: initial interval 1 s, backoff 2.0, maximum interval 100 × initial, **maximum attempts 0 (unlimited)**, no non-retryable errors. Workflows do not retry by default. | docs.temporal.io/encyclopedia/retry-policies | Defaults are never relied upon. Every activity declares an explicit `RetryPolicy`, and a unit test fails if any activity option set omits `retry.maximumAttempts`, `startToCloseTimeout` or (for long activities) `heartbeatTimeout`. The agent activity uses `maximumAttempts: 1`. |
 | Payload limit is 2 MB per request. History hard limits are 51,200 events and 50 MB, with warnings at 10,240 events and 10 MB. | docs.temporal.io/cloud/limits (Cloud defaults; OSS server defaults not verified) | Workflow payloads carry IDs, hashes and `ArtifactRef`s only, never bytes. The run workflow uses continue-as-new on `continueAsNewSuggested`. |
+| The client package exposes an async-completion client that completes or fails an activity by task token. **Not verified:** that 1.24.0 rejects a completion for a token whose attempt already completed or was superseded, and which error it raises. | `@temporalio/client` (`AsyncCompletionClient`); to be confirmed at S10 | CX-35 uses it to inject duplicate completion callbacks at the transport. The assertion is on history (one completion event per scheduled activity) and on the call being rejected, not on a specific error class (Q10). |
 
 ## 5. Signals, updates, queries, versioning
 
@@ -125,7 +149,7 @@ calls from composition roots. Phase 3 extends them (CR-12) instead of creating a
 | A rejected Update (validator throws) leaves no trace in history. Accepted Updates are recorded. | same | Approval validators reject stale, duplicate-conflicting, expired or wrong-request decisions **without** mutating workflow state. |
 | `condition(fn, timeout)` returns `false` on timeout. | `packages/workflow/src/workflow.ts` | Approval expiry and pause timeout are durable workflow timers. |
 | `patched(patchId)` returns false when replaying a history produced without that patch. | `packages/workflow/src/workflow.ts` | Workflow code changes after the first release are guarded with `patched()`. The committed replay corpus proves old histories still replay. |
-| Temporal server 1.32.0 notes that deprecated Worker Versioning APIs are removed in 1.33. | github.com/temporalio/temporal/releases | Phase 3 does **not** adopt build-ID or worker-deployment versioning. It uses `patched()` plus the replay corpus. Revisit once deployment-based versioning is needed for rolling upgrades. |
+| Temporal server 1.32.0 notes that deprecated Worker Versioning APIs are removed in 1.33. | github.com/temporalio/temporal/releases | Phase 3 does **not** adopt build-ID or worker-deployment versioning. It uses `patched()` plus a manifest-gated replay corpus, and deploys workflow-code changes only drain-only or fully patched (architecture §6.6). Revisit once deployment-based versioning is needed for rolling upgrades. |
 | `WorkflowIdConflictPolicy.USE_EXISTING` and `WorkflowIdReusePolicy.REJECT_DUPLICATE` exist. | `packages/common/src/workflow-options.ts` | Starts are idempotent: workflow ID `asep-task-<taskId>` / `asep-run-<runId>` with `USE_EXISTING`. A finished task workflow is never re-run under the same ID (`REJECT_DUPLICATE`). |
 
 ## 6. Docker behavior relied upon (to be verified empirically)
@@ -134,6 +158,7 @@ calls from composition roots. Phase 3 extends them (CR-12) instead of creating a
 |---|---|---|
 | Killing the `docker run` **client** with SIGKILL does not stop the container. The client cannot catch SIGKILL, so `--sig-proxy` cannot forward it. | **not verified** in this session | The orphan-container itest (`asep-suite:temporal-orphan-containers`, S4) kills the client and asserts the container is still running *before* reaping. If the claim is false, the reaper is still required for worker-host death and the test records the observed behavior. |
 | `--name` uniqueness means a second `docker run` with the same name fails while the first container exists. | not verified | Same suite. |
+| `-p 127.0.0.1:<host>:<container>` publishes a port on host loopback only, and `docker inspect` reports `HostIp` `127.0.0.1`. | not verified in this session | Gate test C7 asserts it on the running Temporal container. |
 
 Relevance: `ClaudeCodingProvider` spawns the `docker` CLI and kills it with SIGKILL on timeout or abort
 (`claude-provider.ts:183-190,225-235`). Neither it nor the verification sandbox sets `--name` or `--label`
@@ -142,11 +167,11 @@ Relevance: `ClaudeCodingProvider` spawns the `docker` CLI and kills it with SIGK
 in its container. That would also affect the Phase 2 G3 timeout claim. It is reported to the controller in
 `phase-03-plan.md` §1.
 
-## 7. ESM + TypeScript 7 + Temporal bundler (not verified, decided at S6)
+## 7. ESM + TypeScript 7 + Temporal bundler (not verified, decided at S7)
 
 The repo is ESM (`"type": "module"` in every package) and compiles with TypeScript 7 (`tsc -b`). The Temporal
 bundler uses webpack + `swc-loader`, not `tsc`. **Not verified:** that `workflowsPath` can point at ESM `.ts`
-sources under `tsx`, and that it can point at compiled ESM `dist/**/*.js`. Decision rule: the S6 bundler test
+sources under `tsx`, and that it can point at compiled ESM `dist/**/*.js`. Decision rule: the S7 bundler test
 bundles from the compiled `dist/` output, which is produced by the canonical cold `tsc -b`. If ESM output
 fails to bundle, `adapters/temporal` emits its workflow entry through a dedicated `tsconfig` with
 `module: NodeNext`, and the decision is recorded here. Mocking the bundler is never a fallback.
@@ -155,13 +180,16 @@ fails to bundle, `adapters/temporal` emits its workflow entry through a dedicate
 
 | # | Question | Decision rule / owner |
 |---|---|---|
-| Q1 | Is Temporal PostgreSQL persistence needed in Phase 3? | No. Exit criteria concern workflow semantics, not persistence-driver behavior. Recorded as PR3-26 (pre-production). |
+| Q1 | Is Temporal PostgreSQL persistence needed in Phase 3? | **Decided by the controller (R14):** not in the per-commit gate; yes as a production-shaped pre-deployment smoke (exit C9). The report claims production readiness only if it passed (N5, PR3-26). |
 | Q2 | SDK `1.24.0` vs `1.25.0`? | `1.24.0` (§1). Upgrade is a separate change gated by the replay corpus. |
-| Q3 | Does `unionfs` pass the license gate? | Verify at S6 install. Single-package reviewed override if needed (§1.1). |
-| Q4 | Do native modules need pnpm build approval? | Verify at S6. Single-package `onlyBuiltDependencies` if needed (§1.2). |
-| Q5 | ESM bundling path? | Verify at S6 (§7). |
+| Q3 | Does `unionfs` pass the license gate? | Verify at S7 install. Single-package reviewed override if needed (§1.1). |
+| Q4 | Do native modules need pnpm build approval? | Verify at S7. Single-package `onlyBuiltDependencies` if needed (§1.2). |
+| Q5 | ESM bundling path? | Verify at S7 (§7). |
 | Q6 | Does SIGKILL of the docker client orphan the container? | Verify at S4 (§6). |
-| Q7 | Will Phase 2 cycle-6 repairs change `SideEffectLog` fencing (the lease-handoff wedge)? | Controller decision. If Phase 2 repairs it in 0013–0099, Lane A adopts that mechanism and withdraws CR-05. |
+| Q7 | Will Phase 2 repairs change `SideEffectLog` fencing (the lease-handoff wedge)? | **Resolved by the controller (R1):** yes. Phase 2 HIGH-006 lands the lease-bound fenced takeover. Lane A withdrew CR-05/CR-06 as designs and states invariants instead (plan §30 CR-05). |
+| Q8 | What exactly does GitHub return when a PR already exists for a head? | Not verified (no live credentials). The adapter keys on HTTP `422` plus a re-list by head, never on message text (CR-27). The HTTP double returns `422` for a duplicate create. |
+| Q9 | Which `temporal operator namespace` flag sets retention on the dev server? | Verify at S8 from `--help` output of the pinned image, and record it here and in the runbook. |
+| Q10 | How does `AsyncCompletionClient` in 1.24.0 report a completion for a completed or superseded attempt? | Verify at S10. CX-35 asserts rejection and the history count, not an error class. |
 
 ## 9. Sources (accessed 2026-10-29)
 
@@ -175,4 +203,5 @@ fails to bundle, `adapters/temporal` emits its workflow entry through a dedicate
 - Retry policy defaults: https://docs.temporal.io/encyclopedia/retry-policies
 - Limits: https://docs.temporal.io/cloud/limits
 - Docker Hub tags: `https://hub.docker.com/v2/repositories/temporalio/{auto-setup,temporal}/tags`; digests via `docker buildx imagetools inspect`.
+- Step 3 re-observation (2026-10-29, implementation host): `docker buildx imagetools inspect` for the five refs in §2; `docker run --rm` of the pinned `temporalio/temporal` image with `--version` and `server start-dev --help`; `docker image inspect`; `docker version --format '{{.Server.Version}}'` → `29.6.1`.
 - unionfs license statement: https://github.com/streamich/unionfs (README: "Unlicense - public domain").
