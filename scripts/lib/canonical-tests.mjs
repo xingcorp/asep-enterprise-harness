@@ -190,6 +190,11 @@ export const REQUIRED_SUITES = Object.freeze({
   // lookup threw at runtime, so the COMPLETE gate could not verify a manifest at
   // all. Registered so a schema/query divergence turns the gate RED.
   'asep-suite:authority-resolver-sql': 'adapters/persistence/src/authority-resolver-sql.test.ts',
+  // Crash recovery through a fenced lease takeover: a successor waits out a live
+  // lease, takes the dead executor's unfinished side effects over under a newer
+  // epoch, reconciles them against the forge and converges on one commit, one
+  // ref and one PR, while the dead executor is refused.
+  'asep-suite:crash-recovery': 'apps/control-plane-api/src/crash-recovery.test.ts',
 });
 
 /** The machine-readable marker a suite prints at module load: `SUITE-ID: <id>`. */

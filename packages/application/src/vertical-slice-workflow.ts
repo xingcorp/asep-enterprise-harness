@@ -48,8 +48,8 @@ import type {
   CommandRunner, CommandSpec, SandboxProvider, ForgeProvider, ToolPolicyProfile,
 } from '@asep/ports';
 import type { SpanTracer, AuditSink } from '@asep/observability';
-import { isSpanName, isPrivilegedAction, auditEvent } from '@asep/observability';
 import { governedExecution } from './governed-execution.js';
+import { completionObserver, fencedBy } from './completion-observer.js';
 import {
   completeToReview, SandboxIsolationRequiredError,
   type VerificationCheckSpec, type SandboxRequirement,
@@ -305,51 +305,21 @@ export async function runVerticalSliceWorkflow(
   // Without this, ten span names were declared but only three ever emitted: J1/J4
   // were satisfied by instrumentation code existing rather than by an operator
   // being able to audit the effects that actually touch the outside world.
-  const completionCorrelation = {
-    traceId: `trace-${attempt.id}`,
-    tenantId: scope.organizationId,
-    organizationId: scope.organizationId,
-    projectId: scope.projectId,
-    repositoryBindingId: binding.id,
-    runId: run.id,
-    taskId: task.id,
-    attemptId: attempt.id,
-  };
-  const completionActor = input.actor ?? 'harness';
-  const completionNow = (): string => new Date().toISOString();
-  const observeCompletion = async <T>(
-    boundary: {
-      readonly span: string;
-      readonly action: string;
-      readonly detail: Readonly<Record<string, unknown>>;
+  const observeCompletion = completionObserver({
+    correlation: {
+      traceId: `trace-${attempt.id}`,
+      tenantId: scope.organizationId,
+      organizationId: scope.organizationId,
+      projectId: scope.projectId,
+      repositoryBindingId: binding.id,
+      runId: run.id,
+      taskId: task.id,
+      attemptId: attempt.id,
     },
-    fn: () => Promise<T>,
-  ): Promise<T> => {
-    // The closed sets live in @asep/observability; validate rather than cast so a
-    // typo in a boundary name fails loudly instead of emitting an unnamed span.
-    const span = boundary.span;
-    const action = boundary.action;
-    if (!isSpanName(span) || !isPrivilegedAction(action)) {
-      throw new Error(
-        `unknown span/action pair '${span}'/'${action}' — ` +
-        'a completion boundary must use a declared name',
-      );
-    }
-    if (input.audit) {
-      await input.audit.record(auditEvent({
-        actor: completionActor,
-        action,
-        context: completionCorrelation,
-        occurredAt: completionNow(),
-        detail: boundary.detail,
-      }));
-    }
-    if (input.tracer) {
-      return input.tracer.withSpan(span, completionCorrelation, fn);
-    }
-    return fn();
-  };
-
+    actor: input.actor ?? 'harness',
+    ...(input.tracer ? { tracer: input.tracer } : {}),
+    ...(input.audit ? { audit: input.audit } : {}),
+  });
 
   // The Git backend is resolved only NOW: it is configured per repository
   // binding, and the binding id did not exist until the step above.
@@ -419,156 +389,187 @@ export async function runVerticalSliceWorkflow(
     traceId: `trace-${attempt.id}`,
     actor: input.actor ?? 'harness',
   });
-  if (governed.stoppedAt !== 'ready-for-completion') {
-    throw new Error(`governed execution stopped early at '${governed.stoppedAt}'`);
+  // From here on this run holds the attempt's lease. It is released on EVERY
+  // in-process exit, success or failure: once this function returns or throws,
+  // nothing of ours is still running, so a successor may take the branch over at
+  // once. Only a real crash leaves the lease to expire — exactly the case the
+  // fenced takeover exists for.
+  const heldLease = governed.leaseId;
+  let finished = false;
+  try {
+    const outcome = await completeGoverned(governed);
+    finished = true;
+    return outcome;
+  } finally {
+    if (heldLease) {
+      const released = input.leases.release(scope, heldLease);
+      // A failed release must not mask the error that ended the run.
+      if (finished) await released;
+      else await released.catch(() => undefined);
+    }
   }
-  const change = governed.change;
-  const leaseId = governed.leaseId;
-  const workspace = governed.workspace;
-  const workspaceId = governed.workspaceId;
-  if (!change || !leaseId || !workspace || !workspaceId) {
-    throw new Error('governed execution produced no change/lease/workspace');
-  }
-  if (!change.changedFiles.includes(input.expectChangedFile)) {
-    throw new Error(
-      `trusted inspection did not observe '${input.expectChangedFile}': ${change.changedFiles}`,
+
+  async function completeGoverned(
+    governed: Awaited<ReturnType<typeof governedExecution>>,
+  ): Promise<VerticalSliceWorkflowResult> {
+    if (governed.stoppedAt !== 'ready-for-completion') {
+      throw new Error(`governed execution stopped early at '${governed.stoppedAt}'`);
+    }
+    const change = governed.change;
+    const leaseId = governed.leaseId;
+    const workspace = governed.workspace;
+    const workspaceId = governed.workspaceId;
+    if (!change || !leaseId || !workspace || !workspaceId) {
+      throw new Error('governed execution produced no change/lease/workspace');
+    }
+
+    // Every completion boundary first renews the lease (the fence). If it was
+    // lost — this holder stalled past its TTL and a successor may own the attempt
+    // — the effect never starts.
+    const observeFenced = fencedBy(
+      observeCompletion, () => input.leases.heartbeat(scope, leaseId),
     );
-  }
-
-  // --- verification context: the real workspace path ------------------------
-  const wtPath = await git.pathOf(workspaceId);
-  const check = input.checkCommand(wtPath);
-  // R0 mandates [L0, L1]; one real passing command per mandatory level.
-  const checks: VerificationCheckSpec[] = [
-    { id: 'L0-workspace', level: 'L0', category: 'workspace', mandatory: true, command: check },
-    { id: 'L1-static', level: 'L1', category: 'static', mandatory: true, command: check },
-  ];
-  // The working tree is writable, but the `.git` indirection NESTED inside it is
-  // pinned read-only through the parent mount (disp. P2-FINAL-HIGH-002). Leaving
-  // it merely absent from writablePaths was insufficient: the rw parent bind made
-  // it writable anyway. The separator is spelled literally rather than via
-  // node:path so this use case stays free of host-path machinery (exit B3); the
-  // adapter turns it into an OS-enforced nested read-only bind.
-  const mount = {
-    workspaceId,
-    readOnlyPaths: [],
-    writablePaths: [wtPath],
-    readOnlyOverlayPaths: [`${wtPath}/.git`],
-  };
-
-  // Probe the sandbox the verification commands will run in, so the caller can
-  // assert OS-enforced isolation was genuinely in effect (HIGH-002).
-  const sandboxRequirement: SandboxRequirement = input.sandboxRequirement ?? 'required';
-  const probe = await input.sandbox.start('verification-no-network', mount);
-  const sandboxIsolationEnforced =
-    (probe as { isolationEnforced?: boolean }).isolationEnforced === true;
-  await input.sandbox.stop(probe);
-  // E8: refuse the whole slice BEFORE the first side effect when isolation is
-  // mandatory but absent. Doing it here (not only inside verifyStep) means the
-  // run stops before any commit/push/PR, so an unsandboxed provider can never
-  // reach the forge. verifyStep re-asserts it on the handle it actually uses, so
-  // neither layer trusts the other's check.
-  if (sandboxRequirement === 'required' && !sandboxIsolationEnforced) {
-    throw new SandboxIsolationRequiredError(probe.sandboxId, probe.profile);
-  }
-
-  // --- verify → commit → evidence → push → PR → review gate ----------------
-  const result = await completeToReview({
-    change,
-    baseSha: input.baseSha,
-    runner: input.runnerFor({ scope }),
-    sandbox: input.sandbox,
-    mount,
-    observe: observeCompletion,
-    planId: `plan-${input.risk}`,
-    risk: input.risk,
-    checks,
-    sandboxRequirement,
-    committer: git.committer,
-    scope,
-    workspace: workspace.capability,
-    allowedPaths: input.allowedPaths,
-    identity: input.identity,
-    store: input.evidence,
-    taskId: task.id,
-    attemptId: attempt.id,
-    environment: input.environment,
-    forge: input.forge,
-    log: input.sideEffects,
-    repositoryBindingId: binding.id,
-    branch,
-    base: input.binding.defaultBaseBranch,
-    title: input.prTitle,
-    body: input.prBody,
-    leaseId,
-    task: { id: task.id, status: 'VERIFYING', version: task.version },
-  });
-  if (result.stoppedAt !== 'complete') {
-    throw new Error(`completion stopped early at '${result.stoppedAt}'`);
-  }
-  const commitSha = result.commitSha;
-  const evidence = result.evidence;
-  const pr = result.pr;
-  const finalTask = result.task;
-  if (!commitSha || !evidence || !pr || !finalTask) {
-    throw new Error('completion reported success without commit/evidence/PR/task');
-  }
-
-  // --- persist the AUTHORITATIVE transitions -------------------------------
-  //
-  // `task.execute` (disp. P2-FINAL-MED-003, exit J1/J4) covers the moment the
-  // harness commits the attempt's outcome to canonical state: the result SHA, the
-  // scoped evidence attachment, the task's advance to WAITING_FOR_HUMAN_REVIEW
-  // and the PR row. It is the last of the ten declared spans and pairs with the
-  // task.status.transition audit action, so an operator can see the transition
-  // that made the attempt reviewable — not merely the effects leading up to it.
-  let attemptVersion = attempt.version;
-  await observeCompletion(
-    {
-      span: 'task.execute',
-      action: 'task.status.transition',
-      detail: { to: 'WAITING_FOR_HUMAN_REVIEW', commitSha, prNumber: pr.number },
-    },
-    async () => {
-      attemptVersion = await repos.attempts.setResultSha(
-        scope, attempt.id, attemptVersion, commitSha,
+    if (!change.changedFiles.includes(input.expectChangedFile)) {
+      throw new Error(
+        `trusted inspection did not observe '${input.expectChangedFile}': ${change.changedFiles}`,
       );
-      attemptVersion = await repos.attempts.attachEvidence(
-        scope, attempt.id, attemptVersion, evidence.ref,
-      );
-      await repos.tasks.updateStatus(scope, task.id, task.version, 'WAITING_FOR_HUMAN_REVIEW');
-      await repos.pullRequests.upsert(scope, {
-        repositoryBindingId: binding.id,
-        attemptId: attempt.id,
-        forge: 'github',
-        number: pr.number,
-        headBranch: pr.headBranch,
-        baseBranch: pr.baseBranch,
-        url: pr.url,
-        state: 'OPEN',
-        evidenceRef: evidence.ref,
-      });
-    },
-  );
+    }
 
-  return {
-    scope,
-    repositoryBindingId: binding.id,
-    runId: run.id,
-    taskId: task.id,
-    attemptId: attempt.id,
-    branch,
-    baseSha: input.baseSha,
-    workspaceId,
-    workspacePath: wtPath,
-    commitSha,
-    evidenceArtifactId: evidence.ref.artifactId,
-    evidenceSha256: evidence.ref.sha256,
-    prNumber: pr.number,
-    prHeadBranch: pr.headBranch,
-    prBaseBranch: pr.baseBranch,
-    stoppedAt: result.stoppedAt,
-    taskStatus: finalTask.status,
-    sandboxIsolationEnforced,
-  };
+    // --- verification context: the real workspace path ------------------------
+    const wtPath = await git.pathOf(workspaceId);
+    const check = input.checkCommand(wtPath);
+    // R0 mandates [L0, L1]; one real passing command per mandatory level.
+    const checks: VerificationCheckSpec[] = [
+      { id: 'L0-workspace', level: 'L0', category: 'workspace', mandatory: true, command: check },
+      { id: 'L1-static', level: 'L1', category: 'static', mandatory: true, command: check },
+    ];
+    // The working tree is writable, but the `.git` indirection NESTED inside it is
+    // pinned read-only through the parent mount (disp. P2-FINAL-HIGH-002). Leaving
+    // it merely absent from writablePaths was insufficient: the rw parent bind made
+    // it writable anyway. The separator is spelled literally rather than via
+    // node:path so this use case stays free of host-path machinery (exit B3); the
+    // adapter turns it into an OS-enforced nested read-only bind.
+    const mount = {
+      workspaceId,
+      readOnlyPaths: [],
+      writablePaths: [wtPath],
+      readOnlyOverlayPaths: [`${wtPath}/.git`],
+    };
+
+    // Probe the sandbox the verification commands will run in, so the caller can
+    // assert OS-enforced isolation was genuinely in effect (HIGH-002).
+    const sandboxRequirement: SandboxRequirement = input.sandboxRequirement ?? 'required';
+    const probe = await input.sandbox.start('verification-no-network', mount);
+    const sandboxIsolationEnforced =
+      (probe as { isolationEnforced?: boolean }).isolationEnforced === true;
+    await input.sandbox.stop(probe);
+    // E8: refuse the whole slice BEFORE the first side effect when isolation is
+    // mandatory but absent. Doing it here (not only inside verifyStep) means the
+    // run stops before any commit/push/PR, so an unsandboxed provider can never
+    // reach the forge. verifyStep re-asserts it on the handle it actually uses, so
+    // neither layer trusts the other's check.
+    if (sandboxRequirement === 'required' && !sandboxIsolationEnforced) {
+      throw new SandboxIsolationRequiredError(probe.sandboxId, probe.profile);
+    }
+
+    // --- verify → commit → evidence → push → PR → review gate ----------------
+    const result = await completeToReview({
+      change,
+      baseSha: input.baseSha,
+      runner: input.runnerFor({ scope }),
+      sandbox: input.sandbox,
+      mount,
+      observe: observeFenced,
+      planId: `plan-${input.risk}`,
+      risk: input.risk,
+      checks,
+      sandboxRequirement,
+      committer: git.committer,
+      scope,
+      workspace: workspace.capability,
+      allowedPaths: input.allowedPaths,
+      identity: input.identity,
+      store: input.evidence,
+      taskId: task.id,
+      attemptId: attempt.id,
+      environment: input.environment,
+      forge: input.forge,
+      log: input.sideEffects,
+      repositoryBindingId: binding.id,
+      branch,
+      base: input.binding.defaultBaseBranch,
+      title: input.prTitle,
+      body: input.prBody,
+      leaseId,
+      task: { id: task.id, status: 'VERIFYING', version: task.version },
+    });
+    if (result.stoppedAt !== 'complete') {
+      throw new Error(`completion stopped early at '${result.stoppedAt}'`);
+    }
+    const commitSha = result.commitSha;
+    const evidence = result.evidence;
+    const pr = result.pr;
+    const finalTask = result.task;
+    if (!commitSha || !evidence || !pr || !finalTask) {
+      throw new Error('completion reported success without commit/evidence/PR/task');
+    }
+
+    // --- persist the AUTHORITATIVE transitions -------------------------------
+    //
+    // `task.execute` (disp. P2-FINAL-MED-003, exit J1/J4) covers the moment the
+    // harness commits the attempt's outcome to canonical state: the result SHA, the
+    // scoped evidence attachment, the task's advance to WAITING_FOR_HUMAN_REVIEW
+    // and the PR row. It is the last of the ten declared spans and pairs with the
+    // task.status.transition audit action, so an operator can see the transition
+    // that made the attempt reviewable — not merely the effects leading up to it.
+    let attemptVersion = attempt.version;
+    await observeFenced(
+      {
+        span: 'task.execute',
+        action: 'task.status.transition',
+        detail: { to: 'WAITING_FOR_HUMAN_REVIEW', commitSha, prNumber: pr.number },
+      },
+      async () => {
+        attemptVersion = await repos.attempts.setResultSha(
+          scope, attempt.id, attemptVersion, commitSha,
+        );
+        attemptVersion = await repos.attempts.attachEvidence(
+          scope, attempt.id, attemptVersion, evidence.ref,
+        );
+        await repos.tasks.updateStatus(scope, task.id, task.version, 'WAITING_FOR_HUMAN_REVIEW');
+        await repos.pullRequests.upsert(scope, {
+          repositoryBindingId: binding.id,
+          attemptId: attempt.id,
+          forge: 'github',
+          number: pr.number,
+          headBranch: pr.headBranch,
+          baseBranch: pr.baseBranch,
+          url: pr.url,
+          state: 'OPEN',
+          evidenceRef: evidence.ref,
+        });
+      },
+    );
+
+    return {
+      scope,
+      repositoryBindingId: binding.id,
+      runId: run.id,
+      taskId: task.id,
+      attemptId: attempt.id,
+      branch,
+      baseSha: input.baseSha,
+      workspaceId,
+      workspacePath: wtPath,
+      commitSha,
+      evidenceArtifactId: evidence.ref.artifactId,
+      evidenceSha256: evidence.ref.sha256,
+      prNumber: pr.number,
+      prHeadBranch: pr.headBranch,
+      prBaseBranch: pr.baseBranch,
+      stoppedAt: result.stoppedAt,
+      taskStatus: finalTask.status,
+      sandboxIsolationEnforced,
+    };
+  }
 }

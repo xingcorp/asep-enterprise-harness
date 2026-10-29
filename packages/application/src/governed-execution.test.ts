@@ -36,7 +36,9 @@ import type {
   Lease,
   LeaseDenied,
 } from '@asep/ports';
-import { governedExecution } from './governed-execution.js';
+import {
+  governedExecution, leaseTtlForBudget, LeaseTtlTooShortError,
+} from './governed-execution.js';
 import {
   SpanTracer, CapturingTelemetrySink, auditEvent,
   type AuditEvent, type AuditSink,
@@ -101,7 +103,7 @@ function makeSpies(opts: {
   const spies: Spies = { leaseCalls: 0, workspaceCalls: 0, agentCalls: 0, inspectCalls: 0 };
   const grantedLease: Lease = {
     leaseId: 'lease-1', repositoryBindingId, branch, attemptId,
-    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    expiresAt: new Date(Date.now() + 60_000).toISOString(), fencingEpoch: 1,
   };
   const workspace: Workspace = {
     workspaceId: 'ws-1' as WorkspaceId,
@@ -148,7 +150,7 @@ function inputWith(risk: 'R0' | 'R1' | 'R2' | 'R3' | 'R4', h: ReturnType<typeof 
     attemptId,
     baseSha,
     branch,
-    leaseTtlMs: 60_000,
+    leaseTtlMs: leaseTtlForBudget(budget),
     leases: h.leases,
     workspaces: h.workspaces,
     provider: h.provider,
@@ -305,4 +307,19 @@ test('MED-003: a deferred risk emits NO span/audit (nothing privileged happened)
   assert.equal(result.stoppedAt, 'admission');
   assert.equal(sink.events.length, 0, 'no span for a deferred risk');
   assert.equal(audits.length, 0, 'no audit row for a deferred risk');
+});
+
+test('a lease TTL that would lapse during the agent run is refused before the lease is taken', async () => {
+  const h = makeSpies();
+  // 15 minutes of agent wall clock cannot fit inside a one-minute lease: the
+  // holder could not heartbeat until the agent returned, long after expiry.
+  await assert.rejects(
+    () => governedExecution({ ...inputWith('R0', h), leaseTtlMs: 60_000 }),
+    LeaseTtlTooShortError,
+  );
+  assert.equal(h.spies.leaseCalls, 0, 'no lease was taken');
+  assert.equal(h.spies.workspaceCalls, 0);
+  assert.equal(h.spies.agentCalls, 0);
+  // The helper sizes the TTL to the budget plus margin, which is accepted.
+  assert.equal(leaseTtlForBudget(budget), 15 * 60_000 + 60_000);
 });

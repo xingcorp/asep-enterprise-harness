@@ -55,7 +55,13 @@ async function seed(dataDir?: string) {
     taskId: task.id, repositoryBindingId: binding.id,
   });
   const attemptId: AttemptId = attempt.id;
-  return { client, scope, binding, attemptId };
+  // Every side-effect record is owned by a live workspace lease of its attempt
+  // (migration 0014), exactly as the pipeline writes them.
+  const granted = await new SqlWorkspaceLeaseRepository(client).acquire(scope, {
+    repositoryBindingId: binding.id, branch: 'asep/x', attemptId, ttlMs: 60_000,
+  });
+  if ('denied' in granted) throw new Error('seed lease denied');
+  return { client, scope, binding, attemptId, owner: granted.leaseId };
 }
 
 // --- Fault 2 — DB restart mid-attempt: a PENDING side-effect row is reconciled
@@ -72,13 +78,13 @@ test('M3/Fault2: a PENDING side effect survives a REAL DB restart and is ADOPTED
   const dbDir = mkdtempSync(join(tmpdir(), 'asep-rehearsal-db-'));
   try {
     // First process: seed + begin(), then "crash" (close the client).
-    const { client: first, scope, binding, attemptId } = await seed(dbDir);
+    const { client: first, scope, binding, attemptId, owner } = await seed(dbDir);
     const beginInput = {
       operation: 'push' as const,
       repositoryBindingId: binding.id,
       attemptId,
       requestFingerprint: 'push:asep/x@sha',
-      ownerToken: 'lease-1',
+      ownerToken: owner,
       naturalKey: 'refs/heads/asep/x',
     };
     await new SqlSideEffectLog(first).begin(scope, beginInput);
@@ -128,16 +134,16 @@ test('M3/Fault3: an object-store outage fails closed on read (no partial-evidenc
 
 // --- Fault 4 — stale lease from a dead worker: the expired ACTIVE lease is
 // swept and a fresh acquire wins; a concurrent LIVE lease is denied. Injected
-// against the real lease repository with a 0ms TTL to force expiry.
+// against the real lease repository with a 1ms TTL to force expiry.
 test('M3/Fault4: a stale (expired) lease is swept so a fresh acquire wins; a live one is denied', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'asep-rehearsal-'));
   try {
     const { client, scope, binding } = await seed();
     const leases = new SqlWorkspaceLeaseRepository(client);
     const branch = 'asep/run/task/attempt';
-    // A dead worker's lease with a already-past TTL (0ms).
+    // A dead worker's lease with an immediately-past TTL (1ms).
     const dead = await leases.acquire(scope, {
-      repositoryBindingId: binding.id, branch, attemptId: 'A'.repeat(26) as AttemptId, ttlMs: 0,
+      repositoryBindingId: binding.id, branch, attemptId: 'A'.repeat(26) as AttemptId, ttlMs: 1,
     });
     assert.ok('leaseId' in dead, 'the first (soon-stale) lease is granted');
     // A tiny wait so expires_at is strictly in the past.
@@ -165,14 +171,14 @@ test('M3/Fault4: a stale (expired) lease is swept so a fresh acquire wins; a liv
 test('M3/Fault5: a delayed retry of a COMPLETED forge side effect is adopted (single PR)', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'asep-rehearsal-'));
   try {
-    const { client, scope, binding, attemptId } = await seed();
+    const { client, scope, binding, attemptId, owner } = await seed();
     const log = new SqlSideEffectLog(client);
     const beginInput = {
       operation: 'pr-upsert' as const,
       repositoryBindingId: binding.id,
       attemptId,
       requestFingerprint: 'pr:asep/x->main',
-      ownerToken: 'lease-1',
+      ownerToken: owner,
     };
     await log.begin(scope, beginInput);
     const pr = {

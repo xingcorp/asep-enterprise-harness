@@ -44,8 +44,8 @@ import {
 } from '@asep/local-doubles';
 import { TrustedCommandRunner } from '@asep/command-runner';
 import {
-  runVerticalSliceWorkflow,
-  type SliceWorkspaceBackend, type SandboxRequirement,
+  runVerticalSliceWorkflow, resumeAttemptToReview, leaseTtlForBudget,
+  type SliceWorkspaceBackend, type SandboxRequirement, type ResumeAttemptResult,
 } from '@asep/application';
 import type {
   ForgeProvider, PullRequestRef, CodingAgentProvider, SandboxProvider,
@@ -53,7 +53,7 @@ import type {
 } from '@asep/ports';
 import type {
   TenantScope, RepositoryBindingId, AttemptId, TaskId, RunId, ArtifactId,
-  WorkspaceId,
+  WorkspaceId, Budget,
 } from '@asep/contracts';
 
 // The local doubles (seedMirror / FileWritingAgent / LocalBareForgeProvider) now
@@ -167,7 +167,16 @@ export interface VerticalSliceInput {
     readonly lockfileHash: string;
     readonly nodeVersion: string;
   };
+
+  // The agent budget, and the lease TTL derived from it. ABSENT keeps the
+  // defaults below. A crash-recovery proof passes a tiny budget so the lease it
+  // abandons expires in seconds rather than minutes; the use case refuses any
+  // TTL that would not outlive the agent's wall clock.
+  readonly budget?: Budget;
+  readonly leaseTtlMs?: number;
 }
+
+const DEFAULT_BUDGET: Budget = { maxTurns: 5, maxToolCalls: 10, maxCostUsd: 1, maxWallClockMinutes: 5 };
 
 export interface VerticalSliceResult {
   readonly scope: TenantScope;
@@ -319,8 +328,8 @@ export async function runVerticalSlice(input: VerticalSliceInput): Promise<Verti
     },
     risk: 'R0',
     baseSha,
-    leaseTtlMs: 60_000,
-    budget: { maxTurns: 5, maxToolCalls: 10, maxCostUsd: 1, maxWallClockMinutes: 5 },
+    leaseTtlMs: input.leaseTtlMs ?? leaseTtlForBudget(input.budget ?? DEFAULT_BUDGET),
+    budget: input.budget ?? DEFAULT_BUDGET,
     toolPolicy: {
       allowedTools: ['write'], disallowedTools: ['network'], networkProfile: 'no-network',
     },
@@ -411,4 +420,88 @@ export async function runVerticalSlice(input: VerticalSliceInput): Promise<Verti
       evidenceStore,
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// Crash recovery: resume an attempt under a NEW lease.
+//
+// Same discipline as runVerticalSlice — construct the adapters, call ONE
+// application use case, map the result. The use case takes the attempt's lease
+// (denied while the crashed executor's lease is still live), takes over its
+// unfinished side-effect records, reconciles each against the forge and
+// performs only what did not land.
+// ---------------------------------------------------------------------------
+
+export interface ResumeVerticalSliceInput {
+  readonly client: SqlClient;
+  // The directory the crashed run used: its object store holds the evidence.
+  readonly dir: string;
+  readonly scope: TenantScope;
+  readonly repositoryBindingId: RepositoryBindingId;
+  readonly runId: RunId;
+  readonly taskId: TaskId;
+  readonly attemptId: AttemptId;
+  readonly baseSha: string;
+  readonly branch: string;
+  readonly base?: string;
+  readonly prTitle?: string;
+  readonly prBody?: string;
+  readonly leaseTtlMs?: number;
+  // A real ForgeProvider, or — absent — the local bare-repo double pushing from
+  // `pushFrom` (the bare mirror the crashed run's worktrees shared, which holds
+  // the harness commit object) into `remoteBare`.
+  readonly forge?: ForgeProvider;
+  readonly remoteBare?: string;
+  readonly pushFrom?: string;
+}
+
+export interface ResumeVerticalSliceResult extends ResumeAttemptResult {
+  readonly pushes: number;
+}
+
+export async function resumeVerticalSlice(
+  input: ResumeVerticalSliceInput,
+): Promise<ResumeVerticalSliceResult> {
+  const { client } = input;
+  const objects = new FilesystemObjectStore(join(input.dir, 'objects'));
+  const evidenceStore = new ContentAddressedEvidenceStore(client, objects);
+
+  let localForge: LocalBareForgeProvider | null = null;
+  let forge: ForgeProvider;
+  if (input.forge) {
+    forge = input.forge;
+  } else {
+    if (!input.remoteBare || !input.pushFrom) {
+      throw new Error('resumeVerticalSlice: pass a forge, or remoteBare + pushFrom for the local double');
+    }
+    localForge = new LocalBareForgeProvider(input.remoteBare);
+    localForge.setWorktree(input.pushFrom);
+    forge = localForge;
+  }
+
+  const outcome = await resumeAttemptToReview({
+    scope: input.scope,
+    repositoryBindingId: input.repositoryBindingId,
+    runId: input.runId,
+    taskId: input.taskId,
+    attemptId: input.attemptId,
+    baseSha: input.baseSha,
+    branch: input.branch,
+    base: input.base ?? 'main',
+    title: input.prTitle ?? 'ASEP: add feature.txt',
+    body: input.prBody ?? 'Automated attempt reaching human review.',
+    leaseTtlMs: input.leaseTtlMs ?? 60_000,
+    leases: new SqlWorkspaceLeaseRepository(client),
+    sideEffects: new SqlSideEffectLog(client),
+    evidence: evidenceStore,
+    forge,
+    repositories: {
+      attempts: new AttemptRepository(client),
+      tasks: new TaskRepository(client),
+      pullRequests: new PullRequestRepository(client),
+    },
+    audit: new SqlAuditSink(client),
+    actor: 'harness',
+  });
+  return { ...outcome, pushes: localForge ? localForge.pushes : 0 };
 }

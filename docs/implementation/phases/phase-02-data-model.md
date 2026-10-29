@@ -48,8 +48,9 @@ audit_events, idempotency_records span all.
 `result_sha` semantics (disp. P2-PLAN-HIGH-008): the **final harness-owned commit SHA**, written only after the harness commit exists; never a provider-supplied or pre-commit SHA.
 
 ### workspace_leases
-`id pk`, `organization_id`, `project_id`, `repository_binding_id fk`, `branch text`, `attempt_id fk`, `workspace_id text`, `state text check in ('ACTIVE','RELEASED','EXPIRED','QUARANTINED')`, `acquired_at`, `heartbeat_at`, `expires_at`, `version`.
+`id pk`, `organization_id`, `project_id`, `repository_binding_id fk`, `branch text`, `attempt_id fk`, `workspace_id text`, `state text check in ('ACTIVE','RELEASED','EXPIRED','QUARANTINED')`, `acquired_at`, `heartbeat_at`, `expires_at`, `ttl_ms integer > 0`, `fencing_epoch bigint > 0`, `version`.
 **Unique active-writer constraint**: `create unique index one_active_writer on workspace_leases (repository_binding_id, branch) where state = 'ACTIVE'`. A second concurrent acquire violates it → `LeaseDenied`.
+**Fencing epoch (migration 0014, cycle-6 HIGH-006).** Each granted lease takes `max(fencing_epoch) + 1` for its `(repository_binding_id, branch)`; `unique (repository_binding_id, branch, fencing_epoch)` refuses a duplicate, so two racing acquirers cannot share an epoch. `expires_at` is computed by the database clock (`now() + ttl_ms`), the same clock every liveness check uses. A lease is **live** iff `state = 'ACTIVE' and expires_at > now()`. A heartbeat renews a live lease by `ttl_ms` and fails (`LeaseLostError`) for one that is not live. Trigger `workspace_lease_guard`: the epoch is immutable and a lease that left ACTIVE can never return to it.
 
 ### artifacts
 `id pk`, `organization_id`, `project_id`, `attempt_id null`, `kind text`, `sha256 text`, `size_bytes bigint`, `storage_key text`, `content_type text`, `created_at`. Unique `(organization_id, project_id, sha256, kind)` (tenant-scoped dedup). Composite FK on `attempt_id` when present. Composite unique `(id, organization_id, project_id)` so authoritative references FK onto scoped artifact identity, not an arbitrary JSONB ref (disp. P2-PLAN-HIGH-004).
@@ -66,11 +67,13 @@ audit_events, idempotency_records span all.
 `id pk`, `organization_id`, `project_id`, `run_id null`, `task_id null`, `attempt_id null`, `actor text`, `action text`, `occurred_at`, `detail jsonb`. Append-only.
 
 ### side_effect_records  (was `idempotency_records` — redesigned per disp. P2-PLAN-HIGH-005)
-`id pk`, `organization_id`, `project_id`, `repository_binding_id char(26) not null`, `attempt_id char(26) not null`, `operation text check in ('commit','push','pr-upsert')`, `request_fingerprint text`, `state text check in ('PENDING','COMPLETED','FAILED')`, `owner_token text` (fencing), `result_ref jsonb` (closed shape, see below), `natural_key text` (remote reconciliation key, e.g. head_branch), `created_at`, `updated_at`, `version`. Unique `(organization_id, project_id, repository_binding_id, attempt_id, operation)` — **tenant-scoped and typed**, not global and not text.
+`id pk`, `organization_id`, `project_id`, `repository_binding_id char(26) not null`, `attempt_id char(26) not null`, `operation text check in ('commit','push','pr-upsert')`, `request_fingerprint text`, `state text check in ('PENDING','COMPLETED','FAILED')`, `owner_lease_id char(26) not null` + `owner_epoch bigint not null` (fencing; `owner_token text` until 0014), `result_ref jsonb` (closed shape, see below), `natural_key text` (remote reconciliation key, e.g. head_branch), `created_at`, `updated_at`, `version`. Unique `(organization_id, project_id, repository_binding_id, attempt_id, operation)` — **tenant-scoped and typed**, not global and not text.
 
 **DB coherence (migration 0013, cycle-6 HIGH-005).** Composite FK `(repository_binding_id, organization_id, project_id)` → `repository_bindings` (0012) and composite FK `(attempt_id, organization_id, project_id, repository_binding_id)` → `attempts`, so a record can only name a binding in its own tenant **and** only its attempt's binding. The text columns `scope` and `semantic_key` that 0007 keyed on are dropped; nothing keys on text.
 
 **Closed outcome.** `result_ref` is `NULL` unless `state = 'COMPLETED'`; when COMPLETED it is exactly one of `{kind:'commit',commitSha,evidenceId}`, `{kind:'push',branch,commitSha}`, `{kind:'pr-upsert',number,url,headBranch,baseBranch}` for its operation, with no extra keys, a 40-hex SHA, a ULID evidence id and an http(s) PR URL. The CHECK `side_effect_result_closed` (function `asep_side_effect_result_valid`) enforces this in the database; `SqlSideEffectLog.complete()` validates with `parseSideEffectResultRef` before writing and parses again on read; `SideEffectCompleteInput` in `packages/ports` pins the shape to the operation at the type level.
+
+**Lease-owned, fenced takeover (migration 0014, cycle-6 HIGH-006).** The owner is a lease, not free text: composite FK `(owner_lease_id, organization_id, project_id, repository_binding_id, attempt_id, owner_epoch)` → `workspace_leases (id, …, fencing_epoch)`, so the owner is a lease of the same tenant, binding and attempt, with exactly its epoch. `SqlSideEffectLog` and trigger `side_effect_guard` enforce the same rules independently: a record is created and finished only under a **live** owner lease; an unfinished record moves to a new owner only when the old owner lease is no longer live, the new lease holds the same branch and its epoch is strictly greater (`begin()` reports `takenOver`, and the step reconciles by natural key before acting); a record's identity never changes; a COMPLETED record is immutable. The dead owner is therefore refused for good. Recovery is driven by `resumeAttemptToReview` (packages/application): acquire the branch lease (denied while the old one is live), take over, reconcile push/PR against the forge, persist the authoritative transitions. It resumes only attempts whose commit and evidence are already durable; earlier crashes are re-executed as a new attempt, because nothing has left the harness before the push.
 
 **Crash-safe side-effect protocol.** A result-only row cannot atomically cover an external Git/GitHub side effect: a crash after push but before recording replays the push. Each side effect (commit, exact-ref push, PR upsert) runs: (1) insert/claim a `PENDING` row with a fencing `owner_token` and the `request_fingerprint`; (2) perform the external op; (3) mark `COMPLETED` with `result_ref` + `natural_key`. On restart, a `PENDING`/`FAILED` row triggers **reconciliation by natural key** (does the remote ref / PR / commit already exist?) rather than blind replay. Reuse of a `semantic_key` with a **different** `request_fingerprint` fails closed (a new business intent must not reuse a completed key). Fault-injection tests kill the executor immediately before and after each Git/object/GitHub call and before/after the DB write; restart must converge to exactly one commit, one expected remote ref and one PR.
 
@@ -97,7 +100,7 @@ Transitions are explicit functions in `packages/domain` with table-driven allow-
 ```text
 ACTIVE → RELEASED | EXPIRED | QUARANTINED
 ```
-Expiry is driven by `expires_at` + heartbeat; a stale `ACTIVE` lease past `expires_at` is swept to `EXPIRED` before a new acquire can win, and its workspace is `QUARANTINED` (never reused).
+Expiry is driven by `expires_at` + heartbeat; a stale `ACTIVE` lease past `expires_at` is swept to `EXPIRED` before a new acquire can win, and its workspace is `QUARANTINED` (never reused). The holder renews the lease at every completion boundary (the fence) and releases it on every in-process exit; only a crash leaves it to expire. The TTL must outlive the agent's wall-clock budget (`leaseTtlForBudget`), because nothing can heartbeat while the agent runs. No transition leads back to `ACTIVE`.
 
 ## 5. Migration set (S2)
 
@@ -116,6 +119,10 @@ Expiry is driven by `expires_at` + heartbeat; a stale `ACTIVE` lease past `expir
 0012_side_effect_binding_fk       side_effect_records.repository_binding_id + scoped FK
 0013_side_effect_records_closed   typed identity (attempt_id, operation), attempt-binding FK,
                                   text keys dropped, closed result_ref CHECK
+0014_fenced_lease_takeover        lease fencing_epoch + ttl_ms, lease guard trigger; records owned
+                                  by owner_lease_id + owner_epoch (FK), owner_token dropped,
+                                  side_effect_guard trigger (live owner, fenced takeover, frozen
+                                  COMPLETED)
 ```
 
 Each migration has a checksum recorded in a `schema_migrations` table; re-running an altered applied migration fails closed. A clean-DB forward test asserts the full set applies and the resulting schema matches expectation.

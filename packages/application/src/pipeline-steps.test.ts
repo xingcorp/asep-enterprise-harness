@@ -41,6 +41,7 @@ import type {
   SideEffectLog,
   SideEffectRecord,
   SideEffectResultRef,
+  SideEffectKey,
   SideEffectBeginInput,
   SideEffectCompleteInput,
 } from '@asep/ports';
@@ -538,7 +539,20 @@ class MemorySideEffectLog implements SideEffectLog {
       operation: input.operation,
       state: 'FAILED',
       requestFingerprint: row.fingerprint,
+      existed: true,
+    };
+  }
+
+  async find(_scope: TenantScope, key: SideEffectKey): Promise<SideEffectRecord | null> {
+    const row = this.rows.get(this.key(key.operation, key.repositoryBindingId, key.attemptId));
+    if (!row) return null;
+    return {
+      operation: key.operation,
+      state: row.state,
+      requestFingerprint: row.fingerprint,
       ownerToken: row.owner,
+      ...(row.naturalKey ? { naturalKey: row.naturalKey } : {}),
+      ...(row.resultRef !== undefined ? { resultRef: row.resultRef } : {}),
       existed: true,
     };
   }

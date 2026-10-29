@@ -46,6 +46,11 @@ export const REQUIRED_ITEST_SUITES = Object.freeze({
   // path turns the gate RED instead of silently passing on the filesystem
   // backend (disp. P2-REREVIEW-MED-NEW-001).
   'asep-suite:object-store-s3': 'adapters/persistence/src/object-store-s3.itest.ts',
+  // Crash recovery on real PostgreSQL: an executor child is SIGKILLed the moment
+  // its push (or PR) lands; the successor is denied while the dead lease is
+  // live, takes the unfinished record over once it expired, and converges on
+  // one commit, one remote ref and one PR while the dead lease stays refused.
+  'asep-suite:crash-takeover-real': 'apps/control-plane-api/src/crash-takeover.itest.ts',
 });
 
 export const SUITE_ID_PREFIX = 'SUITE-ID:';

@@ -20,7 +20,9 @@ import {
   RunRepository, TaskRepository, AttemptRepository,
 } from './repositories.js';
 import { SqlSideEffectLog } from './side-effect-log.js';
-import { SideEffectFingerprintError, SideEffectFencingError } from '@asep/ports';
+import { SqlWorkspaceLeaseRepository } from './lease-repository.js';
+import { SideEffectFingerprintError, SideEffectFencingError, LeaseLostError } from '@asep/ports';
+import type { Lease } from '@asep/ports';
 import type {
   TenantScope, AttemptId, RepositoryBindingId,
 } from '@asep/contracts';
@@ -54,20 +56,33 @@ async function fresh() {
   });
   const attemptId: AttemptId = attempt.id;
   const log = new SqlSideEffectLog(client);
-  return { client, scope, binding, log, attemptId, runId: run.id, taskId: task.id };
+  // Ownership is a LEASE (migration 0014): every record is written under a live
+  // workspace lease of its attempt, so the fixture holds one.
+  const leases = new SqlWorkspaceLeaseRepository(client);
+  const granted = await leases.acquire(scope, {
+    repositoryBindingId: binding.id, branch: BRANCH, attemptId, ttlMs: 60_000,
+  });
+  if ('denied' in granted) throw new Error('fixture lease was denied');
+  const owner = granted.leaseId;
+  return {
+    client, scope, binding, log, attemptId, runId: run.id, taskId: task.id,
+    leases, lease: granted, owner,
+  };
 }
+
+const BRANCH = 'asep/attempt-1';
 
 // The closed outcome of the push the tests below record.
 const PUSHED = { kind: 'push' as const, branch: 'asep/attempt-1', commitSha: 'a'.repeat(40) };
 
 test('C7: begin claims a fresh PENDING record (existed=false)', async () => {
-  const { client, scope, binding, log, attemptId } = await fresh();
+  const { client, scope, binding, log, attemptId, owner } = await fresh();
   const rec = await log.begin(scope, {
     operation: 'push',
     repositoryBindingId: binding.id,
     attemptId,
     requestFingerprint: 'push:branch@sha',
-    ownerToken: 'lease-1',
+    ownerToken: owner,
     naturalKey: 'refs/heads/asep/attempt-1',
   });
   assert.equal(rec.existed, false);
@@ -76,13 +91,13 @@ test('C7: begin claims a fresh PENDING record (existed=false)', async () => {
 });
 
 test('C7: a second begin for the SAME effect ADOPTS the record (existed=true) — no duplicate', async () => {
-  const { client, scope, binding, log, attemptId } = await fresh();
+  const { client, scope, binding, log, attemptId, owner } = await fresh();
   const input = {
     operation: 'push' as const,
     repositoryBindingId: binding.id,
     attemptId,
     requestFingerprint: 'push:branch@sha',
-    ownerToken: 'lease-1',
+    ownerToken: owner,
   };
   await log.begin(scope, input);
   const second = await log.begin(scope, input);
@@ -91,13 +106,13 @@ test('C7: a second begin for the SAME effect ADOPTS the record (existed=true) �
 });
 
 test('C7: reusing a key with a DIFFERENT fingerprint FAILS CLOSED', async () => {
-  const { client, scope, binding, log, attemptId } = await fresh();
+  const { client, scope, binding, log, attemptId, owner } = await fresh();
   await log.begin(scope, {
     operation: 'push',
     repositoryBindingId: binding.id,
     attemptId,
     requestFingerprint: 'push:branch@sha1',
-    ownerToken: 'lease-1',
+    ownerToken: owner,
   });
   await assert.rejects(
     () => log.begin(scope, {
@@ -105,7 +120,7 @@ test('C7: reusing a key with a DIFFERENT fingerprint FAILS CLOSED', async () => 
       repositoryBindingId: binding.id,
       attemptId,
       requestFingerprint: 'push:branch@sha2', // different commit → different effect
-      ownerToken: 'lease-1',
+      ownerToken: owner,
     }),
     SideEffectFingerprintError,
   );
@@ -113,13 +128,13 @@ test('C7: reusing a key with a DIFFERENT fingerprint FAILS CLOSED', async () => 
 });
 
 test('C7: complete persists result_ref + natural_key and marks COMPLETED', async () => {
-  const { client, scope, binding, log, attemptId } = await fresh();
+  const { client, scope, binding, log, attemptId, owner } = await fresh();
   await log.begin(scope, {
     operation: 'pr-upsert',
     repositoryBindingId: binding.id,
     attemptId,
     requestFingerprint: 'pr:head->base',
-    ownerToken: 'lease-1',
+    ownerToken: owner,
   });
   const pr = {
     kind: 'pr-upsert' as const, number: 42, url: 'https://github.com/acme/web/pull/42',
@@ -129,7 +144,7 @@ test('C7: complete persists result_ref + natural_key and marks COMPLETED', async
     operation: 'pr-upsert',
     repositoryBindingId: binding.id,
     attemptId,
-    ownerToken: 'lease-1',
+    ownerToken: owner,
     resultRef: pr,
     naturalKey: 'asep/attempt-1',
   });
@@ -141,7 +156,7 @@ test('C7: complete persists result_ref + natural_key and marks COMPLETED', async
     repositoryBindingId: binding.id,
     attemptId,
     requestFingerprint: 'pr:head->base',
-    ownerToken: 'lease-1',
+    ownerToken: owner,
   });
   assert.equal(adopt.existed, true);
   assert.equal(adopt.state, 'COMPLETED');
@@ -150,13 +165,13 @@ test('C7: complete persists result_ref + natural_key and marks COMPLETED', async
 });
 
 test('C7: FENCING — a mismatched owner_token cannot complete another executor\'s effect', async () => {
-  const { client, scope, binding, log, attemptId } = await fresh();
+  const { client, scope, binding, log, attemptId, owner } = await fresh();
   await log.begin(scope, {
     operation: 'push',
     repositoryBindingId: binding.id,
     attemptId,
     requestFingerprint: 'push:branch@sha',
-    ownerToken: 'lease-original',
+    ownerToken: owner,
   });
   await assert.rejects(
     () => log.complete(scope, {
@@ -172,14 +187,14 @@ test('C7: FENCING — a mismatched owner_token cannot complete another executor\
 });
 
 test('C7: complete without a PENDING record fails closed', async () => {
-  const { client, scope, binding, log, attemptId } = await fresh();
+  const { client, scope, binding, log, attemptId, owner } = await fresh();
   await assert.rejects(
     () => log.complete(scope, {
       operation: 'push',
       resultRef: PUSHED,
       repositoryBindingId: binding.id,
       attemptId,
-      ownerToken: 'lease-1',
+      ownerToken: owner,
     }),
     SideEffectFencingError,
   );
@@ -213,14 +228,14 @@ async function beginPush(
 }
 
 test('HIGH-006 B1: crash AFTER begin, BEFORE the external call — resume adopts the PENDING row (no orphan, no duplicate row)', async () => {
-  const { client, scope, binding, log, attemptId } = await fresh();
+  const { client, scope, binding, log, attemptId, owner } = await fresh();
   // begin claims PENDING; the executor "crashes" before pushing.
-  const first = await beginPush(log, scope, binding.id, attemptId, 'lease-1');
+  const first = await beginPush(log, scope, binding.id, attemptId, owner);
   assert.equal(first.existed, false);
   assert.equal(first.state, 'PENDING');
   // Resume by the SAME owner: the row is adopted (existed=true, still PENDING),
   // so the caller reconciles-then-performs rather than inserting a second row.
-  const resume = await beginPush(log, scope, binding.id, attemptId, 'lease-1');
+  const resume = await beginPush(log, scope, binding.id, attemptId, owner);
   assert.equal(resume.existed, true);
   assert.equal(resume.state, 'PENDING');
   // Exactly one row exists for this effect.
@@ -234,83 +249,297 @@ test('HIGH-006 B1: crash AFTER begin, BEFORE the external call — resume adopts
 });
 
 test('HIGH-006 B2: crash AFTER the external call, BEFORE complete — resume completes exactly once', async () => {
-  const { client, scope, binding, log, attemptId } = await fresh();
-  await beginPush(log, scope, binding.id, attemptId, 'lease-1');
+  const { client, scope, binding, log, attemptId, owner } = await fresh();
+  await beginPush(log, scope, binding.id, attemptId, owner);
   // ... external push happened here, then the executor "crashed" before complete.
   // Resume: begin adopts the PENDING row; the SAME owner now completes it.
-  const resume = await beginPush(log, scope, binding.id, attemptId, 'lease-1');
+  const resume = await beginPush(log, scope, binding.id, attemptId, owner);
   assert.equal(resume.state, 'PENDING');
   const done = await log.complete(scope, {
     operation: 'push',
     resultRef: PUSHED,
     repositoryBindingId: binding.id,
     attemptId,
-    ownerToken: 'lease-1',
+    ownerToken: owner,
     naturalKey: 'refs/heads/asep/attempt-1',
   });
   assert.equal(done.state, 'COMPLETED');
   // A SECOND complete (a late duplicate of the crashed step) is a no-op adopt at
   // begin: the record is already COMPLETED, so the caller never re-pushes.
-  const afterComplete = await beginPush(log, scope, binding.id, attemptId, 'lease-1');
+  const afterComplete = await beginPush(log, scope, binding.id, attemptId, owner);
   assert.equal(afterComplete.state, 'COMPLETED');
   assert.equal(afterComplete.existed, true);
   await client.close();
 });
 
 test('HIGH-006 B3: crash AFTER complete — resume adopts the COMPLETED row and never replays', async () => {
-  const { client, scope, binding, log, attemptId } = await fresh();
-  await beginPush(log, scope, binding.id, attemptId, 'lease-1');
+  const { client, scope, binding, log, attemptId, owner } = await fresh();
+  await beginPush(log, scope, binding.id, attemptId, owner);
   await log.complete(scope, {
     operation: 'push',
     resultRef: PUSHED,
     repositoryBindingId: binding.id,
     attemptId,
-    ownerToken: 'lease-1',
+    ownerToken: owner,
     naturalKey: 'refs/heads/asep/attempt-1',
   });
   // The completion durably survived the crash; resume adopts it.
-  const resume = await beginPush(log, scope, binding.id, attemptId, 'lease-1');
+  const resume = await beginPush(log, scope, binding.id, attemptId, owner);
   assert.equal(resume.existed, true);
   assert.equal(resume.state, 'COMPLETED');
   await client.close();
 });
 
-test('HIGH-006 lease-handoff: a REASSIGNED lease cannot complete the crashed executor\'s PENDING row (fencing at the crash boundary)', async () => {
-  const { client, scope, binding, log, attemptId } = await fresh();
-  // Executor A claims the effect then crashes mid-PENDING.
-  await beginPush(log, scope, binding.id, attemptId, 'lease-A');
-  // Executor B (a reassigned lease) resumes: begin adopts the PENDING row, but
-  // B does NOT own it, so B must not be able to complete A's record.
-  const resume = await beginPush(log, scope, binding.id, attemptId, 'lease-B');
-  assert.equal(resume.state, 'PENDING');
+// ---------------------------------------------------------------------------
+// Fenced takeover. A crashed executor leaves its record PENDING under a lease
+// that will never heartbeat again. Its successor must be able to take the
+// record over — otherwise recovery wedges — but only once the old lease is dead,
+// only with a strictly newer epoch on the same branch, and the dead owner must
+// be refused for good afterwards.
+// ---------------------------------------------------------------------------
+
+// A second lease for the same attempt, once the fixture's lease is dead.
+async function successor(fx: Awaited<ReturnType<typeof fresh>>, branch = BRANCH): Promise<Lease> {
+  const next = await fx.leases.acquire(fx.scope, {
+    repositoryBindingId: fx.binding.id, branch, attemptId: fx.attemptId, ttlMs: 60_000,
+  });
+  if ('denied' in next) throw new Error(`successor lease denied: ${next.reason}`);
+  return next;
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Crafted lease ids for the epoch-ordering test (acquire never mints these).
+const HIGH_LEASE = 'H'.repeat(26);
+const LOW_LEASE = 'K'.repeat(26);
+
+test('a live owner cannot be taken over, even by another live lease of the same attempt', async () => {
+  const fx = await fresh();
+  await beginPush(fx.log, fx.scope, fx.binding.id, fx.attemptId, fx.owner);
+  // The one-active-writer index already refuses a second lease on the branch…
+  const denied = await fx.leases.acquire(fx.scope, {
+    repositoryBindingId: fx.binding.id, branch: BRANCH, attemptId: fx.attemptId, ttlMs: 60_000,
+  });
+  assert.equal('denied' in denied, true, 'one active writer per (binding, branch)');
+  // …and the log refuses on its own: a live lease elsewhere cannot steal the row.
+  const elsewhere = await successor(fx, 'asep/attempt-1-other');
   await assert.rejects(
-    () => log.complete(scope, {
-      operation: 'push',
-      resultRef: PUSHED,
-      repositoryBindingId: binding.id,
-      attemptId,
-      ownerToken: 'lease-B',
+    () => beginPush(fx.log, fx.scope, fx.binding.id, fx.attemptId, elsewhere.leaseId),
+    (err: unknown) => err instanceof SideEffectFencingError && /owned by live lease/.test(err.message),
+  );
+  await fx.client.close();
+});
+
+test('after the owner lease EXPIRES, a newer lease takes the PENDING record over and finishes it', async () => {
+  const fx = await fresh();
+  // A short-lived lease stands in for an executor that stops heartbeating.
+  await fx.leases.release(fx.scope, fx.owner);
+  const short = await fx.leases.acquire(fx.scope, {
+    repositoryBindingId: fx.binding.id, branch: BRANCH, attemptId: fx.attemptId, ttlMs: 150,
+  });
+  if ('denied' in short) throw new Error('short lease denied');
+  const first = await beginPush(fx.log, fx.scope, fx.binding.id, fx.attemptId, short.leaseId);
+  assert.equal(first.ownerEpoch, short.fencingEpoch);
+  await sleep(250);
+  // The executor never heartbeats again. Its lease is dead; the next acquire
+  // sweeps it and is granted the next epoch.
+  await assert.rejects(() => fx.leases.heartbeat(fx.scope, short.leaseId), LeaseLostError);
+  const next = await successor(fx);
+  assert.equal(next.fencingEpoch, short.fencingEpoch + 1, 'epochs increase per (binding, branch)');
+
+  const resumed = await beginPush(fx.log, fx.scope, fx.binding.id, fx.attemptId, next.leaseId);
+  assert.equal(resumed.existed, true);
+  assert.equal(resumed.state, 'PENDING');
+  assert.equal(resumed.takenOver, true, 'the caller is told to reconcile before acting');
+  assert.equal(resumed.ownerToken, next.leaseId);
+  assert.equal(resumed.ownerEpoch, next.fencingEpoch);
+  const done = await fx.log.complete(fx.scope, {
+    operation: 'push', resultRef: PUSHED, repositoryBindingId: fx.binding.id,
+    attemptId: fx.attemptId, ownerToken: next.leaseId,
+  });
+  assert.equal(done.state, 'COMPLETED');
+  await fx.client.close();
+});
+
+test('after the owner lease is RELEASED, the successor takes over and the old owner is refused for good', async () => {
+  const fx = await fresh();
+  await beginPush(fx.log, fx.scope, fx.binding.id, fx.attemptId, fx.owner);
+  // Revocation: the old lease leaves ACTIVE without finishing its record.
+  await fx.leases.release(fx.scope, fx.owner);
+  const next = await successor(fx);
+  const resumed = await beginPush(fx.log, fx.scope, fx.binding.id, fx.attemptId, next.leaseId);
+  assert.equal(resumed.takenOver, true);
+
+  // The stale owner can neither finish, fail, nor re-claim the record…
+  await assert.rejects(
+    () => fx.log.complete(fx.scope, {
+      operation: 'push', resultRef: PUSHED, repositoryBindingId: fx.binding.id,
+      attemptId: fx.attemptId, ownerToken: fx.owner,
+    }),
+    (err: unknown) => err instanceof SideEffectFencingError && /different lease/.test(err.message),
+  );
+  await assert.rejects(
+    () => fx.log.fail(fx.scope, {
+      operation: 'push', repositoryBindingId: fx.binding.id, attemptId: fx.attemptId, ownerToken: fx.owner,
     }),
     SideEffectFencingError,
   );
-  await client.close();
+  await assert.rejects(
+    () => beginPush(fx.log, fx.scope, fx.binding.id, fx.attemptId, fx.owner),
+    (err: unknown) => err instanceof SideEffectFencingError && /not a live lease/.test(err.message),
+  );
+  // …and its lease cannot be revived to try again.
+  await assert.rejects(() => fx.leases.heartbeat(fx.scope, fx.owner), LeaseLostError);
+  await assert.rejects(
+    () => fx.client.query(`update workspace_leases set state = 'ACTIVE' where id = $1`, [fx.owner]),
+    /can never become ACTIVE again/,
+  );
+
+  // The successor finishes exactly once, and nothing rewrites the outcome.
+  await fx.log.complete(fx.scope, {
+    operation: 'push', resultRef: PUSHED, repositoryBindingId: fx.binding.id,
+    attemptId: fx.attemptId, ownerToken: next.leaseId,
+  });
+  await assert.rejects(
+    () => fx.log.complete(fx.scope, {
+      operation: 'push', resultRef: { ...PUSHED, commitSha: 'c'.repeat(40) },
+      repositoryBindingId: fx.binding.id, attemptId: fx.attemptId, ownerToken: next.leaseId,
+    }),
+    (err: unknown) => err instanceof SideEffectFencingError && /already COMPLETED/.test(err.message),
+  );
+  const record = await fx.log.find(fx.scope, {
+    operation: 'push', repositoryBindingId: fx.binding.id, attemptId: fx.attemptId,
+  });
+  assert.deepEqual(record?.resultRef, PUSHED);
+  await fx.client.close();
+});
+
+test('an owner whose own lease lapsed cannot finish its record', async () => {
+  const fx = await fresh();
+  await fx.leases.release(fx.scope, fx.owner);
+  const short = await fx.leases.acquire(fx.scope, {
+    repositoryBindingId: fx.binding.id, branch: BRANCH, attemptId: fx.attemptId, ttlMs: 150,
+  });
+  if ('denied' in short) throw new Error('short lease denied');
+  await beginPush(fx.log, fx.scope, fx.binding.id, fx.attemptId, short.leaseId);
+  await sleep(250);
+  await assert.rejects(
+    () => fx.log.complete(fx.scope, {
+      operation: 'push', resultRef: PUSHED, repositoryBindingId: fx.binding.id,
+      attemptId: fx.attemptId, ownerToken: short.leaseId,
+    }),
+    (err: unknown) => err instanceof SideEffectFencingError && /no longer live/.test(err.message),
+  );
+  await fx.client.close();
+});
+
+test('a takeover needs the same branch and a strictly newer epoch', async () => {
+  const fx = await fresh();
+  // Owner on another branch of the same attempt, then dead.
+  await fx.leases.release(fx.scope, fx.owner);
+  const other = await successor(fx, 'asep/attempt-1-other');
+  await beginPush(fx.log, fx.scope, fx.binding.id, fx.attemptId, other.leaseId);
+  await fx.leases.release(fx.scope, other.leaseId);
+  const sameBranchAsFixture = await successor(fx);
+  await assert.rejects(
+    () => beginPush(fx.log, fx.scope, fx.binding.id, fx.attemptId, sameBranchAsFixture.leaseId),
+    (err: unknown) => err instanceof SideEffectFencingError && /cannot take over a record owned on/.test(err.message),
+  );
+
+  // A live lease whose epoch is NOT newer than the dead owner's. Acquire never
+  // produces one; a crafted row is how the rule is exercised.
+  await fx.leases.release(fx.scope, sameBranchAsFixture.leaseId);
+  const high = await fx.client.query(
+    `insert into workspace_leases
+       (id, organization_id, project_id, repository_binding_id, branch, attempt_id, workspace_id,
+        state, expires_at, ttl_ms, fencing_epoch)
+     values ($5, $1, $2, $3, 'asep/attempt-1-other', $4, 'ws', 'ACTIVE',
+             now() + interval '1 minute', 60000, 9)
+     returning id`,
+    [fx.scope.organizationId, fx.scope.projectId, fx.binding.id, fx.attemptId, HIGH_LEASE] as never,
+  );
+  assert.equal(high.rowCount, 1);
+  const moved = await beginPush(fx.log, fx.scope, fx.binding.id, fx.attemptId, HIGH_LEASE);
+  assert.equal(moved.takenOver, true);
+  assert.equal(moved.ownerEpoch, 9);
+  await fx.leases.release(fx.scope, HIGH_LEASE);
+  await fx.client.query(
+    `insert into workspace_leases
+       (id, organization_id, project_id, repository_binding_id, branch, attempt_id, workspace_id,
+        state, expires_at, ttl_ms, fencing_epoch)
+     values ($5, $1, $2, $3, 'asep/attempt-1-other', $4, 'ws', 'ACTIVE',
+             now() + interval '1 minute', 60000, 5)`,
+    [fx.scope.organizationId, fx.scope.projectId, fx.binding.id, fx.attemptId, LOW_LEASE] as never,
+  );
+  await assert.rejects(
+    () => beginPush(fx.log, fx.scope, fx.binding.id, fx.attemptId, LOW_LEASE),
+    (err: unknown) => err instanceof SideEffectFencingError && /is not newer than owner epoch 9/.test(err.message),
+  );
+  await fx.client.close();
+});
+
+test('the database refuses an ownership move the protocol forbids, whoever writes it', async () => {
+  const fx = await fresh();
+  await beginPush(fx.log, fx.scope, fx.binding.id, fx.attemptId, fx.owner);
+  const moveTo = (lease: Lease) => fx.client.query(
+    `update side_effect_records set owner_lease_id = $1, owner_epoch = $2
+     where attempt_id = $3 and operation = 'push'`,
+    [lease.leaseId, lease.fencingEpoch, fx.attemptId] as never,
+  );
+  // The owner is live: no raw UPDATE may move the record.
+  const elsewhere = await successor(fx, 'asep/attempt-1-other');
+  await assert.rejects(() => moveTo(elsewhere), /takeover refused/);
+  // A record can never be created under a dead lease.
+  await fx.leases.release(fx.scope, elsewhere.leaseId);
+  await assert.rejects(
+    () => fx.client.query(
+      `insert into side_effect_records
+         (id, organization_id, project_id, repository_binding_id, attempt_id, operation,
+          request_fingerprint, state, owner_lease_id, owner_epoch)
+       values ('DDDDDDDDDDDDDDDDDDDDDDDDDD', $1, $2, $3, $4, 'commit', 'fp', 'PENDING', $5, $6)`,
+      [fx.scope.organizationId, fx.scope.projectId, fx.binding.id, fx.attemptId,
+        elsewhere.leaseId, elsewhere.fencingEpoch] as never,
+    ),
+    /not live/,
+  );
+  // An owner epoch that is not the lease's own epoch has no lease to point at.
+  await assert.rejects(
+    () => fx.client.query(
+      `update side_effect_records set owner_epoch = owner_epoch + 1 where attempt_id = $1`,
+      [fx.attemptId] as never,
+    ),
+    /foreign key|violates|immutable/i,
+  );
+  // A COMPLETED record is frozen.
+  await fx.log.complete(fx.scope, {
+    operation: 'push', resultRef: PUSHED, repositoryBindingId: fx.binding.id,
+    attemptId: fx.attemptId, ownerToken: fx.owner,
+  });
+  await assert.rejects(
+    () => fx.client.query(
+      `update side_effect_records set result_ref = $1 where attempt_id = $2`,
+      [JSON.stringify({ ...PUSHED, commitSha: 'd'.repeat(40) }), fx.attemptId] as never,
+    ),
+    /COMPLETED and immutable/,
+  );
+  await fx.client.close();
 });
 
 test('C7: different operations for the same attempt are INDEPENDENT effects', async () => {
-  const { client, scope, binding, log, attemptId } = await fresh();
+  const { client, scope, binding, log, attemptId, owner } = await fresh();
   const push = await log.begin(scope, {
     operation: 'push',
     repositoryBindingId: binding.id,
     attemptId,
     requestFingerprint: 'push',
-    ownerToken: 'lease-1',
+    ownerToken: owner,
   });
   const pr = await log.begin(scope, {
     operation: 'pr-upsert',
     repositoryBindingId: binding.id,
     attemptId,
     requestFingerprint: 'pr',
-    ownerToken: 'lease-1',
+    ownerToken: owner,
   });
   assert.equal(push.existed, false);
   assert.equal(pr.existed, false, 'the PR effect is independent of the push effect');
@@ -330,7 +559,7 @@ test('C7: different operations for the same attempt are INDEPENDENT effects', as
 // ---------------------------------------------------------------------------
 
 test('HIGH-005: a side effect naming a binding from another project is rejected by the DB', async () => {
-  const { client, scope, log, attemptId } = await fresh();
+  const { client, scope, log, attemptId, owner, lease } = await fresh();
   // A second tenant with its OWN binding.
   const orgs = new OrganizationRepository(client);
   const projects = new ProjectRepository(client);
@@ -346,30 +575,40 @@ test('HIGH-005: a side effect naming a binding from another project is rejected 
   });
 
   // Claiming tenant A's scope while naming tenant B's binding must be refused by
-  // the composite FK — there is no (bindingB, orgA, projA) row in bindings.
+  // the composite FK — there is no (bindingB, orgA, projA) row in bindings. The
+  // adapter refuses first (the owner lease is not a lease of that binding); the
+  // raw row proves the database refuses it on its own.
   await assert.rejects(
     () => log.begin(scope, {
       operation: 'push',
       repositoryBindingId: foreign.id,
       attemptId,
       requestFingerprint: 'push:branch@sha',
-      ownerToken: 'lease-1',
+      ownerToken: owner,
     }),
+    /foreign key|violates|not a live lease/i,
+  );
+  await assert.rejects(
+    () => rawInsert(client, scope, lease, { binding: foreign.id, attempt: attemptId, operation: 'push' }),
     /foreign key|violates/i,
   );
   await client.close();
 });
 
 test('HIGH-005: a side effect naming a NON-EXISTENT binding is rejected by the DB', async () => {
-  const { client, scope, log, attemptId } = await fresh();
+  const { client, scope, log, attemptId, owner, lease } = await fresh();
   await assert.rejects(
     () => log.begin(scope, {
       operation: 'commit',
       repositoryBindingId: 'Z'.repeat(26) as RepositoryBindingId,
       attemptId,
       requestFingerprint: 'commit:attempt-1',
-      ownerToken: 'lease-1',
+      ownerToken: owner,
     }),
+    /foreign key|violates|not a live lease/i,
+  );
+  await assert.rejects(
+    () => rawInsert(client, scope, lease, { binding: 'Z'.repeat(26), attempt: attemptId, operation: 'commit' }),
     /foreign key|violates/i,
   );
   await client.close();
@@ -388,16 +627,18 @@ let rawRowSeq = 0;
 async function rawInsert(
   client: PgliteClient,
   scope: TenantScope,
+  owner: Lease,
   row: { binding: string | null; attempt: string; operation: string; state?: string; result?: unknown },
 ) {
   return client.query(
     `insert into side_effect_records
        (id, organization_id, project_id, repository_binding_id, attempt_id, operation,
-        request_fingerprint, state, owner_token, result_ref)
-     values ($1, $2, $3, $4, $5, $6, 'fp', $7, 'lease-1', $8)`,
+        request_fingerprint, state, owner_lease_id, owner_epoch, result_ref)
+     values ($1, $2, $3, $4, $5, $6, 'fp', $7, $8, $9, $10)`,
     [
       `S${String(++rawRowSeq).padStart(25, '0')}`, scope.organizationId, scope.projectId,
       row.binding, row.attempt, row.operation, row.state ?? 'PENDING',
+      owner.leaseId, owner.fencingEpoch,
       row.result === undefined ? null : JSON.stringify(row.result),
     ] as never,
   );
@@ -420,51 +661,51 @@ test('the text identity columns are gone and the binding is NOT NULL', async () 
 });
 
 test('the DB refuses a side-effect row with no repository binding', async () => {
-  const { client, scope, attemptId } = await fresh();
+  const { client, scope, attemptId, lease } = await fresh();
   await assert.rejects(
-    () => rawInsert(client, scope, { binding: null, attempt: attemptId, operation: 'push' }),
+    () => rawInsert(client, scope, lease, { binding: null, attempt: attemptId, operation: 'push' }),
     /null value|not-null|violates/i,
   );
   await client.close();
 });
 
 test('the DB refuses a record whose binding is not its attempt\'s binding', async () => {
-  const { client, scope, attemptId, log } = await fresh();
+  const { client, scope, attemptId, log, owner, lease } = await fresh();
   // A second binding in the SAME project: tenant-scoped, but not this attempt's.
   const other = await new RepositoryBindingRepository(client).create(scope, {
     githubHost: 'github.com', githubOwner: 'acme', githubRepo: 'api', defaultBaseBranch: 'main',
   });
   await assert.rejects(
-    () => rawInsert(client, scope, { binding: other.id, attempt: attemptId, operation: 'push' }),
+    () => rawInsert(client, scope, lease, { binding: other.id, attempt: attemptId, operation: 'push' }),
     /foreign key|violates/i,
   );
   await assert.rejects(
     () => log.begin(scope, {
       operation: 'push', repositoryBindingId: other.id, attemptId,
-      requestFingerprint: 'push:x@y', ownerToken: 'lease-1',
+      requestFingerprint: 'push:x@y', ownerToken: owner,
     }),
-    /foreign key|violates/i,
+    /foreign key|violates|not a live lease/i,
   );
   await client.close();
 });
 
 test('the DB refuses a second row for the same (binding, attempt, operation)', async () => {
-  const { client, scope, binding, attemptId } = await fresh();
-  await rawInsert(client, scope, { binding: binding.id, attempt: attemptId, operation: 'commit' });
+  const { client, scope, binding, attemptId, lease } = await fresh();
+  await rawInsert(client, scope, lease, { binding: binding.id, attempt: attemptId, operation: 'commit' });
   await assert.rejects(
-    () => rawInsert(client, scope, { binding: binding.id, attempt: attemptId, operation: 'commit' }),
+    () => rawInsert(client, scope, lease, { binding: binding.id, attempt: attemptId, operation: 'commit' }),
     /unique|duplicate|violates/i,
   );
   // An unknown operation is not a side effect at all.
   await assert.rejects(
-    () => rawInsert(client, scope, { binding: binding.id, attempt: attemptId, operation: 'merge' }),
+    () => rawInsert(client, scope, lease, { binding: binding.id, attempt: attemptId, operation: 'merge' }),
     /check|violates/i,
   );
   await client.close();
 });
 
 test('the DB refuses any outcome that is not the operation\'s closed shape', async () => {
-  const { client, scope, binding, attemptId } = await fresh();
+  const { client, scope, binding, attemptId, lease } = await fresh();
   const evidenceId = '01J0000000000000000000000E';
   const bad: ReadonlyArray<readonly [string, string, unknown]> = [
     ['free-form object', 'commit', { anything: 1 }],
@@ -481,7 +722,7 @@ test('the DB refuses any outcome that is not the operation\'s closed shape', asy
   ];
   for (const [label, operation, result] of bad) {
     await assert.rejects(
-      () => rawInsert(client, scope, {
+      () => rawInsert(client, scope, lease, {
         binding: binding.id, attempt: attemptId, operation, state: 'COMPLETED',
         result: result === null ? undefined : result,
       }),
@@ -491,14 +732,14 @@ test('the DB refuses any outcome that is not the operation\'s closed shape', asy
   }
   // A PENDING record carries no outcome at all.
   await assert.rejects(
-    () => rawInsert(client, scope, {
+    () => rawInsert(client, scope, lease, {
       binding: binding.id, attempt: attemptId, operation: 'push', state: 'PENDING',
       result: { kind: 'push', branch: 'asep/x', commitSha: SHA },
     }),
     /check|violates/i,
   );
   // And the well-formed shape is accepted.
-  await rawInsert(client, scope, {
+  await rawInsert(client, scope, lease, {
     binding: binding.id, attempt: attemptId, operation: 'commit', state: 'COMPLETED',
     result: { kind: 'commit', commitSha: SHA, evidenceId },
   });
@@ -506,21 +747,21 @@ test('the DB refuses any outcome that is not the operation\'s closed shape', asy
 });
 
 test('complete() validates the outcome before writing and leaves the record PENDING', async () => {
-  const { client, scope, binding, log, attemptId } = await fresh();
+  const { client, scope, binding, log, attemptId, owner } = await fresh();
   await log.begin(scope, {
     operation: 'commit', repositoryBindingId: binding.id, attemptId,
-    requestFingerprint: `commit:${attemptId}`, ownerToken: 'lease-1',
+    requestFingerprint: `commit:${attemptId}`, ownerToken: owner,
   });
   await assert.rejects(
     () => log.complete(scope, {
-      operation: 'commit', repositoryBindingId: binding.id, attemptId, ownerToken: 'lease-1',
+      operation: 'commit', repositoryBindingId: binding.id, attemptId, ownerToken: owner,
       resultRef: { commitSha: SHA, evidenceId: 'x' } as never,
     }),
     (err: unknown) => (err as { name?: string })?.name === 'SideEffectResultRefError',
   );
   const again = await log.begin(scope, {
     operation: 'commit', repositoryBindingId: binding.id, attemptId,
-    requestFingerprint: `commit:${attemptId}`, ownerToken: 'lease-1',
+    requestFingerprint: `commit:${attemptId}`, ownerToken: owner,
   });
   assert.equal(again.state, 'PENDING', 'a refused completion writes nothing');
   assert.equal(again.resultRef, undefined);
@@ -528,15 +769,15 @@ test('complete() validates the outcome before writing and leaves the record PEND
 });
 
 test('a COMPLETED outcome is read back already parsed into its closed shape', async () => {
-  const { client, scope, binding, log, attemptId } = await fresh();
+  const { client, scope, binding, log, attemptId, owner } = await fresh();
   const input = {
     operation: 'commit' as const, repositoryBindingId: binding.id, attemptId,
-    requestFingerprint: `commit:${attemptId}`, ownerToken: 'lease-1',
+    requestFingerprint: `commit:${attemptId}`, ownerToken: owner,
   };
   await log.begin(scope, input);
   const evidenceId = '01J0000000000000000000000E';
   await log.complete(scope, {
-    operation: 'commit', repositoryBindingId: binding.id, attemptId, ownerToken: 'lease-1',
+    operation: 'commit', repositoryBindingId: binding.id, attemptId, ownerToken: owner,
     resultRef: { kind: 'commit', commitSha: SHA, evidenceId },
   });
   const adopted = await log.begin(scope, input);

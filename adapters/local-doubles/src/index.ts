@@ -17,7 +17,7 @@
 // worktree, and LocalBareForgeProvider really runs `git push` / `git ls-remote`
 // against a local bare repo. Nothing here fakes a harness-owned fact.
 
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, writeFile, readFile, rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { runGit, safeRefspecFor } from '@asep/git-worktree';
 import type {
@@ -83,16 +83,43 @@ export class FileWritingAgent implements CodingAgentProvider {
 /**
  * Fake GitHub: a REAL `git push` to a local bare remote (pushing the exact
  * commit SHA to the safe ASEP-namespaced ref — a detached worktree has no local
- * branch to push) + an in-memory idempotent PR upsert. NO merge capability
- * exists on the port, so a merge is unrepresentable.
+ * branch to push) + an idempotent PR upsert. NO merge capability exists on the
+ * port, so a merge is unrepresentable.
+ *
+ * The PRs live NEXT TO the bare remote (a JSON file inside it), not in this
+ * object's memory. A forge is outside the harness: a PR it opened survives the
+ * harness process dying, and a crash-recovery proof is only honest if the
+ * successor process sees what its predecessor really left behind.
  */
 export class LocalBareForgeProvider implements ForgeProvider {
   pushes = 0;
-  private readonly prs = new Map<string, PullRequestRef>();
-  private prCounter = 0;
   private worktreePath: string | null = null;
   constructor(private readonly remoteBarePath: string) {}
   setWorktree(path: string): void { this.worktreePath = path; }
+
+  private get prFile(): string {
+    return join(this.remoteBarePath, 'asep-pull-requests.json');
+  }
+
+  private async readPrs(): Promise<PullRequestRef[]> {
+    try {
+      return JSON.parse(await readFile(this.prFile, 'utf8')) as PullRequestRef[];
+    } catch (err) {
+      if ((err as { code?: string }).code === 'ENOENT') return [];
+      throw err;
+    }
+  }
+
+  private async writePrs(prs: readonly PullRequestRef[]): Promise<void> {
+    const tmp = `${this.prFile}.tmp`;
+    await writeFile(tmp, JSON.stringify(prs));
+    await rename(tmp, this.prFile);
+  }
+
+  /** Every PR the forge holds, in creation order. */
+  async listPullRequests(): Promise<readonly PullRequestRef[]> {
+    return this.readPrs();
+  }
 
   async pushBranch(_scope: TenantScope, input: {
     repositoryBindingId: RepositoryBindingId;
@@ -116,15 +143,17 @@ export class LocalBareForgeProvider implements ForgeProvider {
     title: string;
     body: string;
   }): Promise<PullRequestRef> {
-    const existing = this.prs.get(input.headBranch);
+    const prs = await this.readPrs();
+    const existing = prs.find((p) => p.headBranch === input.headBranch);
     if (existing) return existing; // idempotent: no duplicate PR
+    const number = prs.length + 1;
     const pr: PullRequestRef = {
-      number: ++this.prCounter,
-      url: `https://local.forge/pr/${this.prCounter}`,
+      number,
+      url: `https://local.forge/pr/${number}`,
       headBranch: input.headBranch,
       baseBranch: input.base,
     };
-    this.prs.set(input.headBranch, pr);
+    await this.writePrs([...prs, pr]);
     return pr;
   }
 
@@ -149,6 +178,6 @@ export class LocalBareForgeProvider implements ForgeProvider {
     repositoryBindingId: RepositoryBindingId;
     headBranch: string;
   }): Promise<PullRequestRef | null> {
-    return this.prs.get(input.headBranch) ?? null;
+    return (await this.readPrs()).find((p) => p.headBranch === input.headBranch) ?? null;
   }
 }

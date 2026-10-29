@@ -18,6 +18,7 @@ import {
 import { SqlAuditSink } from './audit-sink.js';
 import { auditEvent, type CorrelationContext } from '@asep/observability';
 import { SqlWorkspaceLeaseRepository } from './lease-repository.js';
+import { LeaseLostError } from '@asep/ports';
 import { OptimisticConcurrencyError, ScopeViolationError } from './sql.js';
 import type {
   OrganizationId, ProjectId, RepositoryBindingId, TenantScope, AttemptId,
@@ -601,6 +602,82 @@ test('C3: a second ACTIVE lease on the same (binding, branch) is denied', async 
   await client.close();
 });
 
+test('each granted lease takes the next fencing epoch for its (binding, branch)', async () => {
+  const client = await freshDb();
+  const { scope, binding } = await seedScope(client);
+  const leases = new SqlWorkspaceLeaseRepository(client);
+  const attemptId = 'A'.repeat(26) as AttemptId;
+  const epochs: number[] = [];
+  for (let i = 0; i < 3; i++) {
+    const l = await leases.acquire(scope, {
+      repositoryBindingId: binding.id, branch: 'asep/x', attemptId, ttlMs: 60_000,
+    });
+    if ('denied' in l) throw new Error('acquire denied');
+    epochs.push(l.fencingEpoch);
+    await leases.release(scope, l.leaseId);
+  }
+  assert.deepEqual(epochs, [1, 2, 3], 'strictly increasing, no reuse');
+  // Another branch has its own sequence.
+  const other = await leases.acquire(scope, {
+    repositoryBindingId: binding.id, branch: 'asep/y', attemptId, ttlMs: 60_000,
+  });
+  assert.ok('leaseId' in other && other.fencingEpoch === 1);
+  // The database owns the sequence: a duplicate epoch and an edited epoch are refused.
+  await assert.rejects(
+    () => client.query(
+      `insert into workspace_leases
+         (id, organization_id, project_id, repository_binding_id, branch, attempt_id,
+          workspace_id, state, expires_at, ttl_ms, fencing_epoch)
+       values ($1, $2, $3, $4, 'asep/x', $5, 'ws', 'RELEASED', now(), 1000, 2)`,
+      ['Q'.repeat(26), scope.organizationId, scope.projectId, binding.id, attemptId] as never,
+    ),
+    /unique|duplicate/i,
+  );
+  await assert.rejects(
+    () => client.query(
+      `update workspace_leases set fencing_epoch = 99 where branch = 'asep/y'`, [] as never,
+    ),
+    /fencing epoch is immutable/,
+  );
+  await client.close();
+});
+
+test('a heartbeat renews a live lease by its TTL and refuses a dead one', async () => {
+  const client = await freshDb();
+  const { scope, binding } = await seedScope(client);
+  const leases = new SqlWorkspaceLeaseRepository(client);
+  const attemptId = 'A'.repeat(26) as AttemptId;
+  const l = await leases.acquire(scope, {
+    repositoryBindingId: binding.id, branch: 'asep/x', attemptId, ttlMs: 300,
+  });
+  if ('denied' in l) throw new Error('acquire denied');
+  // Heartbeating keeps the lease alive well past its original expiry.
+  for (let i = 0; i < 4; i++) {
+    await new Promise((r) => setTimeout(r, 150));
+    await leases.heartbeat(scope, l.leaseId);
+  }
+  const row = await client.query(
+    `select state, expires_at > now() as live from workspace_leases where id = $1`, [l.leaseId],
+  );
+  assert.equal(row.rows[0]!['state'], 'ACTIVE');
+  assert.equal(row.rows[0]!['live'], true, 'renewed past the original 300ms TTL');
+  // Once it lapses it is dead, even before any sweep: no heartbeat revives it.
+  await new Promise((r) => setTimeout(r, 400));
+  await assert.rejects(() => leases.heartbeat(scope, l.leaseId), LeaseLostError);
+  // A released lease cannot heartbeat either, and a non-positive TTL is refused.
+  const m = await leases.acquire(scope, {
+    repositoryBindingId: binding.id, branch: 'asep/x', attemptId, ttlMs: 60_000,
+  });
+  if ('denied' in m) throw new Error('acquire denied');
+  await leases.release(scope, m.leaseId);
+  await assert.rejects(() => leases.heartbeat(scope, m.leaseId), LeaseLostError);
+  await assert.rejects(
+    () => leases.acquire(scope, { repositoryBindingId: binding.id, branch: 'asep/x', attemptId, ttlMs: 0 }),
+    RangeError,
+  );
+  await client.close();
+});
+
 // ---------------------------------------------------------------------------
 // C4 — optimistic-concurrency: a stale version update is rejected.
 // ---------------------------------------------------------------------------
@@ -637,15 +714,14 @@ test('C6: no table stores a provider token or private key', async () => {
     `select table_name, column_name from information_schema.columns
      where table_schema = 'public'`,
   );
-  // Provider/forge SECRET material must never be stored. `owner_token` on
-  // side_effect_records is a fencing token (a ULID lock owner id, disp.
-  // P2-PLAN-HIGH-005), NOT a credential — the GitHub App private key and any
-  // installation/access token live out of the DB (data-model §1). Match the
-  // credential words but explicitly exclude the fencing-token column.
+  // Provider/forge SECRET material must never be stored — the GitHub App
+  // private key and any installation/access token live out of the DB
+  // (data-model §1). Side-effect ownership is a lease id (a ULID lock owner),
+  // not a credential.
   const forbidden = /secret|private_key|password|credential|access_token|api_key/i;
   const leaks = r.rows
     .map((row) => `${row['table_name']}.${row['column_name']}`)
-    .filter((c) => forbidden.test(c) && c !== 'side_effect_records.owner_token');
+    .filter((c) => forbidden.test(c));
   assert.deepEqual(leaks, [], `no secret-bearing columns; found: ${leaks.join(', ')}`);
   await client.close();
 });

@@ -542,6 +542,185 @@ alter table side_effect_records
   check (asep_side_effect_result_valid(operation, state, result_ref));
 `;
 
+// ---------------------------------------------------------------------------
+// 0014 — fenced lease takeover.
+//
+// A side-effect record was owned by a free-text `owner_token`, and finishing it
+// required the caller's token to equal that text. When the owning executor
+// crashed between begin and complete, its successor held a NEW lease, so it
+// could neither finish the PENDING record nor replace its owner: recovery
+// wedged. And nothing tied the token to a lease at all, so "the owner" was
+// whatever string a caller passed.
+//
+// This migration makes ownership a lease, and lease succession a total order the
+// database maintains:
+//   - every lease gets a `fencing_epoch`, strictly increasing per (binding,
+//     branch) and unique, plus the `ttl_ms` a heartbeat renews. A lease's epoch
+//     never changes, and a lease that left ACTIVE can never return to it;
+//   - a record is owned by `owner_lease_id` + `owner_epoch`, FK-bound to a lease
+//     of the SAME tenant, binding and attempt with exactly that epoch. The text
+//     `owner_token` column is dropped;
+//   - a trigger is the last line of the protocol. A record can only be written
+//     under a live owner lease; it can only move to a different owner when the
+//     old one is no longer live, the new one holds the same branch and its
+//     epoch is strictly greater; its identity never changes; and once
+//     COMPLETED it is immutable.
+//
+// Existing records are mapped to the lease their token named. A record whose
+// token names no lease of its own attempt has no recoverable owner, and the
+// migration fails rather than guess one. Append-only: earlier migrations are
+// untouched.
+// ---------------------------------------------------------------------------
+const M0014 = `
+alter table workspace_leases add column fencing_epoch bigint;
+alter table workspace_leases add column ttl_ms integer;
+
+update workspace_leases l
+  set fencing_epoch = n.epoch
+  from (
+    select id, row_number() over (
+      partition by repository_binding_id, branch order by acquired_at, id) as epoch
+    from workspace_leases) n
+  where n.id = l.id;
+
+update workspace_leases
+  set ttl_ms = greatest(1, (extract(epoch from (expires_at - acquired_at)) * 1000)::integer);
+
+alter table workspace_leases
+  alter column fencing_epoch set not null,
+  alter column ttl_ms set not null;
+
+alter table workspace_leases
+  add constraint workspace_lease_epoch_positive check (fencing_epoch > 0);
+alter table workspace_leases
+  add constraint workspace_lease_ttl_positive check (ttl_ms > 0);
+alter table workspace_leases
+  add constraint workspace_lease_epoch_uq unique (repository_binding_id, branch, fencing_epoch);
+alter table workspace_leases
+  add constraint workspace_lease_owner_uq
+  unique (id, organization_id, project_id, repository_binding_id, attempt_id, fencing_epoch);
+
+create function asep_workspace_lease_guard() returns trigger
+language plpgsql
+as $fn$
+begin
+  if new.fencing_epoch <> old.fencing_epoch then
+    raise exception 'workspace lease % fencing epoch is immutable', old.id
+      using errcode = '23514';
+  end if;
+  if old.state <> 'ACTIVE' and new.state = 'ACTIVE' then
+    raise exception 'workspace lease % is % and can never become ACTIVE again', old.id, old.state
+      using errcode = '23514';
+  end if;
+  return new;
+end
+$fn$;
+
+create trigger workspace_lease_guard
+  before update on workspace_leases
+  for each row execute function asep_workspace_lease_guard();
+
+alter table side_effect_records add column owner_lease_id char(26);
+alter table side_effect_records add column owner_epoch bigint;
+
+update side_effect_records r
+  set owner_lease_id = l.id, owner_epoch = l.fencing_epoch
+  from workspace_leases l
+  where l.id = r.owner_token
+    and l.organization_id = r.organization_id
+    and l.project_id = r.project_id
+    and l.repository_binding_id = r.repository_binding_id
+    and l.attempt_id = r.attempt_id;
+
+do $chk$
+declare orphans bigint;
+begin
+  select count(*) into orphans from side_effect_records where owner_lease_id is null;
+  if orphans > 0 then
+    raise exception 'side_effect_records: % row(s) are owned by a token that is not a lease of their attempt; refusing to guess an owner', orphans;
+  end if;
+end
+$chk$;
+
+alter table side_effect_records
+  alter column owner_lease_id set not null,
+  alter column owner_epoch set not null;
+
+alter table side_effect_records
+  add constraint side_effect_owner_lease_fk
+  foreign key (owner_lease_id, organization_id, project_id, repository_binding_id, attempt_id, owner_epoch)
+  references workspace_leases (id, organization_id, project_id, repository_binding_id, attempt_id, fencing_epoch);
+
+alter table side_effect_records drop column owner_token;
+
+create function asep_lease_is_live(lease char(26)) returns boolean
+language sql
+stable
+as $fn$
+  select exists (
+    select 1 from workspace_leases
+    where id = lease and state = 'ACTIVE' and expires_at > now())
+$fn$;
+
+create function asep_side_effect_guard() returns trigger
+language plpgsql
+as $fn$
+begin
+  if tg_op = 'INSERT' then
+    if not asep_lease_is_live(new.owner_lease_id) then
+      raise exception 'side-effect record cannot be created under lease %, which is not live', new.owner_lease_id
+        using errcode = '23514';
+    end if;
+    return new;
+  end if;
+
+  if old.state = 'COMPLETED' then
+    raise exception 'side-effect record % is COMPLETED and immutable', old.id
+      using errcode = '23514';
+  end if;
+  if (new.organization_id, new.project_id, new.repository_binding_id, new.attempt_id,
+      new.operation, new.request_fingerprint)
+     is distinct from
+     (old.organization_id, old.project_id, old.repository_binding_id, old.attempt_id,
+      old.operation, old.request_fingerprint) then
+    raise exception 'side-effect record % identity is immutable', old.id
+      using errcode = '23514';
+  end if;
+  if new.owner_lease_id <> old.owner_lease_id then
+    if asep_lease_is_live(old.owner_lease_id) then
+      raise exception 'side-effect record % is owned by live lease %; takeover refused',
+        old.id, old.owner_lease_id
+        using errcode = '23514';
+    end if;
+    if (select branch from workspace_leases where id = new.owner_lease_id)
+       is distinct from
+       (select branch from workspace_leases where id = old.owner_lease_id) then
+      raise exception 'side-effect record % can only be taken over by a lease on the same branch', old.id
+        using errcode = '23514';
+    end if;
+    if new.owner_epoch <= old.owner_epoch then
+      raise exception 'side-effect record % cannot move from epoch % to epoch %: the new owner must be strictly newer',
+        old.id, old.owner_epoch, new.owner_epoch
+        using errcode = '23514';
+    end if;
+  elsif new.owner_epoch <> old.owner_epoch then
+    raise exception 'side-effect record % owner epoch is immutable for the same owner', old.id
+      using errcode = '23514';
+  end if;
+  if not asep_lease_is_live(new.owner_lease_id) then
+    raise exception 'side-effect record % cannot be written under lease %, which is not live',
+      old.id, new.owner_lease_id
+      using errcode = '23514';
+  end if;
+  return new;
+end
+$fn$;
+
+create trigger side_effect_guard
+  before insert or update on side_effect_records
+  for each row execute function asep_side_effect_guard();
+`;
+
 // Ordered, immutable migration set. Order is by id; the runner asserts it.
 export const MIGRATIONS: readonly Migration[] = Object.freeze([
   { id: '0001_init_tenancy', sql: M0001 },
@@ -557,4 +736,5 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   { id: '0011_hierarchy_binding_coherence', sql: M0011 },
   { id: '0012_side_effect_binding_fk', sql: M0012 },
   { id: '0013_side_effect_records_closed', sql: M0013 },
+  { id: '0014_fenced_lease_takeover', sql: M0014 },
 ]);

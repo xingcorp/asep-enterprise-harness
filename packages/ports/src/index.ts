@@ -127,17 +127,40 @@ export interface ArtifactStore {
 // against ports, never adapters.
 // ---------------------------------------------------------------------------
 
+// A workspace lease is the one-active-writer right over (binding, branch), and
+// the FENCING TOKEN every durable side effect is recorded under.
+//
+// `fencingEpoch` is strictly monotonic per (binding, branch): each granted lease
+// gets the previous highest epoch + 1, and the database refuses a duplicate. A
+// lease that is no longer ACTIVE can never become ACTIVE again. So "the newer
+// writer" is a total order the database maintains, not something an executor
+// claims about itself — which is what lets a side-effect record move from a
+// crashed owner to its successor and then refuse the crashed owner forever.
 export interface Lease {
   readonly leaseId: string;
   readonly repositoryBindingId: RepositoryBindingId;
   readonly branch: string;
   readonly attemptId: AttemptId;
   readonly expiresAt: string;
+  readonly fencingEpoch: number;
 }
 
 export interface LeaseDenied {
   readonly denied: true;
   readonly reason: string;
+}
+
+/**
+ * The caller no longer holds a live lease: it was released, swept to EXPIRED,
+ * quarantined, or its `expires_at` passed without a heartbeat. A holder that
+ * sees this has been (or may at any moment be) superseded and must stop before
+ * its next side effect.
+ */
+export class LeaseLostError extends Error {
+  constructor(readonly leaseId: string) {
+    super(`workspace lease ${leaseId} is no longer live — the holder must stop (fencing, fail closed)`);
+    this.name = 'LeaseLostError';
+  }
 }
 
 export interface WorkspaceLeaseRepository {
@@ -147,6 +170,9 @@ export interface WorkspaceLeaseRepository {
     attemptId: AttemptId;
     ttlMs: number;
   }): Promise<Lease | LeaseDenied>;
+  // Extends a LIVE lease by its TTL. Throws LeaseLostError when the lease is no
+  // longer live, so a heartbeat doubles as the fence a holder checks before each
+  // side effect.
   heartbeat(scope: TenantScope, leaseId: string): Promise<void>;
   release(scope: TenantScope, leaseId: string): Promise<void>;
 }
@@ -351,13 +377,14 @@ export interface EvidenceStore {
 // ---------------------------------------------------------------------------
 // SideEffectLog — two-phase crash-safe side-effect protocol (disp.
 // P2-PLAN-HIGH-005, exit C7). Each external effect (commit, exact-ref push, PR
-// upsert) is wrapped by a tenant-scoped record keyed by a semantic key
-// (repositoryBindingId:attemptId:operation) with a request fingerprint, a
-// PENDING/COMPLETED/FAILED state, an owner/fencing token (the lease id) and a
+// upsert) is wrapped by a tenant-scoped record keyed by its typed identity
+// (repositoryBindingId, attemptId, operation) with a request fingerprint, a
+// PENDING/COMPLETED/FAILED state, an owner lease + its fencing epoch, and a
 // remote natural key for reconciliation. Protocol per effect: begin(PENDING) →
 // perform external call → complete(COMPLETED). On restart a PENDING row is
-// reconciled by natural key against the remote before retry-vs-adopt. Reusing a
-// key with a DIFFERENT fingerprint fails closed; a stale owner token cannot
+// reconciled by natural key against the remote before retry-vs-adopt; when its
+// owner lease died, a successor lease with a newer epoch takes it over first.
+// Reusing a key with a DIFFERENT fingerprint fails closed; a stale owner cannot
 // complete another executor's operation (fencing).
 // ---------------------------------------------------------------------------
 
@@ -496,7 +523,9 @@ export interface SideEffectRecord {
   readonly operation: SideEffectOperation;
   readonly state: SideEffectState;
   readonly requestFingerprint: string;
+  // The lease that currently owns the record, and that lease's fencing epoch.
   readonly ownerToken?: string;
+  readonly ownerEpoch?: number;
   readonly naturalKey?: string;
   // Present exactly when state is COMPLETED, already validated against the
   // operation's closed shape.
@@ -504,6 +533,11 @@ export interface SideEffectRecord {
   // True when begin() found an existing record for this key (the caller must
   // reconcile a PENDING/COMPLETED row rather than perform the effect again).
   readonly existed: boolean;
+  // True when this begin() moved an unfinished record from a dead owner lease to
+  // the caller's newer lease. The effect may or may not have reached the outside
+  // world before the old owner died, so the caller MUST reconcile against
+  // external state before performing it.
+  readonly takenOver?: boolean;
 }
 
 export interface SideEffectBeginInput {
@@ -511,8 +545,18 @@ export interface SideEffectBeginInput {
   readonly repositoryBindingId: RepositoryBindingId;
   readonly attemptId: AttemptId;
   readonly requestFingerprint: string;
+  // The id of a LIVE workspace lease held for this attempt and binding. It is
+  // the fencing token: the record is owned by that lease, and only a live
+  // lease with a strictly newer epoch can take an unfinished record over.
   readonly ownerToken: string;
   readonly naturalKey?: string;
+}
+
+// The record's typed identity, for reads that must not claim anything.
+export interface SideEffectKey {
+  readonly operation: SideEffectOperation;
+  readonly repositoryBindingId: RepositoryBindingId;
+  readonly attemptId: AttemptId;
 }
 
 interface SideEffectCompleteBase {
@@ -534,10 +578,19 @@ export type SideEffectCompleteInput =
 export class SideEffectFingerprintError extends Error {}
 export class SideEffectFencingError extends Error {}
 
+// The ownership rules every implementation enforces:
+//   - begin() requires a live owner lease. A new record is owned by it. An
+//     existing PENDING/FAILED record owned by ANOTHER lease is taken over only
+//     when that lease is no longer live AND the caller's epoch is strictly
+//     newer; otherwise begin() fails closed with SideEffectFencingError.
+//   - complete()/fail() succeed only for the current owner while its lease is
+//     still live, and never rewrite a COMPLETED record.
+//   - find() reads a record without claiming it.
 export interface SideEffectLog {
   begin(scope: TenantScope, input: SideEffectBeginInput): Promise<SideEffectRecord>;
   complete(scope: TenantScope, input: SideEffectCompleteInput): Promise<SideEffectRecord>;
   fail(scope: TenantScope, input: { operation: SideEffectOperation; repositoryBindingId: RepositoryBindingId; attemptId: AttemptId; ownerToken: string }): Promise<SideEffectRecord>;
+  find(scope: TenantScope, key: SideEffectKey): Promise<SideEffectRecord | null>;
 }
 
 // ---------------------------------------------------------------------------

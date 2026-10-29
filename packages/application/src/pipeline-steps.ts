@@ -456,7 +456,7 @@ export interface EvidenceStepResult {
 // EvidenceStore implementation can signal absence without this module depending
 // on the adapter. Everything else — integrity failure, scope violation — is NOT
 // absence and is rethrown by the caller.
-function isEvidenceAbsent(err: unknown): boolean {
+export function isEvidenceAbsent(err: unknown): boolean {
   const name = (err as { name?: unknown })?.name;
   if (name === 'EvidenceNotFoundError') return true;
   const msg = err instanceof Error ? err.message : '';
@@ -465,6 +465,50 @@ function isEvidenceAbsent(err: unknown): boolean {
 
 function sha256Hex(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex');
+}
+
+/**
+ * Adopt an evidence bundle already stored at `expected.evidenceId`, but only if
+ * it describes THIS attempt's commit: task, attempt, base SHA and result SHA
+ * must all match the harness-owned values. Throws EvidenceIdentityMismatchError
+ * otherwise. Shared by the evidence step and by a resume, which both adopt a
+ * bundle someone else wrote.
+ */
+export function adoptVerifiedEvidence(
+  existing: EvidenceBundle,
+  expected: {
+    readonly evidenceId: ArtifactId;
+    readonly taskId: TaskId;
+    readonly attemptId: AttemptId;
+    readonly baseSha: string;
+    readonly resultSha: string;
+  },
+): EvidenceStepResult {
+  const fields: readonly (readonly [string, string, string])[] = [
+    ['taskId', String(existing.taskId), String(expected.taskId)],
+    ['attemptId', String(existing.attemptId), String(expected.attemptId)],
+    ['baseSha', String(existing.baseSha), String(expected.baseSha)],
+    ['resultSha', String(existing.resultSha), String(expected.resultSha)],
+  ];
+  const first = fields.find(([, persisted, want]) => persisted !== want);
+  if (first !== undefined) {
+    throw new EvidenceIdentityMismatchError(
+      String(expected.evidenceId), first[0], first[1], first[2],
+    );
+  }
+  return {
+    step: 'evidence',
+    status: 'OK',
+    bundle: existing,
+    // The ref is reconstructed from the adopted bundle's own bytes, so the
+    // caller receives the same (id, sha256) pair the first write recorded.
+    ref: {
+      artifactId: expected.evidenceId,
+      sha256: sha256Hex(new TextEncoder().encode(JSON.stringify(existing))),
+      kind: 'evidence-bundle',
+    },
+    adopted: true,
+  };
 }
 
 export async function evidenceStep(input: EvidenceStepInput): Promise<EvidenceStepResult> {
@@ -504,33 +548,7 @@ export async function evidenceStep(input: EvidenceStepInput): Promise<EvidenceSt
     // provider-reported, so this cannot be satisfied by anything the agent says.
     // `createdAt` and `environment` are deliberately NOT compared: the clock
     // difference is the benign case adoption exists to absorb.
-    const fields: readonly (readonly [string, string, string])[] = [
-      ['taskId', String(existing.taskId), String(input.taskId)],
-      ['attemptId', String(existing.attemptId), String(input.attemptId)],
-      ['baseSha', String(existing.baseSha), String(input.baseSha)],
-      ['resultSha', String(existing.resultSha), String(input.resultSha)],
-    ];
-    const mismatch = fields.filter(([, persisted, expected]) => persisted !== expected);
-    const first = mismatch[0];
-    if (first !== undefined) {
-      throw new EvidenceIdentityMismatchError(
-        String(input.evidenceId), first[0], first[1], first[2],
-      );
-    }
-
-    return {
-      step: 'evidence',
-      status: 'OK',
-      bundle: existing,
-      // The ref is reconstructed from the adopted bundle's own bytes, so the
-      // caller receives the same (id, sha256) pair the first write recorded.
-      ref: {
-        artifactId: input.evidenceId,
-        sha256: sha256Hex(new TextEncoder().encode(JSON.stringify(existing))),
-        kind: 'evidence-bundle',
-      },
-      adopted: true,
-    };
+    return adoptVerifiedEvidence(existing, input);
   } catch (err) {
     // An identity mismatch is a REAL fault, not an absence. Re-throw before the
     // absence check below so it can never be mistaken for "safe to write".

@@ -31,10 +31,23 @@ export {
 
 export {
   governedExecution,
+  leaseTtlForBudget,
+  LeaseTtlTooShortError,
+  LEASE_TTL_MARGIN_MS,
   type GovernedStop,
   type GovernedExecutionInput,
   type GovernedExecutionResult,
 } from './governed-execution.js';
+
+export {
+  resumeAttemptToReview,
+  type ResumeAttemptInput,
+  type ResumeAttemptResult,
+  type ResumeAttemptRepositories,
+  type ResumeAttemptPort,
+  type ResumeTaskPort,
+  type ResumeStop,
+} from './resume-attempt.js';
 
 export {
   createOrganization,

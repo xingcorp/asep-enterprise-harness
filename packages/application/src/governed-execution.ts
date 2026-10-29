@@ -178,6 +178,9 @@ export async function governedExecution(
   }
 
   // --- side effect 1: acquire the workspace lease (only now) ----------------
+  if (input.leaseTtlMs <= budgetWallClockMs(input.budget)) {
+    throw new LeaseTtlTooShortError(input.leaseTtlMs, budgetWallClockMs(input.budget));
+  }
   const lease = await observe(
     'workspace.lease', 'workspace.lease.acquire', { branch: input.branch },
     () => input.leases.acquire(input.scope, {
@@ -257,4 +260,35 @@ export async function governedExecution(
 // discriminating field rather than a status string so the port stays minimal.
 function isLease(v: Lease | { readonly reason: string }): v is Lease {
   return 'leaseId' in v;
+}
+
+// --- lease TTL vs the agent's wall clock -------------------------------------
+//
+// A lease is renewed by a heartbeat at every completion boundary, but nothing
+// can heartbeat while the agent runs. So the TTL must outlive the longest
+// agent run the budget allows; otherwise the lease lapses mid-run, a successor
+// may take the branch over, and the healthy holder fails at its next fence.
+// That is safe (the stale holder is refused) but it turns every long run into a
+// failure, so a too-short TTL is refused before the lease is taken.
+
+/** Slack on top of the agent's wall-clock budget for inspection + the first fence. */
+export const LEASE_TTL_MARGIN_MS = 60_000;
+
+function budgetWallClockMs(budget: Budget): number {
+  return Math.ceil(budget.maxWallClockMinutes * 60_000);
+}
+
+/** The lease TTL a run under `budget` needs: the agent's wall clock plus margin. */
+export function leaseTtlForBudget(budget: Budget): number {
+  return budgetWallClockMs(budget) + LEASE_TTL_MARGIN_MS;
+}
+
+export class LeaseTtlTooShortError extends Error {
+  constructor(ttlMs: number, wallClockMs: number) {
+    super(
+      `lease TTL ${ttlMs}ms does not outlive the agent's wall-clock budget of ${wallClockMs}ms — ` +
+      'the lease would lapse mid-run (fail closed; see leaseTtlForBudget)',
+    );
+    this.name = 'LeaseTtlTooShortError';
+  }
 }
