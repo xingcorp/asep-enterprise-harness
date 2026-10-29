@@ -690,6 +690,12 @@ as defence in depth.
 
 **Invariant:** every authoritative reference is a scoped key with checksum and
 kind that the database checks.
+> **Superseded in repair cycle 9.** The cycle-8 review (CYCLE8-HIGH-002)
+> showed this did not hold: `command_executions.stdout_artifact_id` and
+> `stderr_artifact_id` were left bare, and the test hand-listed five
+> references. Migration 0019 closes them; see "Final review cycle 8
+> dispositions".
+
 **Change:**
 - `54af435`, migration 0017: a PR names an attempt of its own binding. The
   product spec, work order, context pack and both evidence links are
@@ -720,6 +726,16 @@ a test was added and it was then killed).
 **Invariant:** a restart converges on one commit, one ref and one PR after a
 crash at any boundary, and an owner whose records were taken over reaches no
 external system.
+> **Superseded in repair cycle 9.** The cycle-8 review (CYCLE8-HIGH-003)
+> reproduced an owner paused between reading the PR and updating it writing
+> after its successor; the epoch marker narrowed the race and did not close
+> it. The second half of this invariant cannot hold at the forge: a stale
+> owner may still reach it, and GitHub has no compare-and-set for a PR
+> update. The marker is removed; what holds instead — content idempotence,
+> push compare-and-set, reconciliation — is under "Final review cycle 8
+> dispositions". Nor does the first half hold at every Git-call boundary: a
+> crash between `commit-tree` and the attempt ref leaves the attempt
+> not resumable (it is re-executed; nothing was published).
 **Change:**
 - `0e7eb0d` — between commit and evidence: the evidence draft is reserved
   before the commit, so a resume completes it with the committed SHA instead
@@ -925,3 +941,239 @@ session lost their results; they were re-run at `f11d49b` and the numbers above
 are from that re-run. The reservation, commit-reconciliation, fencing,
 network-isolation and verifier checks were run once, at their commits. In all,
 90 mutants: 89 killed, 1 survived (equivalent, under CYCLE7-HIGH-001).
+
+---
+
+## Final review cycle 8 dispositions
+
+> Reviewer: Codex `gpt-6.1-sol`, re-review cycle 8 at `d1d9e7a`
+> (`phase-02-final-rereview-codex-v8.md`), verdict **REQUEST_CHANGES** @ 0.99.
+> The controller's decisions on it (reconciliation R30) were applied as
+> stated. Repairs: repair cycle 9, on `phase/02-single-agent-vertical-slice`
+> from `d1d9e7a`. Every disposition, repair, test and mutation check below
+> was made and verified by the implementer only; none has been independently
+> reviewed. A mutation check applies each mutant to the source, rebuilds when
+> the named suites read the mutated package from its build, runs those suites
+> and reverts the mutant; "killed" means at least one named test failed.
+
+### What the review accepted, and what it did not
+
+The review marked **RESOLVED**: HIGH-001, HIGH-003, HIGH-004, HIGH-007,
+HIGH-008, MED-001, MED-002, MED-003, MED-004, MED-006, MED-NEW-001,
+MED-NEW-002, MED-NEW-003, MED-NEW-004, CYCLE5-PROVENANCE, CYCLE5-PILOT-TEST,
+CYCLE7-HIGH-004, CYCLE7-HIGH-006, CYCLE7-HIGH-007 and CYCLE7-MED-001..004.
+
+It found **PARTIAL**: HIGH-002, HIGH-005, HIGH-006, HIGH-009, MED-005,
+CYCLE7-HIGH-001, CYCLE7-HIGH-002, CYCLE7-HIGH-003 and CYCLE7-HIGH-005, and
+restated what remained as four new findings, CYCLE8-HIGH-001..004. Of the
+implementer's declared limitations it required (a) — a push carried no epoch
+and a PR update has no compare-and-set — to be fixed in Phase 2 (CYCLE8-HIGH-003
+below) and accepted (b)–(f). It also reported a surviving mutation (the
+`--net` alias of `--network`) and that migration 0018 refuses old data.
+
+### Summary
+
+| ID | Restates | Disposition | Commits |
+|---|---|---|---|
+| CYCLE8-HIGH-001 | HIGH-002, CYCLE7-HIGH-001 | ACCEPTED — fixed | `0ab88f7` |
+| CYCLE8-HIGH-002 | HIGH-005, CYCLE7-HIGH-002 | ACCEPTED — fixed | `fdd3226` |
+| CYCLE8-HIGH-003 | HIGH-006, CYCLE7-HIGH-003, limitation (a) | ACCEPTED — invariant restated and proven as R30 decides; residuals below | `aa946cf` |
+| CYCLE8-HIGH-004 | HIGH-009, CYCLE7-HIGH-005 | ACCEPTED — fixed | `9089154` |
+| `--net` alias mutation | CYCLE7-HIGH-005 | ACCEPTED — flags compared by equality with the profile | `9089154` |
+| Migration 0018 refuses old data | — | ACCEPTED as designed; documented as needing a fresh database | docs commit |
+| MED-005 | report honesty | ACCEPTED — report rewritten | docs commit + sentinel |
+| Gate crash (V8, nodejs/node#66366) | limitation (e) | fixed (R26) | `e6ede74` |
+| ~30 s timeouts under load | limitation (e) | bounds named and sized from measurements | `bc4cca5` |
+
+Also: `c2c0e12` adds the cycle-8 transcript with its provenance note.
+
+### CYCLE8-HIGH-001 — a genuine handle's flags could still be changed — ACCEPTED
+
+**Invariant:** nothing reachable from a handle or a result can change what
+the runner executes.
+**Change (`0ab88f7`):** `issue()` froze the handle and its execution record
+only at the top level, and the Docker provider put one `labelled` array into
+both, so a holder of a genuine handle could `splice` `--network host` into
+its `runFlags`. Now the handle, the runner's private record and each result's
+provenance hold their own frozen copies; the runner builds `docker run` from
+its record only.
+**Tests:** `command-runner.test.ts` — "the flags a handle and a result expose
+are frozen copies, never the ones the runner executes": the reviewer's probe
+as assertions, then `splice`, `push` and index assignment through the handle
+and through provenance all throw, and two runs' argv equal the provider's
+profile (`buildSandboxRunFlags` plus the sandbox labels, name, working
+directory, image and command) byte for byte.
+**Mutation check:** 6 mutants, all killed: handle shares the record's flags;
+handle's run prefix unfrozen; record keeps the provider's array; the old
+shallow freeze; provenance returns the runner's array; provenance copy not
+frozen.
+
+### CYCLE8-HIGH-002 — command output references were not protected — ACCEPTED
+
+**Invariant:** every artifact reference in the schema is a scoped key with
+checksum and kind that the database checks, and the test finds every one
+without a hand list.
+**Change (`fdd3226`, migration 0019):** `command_executions.stdout_artifact_id`
+and `stderr_artifact_id` get `<name>_sha256` (both or neither), a generated
+`<name>_kind` (`command-stdout`, `command-stderr`) and a composite FK to
+`artifacts (id, organization_id, project_id, sha256, kind)`. The migration
+creates `artifact_reference_columns`, the registry of every artifact
+reference, which migrations keep current; it refuses to upgrade over a row
+that already names output (no checksum to bind).
+**Tests:** `persistence.test.ts` — "the reference registry, the naming
+convention and the foreign keys into artifacts agree" (references found by the
+`%_artifact_id` pattern, by the registry and by `pg_constraint` FKs into
+`artifacts`; every key must carry tenant, checksum and kind); "every
+registered artifact reference refuses a missing, foreign, mis-hashed or
+mis-kinded artifact" (one subtest per registry row, plus a half-set pair and
+an accepted control); "upgrading over command output without a checksum fails
+instead of inventing one".
+**Mutation check:** 7 mutants, all killed: no stdout FK; stderr FK without
+checksum or kind; stdout FK without kind; stdout pairing check dropped; stderr
+not registered; stdout kind generated wrong; existing output not refused.
+
+### CYCLE8-HIGH-003 — the epoch narrowed the race and did not fence publication — ACCEPTED
+
+**Restated invariant (R30).** A stale owner — one paused inside a forge call
+while its lease lapsed and a successor took its records over — **may still
+reach the forge**: nothing recalls a call in flight, and **GitHub offers no
+compare-and-set for a PR update** (its REST docs support conditional requests
+for `PATCH` only where an endpoint documents them, and "Update a pull
+request" documents none; checked by the controller on 2026-10-30). Ownership
+is still confirmed immediately before every external call, which refuses an
+owner taken over before that point. The guarantee at the forge is **content
+idempotence plus push compare-and-set plus reconciliation**; nothing in this
+repository is fenced at the forge.
+**Change (`aa946cf`):**
+- *Push compare-and-set.* `ForgeProvider.pushBranch` takes a required
+  `expectedRemoteSha` (`null`: absent); both adapters push the attempt's
+  exact commit with `--force-with-lease=refs/heads/<branch>:<expected>`
+  (`pushLeaseFor`). `pushStep` always expects absence and always pushes the
+  attempt's recorded commit, so a stale owner's late push is a no-op (same
+  commit) or refused (`stale info`); it refuses to publish over a branch
+  holding another commit (`RemoteBranchDivergedError`). The unused optional
+  lease field of `SafeRefspec` is removed: one lease mechanism.
+- *Content idempotence.* PR title and body are `pullRequestContent(facts)` —
+  task id, attempt id, verified commit SHA, evidence id, base — and nothing
+  else. The epoch marker, `StaleFencingEpochError`, `withFencingMarker`,
+  `fencingEpochOf`, the read-marker-then-update check and every
+  caller-supplied PR title and body are gone; the adapters write exactly the
+  title, body and base they are given (an update now also sets the base).
+- *Reconciliation.* Before any terminal state `resumeAttemptToReview` runs
+  `reconcileBranchStep` (before the push step, for a branch holding another
+  commit, and after the PR step) and `reconcilePullRequestStep`: a diverged
+  branch is put back on the commit with a lease on the value found; a missing
+  PR, or one whose title, body or base differs, is rewritten from the facts.
+  Each repair is the new privileged action `forge.reconcile`, audited with
+  what was found; the result reports `branchRepaired` and `prRepaired`.
+**Tests:**
+- The reviewer's interleaving inside the transport (`github-app.test.ts`):
+  "owner 1 reads the PR, owner 2 updates it, owner 1 updates it: the PR is
+  byte-identical to owner 2's", with the real `GitHubAppForgeProvider` and
+  owner 1 held between `pulls.list()` and `pulls.update()`; and "owner 1
+  reads no PR, owner 2 opens it, owner 1 tries to open it: still owner 2's one
+  PR".
+- Push race on a real bare remote (`github-app.test.ts`): "a push is
+  compare-and-set at the remote: a late push of the same commit changes
+  nothing, of another is refused", including a repair with the lease on the
+  found value; the same for the local double (`crash-recovery.test.ts`, "the
+  local bare forge takes a push only over the value the branch is expected to
+  hold"); the argv carries the lease and never a force.
+- `crash-takeover.itest.ts`, real PostgreSQL: the paused owner now reaches the
+  forge — its late PR write leaves the successor's PR byte for byte and equal
+  to `pullRequestContent`; its late push of the attempt's commit changes
+  nothing; a late push of another commit is refused by the remote. Its records
+  stay the successor's.
+- Steps and use case: `pipeline-steps.test.ts` (content is the facts and
+  nothing else; two owners ask for the same PR byte for byte; the push expects
+  absence; divergence refused; both reconcile steps, their audit boundary and
+  their compare-and-set); `resume-attempt.test.ts` (a diverged branch, and a
+  PR changed after the resume's own upsert, repaired before the terminal
+  state); `crash-recovery.test.ts` ("a successor rewrites a diverged branch
+  and PR from the attempt's facts, each repair on record": audit rows before
+  the resumed transition).
+**Mutation check:** 19 mutants, all killed: PR body carries the owner's lease;
+PR content carries a clock; adapter push without the lease; adapter push with
+a bare force; lease without its expected value; lease accepts an abbreviated
+value; local double pushes without the lease; push step publishes over a
+diverged branch; push step expects the commit instead of absence; branch
+repair ignores what it found; branch repair audited as a push; PR repair
+audited as an upsert; PR reconcile ignores the base; PR reconcile ignores the
+body; resume skips the final reconcile; resume skips the pre-push reconcile;
+adapter update keeps the old base; adapter adds a marker of its own; port
+lookup drops the PR text.
+**Residual:** a stale write that lands after the successor's reconciliation is
+not repaired by that resume; by construction it is the same PR content, or the
+attempt's own commit (any other commit is refused by the lease). A PR edited
+by a writer outside the harness is repaired only by a later resume.
+`confirmOwner` still returns the owner's epoch, as a record of who acted; no
+forge call carries it.
+
+### CYCLE8-HIGH-004 — the verifier accepted verification missing mandatory levels — ACCEPTED
+
+**Invariant:** the verifier derives the mandatory levels from trusted policy
+for the task's authoritative risk, and accepts flags only equal to the trusted
+sandbox profile.
+**Change (`9089154`):** the pins add `ASEP_VERIFICATION_MATRIX_SHA256`; the
+resolver reads `policies/verification-matrix.yaml` only when its bytes hash
+to the pin, parses them with `parseVerificationMatrix` and exposes
+`verificationPolicy()`. For the task's risk every mandatory level needs a
+check recorded mandatory; each check must be at a level the matrix has and of
+that level's evidence category; every mandatory check must have passed. The
+flags a check ran under are compared whole with the profile — the runner's own
+`buildSandboxRunFlags` output, the attempt's tree as the one writable mount
+with `.git` read-only over it, the sandbox labels for the attempt — after
+normalizing `--flag=value` and the `--net`, `-v` and `-l` aliases.
+**Tests:** `verify-pilot-manifest.test.ts` — "a verification that does not
+cover every level the matrix makes mandatory for the task's risk is refused"
+(includes the reviewer's R1-with-only-L0 probe), "a mandatory check that did
+not pass is refused; an advisory check at a level the risk does not require
+may fail", "coverage is read from the matrix row of the task's own risk", "a
+verification policy that is not the pinned matrix, or is malformed, refuses
+every task", "a check whose docker flags are not exactly the verification
+sandbox profile is refused" (`--net host`, `--net=host`, `--network=host`
+appended or in place, and every added, dropped, changed or reordered flag);
+`authority-resolver-sql.test.ts` — "the verification policy is the pinned
+matrix and the sandbox profile the command runner builds", "a verification
+matrix that does not hash to its pin is never loaded";
+`verification.test.ts` — "the matrix parser reads the canonical document and
+refuses a malformed one". The positive fixture is R1 with L0, L1 and L2; the
+test that accepted a failing advisory L1 now expects the relabelling refused.
+**Mutation check:** 16 mutants, all killed: coverage loop skipped; advisory
+relabel accepted; coverage from the record's risk; level/category check
+dropped; unknown level accepted; mandatory failure accepted; policy pin not
+compared; flags compared by prefix only; flags length not compared; `--net`
+alias dropped (the reviewer's surviving mutant); `--flag=value` not split;
+attempt label read from the record; container not tied to the sandbox; any
+working-tree path; resolver does not compare the matrix pin; loader does not
+check the matrix hash.
+**Note:** the pilot workflow plans L0 and L1 only, so an R1 task stops at
+verification for its missing L2; pilot tasks are R0 (runbook §0.2). The
+runner needs no flag check of its own: it executes the provider's frozen
+profile (CYCLE8-HIGH-001).
+
+### Migration 0018 refuses old data — ACCEPTED
+
+As designed: 0018 (and 0017, 0019) refuses rows it cannot bind instead of
+inventing a draft, an artifact or a checksum. No pilot data exists. The data
+model and the runbook (§0) now say these migrations need a fresh database or a
+separate, reviewed data procedure, and are not a compatible upgrade.
+
+### MED-005 — the report overclaimed — ACCEPTED
+
+The report no longer says every authoritative reference was a scoped key
+before 0019, nor that the epoch fenced the forge; it states the takeover
+guarantee as above, names its residuals, and records the pilot risk as R0.
+
+### Gate crash and timeouts
+
+- **R26 (`e6ede74`).** Every Node process that runs tests starts with
+  `--no-wasm-code-gc` (nodejs/node#66366); a required suite checks the flag
+  reaches the test children and every test entry point.
+- **Timeouts (`bc4cca5`).** Reproduced under synthetic load (load average
+  roughly 55–185) and traced each to its bound: a 10 s test-spec bound, 15 s elapsed
+  checks in the agent tests, a 1-minute default budget, a 1.8 s hung-agent
+  budget shorter than setup, and a torn read of the fake daemon's records.
+  Each bound is now named and sized from the measurements; the production
+  bounds (`claude-provider.ts:110`, `container-teardown.ts:42`) never fired.
+

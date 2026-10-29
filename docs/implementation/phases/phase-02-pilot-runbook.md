@@ -23,6 +23,12 @@
   - `pnpm verify:all` green from a clean checkout (exit A1/A4).
   - PostgreSQL, object store (MinIO) and the sandbox provisioned and healthy
     (exit K4) — the integration gate fails rather than skips if any is down.
+  - The control-plane database created **fresh** at the current schema
+    (migrations through 0019). Migrations 0017, 0018 and 0019 refuse rows that
+    predate them (references without a matching artifact, evidence without a
+    reservation, command output without a checksum), so they are not a
+    compatible upgrade of a database that holds data. Moving older data
+    forward needs a separate, reviewed data procedure; Phase 2 has none.
   - GitHub App installed on the pilot repo with the default branch protected so
     the installation token cannot update or merge it (exit H3).
   - The agent images, model credential and live proofs of §0.1 in place, and
@@ -360,6 +366,16 @@ merged code is possible because nothing is auto-merged.
   branch sweeps the expired lease automatically. To force it, run the sweep
   helper (expire stale `ACTIVE` leases past `expires_at`). Never delete lease
   rows by hand while a worker may still be alive — rely on TTL + heartbeat.
+- **After a takeover:** the forge is not fenced. An executor that was inside a
+  forge call when its lease lapsed may still have pushed or written the PR
+  after the successor took over (GitHub has no compare-and-set for a PR
+  update). Its push can only be the attempt's own commit (anything else is
+  refused by the push's lease) and its PR text is the same function of the
+  attempt's facts, and the resume reconciles the branch and the PR with those
+  facts before the task reaches review. Each repair is an `audit_events` row
+  with action `forge.reconcile` naming what it found; review them for the
+  attempt before the human review. A PR edited by hand afterwards is repaired
+  only by another resume.
 - **Worktree hygiene:** cleanup is idempotent and a failed worktree is
   **quarantined, not reused** (exit E7). Do not manually re-point a quarantined
   worktree at a new attempt.
