@@ -1,0 +1,30 @@
+{
+  "name": "@asep/control-plane-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b --pretty false",
+    "dev": "tsx watch src/server-main.ts",
+    "start": "node dist/server-main.js"
+  },
+  "dependencies": {
+    "@asep/contracts": "workspace:*",
+    "@asep/domain": "workspace:*",
+    "@asep/ports": "workspace:*",
+    "@asep/observability": "workspace:*",
+    "@asep/application": "workspace:*",
+    "@asep/persistence": "workspace:*",
+    "@asep/agent-mock": "workspace:*",
+    "@asep/git-worktree": "workspace:*",
+    "@asep/command-runner": "workspace:*",
+    "fastify": "5.10.0"
+  },
+  "devDependencies": {
+    "pg": "8.22.0",
+    "@types/pg": "8.20.0"
+  }
+}

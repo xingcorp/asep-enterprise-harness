@@ -1,0 +1,77 @@
+{
+  "id": "P2-FINAL-HIGH-009@2e61f24",
+  "findingId": "P2-FINAL-HIGH-009",
+  "phase": 2,
+  "cycle": 1,
+  "reviewKind": "final",
+  "instanceKind": "first-occurrence",
+  "labelStatus": null,
+  "severity": "HIGH",
+  "reviewedSha": "2e61f2447f6812f9ed795a5195a25861ada1c50b",
+  "reviewedShaSource": "derived",
+  "baseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+  "baseShaSource": "phase-plan",
+  "reachability": "reachable",
+  "postFixSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+  "fixCommits": [
+    "45200db77ff9a3b0e7fb08d95b9029d5249b51c5"
+  ],
+  "locations": [
+    {
+      "file": "scripts/pilot/verify-pilot-manifest.mjs",
+      "lineStart": 92,
+      "lineEnd": 110
+    },
+    {
+      "file": "scripts/pilot/verify-pilot-manifest.mjs",
+      "lineStart": 168,
+      "lineEnd": 176
+    },
+    {
+      "file": "scripts/pilot/verify-pilot-manifest.mjs",
+      "lineStart": 186,
+      "lineEnd": 191
+    },
+    {
+      "file": "scripts/pilot/verify-pilot-manifest.test.ts",
+      "lineStart": 22,
+      "lineEnd": 69
+    }
+  ],
+  "excerpts": [
+    {
+      "side": "reviewed",
+      "path": "scripts/pilot/verify-pilot-manifest.mjs",
+      "sha256": "89b63555bc457b0e261352eea761f795e04ae9f8727b8228c50b1d1dc62fb32f"
+    },
+    {
+      "side": "reviewed",
+      "path": "scripts/pilot/verify-pilot-manifest.test.ts",
+      "sha256": "1e0e6e9bc97ac4a32bb4b046d8bab7ba792ec673536a7f8889971abbe298241d"
+    },
+    {
+      "side": "post-fix",
+      "path": "scripts/pilot/verify-pilot-manifest.mjs",
+      "sha256": "890a4fa036b9a153de59baecb03aad2125265070901d447b323d9f2d1a5521af"
+    },
+    {
+      "side": "post-fix",
+      "path": "scripts/pilot/verify-pilot-manifest.test.ts",
+      "sha256": "422dc8645cabe12085bb87c1ea0707f1603f0039e015c9f6cd3afeff26b54d75"
+    }
+  ],
+  "excerptsWithheld": [],
+  "provenance": {
+    "doc": "docs/implementation/phases/phase-02-final-review-codex-v1.md",
+    "line": 91,
+    "shaEvidence": null,
+    "excerptSource": "git",
+    "excerptOnly": false
+  },
+  "confirmation": {
+    "doc": "docs/implementation/phases/phase-02-final-rereview-codex-v2.md",
+    "line": 13,
+    "status": "PARTIAL"
+  },
+  "excluded": null
+}

@@ -1,0 +1,67 @@
+{
+  "id": "P2-FINAL-MED-005@2e61f24",
+  "findingId": "P2-FINAL-MED-005",
+  "phase": 2,
+  "cycle": 1,
+  "reviewKind": "final",
+  "instanceKind": "first-occurrence",
+  "labelStatus": null,
+  "severity": "MEDIUM",
+  "reviewedSha": "2e61f2447f6812f9ed795a5195a25861ada1c50b",
+  "reviewedShaSource": "derived",
+  "baseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+  "baseShaSource": "phase-plan",
+  "reachability": "reachable",
+  "postFixSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+  "fixCommits": [
+    "061ec236dacb985c77afa29205bf8bc0a185a49e"
+  ],
+  "locations": [
+    {
+      "file": "docs/implementation/phases/phase-02-report.md",
+      "lineStart": 33,
+      "lineEnd": 41
+    },
+    {
+      "file": "docs/implementation/phases/phase-02-report.md",
+      "lineStart": 76,
+      "lineEnd": 81
+    },
+    {
+      "file": "docs/implementation/phases/phase-02-report.md",
+      "lineStart": 116,
+      "lineEnd": 120
+    },
+    {
+      "file": "docs/implementation/phases/phase-02-report.md",
+      "lineStart": 170,
+      "lineEnd": 173
+    }
+  ],
+  "excerpts": [
+    {
+      "side": "reviewed",
+      "path": "docs/implementation/phases/phase-02-report.md",
+      "sha256": "6427ac8419d18d2fcbde00e1c88482bb8a322827cf0fcbbb752a50de43bf8363"
+    },
+    {
+      "side": "post-fix",
+      "path": "docs/implementation/phases/phase-02-report.md",
+      "sha256": "8dad7a01b75ab69397057c8a71dc613db0e702ef8193099caa6d6f3ceee2937e"
+    }
+  ],
+  "excerptsWithheld": [],
+  "provenance": {
+    "doc": "docs/implementation/phases/phase-02-final-review-codex-v1.md",
+    "line": 140,
+    "shaEvidence": null,
+    "excerptSource": "git",
+    "excerptOnly": false
+  },
+  "confirmation": {
+    "doc": "docs/implementation/phases/phase-02-final-rereview-codex-v2.md",
+    "line": 18,
+    "status": "PARTIAL"
+  },
+  "excluded": null
+}

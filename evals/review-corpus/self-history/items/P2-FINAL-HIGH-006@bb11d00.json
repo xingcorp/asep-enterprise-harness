@@ -1,0 +1,64 @@
+{
+  "id": "P2-FINAL-HIGH-006@bb11d00",
+  "findingId": "P2-FINAL-HIGH-006",
+  "phase": 2,
+  "cycle": 5,
+  "reviewKind": "rereview",
+  "instanceKind": "residual",
+  "labelStatus": "PARTIAL",
+  "severity": "HIGH",
+  "reviewedSha": "bb11d0086108fc439d69c1d50e6ddcf009409198",
+  "reviewedShaSource": "recorded-in-review",
+  "baseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+  "baseShaSource": "phase-plan",
+  "reachability": "object-store-only",
+  "postFixSha": null,
+  "fixCommits": [],
+  "locations": [
+    {
+      "file": "adapters/persistence/src/evidence-store.ts",
+      "lineStart": 101,
+      "lineEnd": 122
+    },
+    {
+      "file": "packages/application/src/pipeline-steps.test.ts",
+      "lineStart": 828,
+      "lineEnd": 892
+    },
+    {
+      "file": "packages/application/src/pipeline-steps.ts",
+      "lineStart": 458,
+      "lineEnd": 503
+    }
+  ],
+  "excerpts": [
+    {
+      "side": "reviewed",
+      "path": "adapters/persistence/src/evidence-store.ts",
+      "sha256": "c8a38ee208069534631e3cf77c3c18eb6bc219d7b3e7449348d6cdb55f46746b"
+    },
+    {
+      "side": "reviewed",
+      "path": "packages/application/src/pipeline-steps.test.ts",
+      "sha256": "50c94a90675f5fb107a30e7258ab7ae8232c92b6c33db3d59522d4fea0a01d66"
+    },
+    {
+      "side": "reviewed",
+      "path": "packages/application/src/pipeline-steps.ts",
+      "sha256": "d3a40d0ef821d79252b1f1bf9935bf5d51e56fef71fff7913ab580d826cadc42"
+    }
+  ],
+  "excerptsWithheld": [],
+  "provenance": {
+    "doc": "docs/implementation/phases/phase-02-final-rereview-codex-v5.md",
+    "line": 31,
+    "shaEvidence": {
+      "doc": "docs/implementation/phases/phase-02-final-rereview-codex-v5.md",
+      "line": 52
+    },
+    "excerptSource": "object-store",
+    "excerptOnly": true
+  },
+  "confirmation": null,
+  "excluded": null
+}

@@ -1,0 +1,54 @@
+{
+  "id": "P2-FINAL-MED-005@bb11d00",
+  "findingId": "P2-FINAL-MED-005",
+  "phase": 2,
+  "cycle": 5,
+  "reviewKind": "rereview",
+  "instanceKind": "residual",
+  "labelStatus": "REGRESSED",
+  "severity": "MEDIUM",
+  "reviewedSha": "bb11d0086108fc439d69c1d50e6ddcf009409198",
+  "reviewedShaSource": "recorded-in-review",
+  "baseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+  "baseShaSource": "phase-plan",
+  "reachability": "object-store-only",
+  "postFixSha": null,
+  "fixCommits": [],
+  "locations": [
+    {
+      "file": "docs/implementation/phases/phase-02-report.md",
+      "lineStart": 35,
+      "lineEnd": 39
+    },
+    {
+      "file": "docs/implementation/phases/phase-02-report.md",
+      "lineStart": 47,
+      "lineEnd": 73
+    },
+    {
+      "file": "docs/implementation/phases/phase-02-report.md",
+      "lineStart": 216,
+      "lineEnd": 230
+    }
+  ],
+  "excerpts": [
+    {
+      "side": "reviewed",
+      "path": "docs/implementation/phases/phase-02-report.md",
+      "sha256": "66c570bc2534d7d80826fd53698c97be994c0a1c0b2a9b2a7404ac0ceece455e"
+    }
+  ],
+  "excerptsWithheld": [],
+  "provenance": {
+    "doc": "docs/implementation/phases/phase-02-final-rereview-codex-v5.md",
+    "line": 39,
+    "shaEvidence": {
+      "doc": "docs/implementation/phases/phase-02-final-rereview-codex-v5.md",
+      "line": 52
+    },
+    "excerptSource": "object-store",
+    "excerptOnly": true
+  },
+  "confirmation": null,
+  "excluded": null
+}

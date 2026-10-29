@@ -1,0 +1,77 @@
+{
+  "id": "P2-FINAL-HIGH-008@594b628",
+  "findingId": "P2-FINAL-HIGH-008",
+  "phase": 2,
+  "cycle": 3,
+  "reviewKind": "rereview",
+  "instanceKind": "residual",
+  "labelStatus": "PARTIAL",
+  "severity": "HIGH",
+  "reviewedSha": "594b6287416ab6f18b18adb9a152bdba1c6278be",
+  "reviewedShaSource": "derived",
+  "baseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+  "baseShaSource": "phase-plan",
+  "reachability": "reachable",
+  "postFixSha": null,
+  "fixCommits": [
+    "50e68020a30eaefb50201de8bd4ba46c3cec64a7"
+  ],
+  "locations": [
+    {
+      "file": "apps/control-plane-api/package.json",
+      "lineStart": 14,
+      "lineEnd": 24
+    },
+    {
+      "file": "apps/control-plane-api/src/cli-main.ts",
+      "lineStart": 30,
+      "lineEnd": 33
+    },
+    {
+      "file": "apps/control-plane-api/src/vertical-slice.ts",
+      "lineStart": 175,
+      "lineEnd": 182
+    },
+    {
+      "file": "apps/control-plane-api/src/vertical-slice.ts",
+      "lineStart": 246,
+      "lineEnd": 253
+    },
+    {
+      "file": "apps/control-plane-api/src/vertical-slice.ts",
+      "lineStart": 338,
+      "lineEnd": 353
+    }
+  ],
+  "excerpts": [
+    {
+      "side": "reviewed",
+      "path": "apps/control-plane-api/package.json",
+      "sha256": "a5c3a1ae01f89b81443b76b34377071e04d211d436a5c390d8f2abe04c85760f"
+    },
+    {
+      "side": "reviewed",
+      "path": "apps/control-plane-api/src/cli-main.ts",
+      "sha256": "8b813928d505fdd2553f2b2b33922d617ab008dbd0e7cc055ac25f489fa41c6b"
+    },
+    {
+      "side": "reviewed",
+      "path": "apps/control-plane-api/src/vertical-slice.ts",
+      "sha256": "e002bbf76f742fd650e823b5820f3452160c20804c190b2cc62327ac34c25765"
+    }
+  ],
+  "excerptsWithheld": [],
+  "provenance": {
+    "doc": "docs/implementation/phases/phase-02-final-rereview-codex-v3.md",
+    "line": 12,
+    "shaEvidence": null,
+    "excerptSource": "git",
+    "excerptOnly": false
+  },
+  "confirmation": {
+    "doc": "docs/implementation/phases/phase-02-final-rereview-codex-v4.md",
+    "line": 12,
+    "status": "PARTIAL"
+  },
+  "excluded": null
+}

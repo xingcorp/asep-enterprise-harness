@@ -1,0 +1,102 @@
+{
+  "id": "P2-FINAL-MED-001@2e61f24",
+  "findingId": "P2-FINAL-MED-001",
+  "phase": 2,
+  "cycle": 1,
+  "reviewKind": "final",
+  "instanceKind": "first-occurrence",
+  "labelStatus": null,
+  "severity": "MEDIUM",
+  "reviewedSha": "2e61f2447f6812f9ed795a5195a25861ada1c50b",
+  "reviewedShaSource": "derived",
+  "baseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+  "baseShaSource": "phase-plan",
+  "reachability": "reachable",
+  "postFixSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+  "fixCommits": [
+    "fbe4d7af555e74d8106ba158eb2c1d2a6cf116cf"
+  ],
+  "locations": [
+    {
+      "file": "adapters/persistence/package.json",
+      "lineStart": 12,
+      "lineEnd": 19
+    },
+    {
+      "file": "adapters/persistence/src/migrator.ts",
+      "lineStart": 57,
+      "lineEnd": 73
+    },
+    {
+      "file": "adapters/persistence/src/persistence.test.ts",
+      "lineStart": 90,
+      "lineEnd": 97
+    },
+    {
+      "file": "adapters/persistence/src/persistence.test.ts",
+      "lineStart": 194,
+      "lineEnd": 207
+    },
+    {
+      "file": "adapters/persistence/src/pglite-client.ts",
+      "lineStart": 33,
+      "lineEnd": 35
+    }
+  ],
+  "excerpts": [
+    {
+      "side": "reviewed",
+      "path": "adapters/persistence/package.json",
+      "sha256": "9e7ee6183e8c58c2db06ea7fca1ea9d51384ba3ba7c904aaa02f59e89f16a3d4"
+    },
+    {
+      "side": "reviewed",
+      "path": "adapters/persistence/src/migrator.ts",
+      "sha256": "58c43756399cd24364707c7221c90d0bdf7728f443ffd7012163659679c385f8"
+    },
+    {
+      "side": "reviewed",
+      "path": "adapters/persistence/src/persistence.test.ts",
+      "sha256": "514e00cb52cbc5f95034b50b22a1cd1ca3975b480195d5f1ea2912c47ac91828"
+    },
+    {
+      "side": "reviewed",
+      "path": "adapters/persistence/src/pglite-client.ts",
+      "sha256": "27e14dff998491e5a508f262939de5de1070dbd40cb5c9374cc55e31cb3ebc80"
+    },
+    {
+      "side": "post-fix",
+      "path": "adapters/persistence/package.json",
+      "sha256": "3503ee92213453921b1330bab904e9650a4153b8555835d541d67c3f29202a94"
+    },
+    {
+      "side": "post-fix",
+      "path": "adapters/persistence/src/migrator.ts",
+      "sha256": "58c43756399cd24364707c7221c90d0bdf7728f443ffd7012163659679c385f8"
+    },
+    {
+      "side": "post-fix",
+      "path": "adapters/persistence/src/persistence.test.ts",
+      "sha256": "4980f2d06de73259f82dc054b5c0d969579263a90ab92233cae9622e38fab183"
+    },
+    {
+      "side": "post-fix",
+      "path": "adapters/persistence/src/pglite-client.ts",
+      "sha256": "27e14dff998491e5a508f262939de5de1070dbd40cb5c9374cc55e31cb3ebc80"
+    }
+  ],
+  "excerptsWithheld": [],
+  "provenance": {
+    "doc": "docs/implementation/phases/phase-02-final-review-codex-v1.md",
+    "line": 102,
+    "shaEvidence": null,
+    "excerptSource": "git",
+    "excerptOnly": false
+  },
+  "confirmation": {
+    "doc": "docs/implementation/phases/phase-02-final-rereview-codex-v2.md",
+    "line": 14,
+    "status": "RESOLVED"
+  },
+  "excluded": null
+}

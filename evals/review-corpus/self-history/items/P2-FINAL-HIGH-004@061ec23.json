@@ -1,0 +1,97 @@
+{
+  "id": "P2-FINAL-HIGH-004@061ec23",
+  "findingId": "P2-FINAL-HIGH-004",
+  "phase": 2,
+  "cycle": 2,
+  "reviewKind": "rereview",
+  "instanceKind": "residual",
+  "labelStatus": "PARTIAL",
+  "severity": "HIGH",
+  "reviewedSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+  "reviewedShaSource": "derived",
+  "baseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+  "baseShaSource": "phase-plan",
+  "reachability": "reachable",
+  "postFixSha": "594b6287416ab6f18b18adb9a152bdba1c6278be",
+  "fixCommits": [
+    "ea4475370c1babcc8119b6e69b632c6031f76512"
+  ],
+  "locations": [
+    {
+      "file": "apps/control-plane-api/src/app.ts",
+      "lineStart": 92,
+      "lineEnd": 101
+    },
+    {
+      "file": "apps/control-plane-api/src/auth.ts",
+      "lineStart": 79,
+      "lineEnd": 105
+    },
+    {
+      "file": "apps/control-plane-api/src/control-plane.test.ts",
+      "lineStart": 160,
+      "lineEnd": 194
+    },
+    {
+      "file": "apps/control-plane-api/src/principal-resolver.ts",
+      "lineStart": 30,
+      "lineEnd": 50
+    }
+  ],
+  "excerpts": [
+    {
+      "side": "reviewed",
+      "path": "apps/control-plane-api/src/app.ts",
+      "sha256": "27e60ee59cf3a9930725801d5a0fbd19ca5d0ab709a81b1ec3d6cc16edd6345d"
+    },
+    {
+      "side": "reviewed",
+      "path": "apps/control-plane-api/src/auth.ts",
+      "sha256": "5cc66b5103bdf219c1268eb4a60f6974925936e7fdb962315c1c751bee723c79"
+    },
+    {
+      "side": "reviewed",
+      "path": "apps/control-plane-api/src/control-plane.test.ts",
+      "sha256": "5ee6912a371d0a351bdccd37e69b5301eee6949137c785597463f3214857c1fd"
+    },
+    {
+      "side": "reviewed",
+      "path": "apps/control-plane-api/src/principal-resolver.ts",
+      "sha256": "ed295bab5aef4ee8c958cad4d828fdd899868ccf61827de4c3a6f45b9f7c1b18"
+    },
+    {
+      "side": "post-fix",
+      "path": "apps/control-plane-api/src/app.ts",
+      "sha256": "23d15eea336b3a8205ce7c3ff2afc71e5e0d57046b21661bed94f3f74e3e4668"
+    },
+    {
+      "side": "post-fix",
+      "path": "apps/control-plane-api/src/auth.ts",
+      "sha256": "ee5ee643d81ac59120adfb63bb763428800e51a9a1028529e8dd1283a23e1519"
+    },
+    {
+      "side": "post-fix",
+      "path": "apps/control-plane-api/src/control-plane.test.ts",
+      "sha256": "3788238068de4a4d285e869f8c1f6f650f202e02fac34641d375fd8e96b72614"
+    },
+    {
+      "side": "post-fix",
+      "path": "apps/control-plane-api/src/principal-resolver.ts",
+      "sha256": "53fad773bdd5902182f02d36d990fa89d92033ad1b459703e5446be6afdcae5c"
+    }
+  ],
+  "excerptsWithheld": [],
+  "provenance": {
+    "doc": "docs/implementation/phases/phase-02-final-rereview-codex-v2.md",
+    "line": 8,
+    "shaEvidence": null,
+    "excerptSource": "git",
+    "excerptOnly": false
+  },
+  "confirmation": {
+    "doc": "docs/implementation/phases/phase-02-final-rereview-codex-v3.md",
+    "line": 8,
+    "status": "RESOLVED"
+  },
+  "excluded": null
+}

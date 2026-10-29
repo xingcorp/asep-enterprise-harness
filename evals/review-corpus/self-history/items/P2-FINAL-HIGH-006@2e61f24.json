@@ -1,0 +1,83 @@
+{
+  "id": "P2-FINAL-HIGH-006@2e61f24",
+  "findingId": "P2-FINAL-HIGH-006",
+  "phase": 2,
+  "cycle": 1,
+  "reviewKind": "final",
+  "instanceKind": "first-occurrence",
+  "labelStatus": null,
+  "severity": "HIGH",
+  "reviewedSha": "2e61f2447f6812f9ed795a5195a25861ada1c50b",
+  "reviewedShaSource": "derived",
+  "baseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+  "baseShaSource": "phase-plan",
+  "reachability": "reachable",
+  "postFixSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+  "fixCommits": [
+    "45084d2e2a2bd5fdccd6f230634e0ab478638452",
+    "25394932a4f94af9273a2f272ab57d0166c3abe2"
+  ],
+  "locations": [
+    {
+      "file": "adapters/persistence/src/side-effect-log.test.ts",
+      "lineStart": 49,
+      "lineEnd": 189
+    },
+    {
+      "file": "packages/application/src/pipeline-steps.ts",
+      "lineStart": 337,
+      "lineEnd": 363
+    },
+    {
+      "file": "packages/application/src/pipeline-steps.ts",
+      "lineStart": 397,
+      "lineEnd": 429
+    },
+    {
+      "file": "packages/application/src/pipeline-steps.ts",
+      "lineStart": 531,
+      "lineEnd": 545
+    },
+    {
+      "file": "packages/application/src/pipeline-steps.ts",
+      "lineStart": 531,
+      "lineEnd": 559
+    }
+  ],
+  "excerpts": [
+    {
+      "side": "reviewed",
+      "path": "adapters/persistence/src/side-effect-log.test.ts",
+      "sha256": "e35d6c7092d615a9853da2eda0cded7094eb3468f9079fb607155a6312080e49"
+    },
+    {
+      "side": "reviewed",
+      "path": "packages/application/src/pipeline-steps.ts",
+      "sha256": "48d2ba13b2aa93abb46183c4b8025cfb5fcb0c3a93674ba2c3e9181963a38c60"
+    },
+    {
+      "side": "post-fix",
+      "path": "adapters/persistence/src/side-effect-log.test.ts",
+      "sha256": "f22f135754504b88bd092516e9ba7e848f6ed2096a25001fea9a5117f284ea8a"
+    },
+    {
+      "side": "post-fix",
+      "path": "packages/application/src/pipeline-steps.ts",
+      "sha256": "595f079f980bd9df8783e5a3ddb24e5805acbc16a2d1e69b8307e8b8d9883ab5"
+    }
+  ],
+  "excerptsWithheld": [],
+  "provenance": {
+    "doc": "docs/implementation/phases/phase-02-final-review-codex-v1.md",
+    "line": 58,
+    "shaEvidence": null,
+    "excerptSource": "git",
+    "excerptOnly": false
+  },
+  "confirmation": {
+    "doc": "docs/implementation/phases/phase-02-final-rereview-codex-v2.md",
+    "line": 10,
+    "status": "PARTIAL"
+  },
+  "excluded": null
+}

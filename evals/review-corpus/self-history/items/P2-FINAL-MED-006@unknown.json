@@ -1,0 +1,36 @@
+{
+  "id": "P2-FINAL-MED-006@unknown",
+  "findingId": "P2-FINAL-MED-006",
+  "phase": 2,
+  "cycle": 4,
+  "reviewKind": "rereview",
+  "instanceKind": "residual",
+  "labelStatus": "PARTIAL",
+  "severity": "MEDIUM",
+  "reviewedSha": null,
+  "reviewedShaSource": "unknown",
+  "baseSha": null,
+  "baseShaSource": null,
+  "reachability": "unavailable",
+  "postFixSha": "bb11d0086108fc439d69c1d50e6ddcf009409198",
+  "fixCommits": [],
+  "locations": [],
+  "excerpts": [],
+  "excerptsWithheld": [],
+  "provenance": {
+    "doc": "docs/implementation/phases/phase-02-final-rereview-codex-v4.md",
+    "line": 19,
+    "shaEvidence": null,
+    "excerptSource": null,
+    "excerptOnly": true
+  },
+  "confirmation": {
+    "doc": "docs/implementation/phases/phase-02-final-rereview-codex-v5.md",
+    "line": 40,
+    "status": "PARTIAL"
+  },
+  "excluded": {
+    "reason": "tree-unavailable",
+    "detail": "docs/implementation/phases/phase-02-final-rereview-codex-v4.md was added by 5c5471b together with docs/implementation/phases/phase-02-final-rereview-codex-v5.md, a later cycle's document"
+  }
+}

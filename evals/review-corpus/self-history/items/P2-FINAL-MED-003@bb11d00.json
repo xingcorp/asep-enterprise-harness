@@ -1,0 +1,64 @@
+{
+  "id": "P2-FINAL-MED-003@bb11d00",
+  "findingId": "P2-FINAL-MED-003",
+  "phase": 2,
+  "cycle": 5,
+  "reviewKind": "rereview",
+  "instanceKind": "residual",
+  "labelStatus": "PARTIAL",
+  "severity": "MEDIUM",
+  "reviewedSha": "bb11d0086108fc439d69c1d50e6ddcf009409198",
+  "reviewedShaSource": "recorded-in-review",
+  "baseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+  "baseShaSource": "phase-plan",
+  "reachability": "object-store-only",
+  "postFixSha": null,
+  "fixCommits": [],
+  "locations": [
+    {
+      "file": "apps/control-plane-api/src/vertical-slice.itest.ts",
+      "lineStart": 158,
+      "lineEnd": 198
+    },
+    {
+      "file": "packages/application/src/governed-execution.ts",
+      "lineStart": 148,
+      "lineEnd": 215
+    },
+    {
+      "file": "packages/observability/src/spans.ts",
+      "lineStart": 22,
+      "lineEnd": 33
+    }
+  ],
+  "excerpts": [
+    {
+      "side": "reviewed",
+      "path": "apps/control-plane-api/src/vertical-slice.itest.ts",
+      "sha256": "6f5d7e88118626c3c991674bf634dd439d1c1aac8033e95b1fc58070e01b40c8"
+    },
+    {
+      "side": "reviewed",
+      "path": "packages/application/src/governed-execution.ts",
+      "sha256": "4a07c023a7aa0edc525445f54630655cf8e83dab3433032dc493c90a2dddf227"
+    },
+    {
+      "side": "reviewed",
+      "path": "packages/observability/src/spans.ts",
+      "sha256": "26e2356c3cb5d9100c79e931acf93480fbf4c865ac79268fdb3934afbdaceb04"
+    }
+  ],
+  "excerptsWithheld": [],
+  "provenance": {
+    "doc": "docs/implementation/phases/phase-02-final-rereview-codex-v5.md",
+    "line": 37,
+    "shaEvidence": {
+      "doc": "docs/implementation/phases/phase-02-final-rereview-codex-v5.md",
+      "line": 52
+    },
+    "excerptSource": "object-store",
+    "excerptOnly": true
+  },
+  "confirmation": null,
+  "excluded": null
+}

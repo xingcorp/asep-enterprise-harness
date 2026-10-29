@@ -1,0 +1,36 @@
+{
+  "id": "P1-CYCLE3-HIGH-001@97d1e4e",
+  "findingId": "P1-CYCLE3-HIGH-001",
+  "phase": 1,
+  "cycle": 4,
+  "reviewKind": "rereview",
+  "instanceKind": "residual",
+  "labelStatus": "PARTIAL",
+  "severity": "HIGH",
+  "reviewedSha": "97d1e4ec815e11c33a9abeae45b8fa740ade7615",
+  "reviewedShaSource": "recorded-in-review",
+  "baseSha": "83ba33db16072f05fb27f00f34cebd6774cb771a",
+  "baseShaSource": "phase-plan",
+  "reachability": "reachable",
+  "postFixSha": "e7a2d4e2b7eac96a5cfc94ed207a2babf2d6e50c",
+  "fixCommits": [],
+  "locations": [],
+  "excerpts": [],
+  "excerptsWithheld": [],
+  "provenance": {
+    "doc": "docs/implementation/phases/phase-01-final-independent-review-rereview4.yaml",
+    "line": 80,
+    "shaEvidence": {
+      "doc": "docs/implementation/phases/phase-01-final-independent-review-rereview4.yaml",
+      "line": 2
+    },
+    "excerptSource": "git",
+    "excerptOnly": false
+  },
+  "confirmation": {
+    "doc": "docs/implementation/phases/phase-01-final-independent-review-rereview5.yaml",
+    "line": null,
+    "status": null
+  },
+  "excluded": null
+}

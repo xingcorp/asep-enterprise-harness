@@ -1,0 +1,82 @@
+{
+  "id": "P2-FINAL-MED-004@061ec23",
+  "findingId": "P2-FINAL-MED-004",
+  "phase": 2,
+  "cycle": 2,
+  "reviewKind": "rereview",
+  "instanceKind": "residual",
+  "labelStatus": "REGRESSED",
+  "severity": "MEDIUM",
+  "reviewedSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+  "reviewedShaSource": "derived",
+  "baseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+  "baseShaSource": "phase-plan",
+  "reachability": "reachable",
+  "postFixSha": "594b6287416ab6f18b18adb9a152bdba1c6278be",
+  "fixCommits": [
+    "29aaf48959a60eaf888b4b0d95334be6ee7e56d4"
+  ],
+  "locations": [
+    {
+      "file": "apps/control-plane-api/src/app.ts",
+      "lineStart": 96,
+      "lineEnd": 172
+    },
+    {
+      "file": "apps/control-plane-api/src/vertical-slice.ts",
+      "lineStart": 212,
+      "lineEnd": 425
+    },
+    {
+      "file": "scripts/forbidden-imports.test.ts",
+      "lineStart": 261,
+      "lineEnd": 274
+    }
+  ],
+  "excerpts": [
+    {
+      "side": "reviewed",
+      "path": "apps/control-plane-api/src/app.ts",
+      "sha256": "27e60ee59cf3a9930725801d5a0fbd19ca5d0ab709a81b1ec3d6cc16edd6345d"
+    },
+    {
+      "side": "reviewed",
+      "path": "apps/control-plane-api/src/vertical-slice.ts",
+      "sha256": "49ab2eb2e68a94d99a7f5ea33ce5a396de3b8c24cdfcce8ddf2d0609e76f934c"
+    },
+    {
+      "side": "reviewed",
+      "path": "scripts/forbidden-imports.test.ts",
+      "sha256": "9a0afca3856231f63976501dab576ab4daef39c318b87dacaceb62dad660b974"
+    },
+    {
+      "side": "post-fix",
+      "path": "apps/control-plane-api/src/app.ts",
+      "sha256": "23d15eea336b3a8205ce7c3ff2afc71e5e0d57046b21661bed94f3f74e3e4668"
+    },
+    {
+      "side": "post-fix",
+      "path": "apps/control-plane-api/src/vertical-slice.ts",
+      "sha256": "e002bbf76f742fd650e823b5820f3452160c20804c190b2cc62327ac34c25765"
+    },
+    {
+      "side": "post-fix",
+      "path": "scripts/forbidden-imports.test.ts",
+      "sha256": "bf1babb002b1e8f81bf382da550238ab9a4f923efe377c07c58115a6c3d4d669"
+    }
+  ],
+  "excerptsWithheld": [],
+  "provenance": {
+    "doc": "docs/implementation/phases/phase-02-final-rereview-codex-v2.md",
+    "line": 17,
+    "shaEvidence": null,
+    "excerptSource": "git",
+    "excerptOnly": false
+  },
+  "confirmation": {
+    "doc": "docs/implementation/phases/phase-02-final-rereview-codex-v3.md",
+    "line": 17,
+    "status": "PARTIAL"
+  },
+  "excluded": null
+}

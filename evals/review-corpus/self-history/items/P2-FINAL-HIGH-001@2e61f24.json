@@ -1,0 +1,103 @@
+{
+  "id": "P2-FINAL-HIGH-001@2e61f24",
+  "findingId": "P2-FINAL-HIGH-001",
+  "phase": 2,
+  "cycle": 1,
+  "reviewKind": "final",
+  "instanceKind": "first-occurrence",
+  "labelStatus": null,
+  "severity": "HIGH",
+  "reviewedSha": "2e61f2447f6812f9ed795a5195a25861ada1c50b",
+  "reviewedShaSource": "derived",
+  "baseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+  "baseShaSource": "phase-plan",
+  "reachability": "reachable",
+  "postFixSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+  "fixCommits": [
+    "e1c161cfd558df3e19a3a1201cbd24c54f200262",
+    "4ae6974bc436cffbbc97baa9d37df9dff975e255"
+  ],
+  "locations": [
+    {
+      "file": ".github/workflows/ci.yml",
+      "lineStart": 16,
+      "lineEnd": 45
+    },
+    {
+      "file": "compose.yaml",
+      "lineStart": 5,
+      "lineEnd": 5
+    },
+    {
+      "file": "compose.yaml",
+      "lineStart": 39,
+      "lineEnd": 39
+    },
+    {
+      "file": "scripts/lib/canonical-tests.mjs",
+      "lineStart": 106,
+      "lineEnd": 130
+    },
+    {
+      "file": "scripts/verify-all.sh",
+      "lineStart": 53,
+      "lineEnd": 64
+    }
+  ],
+  "excerpts": [
+    {
+      "side": "reviewed",
+      "path": ".github/workflows/ci.yml",
+      "sha256": "9d8bca250c97007d9c17e62c2b3ee3a07a29f8c74ac3b5cd9d038e458a158683"
+    },
+    {
+      "side": "reviewed",
+      "path": "compose.yaml",
+      "sha256": "943e5dabd1f651b66903090286e85e5913d528937fd4292ee98d652ef8c7b92c"
+    },
+    {
+      "side": "reviewed",
+      "path": "scripts/lib/canonical-tests.mjs",
+      "sha256": "657b2088475e50c7849d9859dd37664aff8ef1b5ac1e110fa02642b0c63d7acc"
+    },
+    {
+      "side": "reviewed",
+      "path": "scripts/verify-all.sh",
+      "sha256": "1868a7c3acba0d678859b6e34dc660074f6921381562580680018488ede4f197"
+    },
+    {
+      "side": "post-fix",
+      "path": ".github/workflows/ci.yml",
+      "sha256": "8e996fa81dc344e6fad00abf1957eb6f919f3648538baa546c3c7c04f87a2f66"
+    },
+    {
+      "side": "post-fix",
+      "path": "compose.yaml",
+      "sha256": "06cae49b075afda5635152ccf7cdd45ee6a94a5b03e9f009e4420421d4c768c6"
+    },
+    {
+      "side": "post-fix",
+      "path": "scripts/lib/canonical-tests.mjs",
+      "sha256": "c8ef1adaa5707816b1c4de5c1f638662e595be1dc0adba53c9c49cd3fbb54979"
+    },
+    {
+      "side": "post-fix",
+      "path": "scripts/verify-all.sh",
+      "sha256": "1868a7c3acba0d678859b6e34dc660074f6921381562580680018488ede4f197"
+    }
+  ],
+  "excerptsWithheld": [],
+  "provenance": {
+    "doc": "docs/implementation/phases/phase-02-final-review-codex-v1.md",
+    "line": 5,
+    "shaEvidence": null,
+    "excerptSource": "git",
+    "excerptOnly": false
+  },
+  "confirmation": {
+    "doc": "docs/implementation/phases/phase-02-final-rereview-codex-v2.md",
+    "line": 5,
+    "status": "RESOLVED"
+  },
+  "excluded": null
+}

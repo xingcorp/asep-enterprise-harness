@@ -1,0 +1,69 @@
+{
+  "id": "P2-FINAL-MED-004@bb11d00",
+  "findingId": "P2-FINAL-MED-004",
+  "phase": 2,
+  "cycle": 5,
+  "reviewKind": "rereview",
+  "instanceKind": "residual",
+  "labelStatus": "PARTIAL",
+  "severity": "MEDIUM",
+  "reviewedSha": "bb11d0086108fc439d69c1d50e6ddcf009409198",
+  "reviewedShaSource": "recorded-in-review",
+  "baseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+  "baseShaSource": "phase-plan",
+  "reachability": "object-store-only",
+  "postFixSha": null,
+  "fixCommits": [],
+  "locations": [
+    {
+      "file": "apps/control-plane-api/src/vertical-slice.ts",
+      "lineStart": 54,
+      "lineEnd": 165
+    },
+    {
+      "file": "apps/control-plane-api/src/vertical-slice.ts",
+      "lineStart": 253,
+      "lineEnd": 330
+    },
+    {
+      "file": "scripts/forbidden-imports.test.ts",
+      "lineStart": 261,
+      "lineEnd": 308
+    },
+    {
+      "file": "workers/workflow-worker/src/index.ts",
+      "lineStart": 14,
+      "lineEnd": 26
+    }
+  ],
+  "excerpts": [
+    {
+      "side": "reviewed",
+      "path": "apps/control-plane-api/src/vertical-slice.ts",
+      "sha256": "7df08f1add5f25a2a9abf0d9458f0e1a94938efca5ca458f125d0fe7fe02dc25"
+    },
+    {
+      "side": "reviewed",
+      "path": "scripts/forbidden-imports.test.ts",
+      "sha256": "bf1babb002b1e8f81bf382da550238ab9a4f923efe377c07c58115a6c3d4d669"
+    },
+    {
+      "side": "reviewed",
+      "path": "workers/workflow-worker/src/index.ts",
+      "sha256": "2a1f80d554c213ddac6a04050703ec886658fd4aac76a73a3aaf4d82a7e0b172"
+    }
+  ],
+  "excerptsWithheld": [],
+  "provenance": {
+    "doc": "docs/implementation/phases/phase-02-final-rereview-codex-v5.md",
+    "line": 38,
+    "shaEvidence": {
+      "doc": "docs/implementation/phases/phase-02-final-rereview-codex-v5.md",
+      "line": 52
+    },
+    "excerptSource": "object-store",
+    "excerptOnly": true
+  },
+  "confirmation": null,
+  "excluded": null
+}

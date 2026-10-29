@@ -1,0 +1,97 @@
+{
+  "id": "P2-FINAL-HIGH-002@061ec23",
+  "findingId": "P2-FINAL-HIGH-002",
+  "phase": 2,
+  "cycle": 2,
+  "reviewKind": "rereview",
+  "instanceKind": "residual",
+  "labelStatus": "PARTIAL",
+  "severity": "HIGH",
+  "reviewedSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+  "reviewedShaSource": "derived",
+  "baseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+  "baseShaSource": "phase-plan",
+  "reachability": "reachable",
+  "postFixSha": "594b6287416ab6f18b18adb9a152bdba1c6278be",
+  "fixCommits": [
+    "55bac8852b03ba6707406857a1b9469d5d317a67"
+  ],
+  "locations": [
+    {
+      "file": "adapters/agent-claude/src/claude-provider.ts",
+      "lineStart": 120,
+      "lineEnd": 141
+    },
+    {
+      "file": "adapters/command-runner/src/command-runner.ts",
+      "lineStart": 52,
+      "lineEnd": 65
+    },
+    {
+      "file": "adapters/command-runner/src/sandbox.ts",
+      "lineStart": 103,
+      "lineEnd": 106
+    },
+    {
+      "file": "apps/control-plane-api/src/vertical-slice.ts",
+      "lineStart": 364,
+      "lineEnd": 376
+    }
+  ],
+  "excerpts": [
+    {
+      "side": "reviewed",
+      "path": "adapters/agent-claude/src/claude-provider.ts",
+      "sha256": "9ae02159568043fd5721bab237db94e2db7c5e160c2d1d845da61964a76f23c5"
+    },
+    {
+      "side": "reviewed",
+      "path": "adapters/command-runner/src/command-runner.ts",
+      "sha256": "297832e66095c33018d9a9b401035749477b201fc9252b62d130191aba0a609f"
+    },
+    {
+      "side": "reviewed",
+      "path": "adapters/command-runner/src/sandbox.ts",
+      "sha256": "341ae4b7ed24962a4652ecc85b0895285826247f309d8ffc6d920fe064102be0"
+    },
+    {
+      "side": "reviewed",
+      "path": "apps/control-plane-api/src/vertical-slice.ts",
+      "sha256": "49ab2eb2e68a94d99a7f5ea33ce5a396de3b8c24cdfcce8ddf2d0609e76f934c"
+    },
+    {
+      "side": "post-fix",
+      "path": "adapters/agent-claude/src/claude-provider.ts",
+      "sha256": "9ae02159568043fd5721bab237db94e2db7c5e160c2d1d845da61964a76f23c5"
+    },
+    {
+      "side": "post-fix",
+      "path": "adapters/command-runner/src/command-runner.ts",
+      "sha256": "297832e66095c33018d9a9b401035749477b201fc9252b62d130191aba0a609f"
+    },
+    {
+      "side": "post-fix",
+      "path": "adapters/command-runner/src/sandbox.ts",
+      "sha256": "81ff1cc4d7e5ae65a21f4f10c1b949e50481237a76aa762f9b9eaaccca627fa7"
+    },
+    {
+      "side": "post-fix",
+      "path": "apps/control-plane-api/src/vertical-slice.ts",
+      "sha256": "e002bbf76f742fd650e823b5820f3452160c20804c190b2cc62327ac34c25765"
+    }
+  ],
+  "excerptsWithheld": [],
+  "provenance": {
+    "doc": "docs/implementation/phases/phase-02-final-rereview-codex-v2.md",
+    "line": 6,
+    "shaEvidence": null,
+    "excerptSource": "git",
+    "excerptOnly": false
+  },
+  "confirmation": {
+    "doc": "docs/implementation/phases/phase-02-final-rereview-codex-v3.md",
+    "line": 6,
+    "status": "PARTIAL"
+  },
+  "excluded": null
+}

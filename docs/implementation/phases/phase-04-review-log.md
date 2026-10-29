@@ -459,6 +459,26 @@ Every lock-check finding is dispositioned (11 accepted, 0 rejected); R18 and the
 applied; the slot block is fixed and type-checked against the real built types. Remaining before the corpus freeze
 and before Lane A receives the block: the controller confirms v3.
 
+### Corpus collection: rules the freeze must confirm
+
+S19's pure core (`evals/review-corpus/collect.ts`, data model §7.1) applied the §7.8 reviewed-SHA rule to every
+cycle and met four cases the rule does not name. Each is recorded in the items and needs the controller's
+confirmation together with §7.8:
+
+- Phase 1 cycle 1 (`P1-FINAL-*` first occurrences, 10 items): the review document was never committed, so the
+  reviewed SHA is `unknown` and the items are excluded `tree-unavailable`.
+- Phase 2 re-review v4 (9 residual items): `5c5471b` added the v4 and v5 documents together, so "parent of the adding
+  commit" would postdate v5's own recorded tree. The collector marks such a SHA `unknown` (`tree-unavailable`); v4's
+  status rows still confirm the v3 items.
+- Phase 2 re-review v5 names its tree (`bb11d00`, unreachable since the history rewrite), so its 9 residual items are
+  `object-store-only` and excerpt-only; the fix commits found for the v3 items run up to that tree and so include
+  pre-rewrite commits that only the local object store holds.
+- The self-found `P2-CYCLE6-HIGH-001` has no review document: its reviewed SHA is the parent of the fix commit the
+  Phase 2 report names (`derived-from-fix`).
+
+Collected: 153 items (65 included, 69 `plan-defect`, 19 `tree-unavailable`, 0 `excerpt-unpublishable`) and 122
+excerpts; exit I13 verifies them against the repository.
+
 ---
 
 ## Disposition template

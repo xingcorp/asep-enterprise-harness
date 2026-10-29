@@ -1,0 +1,32 @@
+{
+  "id": "P2-PLAN-MED-006@e046885",
+  "findingId": "P2-PLAN-MED-006",
+  "phase": 2,
+  "cycle": 0,
+  "reviewKind": "plan",
+  "instanceKind": "first-occurrence",
+  "labelStatus": null,
+  "severity": "MEDIUM",
+  "reviewedSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+  "reviewedShaSource": "derived",
+  "baseSha": null,
+  "baseShaSource": null,
+  "reachability": "reachable",
+  "postFixSha": null,
+  "fixCommits": [],
+  "locations": [],
+  "excerpts": [],
+  "excerptsWithheld": [],
+  "provenance": {
+    "doc": "docs/implementation/phases/phase-02-plan-review-codex-v1.md",
+    "line": 348,
+    "shaEvidence": null,
+    "excerptSource": "git",
+    "excerptOnly": false
+  },
+  "confirmation": null,
+  "excluded": {
+    "reason": "plan-defect",
+    "detail": "labels a plan review; no code tree was reviewed"
+  }
+}

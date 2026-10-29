@@ -1,0 +1,36 @@
+{
+  "id": "P1-REREVIEW-CRIT-001@1af1cff",
+  "findingId": "P1-REREVIEW-CRIT-001",
+  "phase": 1,
+  "cycle": 3,
+  "reviewKind": "rereview",
+  "instanceKind": "residual",
+  "labelStatus": "OPEN",
+  "severity": "CRITICAL",
+  "reviewedSha": "1af1cff0dde456b935a5886e9895ae4ebbeeec58",
+  "reviewedShaSource": "recorded-in-review",
+  "baseSha": "83ba33db16072f05fb27f00f34cebd6774cb771a",
+  "baseShaSource": "phase-plan",
+  "reachability": "reachable",
+  "postFixSha": "97d1e4ec815e11c33a9abeae45b8fa740ade7615",
+  "fixCommits": [],
+  "locations": [],
+  "excerpts": [],
+  "excerptsWithheld": [],
+  "provenance": {
+    "doc": "docs/implementation/phases/phase-01-final-independent-review-rereview3.yaml",
+    "line": 19,
+    "shaEvidence": {
+      "doc": "docs/implementation/phases/phase-01-final-independent-review-rereview3.yaml",
+      "line": 2
+    },
+    "excerptSource": "git",
+    "excerptOnly": false
+  },
+  "confirmation": {
+    "doc": "docs/implementation/phases/phase-01-final-independent-review-rereview4.yaml",
+    "line": null,
+    "status": null
+  },
+  "excluded": null
+}

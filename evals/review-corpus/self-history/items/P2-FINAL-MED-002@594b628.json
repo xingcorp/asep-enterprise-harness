@@ -1,0 +1,67 @@
+{
+  "id": "P2-FINAL-MED-002@594b628",
+  "findingId": "P2-FINAL-MED-002",
+  "phase": 2,
+  "cycle": 3,
+  "reviewKind": "rereview",
+  "instanceKind": "residual",
+  "labelStatus": "PARTIAL",
+  "severity": "MEDIUM",
+  "reviewedSha": "594b6287416ab6f18b18adb9a152bdba1c6278be",
+  "reviewedShaSource": "derived",
+  "baseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+  "baseShaSource": "phase-plan",
+  "reachability": "reachable",
+  "postFixSha": null,
+  "fixCommits": [
+    "c8c6cc87ecb226a11871d391f63a5a631f74af3f"
+  ],
+  "locations": [
+    {
+      "file": "adapters/github-app/src/credential-provider.ts",
+      "lineStart": 87,
+      "lineEnd": 93
+    },
+    {
+      "file": "adapters/github-app/src/forge-provider.ts",
+      "lineStart": 66,
+      "lineEnd": 75
+    },
+    {
+      "file": "adapters/github-app/src/forge-provider.ts",
+      "lineStart": 191,
+      "lineEnd": 213
+    },
+    {
+      "file": "adapters/github-app/src/forge-provider.ts",
+      "lineStart": 223,
+      "lineEnd": 276
+    }
+  ],
+  "excerpts": [
+    {
+      "side": "reviewed",
+      "path": "adapters/github-app/src/credential-provider.ts",
+      "sha256": "c6061292327714cc1718908cccccf01103c201c31df63f1e1c177b91edffc5cf"
+    },
+    {
+      "side": "reviewed",
+      "path": "adapters/github-app/src/forge-provider.ts",
+      "sha256": "151a7a2af1d0686409598c25525c42fb603e81d8fac1a18d9328f985234dd39e"
+    }
+  ],
+  "excerptsWithheld": [],
+  "provenance": {
+    "doc": "docs/implementation/phases/phase-02-final-rereview-codex-v3.md",
+    "line": 15,
+    "shaEvidence": null,
+    "excerptSource": "git",
+    "excerptOnly": false
+  },
+  "confirmation": {
+    "doc": "docs/implementation/phases/phase-02-final-rereview-codex-v4.md",
+    "line": 15,
+    "status": "PARTIAL"
+  },
+  "excluded": null
+}

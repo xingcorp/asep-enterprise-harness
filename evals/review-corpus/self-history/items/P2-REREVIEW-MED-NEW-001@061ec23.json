@@ -1,0 +1,67 @@
+{
+  "id": "P2-REREVIEW-MED-NEW-001@061ec23",
+  "findingId": "P2-REREVIEW-MED-NEW-001",
+  "phase": 2,
+  "cycle": 2,
+  "reviewKind": "rereview",
+  "instanceKind": "first-occurrence",
+  "labelStatus": null,
+  "severity": "MEDIUM",
+  "reviewedSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+  "reviewedShaSource": "derived",
+  "baseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+  "baseShaSource": "phase-plan",
+  "reachability": "reachable",
+  "postFixSha": "594b6287416ab6f18b18adb9a152bdba1c6278be",
+  "fixCommits": [
+    "ec0086aeae2bd51e9c1299fceae4afdb4977a22f"
+  ],
+  "locations": [
+    {
+      "file": "adapters/persistence/src/object-store.ts",
+      "lineStart": 31,
+      "lineEnd": 44
+    },
+    {
+      "file": "scripts/integration/run-integration.mjs",
+      "lineStart": 158,
+      "lineEnd": 179
+    }
+  ],
+  "excerpts": [
+    {
+      "side": "reviewed",
+      "path": "adapters/persistence/src/object-store.ts",
+      "sha256": "40bedcb813da2fd57485140ce4ae46f882df7c2446bdd050e37f05a02df2caee"
+    },
+    {
+      "side": "reviewed",
+      "path": "scripts/integration/run-integration.mjs",
+      "sha256": "4989462c0d389216b2ca05ba43be2de49c6d42953bf66cd9bd5babc8ca64f5b7"
+    },
+    {
+      "side": "post-fix",
+      "path": "adapters/persistence/src/object-store.ts",
+      "sha256": "0c9ea7d02b742e07723bdf6d520bb74ae79847d2ac870af648e9aecb16b2eebe"
+    },
+    {
+      "side": "post-fix",
+      "path": "scripts/integration/run-integration.mjs",
+      "sha256": "4989462c0d389216b2ca05ba43be2de49c6d42953bf66cd9bd5babc8ca64f5b7"
+    }
+  ],
+  "excerptsWithheld": [],
+  "provenance": {
+    "doc": "docs/implementation/phases/phase-02-final-rereview-codex-v2.md",
+    "line": 31,
+    "shaEvidence": null,
+    "excerptSource": "git",
+    "excerptOnly": false
+  },
+  "confirmation": {
+    "doc": "docs/implementation/phases/phase-02-final-rereview-codex-v3.md",
+    "line": 20,
+    "status": "RESOLVED"
+  },
+  "excluded": null
+}

@@ -1,0 +1,97 @@
+{
+  "id": "P2-FINAL-HIGH-007@2e61f24",
+  "findingId": "P2-FINAL-HIGH-007",
+  "phase": 2,
+  "cycle": 1,
+  "reviewKind": "final",
+  "instanceKind": "first-occurrence",
+  "labelStatus": null,
+  "severity": "HIGH",
+  "reviewedSha": "2e61f2447f6812f9ed795a5195a25861ada1c50b",
+  "reviewedShaSource": "derived",
+  "baseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+  "baseShaSource": "phase-plan",
+  "reachability": "reachable",
+  "postFixSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+  "fixCommits": [
+    "3815620d023e7ebcfc6799dfc7efd26283b4fc3c"
+  ],
+  "locations": [
+    {
+      "file": "adapters/agent-claude/src/agent-claude.test.ts",
+      "lineStart": 271,
+      "lineEnd": 283
+    },
+    {
+      "file": "adapters/git-worktree/src/git-worktree.test.ts",
+      "lineStart": 247,
+      "lineEnd": 269
+    },
+    {
+      "file": "adapters/git-worktree/src/worktree-manager.ts",
+      "lineStart": 151,
+      "lineEnd": 174
+    },
+    {
+      "file": "packages/application/src/execute-task.ts",
+      "lineStart": 124,
+      "lineEnd": 133
+    }
+  ],
+  "excerpts": [
+    {
+      "side": "reviewed",
+      "path": "adapters/agent-claude/src/agent-claude.test.ts",
+      "sha256": "0c4b5f834d59bc0757b3e78b4f7dfe77b067686252d732531493577f23dcbeae"
+    },
+    {
+      "side": "reviewed",
+      "path": "adapters/git-worktree/src/git-worktree.test.ts",
+      "sha256": "322d265942629074d5283575b0c442fccd7738b391a18d98f6e2bcff04545c8c"
+    },
+    {
+      "side": "reviewed",
+      "path": "adapters/git-worktree/src/worktree-manager.ts",
+      "sha256": "98bba66072b7161f6bcf93c54771faadc5b625f958a637c793c81b257f07e1d0"
+    },
+    {
+      "side": "reviewed",
+      "path": "packages/application/src/execute-task.ts",
+      "sha256": "4bf986af0211a5485c045284fddcfed6c74bcccb6f5e6749fe8fc701e1efb8a6"
+    },
+    {
+      "side": "post-fix",
+      "path": "adapters/agent-claude/src/agent-claude.test.ts",
+      "sha256": "0c4b5f834d59bc0757b3e78b4f7dfe77b067686252d732531493577f23dcbeae"
+    },
+    {
+      "side": "post-fix",
+      "path": "adapters/git-worktree/src/git-worktree.test.ts",
+      "sha256": "59c944af9d2f220914318e980e344bbd86cdef055bf37e48899cacba924d4a1d"
+    },
+    {
+      "side": "post-fix",
+      "path": "adapters/git-worktree/src/worktree-manager.ts",
+      "sha256": "e2a31fa90e061c6a9fd415e4908343c9b8e037c7fd3894d97df2e7e7247447ce"
+    },
+    {
+      "side": "post-fix",
+      "path": "packages/application/src/execute-task.ts",
+      "sha256": "bab6d5f04a79af251d30018184a14e4506be0b52eebaa5d0903b2ab1741e040e"
+    }
+  ],
+  "excerptsWithheld": [],
+  "provenance": {
+    "doc": "docs/implementation/phases/phase-02-final-review-codex-v1.md",
+    "line": 69,
+    "shaEvidence": null,
+    "excerptSource": "git",
+    "excerptOnly": false
+  },
+  "confirmation": {
+    "doc": "docs/implementation/phases/phase-02-final-rereview-codex-v2.md",
+    "line": 11,
+    "status": "RESOLVED"
+  },
+  "excluded": null
+}

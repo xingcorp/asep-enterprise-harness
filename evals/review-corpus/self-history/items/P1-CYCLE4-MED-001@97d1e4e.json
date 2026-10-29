@@ -1,0 +1,85 @@
+{
+  "id": "P1-CYCLE4-MED-001@97d1e4e",
+  "findingId": "P1-CYCLE4-MED-001",
+  "phase": 1,
+  "cycle": 4,
+  "reviewKind": "rereview",
+  "instanceKind": "first-occurrence",
+  "labelStatus": null,
+  "severity": "MEDIUM",
+  "reviewedSha": "97d1e4ec815e11c33a9abeae45b8fa740ade7615",
+  "reviewedShaSource": "recorded-in-review",
+  "baseSha": "83ba33db16072f05fb27f00f34cebd6774cb771a",
+  "baseShaSource": "phase-plan",
+  "reachability": "reachable",
+  "postFixSha": "e7a2d4e2b7eac96a5cfc94ed207a2babf2d6e50c",
+  "fixCommits": [
+    "b5e7ca7e1801ba89ce77533cf2ddc87cf96b3691"
+  ],
+  "locations": [
+    {
+      "file": "package.json",
+      "lineStart": null,
+      "lineEnd": null
+    },
+    {
+      "file": "scripts/check-acceptance.test.ts",
+      "lineStart": null,
+      "lineEnd": null
+    },
+    {
+      "file": "scripts/lib/acceptance-crypto.test.ts",
+      "lineStart": null,
+      "lineEnd": null
+    }
+  ],
+  "excerpts": [
+    {
+      "side": "reviewed",
+      "path": "package.json",
+      "sha256": "ee5e5134756830ea1dea47cb013d931e389c52cdc85d36a27a58c74c5ae1055b"
+    },
+    {
+      "side": "reviewed",
+      "path": "scripts/check-acceptance.test.ts",
+      "sha256": "e30000af8e25d73599a647c398f72c96c545a05ef9c3aed07f4c968483e8e6fe"
+    },
+    {
+      "side": "reviewed",
+      "path": "scripts/lib/acceptance-crypto.test.ts",
+      "sha256": "e71a4810d78dd50a469785d09d8021817929e0af34f6efe33a335a66c6580611"
+    },
+    {
+      "side": "post-fix",
+      "path": "package.json",
+      "sha256": "d3bddc1c56d4cfecdab7e5d236f92a53ebbd869a2202946b417c4218a51d8960"
+    },
+    {
+      "side": "post-fix",
+      "path": "scripts/check-acceptance.test.ts",
+      "sha256": "3ef264e22f552b050f23ed729de76efea7a9a65690396137e80b6af23be2ec19"
+    },
+    {
+      "side": "post-fix",
+      "path": "scripts/lib/acceptance-crypto.test.ts",
+      "sha256": "e5801f503c81d51867f2f7935675abee1c6eab7f94076526a782ef89acb0a0db"
+    }
+  ],
+  "excerptsWithheld": [],
+  "provenance": {
+    "doc": "docs/implementation/phases/phase-01-final-independent-review-rereview4.yaml",
+    "line": 93,
+    "shaEvidence": {
+      "doc": "docs/implementation/phases/phase-01-final-independent-review-rereview4.yaml",
+      "line": 2
+    },
+    "excerptSource": "git",
+    "excerptOnly": false
+  },
+  "confirmation": {
+    "doc": "docs/implementation/phases/phase-01-final-independent-review-rereview5.yaml",
+    "line": 31,
+    "status": "RESOLVED"
+  },
+  "excluded": null
+}

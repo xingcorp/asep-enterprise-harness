@@ -1,0 +1,64 @@
+{
+  "id": "P2-FINAL-HIGH-008@bb11d00",
+  "findingId": "P2-FINAL-HIGH-008",
+  "phase": 2,
+  "cycle": 5,
+  "reviewKind": "rereview",
+  "instanceKind": "residual",
+  "labelStatus": "PARTIAL",
+  "severity": "HIGH",
+  "reviewedSha": "bb11d0086108fc439d69c1d50e6ddcf009409198",
+  "reviewedShaSource": "recorded-in-review",
+  "baseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+  "baseShaSource": "phase-plan",
+  "reachability": "object-store-only",
+  "postFixSha": null,
+  "fixCommits": [],
+  "locations": [
+    {
+      "file": "adapters/github-app/src/binding-resolver.ts",
+      "lineStart": 84,
+      "lineEnd": 106
+    },
+    {
+      "file": "apps/control-plane-api/src/vertical-slice.ts",
+      "lineStart": 54,
+      "lineEnd": 66
+    },
+    {
+      "file": "apps/control-plane-api/src/vertical-slice.ts",
+      "lineStart": 279,
+      "lineEnd": 320
+    },
+    {
+      "file": "apps/control-plane-api/src/vertical-slice.ts",
+      "lineStart": 337,
+      "lineEnd": 340
+    }
+  ],
+  "excerpts": [
+    {
+      "side": "reviewed",
+      "path": "adapters/github-app/src/binding-resolver.ts",
+      "sha256": "9fcef91a5ceef8da38883372630362a59910aca9e393d80f2ea9dfc952c2302e"
+    },
+    {
+      "side": "reviewed",
+      "path": "apps/control-plane-api/src/vertical-slice.ts",
+      "sha256": "7df08f1add5f25a2a9abf0d9458f0e1a94938efca5ca458f125d0fe7fe02dc25"
+    }
+  ],
+  "excerptsWithheld": [],
+  "provenance": {
+    "doc": "docs/implementation/phases/phase-02-final-rereview-codex-v5.md",
+    "line": 33,
+    "shaEvidence": {
+      "doc": "docs/implementation/phases/phase-02-final-rereview-codex-v5.md",
+      "line": 52
+    },
+    "excerptSource": "object-store",
+    "excerptOnly": true
+  },
+  "confirmation": null,
+  "excluded": null
+}

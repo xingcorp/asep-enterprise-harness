@@ -815,29 +815,35 @@ rejects `gating`; `approval-matrix.yaml` and `verification-matrix.yaml` stay byt
 
 ### 7.1 Corpus item (`evals/review-corpus/self-history/items/<id>.json`)
 
-Fields marked *(S19 now)* are collected by S19's pure core; the others are filled when the protocol of plan §7.8 is
-confirmed and the corpus is frozen.
+Fields marked *(S19 now)* are collected by S19's pure core (`evals/review-corpus/collect.ts`, regenerated with
+`pnpm exec tsx evals/review-corpus/collect.ts --write`); the others are filled when the protocol of plan §7.8 is
+confirmed and the corpus is frozen. Every labelled instance is an item: each finding a review document raises
+(`first-occurrence`) and each re-review status row that does not resolve its finding (`residual`). Plan-review labels
+are items too, excluded `plan-defect`. Excerpts live in `evals/review-corpus/self-history/blobs/<sha256>`.
 
 | Field | Notes |
 |---|---|
-| `id` | `<findingId>@<reviewedSha7>` |
-| `findingId`, `phase`, `cycle`, `reviewKind` (`final, rereview`) | *(S19 now)* |
-| `reviewedSha`, `reviewedShaSource` (`recorded-in-review, derived, unknown`) | *(S19 now)* full 40-hex; `derived` = parent of the commit that added the review document |
-| `baseSha`, `baseShaSource` | *(S19 now)* `B_c`: the phase plan's `BASE_SHA` line read at `reviewedSha` |
-| `reachability` | *(S19 now)* `reachable` (advertised refs) / `object-store-only` / `bundle-only` / `unavailable` |
-| `fixCommits[]` | *(S19 now)* commits between `reviewedSha` and the next cycle's reviewed SHA whose subject names the finding id (long or short form) |
-| `postFixSha`, `negativeEligible` | the next cycle's reviewed SHA `R_{c+1}`; eligible iff the item is `RESOLVED` there and at least one location maps (plan §7.8) |
-| `excerpts` | *(S19 now, cited files)* `[{side: reviewed|post-fix, path, sha256}]` → `blobs/<sha256>`; chunk diffs and post-images are added at the freeze |
-| `provenance` | *(S19 now)* `{doc, line}` for the label; `excerptSource: git|object-store|bundle`; `excerpt-only` flag |
-| `confirmation` | *(S19 now)* `{doc, line, status: RESOLVED|PARTIAL|REGRESSED|null}` from the next cycle's document |
-| `severity`, `goldCategory`, `goldCategoryRationale`, `defectClass` | severity *(S19 now)* from the label; `goldCategory` (category table `corpus-categories/v1`) and its one-line rationale assigned by Lane B |
-| `locations[]` | *(S19 now)* `{file, lineStart, lineEnd}` at `reviewedSha`, parsed from the label |
+| `id` | `<findingId>@<reviewedSha7>`; `<findingId>@unknown` when the reviewed SHA is unknown |
+| `findingId`, `phase`, `cycle`, `reviewKind` (`final, rereview, self-found, plan`) | *(S19 now)*; `cycle` orders a phase's reviews (plan reviews are cycle 0) |
+| `instanceKind` (`first-occurrence, residual`), `labelStatus` | *(S19 now)*; `labelStatus` is a residual's own status in its cycle (`PARTIAL, REGRESSED, OPEN`), null for a first occurrence |
+| `reviewedSha`, `reviewedShaSource` (`recorded-in-review, derived, derived-from-fix, unknown`) | *(S19 now)* full 40-hex; `recorded-in-review` = named by the document; `derived` = parent of the commit that added the review document; `derived-from-fix` = parent of the fix commit the document names (the self-found item); `unknown` when the document was never committed, or when the commit that added it also added a later cycle's document (its parent would postdate that later review) |
+| `baseSha`, `baseShaSource` | *(S19 now)* `B_c`: the phase plan's first `BASE_SHA` line read at `reviewedSha`; `phase-plan` |
+| `reachability` | *(S19 now)* `reachable` (from HEAD or an advertised ref) / `object-store-only` / `unavailable`; `bundle-only` is decided only in bundle mode, after the freeze |
+| `fixCommits[]` | *(S19 now)* commits after `reviewedSha` up to the next cycle with a known reviewed SHA whose subject names the finding id as a whole token (long form; Phase 2 also the short form its re-reviews use, e.g. `HIGH-005`); a rewritten copy of a commit already in the reviewed tree (same author date and subject) is not a fix |
+| `postFixSha` | *(S19 now)* `R_{c+1}`: the reviewed SHA of the next cycle when that cycle re-reviews this one and its tree is known; else null |
+| `negativeEligible` | eligible iff the item is `RESOLVED` at `c+1` and at least one location maps (plan §7.8) |
+| `excerpts` | *(S19 now, cited files)* `[{side: reviewed|post-fix, path, sha256}]` → `blobs/<sha256>`; the post-fix side reads the same path at `postFixSha` (renames are followed by the mapping at the freeze); chunk diffs and post-images are added at the freeze |
+| `excerptsWithheld` | *(S19 now)* `[{side, path, gates}]`: post-fix excerpts that fail a publication gate (a reviewed-side failure excludes the item instead) |
+| `provenance` | *(S19 now)* `{doc, line}` for the label; `shaEvidence: {doc, line}` naming the reviewed SHA or the fix commit, null when derived; `excerptSource: git|object-store` (null without a tree); `excerptOnly` flag (true unless reachable) |
+| `confirmation` | *(S19 now)* `{doc, line, status: RESOLVED|PARTIAL|REGRESSED|OPEN|null}` from the next cycle's document when that cycle is a re-review (line and status null when it has no row for the finding); null when no re-review follows |
+| `severity`, `goldCategory`, `goldCategoryRationale`, `defectClass` | severity *(S19 now)* from the label, checked against the id's own token; `goldCategory` (category table `corpus-categories/v1`) and its one-line rationale assigned by Lane B |
+| `locations[]` | *(S19 now)* `{file, lineStart, lineEnd}` at `reviewedSha`: every path token of the label, with its `:a-b,c` ranges, that is a file at `reviewedSha` (a file cited with lines drops its bare mention); empty without a tree |
 | `mappedLocations[]` | `{file, lineStart, lineEnd}` at `postFixSha` (plan §7.8 mapping) |
 | `labelSource` | `codex-gpt-5.6-sol`, `implementer-self-found`, `controller-ai-paraphrase` |
 | `labelQuality` | `primary`, `secondhand` |
-| `labellerMiss`, `instanceKind` (`first-occurrence, residual`) | |
+| `labellerMiss` | |
 | `set` | `prompt-development` (Phase 1) / `reporting` (Phase 2); reporting labels were visible to the prompt author |
-| `excluded` | null or `{reason}` with the reasons and order of plan §7.8; S19 records only `plan-defect`, `tree-unavailable` and `excerpt-unpublishable` |
+| `excluded` | null or `{reason, detail}` with the reasons and order of plan §7.8; S19 records only `plan-defect`, `tree-unavailable` and `excerpt-unpublishable` (a cited file at `reviewedSha` fails a gate the repository runs over tracked files: format, secret, PII, large-file or publication) |
 | `synthetic` | the synthetic-field record of plan §7.8 (identity labels, objective text, `NOT_RECORDED`, masks applied) |
 | `humanVerified` | null (DF-8) or `{by, at, agrees}` |
 

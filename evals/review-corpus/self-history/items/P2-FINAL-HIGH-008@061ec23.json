@@ -1,0 +1,92 @@
+{
+  "id": "P2-FINAL-HIGH-008@061ec23",
+  "findingId": "P2-FINAL-HIGH-008",
+  "phase": 2,
+  "cycle": 2,
+  "reviewKind": "rereview",
+  "instanceKind": "residual",
+  "labelStatus": "PARTIAL",
+  "severity": "HIGH",
+  "reviewedSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+  "reviewedShaSource": "derived",
+  "baseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+  "baseShaSource": "phase-plan",
+  "reachability": "reachable",
+  "postFixSha": "594b6287416ab6f18b18adb9a152bdba1c6278be",
+  "fixCommits": [
+    "e692a9b1413adef555e05d3fbf7357676a1180c0"
+  ],
+  "locations": [
+    {
+      "file": "adapters/github-app/src/port-adapter.ts",
+      "lineStart": 60,
+      "lineEnd": 112
+    },
+    {
+      "file": "apps/control-plane-api/src/cli-main.ts",
+      "lineStart": 8,
+      "lineEnd": 32
+    },
+    {
+      "file": "apps/control-plane-api/src/vertical-slice.ts",
+      "lineStart": 76,
+      "lineEnd": 147
+    },
+    {
+      "file": "apps/control-plane-api/src/vertical-slice.ts",
+      "lineStart": 280,
+      "lineEnd": 281
+    },
+    {
+      "file": "apps/control-plane-api/src/vertical-slice.ts",
+      "lineStart": 407,
+      "lineEnd": 425
+    }
+  ],
+  "excerpts": [
+    {
+      "side": "reviewed",
+      "path": "adapters/github-app/src/port-adapter.ts",
+      "sha256": "df2335030a5fb438fb9da0bca3585820bc008690f1a9095b27833c89d109374b"
+    },
+    {
+      "side": "reviewed",
+      "path": "apps/control-plane-api/src/cli-main.ts",
+      "sha256": "8b813928d505fdd2553f2b2b33922d617ab008dbd0e7cc055ac25f489fa41c6b"
+    },
+    {
+      "side": "reviewed",
+      "path": "apps/control-plane-api/src/vertical-slice.ts",
+      "sha256": "49ab2eb2e68a94d99a7f5ea33ce5a396de3b8c24cdfcce8ddf2d0609e76f934c"
+    },
+    {
+      "side": "post-fix",
+      "path": "adapters/github-app/src/port-adapter.ts",
+      "sha256": "df2335030a5fb438fb9da0bca3585820bc008690f1a9095b27833c89d109374b"
+    },
+    {
+      "side": "post-fix",
+      "path": "apps/control-plane-api/src/cli-main.ts",
+      "sha256": "8b813928d505fdd2553f2b2b33922d617ab008dbd0e7cc055ac25f489fa41c6b"
+    },
+    {
+      "side": "post-fix",
+      "path": "apps/control-plane-api/src/vertical-slice.ts",
+      "sha256": "e002bbf76f742fd650e823b5820f3452160c20804c190b2cc62327ac34c25765"
+    }
+  ],
+  "excerptsWithheld": [],
+  "provenance": {
+    "doc": "docs/implementation/phases/phase-02-final-rereview-codex-v2.md",
+    "line": 12,
+    "shaEvidence": null,
+    "excerptSource": "git",
+    "excerptOnly": false
+  },
+  "confirmation": {
+    "doc": "docs/implementation/phases/phase-02-final-rereview-codex-v3.md",
+    "line": 12,
+    "status": "PARTIAL"
+  },
+  "excluded": null
+}

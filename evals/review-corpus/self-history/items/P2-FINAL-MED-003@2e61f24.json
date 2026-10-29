@@ -1,0 +1,89 @@
+{
+  "id": "P2-FINAL-MED-003@2e61f24",
+  "findingId": "P2-FINAL-MED-003",
+  "phase": 2,
+  "cycle": 1,
+  "reviewKind": "final",
+  "instanceKind": "first-occurrence",
+  "labelStatus": null,
+  "severity": "MEDIUM",
+  "reviewedSha": "2e61f2447f6812f9ed795a5195a25861ada1c50b",
+  "reviewedShaSource": "derived",
+  "baseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+  "baseShaSource": "phase-plan",
+  "reachability": "reachable",
+  "postFixSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+  "fixCommits": [
+    "6d9e6e6273f08e3c191d36267de5240f41208249",
+    "9844adc44ea983d6d692f4e686364ec5c5a63bf9",
+    "2fb8889ffe61585f3927d2fe460bc30c11f9c6e8"
+  ],
+  "locations": [
+    {
+      "file": "packages/observability/src/audit.ts",
+      "lineStart": 54,
+      "lineEnd": 58
+    },
+    {
+      "file": "packages/observability/src/index.ts",
+      "lineStart": 1,
+      "lineEnd": 9
+    },
+    {
+      "file": "packages/observability/src/index.ts",
+      "lineStart": 68,
+      "lineEnd": 70
+    },
+    {
+      "file": "packages/observability/src/spans.ts",
+      "lineStart": 22,
+      "lineEnd": 33
+    }
+  ],
+  "excerpts": [
+    {
+      "side": "reviewed",
+      "path": "packages/observability/src/audit.ts",
+      "sha256": "6b841aa10b6897601425234ca26fd0b34b8ea046880d1d5a9527aaad2248120e"
+    },
+    {
+      "side": "reviewed",
+      "path": "packages/observability/src/index.ts",
+      "sha256": "3a9881e8da078740e686b85b20e73653942aa46a5e3fffa57836a127cedb56a6"
+    },
+    {
+      "side": "reviewed",
+      "path": "packages/observability/src/spans.ts",
+      "sha256": "26e2356c3cb5d9100c79e931acf93480fbf4c865ac79268fdb3934afbdaceb04"
+    },
+    {
+      "side": "post-fix",
+      "path": "packages/observability/src/audit.ts",
+      "sha256": "6b841aa10b6897601425234ca26fd0b34b8ea046880d1d5a9527aaad2248120e"
+    },
+    {
+      "side": "post-fix",
+      "path": "packages/observability/src/index.ts",
+      "sha256": "eeb3280d192af1b258e53fc4e5ee899f97c404fe491f86a8f9ddb3ccb4f76753"
+    },
+    {
+      "side": "post-fix",
+      "path": "packages/observability/src/spans.ts",
+      "sha256": "26e2356c3cb5d9100c79e931acf93480fbf4c865ac79268fdb3934afbdaceb04"
+    }
+  ],
+  "excerptsWithheld": [],
+  "provenance": {
+    "doc": "docs/implementation/phases/phase-02-final-review-codex-v1.md",
+    "line": 122,
+    "shaEvidence": null,
+    "excerptSource": "git",
+    "excerptOnly": false
+  },
+  "confirmation": {
+    "doc": "docs/implementation/phases/phase-02-final-rereview-codex-v2.md",
+    "line": 16,
+    "status": "PARTIAL"
+  },
+  "excluded": null
+}

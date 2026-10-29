@@ -1,0 +1,78 @@
+{
+  "id": "P2-FINAL-HIGH-005@594b628",
+  "findingId": "P2-FINAL-HIGH-005",
+  "phase": 2,
+  "cycle": 3,
+  "reviewKind": "rereview",
+  "instanceKind": "residual",
+  "labelStatus": "PARTIAL",
+  "severity": "HIGH",
+  "reviewedSha": "594b6287416ab6f18b18adb9a152bdba1c6278be",
+  "reviewedShaSource": "derived",
+  "baseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+  "baseShaSource": "phase-plan",
+  "reachability": "reachable",
+  "postFixSha": null,
+  "fixCommits": [
+    "030d7616d1a9b757d1e19cc7d3884becda3f24bb",
+    "bb11d0086108fc439d69c1d50e6ddcf009409198"
+  ],
+  "locations": [
+    {
+      "file": "adapters/persistence/src/migrations.ts",
+      "lineStart": 245,
+      "lineEnd": 259
+    },
+    {
+      "file": "adapters/persistence/src/migrations.ts",
+      "lineStart": 373,
+      "lineEnd": 390
+    },
+    {
+      "file": "adapters/persistence/src/repositories.ts",
+      "lineStart": 447,
+      "lineEnd": 470
+    },
+    {
+      "file": "packages/application/src/pipeline-steps.ts",
+      "lineStart": 341,
+      "lineEnd": 341
+    },
+    {
+      "file": "packages/application/src/pipeline-steps.ts",
+      "lineStart": 365,
+      "lineEnd": 372
+    }
+  ],
+  "excerpts": [
+    {
+      "side": "reviewed",
+      "path": "adapters/persistence/src/migrations.ts",
+      "sha256": "26560c65f2f828dd92d0c658674228ddb91868068d3688b6d9d66c873854affe"
+    },
+    {
+      "side": "reviewed",
+      "path": "adapters/persistence/src/repositories.ts",
+      "sha256": "9e2c4a1db959a74094b828a979a723c9c93094cb091f8fff4cdca83b2a5f00df"
+    },
+    {
+      "side": "reviewed",
+      "path": "packages/application/src/pipeline-steps.ts",
+      "sha256": "9fd8db74d2b7cc5fefa7d204711efebe061f835436731a504920a05bc6ac806d"
+    }
+  ],
+  "excerptsWithheld": [],
+  "provenance": {
+    "doc": "docs/implementation/phases/phase-02-final-rereview-codex-v3.md",
+    "line": 9,
+    "shaEvidence": null,
+    "excerptSource": "git",
+    "excerptOnly": false
+  },
+  "confirmation": {
+    "doc": "docs/implementation/phases/phase-02-final-rereview-codex-v4.md",
+    "line": 9,
+    "status": "PARTIAL"
+  },
+  "excluded": null
+}

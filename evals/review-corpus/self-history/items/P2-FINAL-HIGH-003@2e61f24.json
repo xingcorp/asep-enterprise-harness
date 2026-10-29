@@ -1,0 +1,92 @@
+{
+  "id": "P2-FINAL-HIGH-003@2e61f24",
+  "findingId": "P2-FINAL-HIGH-003",
+  "phase": 2,
+  "cycle": 1,
+  "reviewKind": "final",
+  "instanceKind": "first-occurrence",
+  "labelStatus": null,
+  "severity": "HIGH",
+  "reviewedSha": "2e61f2447f6812f9ed795a5195a25861ada1c50b",
+  "reviewedShaSource": "derived",
+  "baseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+  "baseShaSource": "phase-plan",
+  "reachability": "reachable",
+  "postFixSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+  "fixCommits": [
+    "8e1dc5dda6922981713f412e1fa520619f4a858e"
+  ],
+  "locations": [
+    {
+      "file": "apps/control-plane-api/src/vertical-integration.test.ts",
+      "lineStart": 183,
+      "lineEnd": 199
+    },
+    {
+      "file": "apps/control-plane-api/src/vertical-integration.test.ts",
+      "lineStart": 211,
+      "lineEnd": 213
+    },
+    {
+      "file": "packages/application/src/execute-task.test.ts",
+      "lineStart": 113,
+      "lineEnd": 125
+    },
+    {
+      "file": "packages/application/src/execute-task.ts",
+      "lineStart": 143,
+      "lineEnd": 148
+    },
+    {
+      "file": "packages/application/src/execute-task.ts",
+      "lineStart": 160,
+      "lineEnd": 172
+    }
+  ],
+  "excerpts": [
+    {
+      "side": "reviewed",
+      "path": "apps/control-plane-api/src/vertical-integration.test.ts",
+      "sha256": "0f5a0414f6e6e0387022f6f8d1d49a6eae060a382e32b9f1d114df8ba2d4a973"
+    },
+    {
+      "side": "reviewed",
+      "path": "packages/application/src/execute-task.test.ts",
+      "sha256": "e3f84f852713aae42be744dd19fb87187b86d751f04c04479e69317f65668412"
+    },
+    {
+      "side": "reviewed",
+      "path": "packages/application/src/execute-task.ts",
+      "sha256": "4bf986af0211a5485c045284fddcfed6c74bcccb6f5e6749fe8fc701e1efb8a6"
+    },
+    {
+      "side": "post-fix",
+      "path": "apps/control-plane-api/src/vertical-integration.test.ts",
+      "sha256": "1fb38115e07e967c49558a88ca4e4a8e6d09e7f03bfec7dcb50af01962384d69"
+    },
+    {
+      "side": "post-fix",
+      "path": "packages/application/src/execute-task.test.ts",
+      "sha256": "afac575fd59211b439969afaf30613133a8e7ecc66c384fe292a8da842d07f62"
+    },
+    {
+      "side": "post-fix",
+      "path": "packages/application/src/execute-task.ts",
+      "sha256": "bab6d5f04a79af251d30018184a14e4506be0b52eebaa5d0903b2ab1741e040e"
+    }
+  ],
+  "excerptsWithheld": [],
+  "provenance": {
+    "doc": "docs/implementation/phases/phase-02-final-review-codex-v1.md",
+    "line": 26,
+    "shaEvidence": null,
+    "excerptSource": "git",
+    "excerptOnly": false
+  },
+  "confirmation": {
+    "doc": "docs/implementation/phases/phase-02-final-rereview-codex-v2.md",
+    "line": 7,
+    "status": "RESOLVED"
+  },
+  "excluded": null
+}

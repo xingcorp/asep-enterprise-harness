@@ -1,0 +1,85 @@
+{
+  "id": "P2-FINAL-MED-006@061ec23",
+  "findingId": "P2-FINAL-MED-006",
+  "phase": 2,
+  "cycle": 2,
+  "reviewKind": "rereview",
+  "instanceKind": "residual",
+  "labelStatus": "PARTIAL",
+  "severity": "MEDIUM",
+  "reviewedSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+  "reviewedShaSource": "derived",
+  "baseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+  "baseShaSource": "phase-plan",
+  "reachability": "reachable",
+  "postFixSha": "594b6287416ab6f18b18adb9a152bdba1c6278be",
+  "fixCommits": [],
+  "locations": [
+    {
+      "file": "adapters/agent-claude/src/claude-provider.ts",
+      "lineStart": 90,
+      "lineEnd": 169
+    },
+    {
+      "file": "adapters/persistence/src/pilot-rehearsal.test.ts",
+      "lineStart": 12,
+      "lineEnd": 14
+    },
+    {
+      "file": "adapters/persistence/src/pilot-rehearsal.test.ts",
+      "lineStart": 51,
+      "lineEnd": 73
+    },
+    {
+      "file": "docs/implementation/phases/phase-02-pilot-rehearsal.md",
+      "lineStart": 3,
+      "lineEnd": 9
+    }
+  ],
+  "excerpts": [
+    {
+      "side": "reviewed",
+      "path": "adapters/agent-claude/src/claude-provider.ts",
+      "sha256": "9ae02159568043fd5721bab237db94e2db7c5e160c2d1d845da61964a76f23c5"
+    },
+    {
+      "side": "reviewed",
+      "path": "adapters/persistence/src/pilot-rehearsal.test.ts",
+      "sha256": "a4662af93c07e9aaead369bc06733c1ed40edfad54f43e69fa3ea0f72609be55"
+    },
+    {
+      "side": "reviewed",
+      "path": "docs/implementation/phases/phase-02-pilot-rehearsal.md",
+      "sha256": "cb95d71193e62cdce630f885b1770b2217f71dfa835b504139758508fd63cbc4"
+    },
+    {
+      "side": "post-fix",
+      "path": "adapters/agent-claude/src/claude-provider.ts",
+      "sha256": "9ae02159568043fd5721bab237db94e2db7c5e160c2d1d845da61964a76f23c5"
+    },
+    {
+      "side": "post-fix",
+      "path": "adapters/persistence/src/pilot-rehearsal.test.ts",
+      "sha256": "a4662af93c07e9aaead369bc06733c1ed40edfad54f43e69fa3ea0f72609be55"
+    },
+    {
+      "side": "post-fix",
+      "path": "docs/implementation/phases/phase-02-pilot-rehearsal.md",
+      "sha256": "cb95d71193e62cdce630f885b1770b2217f71dfa835b504139758508fd63cbc4"
+    }
+  ],
+  "excerptsWithheld": [],
+  "provenance": {
+    "doc": "docs/implementation/phases/phase-02-final-rereview-codex-v2.md",
+    "line": 19,
+    "shaEvidence": null,
+    "excerptSource": "git",
+    "excerptOnly": false
+  },
+  "confirmation": {
+    "doc": "docs/implementation/phases/phase-02-final-rereview-codex-v3.md",
+    "line": 19,
+    "status": "PARTIAL"
+  },
+  "excluded": null
+}

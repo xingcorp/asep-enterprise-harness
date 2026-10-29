@@ -1,0 +1,38 @@
+{
+  "id": "P1-FINAL-MED-001@1af1cff",
+  "findingId": "P1-FINAL-MED-001",
+  "phase": 1,
+  "cycle": 3,
+  "reviewKind": "rereview",
+  "instanceKind": "residual",
+  "labelStatus": "PARTIAL",
+  "severity": "MEDIUM",
+  "reviewedSha": "1af1cff0dde456b935a5886e9895ae4ebbeeec58",
+  "reviewedShaSource": "recorded-in-review",
+  "baseSha": "83ba33db16072f05fb27f00f34cebd6774cb771a",
+  "baseShaSource": "phase-plan",
+  "reachability": "reachable",
+  "postFixSha": "97d1e4ec815e11c33a9abeae45b8fa740ade7615",
+  "fixCommits": [
+    "d849ecac814c67d0894ef1d9334cf9b3c2689def"
+  ],
+  "locations": [],
+  "excerpts": [],
+  "excerptsWithheld": [],
+  "provenance": {
+    "doc": "docs/implementation/phases/phase-01-final-independent-review-rereview3.yaml",
+    "line": 77,
+    "shaEvidence": {
+      "doc": "docs/implementation/phases/phase-01-final-independent-review-rereview3.yaml",
+      "line": 2
+    },
+    "excerptSource": "git",
+    "excerptOnly": false
+  },
+  "confirmation": {
+    "doc": "docs/implementation/phases/phase-01-final-independent-review-rereview4.yaml",
+    "line": 56,
+    "status": "RESOLVED"
+  },
+  "excluded": null
+}

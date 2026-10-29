@@ -1,0 +1,64 @@
+{
+  "id": "P2-FINAL-HIGH-002@bb11d00",
+  "findingId": "P2-FINAL-HIGH-002",
+  "phase": 2,
+  "cycle": 5,
+  "reviewKind": "rereview",
+  "instanceKind": "residual",
+  "labelStatus": "PARTIAL",
+  "severity": "HIGH",
+  "reviewedSha": "bb11d0086108fc439d69c1d50e6ddcf009409198",
+  "reviewedShaSource": "recorded-in-review",
+  "baseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+  "baseShaSource": "phase-plan",
+  "reachability": "object-store-only",
+  "postFixSha": null,
+  "fixCommits": [],
+  "locations": [
+    {
+      "file": "adapters/agent-claude/src/claude-provider.ts",
+      "lineStart": 97,
+      "lineEnd": 102
+    },
+    {
+      "file": "adapters/agent-claude/src/claude-provider.ts",
+      "lineStart": 153,
+      "lineEnd": 174
+    },
+    {
+      "file": "apps/control-plane-api/src/production-root.ts",
+      "lineStart": 47,
+      "lineEnd": 50
+    },
+    {
+      "file": "apps/control-plane-api/src/production-root.ts",
+      "lineStart": 109,
+      "lineEnd": 112
+    }
+  ],
+  "excerpts": [
+    {
+      "side": "reviewed",
+      "path": "adapters/agent-claude/src/claude-provider.ts",
+      "sha256": "75bba6f14703307dd6415a507ed1400623c7d66efdeca26b3a1f0a37cf31c2a7"
+    },
+    {
+      "side": "reviewed",
+      "path": "apps/control-plane-api/src/production-root.ts",
+      "sha256": "fd6406294c8aee4e604b36112bc3af2d83245ca08e3227597f679aaffaeff5ab"
+    }
+  ],
+  "excerptsWithheld": [],
+  "provenance": {
+    "doc": "docs/implementation/phases/phase-02-final-rereview-codex-v5.md",
+    "line": 27,
+    "shaEvidence": {
+      "doc": "docs/implementation/phases/phase-02-final-rereview-codex-v5.md",
+      "line": 52
+    },
+    "excerptSource": "object-store",
+    "excerptOnly": true
+  },
+  "confirmation": null,
+  "excluded": null
+}

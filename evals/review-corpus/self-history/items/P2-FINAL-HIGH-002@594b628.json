@@ -1,0 +1,73 @@
+{
+  "id": "P2-FINAL-HIGH-002@594b628",
+  "findingId": "P2-FINAL-HIGH-002",
+  "phase": 2,
+  "cycle": 3,
+  "reviewKind": "rereview",
+  "instanceKind": "residual",
+  "labelStatus": "PARTIAL",
+  "severity": "HIGH",
+  "reviewedSha": "594b6287416ab6f18b18adb9a152bdba1c6278be",
+  "reviewedShaSource": "derived",
+  "baseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+  "baseShaSource": "phase-plan",
+  "reachability": "reachable",
+  "postFixSha": null,
+  "fixCommits": [
+    "42df0a8428049d9ac7bfbeacf48480d4f337d88e",
+    "d454fa5e3b5ab7346ee2e0c9b51cd394818b0745"
+  ],
+  "locations": [
+    {
+      "file": "adapters/agent-claude/src/claude-provider.ts",
+      "lineStart": 53,
+      "lineEnd": 56
+    },
+    {
+      "file": "adapters/agent-claude/src/claude-provider.ts",
+      "lineStart": 120,
+      "lineEnd": 140
+    },
+    {
+      "file": "adapters/command-runner/src/sandbox-exec.itest.ts",
+      "lineStart": 179,
+      "lineEnd": 210
+    },
+    {
+      "file": "packages/application/src/vertical-slice-workflow.ts",
+      "lineStart": 367,
+      "lineEnd": 393
+    }
+  ],
+  "excerpts": [
+    {
+      "side": "reviewed",
+      "path": "adapters/agent-claude/src/claude-provider.ts",
+      "sha256": "9ae02159568043fd5721bab237db94e2db7c5e160c2d1d845da61964a76f23c5"
+    },
+    {
+      "side": "reviewed",
+      "path": "adapters/command-runner/src/sandbox-exec.itest.ts",
+      "sha256": "fc93bbedc4e0d21fa749f681233a415d7f11cebf6f965ae2669ecc635b317454"
+    },
+    {
+      "side": "reviewed",
+      "path": "packages/application/src/vertical-slice-workflow.ts",
+      "sha256": "71493c16904c84b55ac06804cc4b9bf6c4624747f4ce21af261a33126d27897d"
+    }
+  ],
+  "excerptsWithheld": [],
+  "provenance": {
+    "doc": "docs/implementation/phases/phase-02-final-rereview-codex-v3.md",
+    "line": 6,
+    "shaEvidence": null,
+    "excerptSource": "git",
+    "excerptOnly": false
+  },
+  "confirmation": {
+    "doc": "docs/implementation/phases/phase-02-final-rereview-codex-v4.md",
+    "line": 6,
+    "status": "RESOLVED"
+  },
+  "excluded": null
+}

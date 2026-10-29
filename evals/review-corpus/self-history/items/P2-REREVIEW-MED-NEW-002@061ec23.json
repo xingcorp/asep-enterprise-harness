@@ -1,0 +1,52 @@
+{
+  "id": "P2-REREVIEW-MED-NEW-002@061ec23",
+  "findingId": "P2-REREVIEW-MED-NEW-002",
+  "phase": 2,
+  "cycle": 2,
+  "reviewKind": "rereview",
+  "instanceKind": "first-occurrence",
+  "labelStatus": null,
+  "severity": "MEDIUM",
+  "reviewedSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+  "reviewedShaSource": "derived",
+  "baseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+  "baseShaSource": "phase-plan",
+  "reachability": "reachable",
+  "postFixSha": "594b6287416ab6f18b18adb9a152bdba1c6278be",
+  "fixCommits": [
+    "bbabb5a496746c56e84d726575fa4eca496da159"
+  ],
+  "locations": [
+    {
+      "file": "scripts/integration/lib.mjs",
+      "lineStart": 31,
+      "lineEnd": 39
+    }
+  ],
+  "excerpts": [
+    {
+      "side": "reviewed",
+      "path": "scripts/integration/lib.mjs",
+      "sha256": "16b5185edfef4568a70393230c840f36e70207afc3adac69a8e8dab92731fa47"
+    },
+    {
+      "side": "post-fix",
+      "path": "scripts/integration/lib.mjs",
+      "sha256": "e19dec41162e6a94784bcdd5261d85fbf5e22e28c641b5c8233068e465d4c48f"
+    }
+  ],
+  "excerptsWithheld": [],
+  "provenance": {
+    "doc": "docs/implementation/phases/phase-02-final-rereview-codex-v2.md",
+    "line": 37,
+    "shaEvidence": null,
+    "excerptSource": "git",
+    "excerptOnly": false
+  },
+  "confirmation": {
+    "doc": "docs/implementation/phases/phase-02-final-rereview-codex-v3.md",
+    "line": 21,
+    "status": "RESOLVED"
+  },
+  "excluded": null
+}

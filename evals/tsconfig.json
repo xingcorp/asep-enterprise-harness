@@ -6,7 +6,8 @@
   },
   "include": [
     "runner/**/*.ts",
-    "schema/**/*.ts"
+    "schema/**/*.ts",
+    "review-corpus/**/*.ts"
   ],
   "references": [
     {

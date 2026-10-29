@@ -1,0 +1,67 @@
+{
+  "id": "P2-FINAL-MED-006@2e61f24",
+  "findingId": "P2-FINAL-MED-006",
+  "phase": 2,
+  "cycle": 1,
+  "reviewKind": "final",
+  "instanceKind": "first-occurrence",
+  "labelStatus": null,
+  "severity": "MEDIUM",
+  "reviewedSha": "2e61f2447f6812f9ed795a5195a25861ada1c50b",
+  "reviewedShaSource": "derived",
+  "baseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+  "baseShaSource": "phase-plan",
+  "reachability": "reachable",
+  "postFixSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+  "fixCommits": [
+    "9d2bbd03e0e5aa698ff6b6ff035063cdf25a684e"
+  ],
+  "locations": [
+    {
+      "file": "docs/implementation/phases/phase-02-pilot-rehearsal.md",
+      "lineStart": 3,
+      "lineEnd": 9
+    },
+    {
+      "file": "docs/implementation/phases/phase-02-pilot-rehearsal.md",
+      "lineStart": 19,
+      "lineEnd": 26
+    },
+    {
+      "file": "docs/implementation/phases/phase-02-pilot-rehearsal.md",
+      "lineStart": 37,
+      "lineEnd": 52
+    },
+    {
+      "file": "docs/implementation/phases/phase-02-pilot-rehearsal.md",
+      "lineStart": 87,
+      "lineEnd": 99
+    }
+  ],
+  "excerpts": [
+    {
+      "side": "reviewed",
+      "path": "docs/implementation/phases/phase-02-pilot-rehearsal.md",
+      "sha256": "cb95d71193e62cdce630f885b1770b2217f71dfa835b504139758508fd63cbc4"
+    },
+    {
+      "side": "post-fix",
+      "path": "docs/implementation/phases/phase-02-pilot-rehearsal.md",
+      "sha256": "cb95d71193e62cdce630f885b1770b2217f71dfa835b504139758508fd63cbc4"
+    }
+  ],
+  "excerptsWithheld": [],
+  "provenance": {
+    "doc": "docs/implementation/phases/phase-02-final-review-codex-v1.md",
+    "line": 149,
+    "shaEvidence": null,
+    "excerptSource": "git",
+    "excerptOnly": false
+  },
+  "confirmation": {
+    "doc": "docs/implementation/phases/phase-02-final-rereview-codex-v2.md",
+    "line": 19,
+    "status": "PARTIAL"
+  },
+  "excluded": null
+}

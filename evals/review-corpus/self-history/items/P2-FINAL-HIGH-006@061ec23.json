@@ -1,0 +1,77 @@
+{
+  "id": "P2-FINAL-HIGH-006@061ec23",
+  "findingId": "P2-FINAL-HIGH-006",
+  "phase": 2,
+  "cycle": 2,
+  "reviewKind": "rereview",
+  "instanceKind": "residual",
+  "labelStatus": "PARTIAL",
+  "severity": "HIGH",
+  "reviewedSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+  "reviewedShaSource": "derived",
+  "baseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+  "baseShaSource": "phase-plan",
+  "reachability": "reachable",
+  "postFixSha": "594b6287416ab6f18b18adb9a152bdba1c6278be",
+  "fixCommits": [
+    "4466fc4813e4d7bb19c7f8f233522b973c0e8984"
+  ],
+  "locations": [
+    {
+      "file": "adapters/persistence/src/side-effect-log.test.ts",
+      "lineStart": 215,
+      "lineEnd": 235
+    },
+    {
+      "file": "packages/application/src/pipeline-steps.ts",
+      "lineStart": 260,
+      "lineEnd": 300
+    },
+    {
+      "file": "packages/application/src/pipeline-steps.ts",
+      "lineStart": 394,
+      "lineEnd": 420
+    },
+    {
+      "file": "packages/application/src/pipeline-steps.ts",
+      "lineStart": 454,
+      "lineEnd": 486
+    }
+  ],
+  "excerpts": [
+    {
+      "side": "reviewed",
+      "path": "adapters/persistence/src/side-effect-log.test.ts",
+      "sha256": "f22f135754504b88bd092516e9ba7e848f6ed2096a25001fea9a5117f284ea8a"
+    },
+    {
+      "side": "reviewed",
+      "path": "packages/application/src/pipeline-steps.ts",
+      "sha256": "595f079f980bd9df8783e5a3ddb24e5805acbc16a2d1e69b8307e8b8d9883ab5"
+    },
+    {
+      "side": "post-fix",
+      "path": "adapters/persistence/src/side-effect-log.test.ts",
+      "sha256": "f22f135754504b88bd092516e9ba7e848f6ed2096a25001fea9a5117f284ea8a"
+    },
+    {
+      "side": "post-fix",
+      "path": "packages/application/src/pipeline-steps.ts",
+      "sha256": "9fd8db74d2b7cc5fefa7d204711efebe061f835436731a504920a05bc6ac806d"
+    }
+  ],
+  "excerptsWithheld": [],
+  "provenance": {
+    "doc": "docs/implementation/phases/phase-02-final-rereview-codex-v2.md",
+    "line": 10,
+    "shaEvidence": null,
+    "excerptSource": "git",
+    "excerptOnly": false
+  },
+  "confirmation": {
+    "doc": "docs/implementation/phases/phase-02-final-rereview-codex-v3.md",
+    "line": 10,
+    "status": "PARTIAL"
+  },
+  "excluded": null
+}

@@ -1,0 +1,32 @@
+{
+  "id": "P1-HIGH-008@unknown",
+  "findingId": "P1-HIGH-008",
+  "phase": 1,
+  "cycle": 0,
+  "reviewKind": "plan",
+  "instanceKind": "first-occurrence",
+  "labelStatus": null,
+  "severity": "HIGH",
+  "reviewedSha": null,
+  "reviewedShaSource": "unknown",
+  "baseSha": null,
+  "baseShaSource": null,
+  "reachability": "unavailable",
+  "postFixSha": null,
+  "fixCommits": [],
+  "locations": [],
+  "excerpts": [],
+  "excerptsWithheld": [],
+  "provenance": {
+    "doc": "docs/implementation/phases/phase-01-plan-review-codex-v1.md",
+    "line": 215,
+    "shaEvidence": null,
+    "excerptSource": null,
+    "excerptOnly": true
+  },
+  "confirmation": null,
+  "excluded": {
+    "reason": "plan-defect",
+    "detail": "labels a plan review; no code tree was reviewed"
+  }
+}

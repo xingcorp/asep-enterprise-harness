@@ -1,0 +1,118 @@
+{
+  "id": "P2-FINAL-HIGH-008@2e61f24",
+  "findingId": "P2-FINAL-HIGH-008",
+  "phase": 2,
+  "cycle": 1,
+  "reviewKind": "final",
+  "instanceKind": "first-occurrence",
+  "labelStatus": null,
+  "severity": "HIGH",
+  "reviewedSha": "2e61f2447f6812f9ed795a5195a25861ada1c50b",
+  "reviewedShaSource": "derived",
+  "baseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+  "baseShaSource": "phase-plan",
+  "reachability": "reachable",
+  "postFixSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+  "fixCommits": [
+    "6de0393dc253f6d6477c0494716ef71943ebad06",
+    "66d20bd16627d8e5c048ae43def8f0ede95a3f8a"
+  ],
+  "locations": [
+    {
+      "file": "adapters/github-app/src/forge-provider.ts",
+      "lineStart": 129,
+      "lineEnd": 164
+    },
+    {
+      "file": "apps/control-plane-api/src/cli-main.ts",
+      "lineStart": 8,
+      "lineEnd": 31
+    },
+    {
+      "file": "apps/control-plane-api/src/vertical-integration.test.ts",
+      "lineStart": 95,
+      "lineEnd": 140
+    },
+    {
+      "file": "apps/control-plane-api/src/vertical-integration.test.ts",
+      "lineStart": 306,
+      "lineEnd": 321
+    },
+    {
+      "file": "packages/application/src/execute-task.ts",
+      "lineStart": 160,
+      "lineEnd": 198
+    },
+    {
+      "file": "packages/ports/src/index.ts",
+      "lineStart": 259,
+      "lineEnd": 272
+    }
+  ],
+  "excerpts": [
+    {
+      "side": "reviewed",
+      "path": "adapters/github-app/src/forge-provider.ts",
+      "sha256": "00eecaf8d2f542e82438759e8b85262a49237b63d362235c32b8bb7d1e91ae21"
+    },
+    {
+      "side": "reviewed",
+      "path": "apps/control-plane-api/src/cli-main.ts",
+      "sha256": "c61d92e7d8c8c68abb424d121c44799946f8666e3a2b580f93f001cc36744ac7"
+    },
+    {
+      "side": "reviewed",
+      "path": "apps/control-plane-api/src/vertical-integration.test.ts",
+      "sha256": "0f5a0414f6e6e0387022f6f8d1d49a6eae060a382e32b9f1d114df8ba2d4a973"
+    },
+    {
+      "side": "reviewed",
+      "path": "packages/application/src/execute-task.ts",
+      "sha256": "4bf986af0211a5485c045284fddcfed6c74bcccb6f5e6749fe8fc701e1efb8a6"
+    },
+    {
+      "side": "reviewed",
+      "path": "packages/ports/src/index.ts",
+      "sha256": "6196bb3cfc018a69ae94406edd84796dc84b90da7a100e0573afea0be6e79ee6"
+    },
+    {
+      "side": "post-fix",
+      "path": "adapters/github-app/src/forge-provider.ts",
+      "sha256": "151a7a2af1d0686409598c25525c42fb603e81d8fac1a18d9328f985234dd39e"
+    },
+    {
+      "side": "post-fix",
+      "path": "apps/control-plane-api/src/cli-main.ts",
+      "sha256": "8b813928d505fdd2553f2b2b33922d617ab008dbd0e7cc055ac25f489fa41c6b"
+    },
+    {
+      "side": "post-fix",
+      "path": "apps/control-plane-api/src/vertical-integration.test.ts",
+      "sha256": "1fb38115e07e967c49558a88ca4e4a8e6d09e7f03bfec7dcb50af01962384d69"
+    },
+    {
+      "side": "post-fix",
+      "path": "packages/application/src/execute-task.ts",
+      "sha256": "bab6d5f04a79af251d30018184a14e4506be0b52eebaa5d0903b2ab1741e040e"
+    },
+    {
+      "side": "post-fix",
+      "path": "packages/ports/src/index.ts",
+      "sha256": "5d0ad93b12f4aad994e604cf1a06e9a8785068470bc9de4376117d0fc19d7cdd"
+    }
+  ],
+  "excerptsWithheld": [],
+  "provenance": {
+    "doc": "docs/implementation/phases/phase-02-final-review-codex-v1.md",
+    "line": 79,
+    "shaEvidence": null,
+    "excerptSource": "git",
+    "excerptOnly": false
+  },
+  "confirmation": {
+    "doc": "docs/implementation/phases/phase-02-final-rereview-codex-v2.md",
+    "line": 12,
+    "status": "PARTIAL"
+  },
+  "excluded": null
+}

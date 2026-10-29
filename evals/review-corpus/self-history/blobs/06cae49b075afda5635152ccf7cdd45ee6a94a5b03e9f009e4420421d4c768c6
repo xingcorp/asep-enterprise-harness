@@ -1,0 +1,101 @@
+# Local development only. Production must use managed/persistent services,
+# TLS, secret management and network policy.
+#
+# Image pinning (disp. P2-FINAL-HIGH-001): the two services the integration gate
+# depends on — postgres and minio — are pinned BY DIGEST, not by a mutable tag,
+# and their digests are kept byte-identical to scripts/integration/images.mjs by
+# an executable gate (scripts/integration/run-integration.test.ts). A tag can be
+# re-pointed at new bytes under our feet; a @sha256:<64hex> digest names exactly
+# one immutable manifest, so `pnpm infra:up` and the CI integration job provision
+# the SAME backend build the suites were proven against.
+services:
+  postgres:
+    # postgres:17 — digest-pinned; mirrored in scripts/integration/images.mjs.
+    image: postgres@sha256:a426e44bac0b759c95894d68e1a0ac03ecc20b619f498a91aae373bf06d8508d
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports: ["${POSTGRES_PORT}:5432"]
+    volumes: ["postgres_data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  temporal:
+    image: temporalio/auto-setup:1.31.0
+    depends_on:
+      postgres: { condition: service_healthy }
+    environment:
+      DB: postgres12
+      DB_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PWD: ${POSTGRES_PASSWORD}
+      POSTGRES_SEEDS: postgres
+      DYNAMIC_CONFIG_FILE_PATH: config/dynamicconfig/development-sql.yaml
+    ports: ["7233:7233"]
+
+  temporal-ui:
+    image: temporalio/ui:2.39.0
+    depends_on: [temporal]
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+    ports: ["${TEMPORAL_UI_PORT}:8080"]
+
+  minio:
+    # minio RELEASE.2025-04-22T22-12-26Z — digest-pinned; mirrored in
+    # scripts/integration/images.mjs.
+    image: minio/minio@sha256:a1ea29fa28355559ef137d71fc570e508a214ec84ff8083e39bc5428980b015e
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    ports:
+      - "${MINIO_API_PORT}:9000"
+      - "${MINIO_CONSOLE_PORT}:9001"
+    volumes: ["minio_data:/data"]
+    # Health-checked so `depends_on: service_healthy` and the integration gate
+    # can WAIT for readiness instead of racing it (disp. P2-FINAL-HIGH-001).
+    healthcheck:
+      test: ["CMD-SHELL", "mc ready local || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.68.0
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "${JAEGER_UI_PORT}:16686"
+      - "4317"
+      - "4318"
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.130.0
+    command: ["--config=/etc/otel/config.yaml"]
+    volumes:
+      - ./deploy/otel/collector.yaml:/etc/otel/config.yaml:ro
+    ports:
+      - "${OTEL_GRPC_PORT}:4317"
+      - "${OTEL_HTTP_PORT}:4318"
+    depends_on: [jaeger]
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    command: ["--config.file=/etc/prometheus/prometheus.yml"]
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports: ["${PROMETHEUS_PORT}:9090"]
+
+  grafana:
+    image: grafana/grafana:12.0.2
+    ports: ["${GRAFANA_PORT}:3000"]
+    volumes: ["grafana_data:/var/lib/grafana"]
+
+volumes:
+  postgres_data:
+  minio_data:
+  grafana_data:

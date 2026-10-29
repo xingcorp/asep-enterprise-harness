@@ -1,0 +1,84 @@
+{
+  "id": "P2-FINAL-HIGH-005@bb11d00",
+  "findingId": "P2-FINAL-HIGH-005",
+  "phase": 2,
+  "cycle": 5,
+  "reviewKind": "rereview",
+  "instanceKind": "residual",
+  "labelStatus": "PARTIAL",
+  "severity": "HIGH",
+  "reviewedSha": "bb11d0086108fc439d69c1d50e6ddcf009409198",
+  "reviewedShaSource": "recorded-in-review",
+  "baseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+  "baseShaSource": "phase-plan",
+  "reachability": "object-store-only",
+  "postFixSha": null,
+  "fixCommits": [],
+  "locations": [
+    {
+      "file": "adapters/persistence/src/migrations.ts",
+      "lineStart": 245,
+      "lineEnd": 260
+    },
+    {
+      "file": "adapters/persistence/src/migrations.ts",
+      "lineStart": 410,
+      "lineEnd": 421
+    },
+    {
+      "file": "adapters/persistence/src/side-effect-log.ts",
+      "lineStart": 96,
+      "lineEnd": 104
+    },
+    {
+      "file": "adapters/persistence/src/side-effect-log.ts",
+      "lineStart": 163,
+      "lineEnd": 211
+    },
+    {
+      "file": "packages/application/src/pipeline-steps.ts",
+      "lineStart": 632,
+      "lineEnd": 637
+    },
+    {
+      "file": "packages/ports/src/index.ts",
+      "lineStart": 467,
+      "lineEnd": 473
+    }
+  ],
+  "excerpts": [
+    {
+      "side": "reviewed",
+      "path": "adapters/persistence/src/migrations.ts",
+      "sha256": "e3b2fd3e1bf68db61da911bb1f290b31f405412d36a00dc05afdee675b8ed125"
+    },
+    {
+      "side": "reviewed",
+      "path": "adapters/persistence/src/side-effect-log.ts",
+      "sha256": "afc7e641ffbedec25ecc7a46f2fda350ab86175b2adfc15a129edec0d8fb40c0"
+    },
+    {
+      "side": "reviewed",
+      "path": "packages/application/src/pipeline-steps.ts",
+      "sha256": "d3a40d0ef821d79252b1f1bf9935bf5d51e56fef71fff7913ab580d826cadc42"
+    },
+    {
+      "side": "reviewed",
+      "path": "packages/ports/src/index.ts",
+      "sha256": "add72583268b675fc4c48274597868c99e5b58472bf49250f3e034f123ae633d"
+    }
+  ],
+  "excerptsWithheld": [],
+  "provenance": {
+    "doc": "docs/implementation/phases/phase-02-final-rereview-codex-v5.md",
+    "line": 30,
+    "shaEvidence": {
+      "doc": "docs/implementation/phases/phase-02-final-rereview-codex-v5.md",
+      "line": 52
+    },
+    "excerptSource": "object-store",
+    "excerptOnly": true
+  },
+  "confirmation": null,
+  "excluded": null
+}

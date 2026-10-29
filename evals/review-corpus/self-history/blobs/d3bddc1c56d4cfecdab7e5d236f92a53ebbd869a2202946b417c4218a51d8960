@@ -1,0 +1,30 @@
+{
+  "name": "asep-enterprise-harness",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@10.31.0",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @asep/control-plane-api dev",
+    "build": "tsc -b",
+    "typecheck": "tsc -b --pretty false",
+    "test": "node scripts/run-canonical-tests.mjs",
+    "format:check": "bash scripts/format-check.sh",
+    "scan:secret": "bash scripts/secret-scan.sh",
+    "scan:large-file": "bash scripts/large-file-scan.sh",
+    "scan:pii": "bash scripts/pii-scan.sh",
+    "check:publication": "bash scripts/check-publication.sh",
+    "verify": "pnpm format:check && pnpm typecheck && pnpm test",
+    "verify:all": "bash scripts/verify-all.sh",
+    "infra:up": "docker compose --env-file .env up -d",
+    "infra:down": "docker compose --env-file .env down",
+    "infra:logs": "docker compose --env-file .env logs -f --tail=200"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.0",
+    "tsx": "^4.23.1",
+    "typescript": "^7.0.2"
+  }
+}

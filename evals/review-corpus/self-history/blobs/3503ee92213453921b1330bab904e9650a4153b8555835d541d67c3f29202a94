@@ -1,0 +1,23 @@
+{
+  "name": "@asep/persistence",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b --pretty false"
+  },
+  "dependencies": {
+    "@asep/contracts": "workspace:*",
+    "@asep/ports": "workspace:*",
+    "@asep/domain": "workspace:*",
+    "@asep/observability": "workspace:*",
+    "pg": "8.22.0"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "0.5.4",
+    "@types/pg": "8.20.0"
+  }
+}

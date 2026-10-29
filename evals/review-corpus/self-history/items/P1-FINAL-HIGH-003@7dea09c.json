@@ -1,0 +1,55 @@
+{
+  "id": "P1-FINAL-HIGH-003@7dea09c",
+  "findingId": "P1-FINAL-HIGH-003",
+  "phase": 1,
+  "cycle": 2,
+  "reviewKind": "rereview",
+  "instanceKind": "residual",
+  "labelStatus": "PARTIAL",
+  "severity": "HIGH",
+  "reviewedSha": "7dea09ca473e61190ae08499c7616b70fdbb690d",
+  "reviewedShaSource": "recorded-in-review",
+  "baseSha": "83ba33db16072f05fb27f00f34cebd6774cb771a",
+  "baseShaSource": "phase-plan",
+  "reachability": "reachable",
+  "postFixSha": "1af1cff0dde456b935a5886e9895ae4ebbeeec58",
+  "fixCommits": [
+    "a8bb5c865f4df0ca8e05b11da88efe967ddbd620"
+  ],
+  "locations": [
+    {
+      "file": "scripts/lib/secret-patterns.sh",
+      "lineStart": null,
+      "lineEnd": null
+    }
+  ],
+  "excerpts": [
+    {
+      "side": "reviewed",
+      "path": "scripts/lib/secret-patterns.sh",
+      "sha256": "de15dda44a12061269158946b32893d89f618c02b001b0917b4b936fbae355c2"
+    },
+    {
+      "side": "post-fix",
+      "path": "scripts/lib/secret-patterns.sh",
+      "sha256": "de15dda44a12061269158946b32893d89f618c02b001b0917b4b936fbae355c2"
+    }
+  ],
+  "excerptsWithheld": [],
+  "provenance": {
+    "doc": "docs/implementation/phases/phase-01-final-independent-review-rereview.md",
+    "line": 44,
+    "shaEvidence": {
+      "doc": "docs/implementation/phases/phase-01-final-independent-review-rereview.md",
+      "line": 16
+    },
+    "excerptSource": "git",
+    "excerptOnly": false
+  },
+  "confirmation": {
+    "doc": "docs/implementation/phases/phase-01-final-independent-review-rereview3.yaml",
+    "line": 65,
+    "status": "RESOLVED"
+  },
+  "excluded": null
+}

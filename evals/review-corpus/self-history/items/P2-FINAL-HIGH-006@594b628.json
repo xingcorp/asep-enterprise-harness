@@ -1,0 +1,77 @@
+{
+  "id": "P2-FINAL-HIGH-006@594b628",
+  "findingId": "P2-FINAL-HIGH-006",
+  "phase": 2,
+  "cycle": 3,
+  "reviewKind": "rereview",
+  "instanceKind": "residual",
+  "labelStatus": "PARTIAL",
+  "severity": "HIGH",
+  "reviewedSha": "594b6287416ab6f18b18adb9a152bdba1c6278be",
+  "reviewedShaSource": "derived",
+  "baseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+  "baseShaSource": "phase-plan",
+  "reachability": "reachable",
+  "postFixSha": null,
+  "fixCommits": [
+    "f08bec2f67ee84b7c4264f712c1cbb74c0f1c3e3"
+  ],
+  "locations": [
+    {
+      "file": "adapters/git-worktree/src/git-worktree.test.ts",
+      "lineStart": 392,
+      "lineEnd": 429
+    },
+    {
+      "file": "adapters/git-worktree/src/worktree-manager.ts",
+      "lineStart": 260,
+      "lineEnd": 286
+    },
+    {
+      "file": "packages/application/src/pipeline-steps.ts",
+      "lineStart": 303,
+      "lineEnd": 374
+    },
+    {
+      "file": "packages/application/src/pipeline-steps.ts",
+      "lineStart": 468,
+      "lineEnd": 494
+    },
+    {
+      "file": "packages/application/src/pipeline-steps.ts",
+      "lineStart": 528,
+      "lineEnd": 560
+    }
+  ],
+  "excerpts": [
+    {
+      "side": "reviewed",
+      "path": "adapters/git-worktree/src/git-worktree.test.ts",
+      "sha256": "36b1eee24b774cba54ecd148638e0279c3e39c9d6365cae1bd66be3a2b4e08b3"
+    },
+    {
+      "side": "reviewed",
+      "path": "adapters/git-worktree/src/worktree-manager.ts",
+      "sha256": "42af29998b972c1e327e760094c7e7c9e331768cfb9f25e668e6b004bce635e7"
+    },
+    {
+      "side": "reviewed",
+      "path": "packages/application/src/pipeline-steps.ts",
+      "sha256": "9fd8db74d2b7cc5fefa7d204711efebe061f835436731a504920a05bc6ac806d"
+    }
+  ],
+  "excerptsWithheld": [],
+  "provenance": {
+    "doc": "docs/implementation/phases/phase-02-final-rereview-codex-v3.md",
+    "line": 10,
+    "shaEvidence": null,
+    "excerptSource": "git",
+    "excerptOnly": false
+  },
+  "confirmation": {
+    "doc": "docs/implementation/phases/phase-02-final-rereview-codex-v4.md",
+    "line": 10,
+    "status": "PARTIAL"
+  },
+  "excluded": null
+}

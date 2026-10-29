@@ -1,0 +1,99 @@
+{
+  "id": "P2-FINAL-HIGH-005@2e61f24",
+  "findingId": "P2-FINAL-HIGH-005",
+  "phase": 2,
+  "cycle": 1,
+  "reviewKind": "final",
+  "instanceKind": "first-occurrence",
+  "labelStatus": null,
+  "severity": "HIGH",
+  "reviewedSha": "2e61f2447f6812f9ed795a5195a25861ada1c50b",
+  "reviewedShaSource": "derived",
+  "baseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+  "baseShaSource": "phase-plan",
+  "reachability": "reachable",
+  "postFixSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+  "fixCommits": [
+    "52f94186fcf71cfcd6162e04953e1f945cd04b63",
+    "ae855e00930c838fa6669704f3043eafa0c18708",
+    "5ddf49a393780591f42dd6e8aea5da8e64052060"
+  ],
+  "locations": [
+    {
+      "file": "adapters/persistence/src/artifact-store.ts",
+      "lineStart": 112,
+      "lineEnd": 123
+    },
+    {
+      "file": "adapters/persistence/src/migrations.ts",
+      "lineStart": 81,
+      "lineEnd": 98
+    },
+    {
+      "file": "adapters/persistence/src/migrations.ts",
+      "lineStart": 100,
+      "lineEnd": 123
+    },
+    {
+      "file": "adapters/persistence/src/migrations.ts",
+      "lineStart": 203,
+      "lineEnd": 225
+    },
+    {
+      "file": "adapters/persistence/src/migrations.ts",
+      "lineStart": 245,
+      "lineEnd": 260
+    },
+    {
+      "file": "adapters/persistence/src/repositories.ts",
+      "lineStart": 248,
+      "lineEnd": 260
+    }
+  ],
+  "excerpts": [
+    {
+      "side": "reviewed",
+      "path": "adapters/persistence/src/artifact-store.ts",
+      "sha256": "b58226152b7c482748d6ded1c8b68e852f51d0a87be488397116027529000d8d"
+    },
+    {
+      "side": "reviewed",
+      "path": "adapters/persistence/src/migrations.ts",
+      "sha256": "f32a60d6bf4f3e47ad8ea93d3caf89d82c36b560e0258b6b3b6eb4bd5b898b1c"
+    },
+    {
+      "side": "reviewed",
+      "path": "adapters/persistence/src/repositories.ts",
+      "sha256": "fa5643631809e6f644492d6f3470d3e077d01ffd03c80fa2afce078041e38c93"
+    },
+    {
+      "side": "post-fix",
+      "path": "adapters/persistence/src/artifact-store.ts",
+      "sha256": "131b1ce6e99aebde28ea5516b562da7b203cb308a0300d7d4a7cacd2b6bdc5d1"
+    },
+    {
+      "side": "post-fix",
+      "path": "adapters/persistence/src/migrations.ts",
+      "sha256": "c54a3527f1eba55bf2a0d4b2e43a355a64965c906e0efdc84f2547bd6ed6088e"
+    },
+    {
+      "side": "post-fix",
+      "path": "adapters/persistence/src/repositories.ts",
+      "sha256": "3d9c66b5783b991328120f61bddd52155adfb871148ce6a38a7071ddd1a86704"
+    }
+  ],
+  "excerptsWithheld": [],
+  "provenance": {
+    "doc": "docs/implementation/phases/phase-02-final-review-codex-v1.md",
+    "line": 46,
+    "shaEvidence": null,
+    "excerptSource": "git",
+    "excerptOnly": false
+  },
+  "confirmation": {
+    "doc": "docs/implementation/phases/phase-02-final-rereview-codex-v2.md",
+    "line": 9,
+    "status": "PARTIAL"
+  },
+  "excluded": null
+}

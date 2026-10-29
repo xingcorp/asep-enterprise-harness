@@ -1,0 +1,67 @@
+{
+  "id": "P2-FINAL-MED-004@2e61f24",
+  "findingId": "P2-FINAL-MED-004",
+  "phase": 2,
+  "cycle": 1,
+  "reviewKind": "final",
+  "instanceKind": "first-occurrence",
+  "labelStatus": null,
+  "severity": "MEDIUM",
+  "reviewedSha": "2e61f2447f6812f9ed795a5195a25861ada1c50b",
+  "reviewedShaSource": "derived",
+  "baseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+  "baseShaSource": "phase-plan",
+  "reachability": "reachable",
+  "postFixSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+  "fixCommits": [
+    "dd35f39b20905d3b612d139e7a012cc66ee51a0e"
+  ],
+  "locations": [
+    {
+      "file": "apps/control-plane-api/src/app.ts",
+      "lineStart": 87,
+      "lineEnd": 161
+    },
+    {
+      "file": "scripts/forbidden-imports.test.ts",
+      "lineStart": 241,
+      "lineEnd": 265
+    }
+  ],
+  "excerpts": [
+    {
+      "side": "reviewed",
+      "path": "apps/control-plane-api/src/app.ts",
+      "sha256": "1a23a1ee5bc911c1dc79b87a1a4cd1294586768a6e62cd27b0465c89a34a1539"
+    },
+    {
+      "side": "reviewed",
+      "path": "scripts/forbidden-imports.test.ts",
+      "sha256": "051a7bb628a420d1a5070efb6d666c5aa6010c6d415456850979b1fc7a23a1de"
+    },
+    {
+      "side": "post-fix",
+      "path": "apps/control-plane-api/src/app.ts",
+      "sha256": "27e60ee59cf3a9930725801d5a0fbd19ca5d0ab709a81b1ec3d6cc16edd6345d"
+    },
+    {
+      "side": "post-fix",
+      "path": "scripts/forbidden-imports.test.ts",
+      "sha256": "9a0afca3856231f63976501dab576ab4daef39c318b87dacaceb62dad660b974"
+    }
+  ],
+  "excerptsWithheld": [],
+  "provenance": {
+    "doc": "docs/implementation/phases/phase-02-final-review-codex-v1.md",
+    "line": 132,
+    "shaEvidence": null,
+    "excerptSource": "git",
+    "excerptOnly": false
+  },
+  "confirmation": {
+    "doc": "docs/implementation/phases/phase-02-final-rereview-codex-v2.md",
+    "line": 17,
+    "status": "REGRESSED"
+  },
+  "excluded": null
+}

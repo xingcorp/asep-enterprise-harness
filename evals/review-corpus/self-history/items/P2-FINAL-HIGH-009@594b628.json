@@ -1,0 +1,67 @@
+{
+  "id": "P2-FINAL-HIGH-009@594b628",
+  "findingId": "P2-FINAL-HIGH-009",
+  "phase": 2,
+  "cycle": 3,
+  "reviewKind": "rereview",
+  "instanceKind": "residual",
+  "labelStatus": "PARTIAL",
+  "severity": "HIGH",
+  "reviewedSha": "594b6287416ab6f18b18adb9a152bdba1c6278be",
+  "reviewedShaSource": "derived",
+  "baseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+  "baseShaSource": "phase-plan",
+  "reachability": "reachable",
+  "postFixSha": null,
+  "fixCommits": [
+    "eaae44abeae9ac27f346df5269365c582bd38537"
+  ],
+  "locations": [
+    {
+      "file": "scripts/pilot/authority-resolver.mjs",
+      "lineStart": 68,
+      "lineEnd": 149
+    },
+    {
+      "file": "scripts/pilot/authority-resolver.mjs",
+      "lineStart": 123,
+      "lineEnd": 130
+    },
+    {
+      "file": "scripts/pilot/verify-pilot-manifest.mjs",
+      "lineStart": 347,
+      "lineEnd": 366
+    },
+    {
+      "file": "scripts/pilot/verify-pilot-manifest.mjs",
+      "lineStart": 472,
+      "lineEnd": 484
+    }
+  ],
+  "excerpts": [
+    {
+      "side": "reviewed",
+      "path": "scripts/pilot/authority-resolver.mjs",
+      "sha256": "8172c4d89360cee96eff389064de5538a78a8b068c7f80b15d195c365342a989"
+    },
+    {
+      "side": "reviewed",
+      "path": "scripts/pilot/verify-pilot-manifest.mjs",
+      "sha256": "5b80fb251a8496c11a9b65617ddd937df4d0d95e3724111ef70f3b7e4fa99197"
+    }
+  ],
+  "excerptsWithheld": [],
+  "provenance": {
+    "doc": "docs/implementation/phases/phase-02-final-rereview-codex-v3.md",
+    "line": 13,
+    "shaEvidence": null,
+    "excerptSource": "git",
+    "excerptOnly": false
+  },
+  "confirmation": {
+    "doc": "docs/implementation/phases/phase-02-final-rereview-codex-v4.md",
+    "line": 13,
+    "status": "PARTIAL"
+  },
+  "excluded": null
+}

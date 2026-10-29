@@ -1,0 +1,45 @@
+name: CI
+
+# Canonical verification gate, mirrored from the local `pnpm verify` +
+# publication scanners. Fails red on any step (P1-CHANGE-009).
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (full history for git-history secret scan)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: Setup Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+
+      # Single full-gate entry point (P1-FINAL-MED-004). CI runs the EXACT same
+      # script a developer runs locally via `pnpm verify:all`, so the local gate
+      # and the CI gate cannot silently diverge. Adding a check to verify-all.sh
+      # adds it to both. This step is deliberately the whole gate — format,
+      # typecheck, full test matrix, filter tests, compat gate, forbidden-import
+      # fitness, secret/large-file/PII scans, publication gate, and the
+      # clean-tree assertion — so there is nothing to keep in sync by hand.
+      - name: Full verification gate (pnpm verify:all)
+        run: pnpm verify:all

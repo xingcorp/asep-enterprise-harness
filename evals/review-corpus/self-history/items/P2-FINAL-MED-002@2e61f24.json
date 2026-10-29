@@ -1,0 +1,87 @@
+{
+  "id": "P2-FINAL-MED-002@2e61f24",
+  "findingId": "P2-FINAL-MED-002",
+  "phase": 2,
+  "cycle": 1,
+  "reviewKind": "final",
+  "instanceKind": "first-occurrence",
+  "labelStatus": null,
+  "severity": "MEDIUM",
+  "reviewedSha": "2e61f2447f6812f9ed795a5195a25861ada1c50b",
+  "reviewedShaSource": "derived",
+  "baseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+  "baseShaSource": "phase-plan",
+  "reachability": "reachable",
+  "postFixSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+  "fixCommits": [
+    "348c6169f072e31c8bca1576333f862845aa61b7"
+  ],
+  "locations": [
+    {
+      "file": "adapters/github-app/src/credential-provider.ts",
+      "lineStart": 87,
+      "lineEnd": 93
+    },
+    {
+      "file": "adapters/github-app/src/forge-provider.ts",
+      "lineStart": 136,
+      "lineEnd": 159
+    },
+    {
+      "file": "adapters/github-app/src/forge-provider.ts",
+      "lineStart": 164,
+      "lineEnd": 210
+    },
+    {
+      "file": "adapters/github-app/src/github-app.test.ts",
+      "lineStart": 62,
+      "lineEnd": 72
+    }
+  ],
+  "excerpts": [
+    {
+      "side": "reviewed",
+      "path": "adapters/github-app/src/credential-provider.ts",
+      "sha256": "c6061292327714cc1718908cccccf01103c201c31df63f1e1c177b91edffc5cf"
+    },
+    {
+      "side": "reviewed",
+      "path": "adapters/github-app/src/forge-provider.ts",
+      "sha256": "00eecaf8d2f542e82438759e8b85262a49237b63d362235c32b8bb7d1e91ae21"
+    },
+    {
+      "side": "reviewed",
+      "path": "adapters/github-app/src/github-app.test.ts",
+      "sha256": "da5e4619cde74a1ffae0f42d3c1ee040c4032fd3b2d99ef8d2eea404952cdd86"
+    },
+    {
+      "side": "post-fix",
+      "path": "adapters/github-app/src/credential-provider.ts",
+      "sha256": "c6061292327714cc1718908cccccf01103c201c31df63f1e1c177b91edffc5cf"
+    },
+    {
+      "side": "post-fix",
+      "path": "adapters/github-app/src/forge-provider.ts",
+      "sha256": "151a7a2af1d0686409598c25525c42fb603e81d8fac1a18d9328f985234dd39e"
+    },
+    {
+      "side": "post-fix",
+      "path": "adapters/github-app/src/github-app.test.ts",
+      "sha256": "7c2a8236c5a33cc8d58a366ac7f982fad5ccbb2383fd5a5c4d6a1df0829743a7"
+    }
+  ],
+  "excerptsWithheld": [],
+  "provenance": {
+    "doc": "docs/implementation/phases/phase-02-final-review-codex-v1.md",
+    "line": 113,
+    "shaEvidence": null,
+    "excerptSource": "git",
+    "excerptOnly": false
+  },
+  "confirmation": {
+    "doc": "docs/implementation/phases/phase-02-final-rereview-codex-v2.md",
+    "line": 15,
+    "status": "PARTIAL"
+  },
+  "excluded": null
+}

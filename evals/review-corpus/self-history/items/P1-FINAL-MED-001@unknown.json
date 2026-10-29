@@ -1,0 +1,36 @@
+{
+  "id": "P1-FINAL-MED-001@unknown",
+  "findingId": "P1-FINAL-MED-001",
+  "phase": 1,
+  "cycle": 1,
+  "reviewKind": "final",
+  "instanceKind": "first-occurrence",
+  "labelStatus": null,
+  "severity": "MEDIUM",
+  "reviewedSha": null,
+  "reviewedShaSource": "unknown",
+  "baseSha": null,
+  "baseShaSource": null,
+  "reachability": "unavailable",
+  "postFixSha": "7dea09ca473e61190ae08499c7616b70fdbb690d",
+  "fixCommits": [],
+  "locations": [],
+  "excerpts": [],
+  "excerptsWithheld": [],
+  "provenance": {
+    "doc": "docs/implementation/phases/phase-01-review-log.md",
+    "line": 201,
+    "shaEvidence": null,
+    "excerptSource": null,
+    "excerptOnly": true
+  },
+  "confirmation": {
+    "doc": "docs/implementation/phases/phase-01-final-independent-review-rereview.md",
+    "line": 68,
+    "status": "PARTIAL"
+  },
+  "excluded": {
+    "reason": "tree-unavailable",
+    "detail": "the first final review was never committed and was deleted as stale (phase-02-plan.md §1.1); its labels survive only as the paraphrase in the review log"
+  }
+}
