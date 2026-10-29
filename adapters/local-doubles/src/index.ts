@@ -174,10 +174,17 @@ export class LocalBareForgeProvider implements ForgeProvider {
     return sha && /^[0-9a-f]{40}$/.test(sha) ? sha : null;
   }
 
-  async findPullRequest(_scope: TenantScope, input: {
+  // The PR plus the commit its head branch points at on the remote NOW, like a
+  // forge that reports a PR's live head.
+  async findPullRequest(scope: TenantScope, input: {
     repositoryBindingId: RepositoryBindingId;
     headBranch: string;
   }): Promise<PullRequestRef | null> {
-    return (await this.readPrs()).find((p) => p.headBranch === input.headBranch) ?? null;
+    const pr = (await this.readPrs()).find((p) => p.headBranch === input.headBranch);
+    if (!pr) return null;
+    const headSha = await this.resolveRef(scope, {
+      repositoryBindingId: input.repositoryBindingId, branch: input.headBranch,
+    });
+    return headSha === null ? pr : { ...pr, headSha };
   }
 }

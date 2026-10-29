@@ -198,6 +198,10 @@ export const REQUIRED_SUITES = Object.freeze({
   // epoch, reconciles them against the forge and converges on one commit, one
   // ref and one PR, while the dead executor is refused.
   'asep-suite:crash-recovery': 'apps/control-plane-api/src/crash-recovery.test.ts',
+  // The pilot verifier over a real governed slice: the production resolver
+  // accepts what the run backs, and refuses it once the PR head moves, the
+  // stored evidence bytes change, or the signature binds another commit.
+  'asep-suite:pilot-verifier': 'apps/control-plane-api/src/pilot-verifier.test.ts',
 });
 
 /** The machine-readable marker a suite prints at module load: `SUITE-ID: <id>`. */

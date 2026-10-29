@@ -8,8 +8,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { generateKeyPairSync } from 'node:crypto';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { createHash, generateKeyPairSync } from 'node:crypto';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -23,6 +23,8 @@ import {
 import {
   createSqlAuthorityResolver,
   createResolverFromEnv,
+  filesystemObjectReader,
+  sqlBindingReader,
   // @ts-expect-error - .mjs sibling has no type declarations; runtime import is fine under tsx.
 } from './authority-resolver.mjs';
 import {
@@ -192,10 +194,12 @@ function genuineAuthority(over: {
   attempt?: (i: number, base: Record<string, unknown>) => Record<string, unknown> | null;
   evidence?: (i: number, base: Record<string, unknown>) => Record<string, unknown> | null;
   pr?: (i: number, base: Record<string, unknown>) => Record<string, unknown> | null;
+  livePr?: (i: number, base: Record<string, unknown>) => Record<string, unknown> | null;
   auth?: (i: number, base: Record<string, unknown>) => Record<string, unknown> | null;
 } = {}) {
   const idxOf = (s: string) => Number(String(s).replace(/[^0-9]/g, ''));
   const SHA64local = 'a'.repeat(64);
+  const resultOf = (i: number) => (i + 1).toString(16).padStart(40, '0');
   return {
     async resolveAttempt(trace: Record<string, unknown>) {
       const i = idxOf(trace.taskId as string);
@@ -204,16 +208,23 @@ function genuineAuthority(over: {
         taskId: `task-${i}`,
         runId: `run-${i}`,
         repositoryBindingId: 'rb-1',
-        resultSha: (i + 1).toString(16).padStart(40, '0'),
+        resultSha: resultOf(i),
         evidenceArtifactId: `ev-${i}`,
         evidenceSha256: SHA64local,
         providerId: 'claude:claude-sonnet@cli-1.2.3',
       };
       return over.attempt ? over.attempt(i, base) : base;
     },
+    // The stored bytes hash to the recorded sha256 and parse as the bundle of
+    // this very attempt.
     async resolveEvidence(trace: Record<string, unknown>, _id: string) {
       const i = idxOf(trace.taskId as string);
-      const base = { sha256: SHA64local, kind: 'evidence-bundle' };
+      const base = {
+        sha256: SHA64local,
+        kind: 'evidence-bundle',
+        bytesSha256: SHA64local,
+        bundle: { taskId: `task-${i}`, attemptId: `att-${i}`, baseSha: '0'.repeat(40), resultSha: resultOf(i) },
+      };
       return over.evidence ? over.evidence(i, base) : base;
     },
     async resolvePullRequest(trace: Record<string, unknown>, _id: string) {
@@ -226,9 +237,23 @@ function genuineAuthority(over: {
       };
       return over.pr ? over.pr(i, base) : base;
     },
+    // What the forge reports for the PR right now.
+    async resolveLivePullRequest(trace: Record<string, unknown>, _q: Record<string, unknown>) {
+      const i = idxOf(trace.taskId as string);
+      const base = {
+        number: i + 1,
+        url: `https://github.com/acme/repo/pull/${i + 1}`,
+        headBranch: `asep/${trace.taskId}`,
+        headSha: resultOf(i),
+      };
+      return over.livePr ? over.livePr(i, base) : base;
+    },
     async resolveHumanAuthorization(taskId: string) {
       const i = idxOf(taskId);
-      const base = { disposition: 'PENDING', signedBy: 'reviewer@acme', signatureValid: true };
+      const base = {
+        disposition: 'PENDING', signedBy: 'reviewer@acme', signatureValid: true,
+        attemptId: `att-${i}`, reviewedResultSha: resultOf(i), pullRequestId: `pr-${i}`,
+      };
       return over.auth ? over.auth(i, base) : base;
     },
   };
@@ -318,6 +343,84 @@ test('HIGH-009: a manifest disposition that disagrees with the authoritative rec
   const res = await verifyManifestAgainstAuthority(makeManifest(MIN_PILOT_TASKS), authority);
   assert.equal(res.ok, false);
   assert.ok(res.reasons.some((r: string) => /self-declared disposition/.test(r)));
+});
+
+// --- the evidence bytes, the live PR, and what the signature binds ----------------
+
+async function rejectsWith(authority: ReturnType<typeof genuineAuthority>, pattern: RegExp) {
+  const res = await verifyManifestAgainstAuthority(makeManifest(MIN_PILOT_TASKS), authority);
+  assert.equal(res.ok, false, `expected a rejection matching ${pattern}`);
+  assert.ok(res.reasons.some((r: string) => pattern.test(r)), `${pattern} not among: ${res.reasons.join('; ')}`);
+}
+
+test('evidence whose stored bytes no longer hash to the recorded sha256 is rejected', async () => {
+  await rejectsWith(genuineAuthority({ evidence: (i, b) => ({ ...b, bytesSha256: 'c'.repeat(64) }) }),
+    /stored evidence bytes hash to/);
+});
+
+test('evidence whose bytes cannot be read back is rejected', async () => {
+  await rejectsWith(genuineAuthority({ evidence: (i, b) => ({ ...b, bytesSha256: null, bundle: null }) }),
+    /stored evidence bytes hash to/);
+});
+
+test('evidence bytes that are not an evidence bundle are rejected', async () => {
+  await rejectsWith(genuineAuthority({ evidence: (i, b) => ({ ...b, bundle: null }) }),
+    /not an evidence bundle/);
+});
+
+test('an artifact of another kind cannot stand in for the evidence bundle', async () => {
+  await rejectsWith(genuineAuthority({ evidence: (i, b) => ({ ...b, kind: 'command-stdout' }) }),
+    /is not an evidence bundle/);
+});
+
+test('an evidence bundle of another task, attempt, base or result is rejected', async () => {
+  const cases: Array<[Record<string, string>, RegExp]> = [
+    [{ taskId: 'task-other' }, /evidence bundle names task "task-other"/],
+    [{ attemptId: 'att-other' }, /evidence bundle names attempt "att-other"/],
+    [{ resultSha: 'e'.repeat(40) }, /evidence bundle records result/],
+    [{ baseSha: 'e'.repeat(40) }, /evidence bundle records base/],
+  ];
+  for (const [field, pattern] of cases) {
+    await rejectsWith(genuineAuthority({
+      evidence: (i, b) => ({ ...b, bundle: { ...(b.bundle as object), ...field } }),
+    }), pattern);
+  }
+});
+
+test('a PR the forge no longer has is rejected', async () => {
+  await rejectsWith(genuineAuthority({ livePr: () => null }), /the forge has no pull request/);
+});
+
+test('a PR whose live head has moved off the reviewed commit is rejected', async () => {
+  await rejectsWith(genuineAuthority({ livePr: (i, b) => ({ ...b, headSha: 'f'.repeat(40) }) }),
+    /live PR head .* != the attempt result/);
+});
+
+test('a PR whose live head the forge does not report is rejected', async () => {
+  await rejectsWith(genuineAuthority({ livePr: (i, b) => ({ ...b, headSha: undefined }) }),
+    /did not report the PR head commit/);
+});
+
+test('a live PR with another number or url than the record is rejected', async () => {
+  await rejectsWith(genuineAuthority({ livePr: (i, b) => ({ ...b, number: 9000 + i }) }), /live PR number/);
+  await rejectsWith(genuineAuthority({ livePr: (i, b) => ({ ...b, url: `https://github.com/acme/repo/pull/${9000 + i}` }) }),
+    /live PR url/);
+});
+
+test('a resolver that cannot look the PR up on the forge is refused', async () => {
+  const { resolveLivePullRequest: _drop, ...partial } = genuineAuthority();
+  const res = await verifyManifestAgainstAuthority(makeManifest(MIN_PILOT_TASKS), partial);
+  assert.equal(res.ok, false);
+  assert.ok(res.reasons.some((r: string) => /cannot look the pull request up on the forge/.test(r)), res.reasons.join('; '));
+});
+
+test('a signed authorization for another attempt, commit or PR is rejected', async () => {
+  await rejectsWith(genuineAuthority({ auth: (i, b) => ({ ...b, attemptId: 'att-other' }) }),
+    /authorization was signed for attempt "att-other"/);
+  await rejectsWith(genuineAuthority({ auth: (i, b) => ({ ...b, reviewedResultSha: 'e'.repeat(40) }) }),
+    /authorization was signed for result/);
+  await rejectsWith(genuineAuthority({ auth: (i, b) => ({ ...b, pullRequestId: 'pr-other' }) }),
+    /authorization was signed for pull request "pr-other"/);
 });
 
 test('HIGH-009: a structurally malformed manifest never reaches the resolver', async () => {
@@ -427,6 +530,13 @@ const keys = generateKeyPairSync('ed25519');
 const REVIEWER_PUB = keys.publicKey.export({ type: 'spki', format: 'pem' }).toString();
 const REVIEWER_PRIV = keys.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
 
+// Object and forge readers for resolver tests that do not exercise them.
+const NO_OBJECTS = { get: async (key: string) => { throw new Error(`no object at ${key}`); } };
+const NO_FORGE = { findPullRequest: async () => null };
+const resolverOpts = (over: Record<string, unknown> = {}) => ({
+  reviewerPublicKeyPem: REVIEWER_PUB, objects: NO_OBJECTS, forge: NO_FORGE, ...over,
+});
+
 function signedAuthRow(over: Record<string, unknown> = {}) {
   const decision = {
     task_id: 'task-1',
@@ -443,7 +553,7 @@ function signedAuthRow(over: Record<string, unknown> = {}) {
 
 test('HIGH-009 (resolver): a genuinely signed authorization reports signatureValid=true', async () => {
   const db = fakeDb(() => [signedAuthRow()]);
-  const resolver = createSqlAuthorityResolver(db, { reviewerPublicKeyPem: REVIEWER_PUB });
+  const resolver = createSqlAuthorityResolver(db, resolverOpts());
   const auth = await resolver.resolveHumanAuthorization('task-1', {
     organizationId: 'org-1', projectId: 'proj-1',
   });
@@ -455,7 +565,7 @@ test('HIGH-009 (resolver): a disposition EDITED after signing reports signatureV
   // The row says ACCEPTED but the signature covers PENDING's payload — flipping
   // the decision in the database cannot produce a valid signature.
   const db = fakeDb(() => [signedAuthRow({ disposition: 'REJECTED' })]);
-  const resolver = createSqlAuthorityResolver(db, { reviewerPublicKeyPem: REVIEWER_PUB });
+  const resolver = createSqlAuthorityResolver(db, resolverOpts());
   const auth = await resolver.resolveHumanAuthorization('task-1', {
     organizationId: 'org-1', projectId: 'proj-1',
   });
@@ -468,7 +578,7 @@ test('HIGH-009 (resolver): a FABRICATED row (inserted by whoever can write the D
     disposition: 'ACCEPTED', reviewed_result_sha: 'c'.repeat(40),
     signed_by: 'attacker@evil', signature: Buffer.alloc(64).toString('base64'),
   }]);
-  const resolver = createSqlAuthorityResolver(db, { reviewerPublicKeyPem: REVIEWER_PUB });
+  const resolver = createSqlAuthorityResolver(db, resolverOpts());
   const auth = await resolver.resolveHumanAuthorization('task-1', {
     organizationId: 'org-1', projectId: 'proj-1',
   });
@@ -481,7 +591,7 @@ test('HIGH-009 (resolver): every lookup is tenant-scoped and fully parameter-bou
     taskId: 'task-1', evidenceArtifactId: 'ev-1', pullRequestId: 'pr-1',
   };
   const db = fakeDb(() => []);
-  const resolver = createSqlAuthorityResolver(db, { reviewerPublicKeyPem: REVIEWER_PUB });
+  const resolver = createSqlAuthorityResolver(db, resolverOpts());
   await resolver.resolveAttempt(trace);
   await resolver.resolveEvidence(trace, 'ev-1');
   await resolver.resolvePullRequest(trace, 'pr-1');
@@ -501,8 +611,108 @@ test('HIGH-009 (resolver): every lookup is tenant-scoped and fully parameter-bou
 test('HIGH-009 (resolver): a resolver cannot be built WITHOUT a reviewer public key', () => {
   const db = fakeDb(() => []);
   assert.throws(
-    () => createSqlAuthorityResolver(db, { reviewerPublicKeyPem: '' }),
+    () => createSqlAuthorityResolver(db, resolverOpts({ reviewerPublicKeyPem: '' })),
     /requires a reviewer public key/,
+  );
+});
+
+test('a resolver cannot be built without the evidence bytes or the forge', () => {
+  const db = fakeDb(() => []);
+  assert.throws(() => createSqlAuthorityResolver(db, resolverOpts({ objects: undefined })), /evidence object reader/);
+  assert.throws(() => createSqlAuthorityResolver(db, resolverOpts({ forge: undefined })), /forge/);
+});
+
+// The evidence row as the database holds it, for a bundle of `bytes`.
+function evidenceRow(bytes: Buffer, over: Record<string, unknown> = {}) {
+  return {
+    id: 'ev-1', kind: 'evidence-bundle', sha256: createHash('sha256').update(bytes).digest('hex'),
+    storage_key: 'org-1/proj-1/evidence/ev-1', ...over,
+  };
+}
+
+test('the resolver fetches the evidence bytes, re-hashes them and parses the bundle they hold', async () => {
+  const bundle = { taskId: 'task-1', attemptId: 'att-1', baseSha: '0'.repeat(40), resultSha: 'b'.repeat(40), checks: [] };
+  const bytes = Buffer.from(JSON.stringify(bundle));
+  const asked: string[] = [];
+  const objects = { get: async (key: string) => { asked.push(key); return new Uint8Array(bytes); } };
+  const resolver = createSqlAuthorityResolver(fakeDb(() => [evidenceRow(bytes)]), resolverOpts({ objects }));
+  const ev = await resolver.resolveEvidence({ organizationId: 'org-1', projectId: 'proj-1' }, 'ev-1');
+  assert.deepEqual(asked, ['org-1/proj-1/evidence/ev-1'], 'the bytes come from the storage key the row records');
+  assert.equal(ev.bytesSha256, ev.sha256);
+  assert.deepEqual(ev.bundle, { taskId: 'task-1', attemptId: 'att-1', baseSha: '0'.repeat(40), resultSha: 'b'.repeat(40) });
+});
+
+test('evidence bytes that changed, vanished or are not a bundle are reported as such', async () => {
+  const scope = { organizationId: 'org-1', projectId: 'proj-1' };
+  const original = Buffer.from(JSON.stringify({ taskId: 't', attemptId: 'a', baseSha: 'x', resultSha: 'y' }));
+  const tampered = Buffer.from(original.toString().replace('"y"', '"z"'));
+  const changed = await createSqlAuthorityResolver(fakeDb(() => [evidenceRow(original)]),
+    resolverOpts({ objects: { get: async () => new Uint8Array(tampered) } })).resolveEvidence(scope, 'ev-1');
+  assert.notEqual(changed.bytesSha256, changed.sha256);
+  assert.equal(changed.bytesSha256, createHash('sha256').update(tampered).digest('hex'));
+
+  const vanished = await createSqlAuthorityResolver(fakeDb(() => [evidenceRow(original)]), resolverOpts())
+    .resolveEvidence(scope, 'ev-1');
+  assert.equal(vanished.bytesSha256, null);
+  assert.equal(vanished.bundle, null);
+
+  const junk = Buffer.from('not json');
+  const notBundle = await createSqlAuthorityResolver(fakeDb(() => [evidenceRow(junk)]),
+    resolverOpts({ objects: { get: async () => new Uint8Array(junk) } })).resolveEvidence(scope, 'ev-1');
+  assert.equal(notBundle.bytesSha256, notBundle.sha256);
+  assert.equal(notBundle.bundle, null);
+});
+
+test('the resolver asks the forge for the live PR in the trace scope and reports its head', async () => {
+  const calls: unknown[] = [];
+  const forge = {
+    findPullRequest: async (scope: unknown, q: unknown) => {
+      calls.push([scope, q]);
+      return { number: 4, url: 'https://github.com/acme/web/pull/4', headBranch: 'asep/x', baseBranch: 'main', headSha: 'c'.repeat(40) };
+    },
+  };
+  const resolver = createSqlAuthorityResolver(fakeDb(() => []), resolverOpts({ forge }));
+  const live = await resolver.resolveLivePullRequest(
+    { organizationId: 'org-1', projectId: 'proj-1', attemptId: 'att-1' },
+    { repositoryBindingId: 'rb-1', headBranch: 'asep/x' },
+  );
+  assert.deepEqual(calls, [[{ organizationId: 'org-1', projectId: 'proj-1' }, { repositoryBindingId: 'rb-1', headBranch: 'asep/x' }]]);
+  assert.deepEqual(live, { number: 4, url: 'https://github.com/acme/web/pull/4', headBranch: 'asep/x', headSha: 'c'.repeat(40) });
+
+  const none = createSqlAuthorityResolver(fakeDb(() => []), resolverOpts());
+  assert.equal(await none.resolveLivePullRequest({ organizationId: 'o', projectId: 'p' }, { repositoryBindingId: 'r', headBranch: 'b' }), null);
+});
+
+test('the resolver reports which attempt, commit and PR an authorization was signed for', async () => {
+  const db = fakeDb(() => [signedAuthRow()]);
+  const auth = await createSqlAuthorityResolver(db, resolverOpts())
+    .resolveHumanAuthorization('task-1', { organizationId: 'org-1', projectId: 'proj-1' });
+  assert.equal(auth.attemptId, 'att-1');
+  assert.equal(auth.reviewedResultSha, 'b'.repeat(40));
+  assert.equal(auth.pullRequestId, 'pr-1');
+});
+
+test('the filesystem evidence reader stays under its root', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'asep-objects-'));
+  mkdirSync(join(root, 'org', 'proj', 'evidence'), { recursive: true });
+  writeFileSync(join(root, 'org', 'proj', 'evidence', 'ev'), 'bytes');
+  const reader = filesystemObjectReader(root);
+  assert.equal(Buffer.from(await reader.get('org/proj/evidence/ev')).toString(), 'bytes');
+  for (const key of ['../outside', 'org/../../outside', '/etc/hosts', 'org\\x', '', 'a/\0b']) {
+    await assert.rejects(() => reader.get(key), /refusing evidence key/, `key ${JSON.stringify(key)}`);
+  }
+});
+
+test('the forge binding reader is tenant-scoped and parameter-bound', async () => {
+  const db = fakeDb(() => [{ github_host: 'github.com', github_owner: 'acme', github_repo: 'web', github_repository_id: 42 }]);
+  const row = await sqlBindingReader(db).getScoped({ organizationId: 'org-1', projectId: 'proj-1' }, 'rb-1');
+  assert.deepEqual(row, { githubHost: 'github.com', githubOwner: 'acme', githubRepo: 'web', githubRepositoryId: 42 });
+  assert.match(db.calls[0]!.text, /organization_id = \$\d/);
+  assert.match(db.calls[0]!.text, /project_id = \$\d/);
+  assert.deepEqual([...db.calls[0]!.params].sort(), ['org-1', 'proj-1', 'rb-1']);
+  await assert.rejects(
+    () => sqlBindingReader(fakeDb(() => [])).getScoped({ organizationId: 'o', projectId: 'p' }, 'rb-x'),
+    /not visible in this scope/,
   );
 });
 
@@ -512,11 +722,60 @@ test('HIGH-009 (resolver): createResolverFromEnv fails closed on missing env', a
     () => createResolverFromEnv({ ASEP_PG_URL: 'postgresql://x/y' }),
     /ASEP_REVIEWER_PUBLIC_KEY is not set/,
   );
+  const dir = mkdtempSync(join(tmpdir(), 'asep-resolver-env-'));
+  const pub = join(dir, 'reviewer.pub.pem');
+  writeFileSync(pub, REVIEWER_PUB);
+  const base = { ASEP_PG_URL: 'postgresql://x/y', ASEP_REVIEWER_PUBLIC_KEY: pub };
+  await assert.rejects(() => createResolverFromEnv(base), /ASEP_OBJECT_STORE_DIR is not set/);
+  await assert.rejects(
+    () => createResolverFromEnv({ ...base, ASEP_OBJECT_STORE_DIR: join(dir, 'missing') }),
+    /ASEP_OBJECT_STORE_DIR .* is not a directory/,
+  );
+  const withObjects = { ...base, ASEP_OBJECT_STORE_DIR: dir };
+  await assert.rejects(() => createResolverFromEnv(withObjects), /ASEP_GITHUB_APP_ID is not set/);
+  await assert.rejects(
+    () => createResolverFromEnv({ ...withObjects, ASEP_GITHUB_APP_ID: '1' }),
+    /ASEP_GITHUB_PRIVATE_KEY_PATH is not set/,
+  );
+  await assert.rejects(
+    () => createResolverFromEnv({ ...withObjects, ASEP_GITHUB_APP_ID: '1', ASEP_GITHUB_PRIVATE_KEY_PATH: pub }),
+    /ASEP_GITHUB_INSTALLATION_ID is not set/,
+  );
+  await assert.rejects(
+    () => createResolverFromEnv({ ...withObjects, ASEP_GITHUB_APP_ID: 'one', ASEP_GITHUB_PRIVATE_KEY_PATH: pub, ASEP_GITHUB_INSTALLATION_ID: '2' }),
+    /ASEP_GITHUB_APP_ID must be a positive integer/,
+  );
+});
+
+// The production path builds the real GitHub App forge port from the built
+// adapter. Nothing connects here: the pool opens lazily, and no lookup runs.
+test('createResolverFromEnv builds the resolver over the real GitHub App forge port', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'asep-resolver-prod-'));
+  const pub = join(dir, 'reviewer.pub.pem');
+  writeFileSync(pub, REVIEWER_PUB);
+  const appKey = join(dir, 'app.pem');
+  writeFileSync(appKey, generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey
+    .export({ type: 'pkcs1', format: 'pem' }).toString(), { mode: 0o600 });
+  const handle = await createResolverFromEnv({
+    ASEP_PG_URL: 'postgresql://unused@127.0.0.1:1/none',
+    ASEP_REVIEWER_PUBLIC_KEY: pub,
+    ASEP_OBJECT_STORE_DIR: dir,
+    ASEP_GITHUB_APP_ID: '1',
+    ASEP_GITHUB_PRIVATE_KEY_PATH: appKey,
+    ASEP_GITHUB_INSTALLATION_ID: '2',
+  });
+  try {
+    for (const m of ['resolveAttempt', 'resolveEvidence', 'resolvePullRequest', 'resolveLivePullRequest', 'resolveHumanAuthorization']) {
+      assert.equal(typeof handle.resolver[m], 'function', m);
+    }
+  } finally {
+    await handle.close();
+  }
 });
 
 test('HIGH-009 (resolver): an absent authoritative row resolves to null (verifier fails closed)', async () => {
   const db = fakeDb(() => []);
-  const resolver = createSqlAuthorityResolver(db, { reviewerPublicKeyPem: REVIEWER_PUB });
+  const resolver = createSqlAuthorityResolver(db, resolverOpts());
   assert.equal(await resolver.resolveAttempt({ organizationId: 'o', projectId: 'p', attemptId: 'a' }), null);
   assert.equal(await resolver.resolveEvidence({ organizationId: 'o', projectId: 'p' }, 'ev'), null);
   assert.equal(await resolver.resolvePullRequest({ organizationId: 'o', projectId: 'p' }, 'pr'), null);

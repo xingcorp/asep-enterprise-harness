@@ -301,6 +301,38 @@ test('HIGH-008: PR upsert through the port is idempotent and returns the port re
   assert.deepEqual(Object.keys(first).sort(), ['baseBranch', 'headBranch', 'number', 'url']);
 });
 
+// The pilot verifier asks the forge which commit a reviewed PR shows right now;
+// the port carries the head commit GitHub reports, and nothing when it reports
+// none.
+test('a PR looked up through the port reports the commit its head points at', async () => {
+  const headSha = 'c'.repeat(40);
+  const prs = [{
+    number: 7, html_url: 'https://github.com/acme/web/pull/7',
+    head: { ref: attemptBranchStr, sha: headSha }, base: { ref: 'main' },
+  }];
+  const octokitFor = (): OctokitLike => ({
+    pulls: {
+      list: async ({ head }) => ({ data: prs.filter((pr) => head.endsWith(pr.head.ref)) }),
+      create: async () => { throw new Error('a lookup must not create'); },
+      update: async () => { throw new Error('a lookup must not update'); },
+    },
+  });
+  const creds = new GitHubAppCredentialProvider(
+    { appId: 1, privateKey: 'PEM', installationId: 9 }, fakeAuth(),
+  );
+  const port: ForgeProvider = new GitHubAppForgePort(
+    new GitHubAppForgeProvider(creds, octokitFor, ['github.com']), scopedResolver('/tmp/wt'),
+  );
+  const found = await port.findPullRequest(scope, { repositoryBindingId: BINDING, headBranch: attemptBranchStr });
+  assert.deepEqual(found, {
+    number: 7, url: 'https://github.com/acme/web/pull/7', headBranch: attemptBranchStr, baseBranch: 'main', headSha,
+  });
+
+  delete (prs[0]!.head as { sha?: string }).sha;
+  const unreported = await port.findPullRequest(scope, { repositoryBindingId: BINDING, headBranch: attemptBranchStr });
+  assert.equal(unreported !== null && 'headSha' in unreported, false, 'an unreported head is absent, not invented');
+});
+
 // ---------------------------------------------------------------------------
 // 5 — H5: no merge capability is reachable through the port.
 // ---------------------------------------------------------------------------

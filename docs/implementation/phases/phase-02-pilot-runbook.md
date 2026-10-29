@@ -14,9 +14,11 @@
   separately recorded human independent-review step; **R2–R4 are deferred**
   (risk-admission matrix, exit BR1/BR2/I4). Do not attempt a pilot task above R0
   without the recorded human review.
-- The verification sandbox is **pilot-only** unless the host can enforce OS-level
-  isolation (exit F6). If Docker/gVisor isolation is unavailable, the adapter
-  self-labels pilot-only in code and report — do not claim a production sandbox.
+- The verification sandbox must enforce OS-level isolation (exit E8/F6). The
+  governed slice probes it and refuses, before any commit, push or PR, a sandbox
+  whose handle does not claim `isolationEnforced: true`; there is no waiver and
+  no input that relaxes it. A host without a working Docker daemon cannot run a
+  pilot task.
 - Preconditions before any pilot task:
   - `pnpm verify:all` green from a clean checkout (exit A1/A4).
   - PostgreSQL, object store (MinIO) and the sandbox provisioned and healthy
@@ -83,6 +85,44 @@ skip and print why.
   client, the real proxy and a fake model API. No credential and no network. It
   checks that the CLI accepts the provider's exact argv and stdin prompt and
   that its stream parses.
+
+### 0.2 Evidence storage and the pilot verifier
+
+`ASEP_OBJECT_STORE_DIR` (required) is the directory the pilot writes artifact
+and evidence bytes to. Keep it for the life of the pilot: the verifier reads the
+evidence back from it.
+
+A COMPLETE verdict is gated by `scripts/pilot/verify-pilot-manifest.mjs`. Run
+`pnpm build` first (it loads the built GitHub App adapter), then:
+
+```sh
+ASEP_PG_URL=… ASEP_REVIEWER_PUBLIC_KEY=<reviewer public key PEM> \
+ASEP_OBJECT_STORE_DIR=<the pilot's object store> \
+ASEP_GITHUB_APP_ID=… ASEP_GITHUB_PRIVATE_KEY_PATH=… ASEP_GITHUB_INSTALLATION_ID=… \
+  node scripts/pilot/verify-pilot-manifest.mjs <manifest.json>
+```
+
+Every variable is required; a missing one is a rejection, not a downgrade. For
+each task the verifier, besides matching the manifest against the database rows:
+
+- fetches the evidence bytes from the object store, requires them to hash to
+  the sha256 the artifact row records, and requires the bundle they hold to name
+  the task, the attempt, the attempt's result commit and the manifest's base;
+- asks GitHub, through the same GitHub App and forge port the pilot uses, for
+  the PR on the attempt's branch, and requires its number and URL to match the
+  record and its head to be the attempt's result commit — a PR whose branch has
+  moved since review is refused;
+- requires a human authorization whose ed25519 signature verifies against the
+  reviewer key and which was signed for this attempt, this result commit and
+  this PR.
+
+Recording a human decision: write the decision as JSON with `task_id`,
+`attempt_id`, `pull_request_id`, `disposition`, `reviewed_result_sha` (the
+attempt's result commit, which is the PR head being reviewed) and `signed_by`;
+sign it out of band with
+`node scripts/pilot/human-authorization-crypto.mjs sign <private key> <decision.json>`;
+and insert the signed fields into `human_authorizations`. The harness never
+holds the reviewer's private key.
 
 ## 1. Dashboard & metrics requirements (M1)
 

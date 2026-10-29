@@ -318,6 +318,10 @@ export interface PullRequestRef {
   readonly url: string;
   readonly headBranch: string;
   readonly baseBranch: string;
+  // The commit the PR head points at, as the forge reports it at the time of
+  // the call. Absent when the forge does not report one; a reader that needs
+  // it (the pilot verifier's live check) treats absence as a failure.
+  readonly headSha?: string;
 }
 
 export interface ForgeProvider {

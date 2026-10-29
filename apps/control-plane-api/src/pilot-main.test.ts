@@ -52,6 +52,7 @@ const COMPLETE_ENV: Record<string, string> = {
   ASEP_GITHUB_APP_ID: '12345',
   ASEP_GITHUB_PRIVATE_KEY_PATH: '/run/secrets/github-app.pem',
   ASEP_GITHUB_INSTALLATION_ID: '67890',
+  ASEP_OBJECT_STORE_DIR: '/var/lib/asep/objects',
 
   // --- the real repository this attempt targets -----------------------------
   ASEP_ORGANIZATION_NAME: 'Acme Inc',
@@ -103,6 +104,7 @@ test('HIGH-008: a fully-configured environment yields the pilot configuration', 
   assert.match(env.egressProxyImageDigest, /@sha256:[0-9a-f]{64}$/);
   assert.equal(env.anthropicApiKeyFile, '/run/secrets/anthropic-api-key');
   assert.equal(env.anthropicBaseUrl, 'https://api.anthropic.com', 'the public API unless configured');
+  assert.equal(env.objectStoreDir, '/var/lib/asep/objects', 'evidence goes to the durable store the verifier reads');
 
   // The live target: a real owner/repo, the NUMERIC id the forge resolver needs,
   // and a real mirror + base SHA. None of this was configurable before, which is

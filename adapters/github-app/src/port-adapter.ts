@@ -141,11 +141,14 @@ export class GitHubAppForgePort implements ForgeProvider {
       headBranch: input.headBranch,
     });
     if (!pr) return null;
+    // A lookup carries the head commit GitHub reports, so a reader can check
+    // which commit the PR shows now.
     return {
       number: pr.number,
       url: pr.url,
       headBranch: pr.headBranch,
       baseBranch: pr.baseBranch,
+      ...(pr.headSha !== undefined ? { headSha: pr.headSha } : {}),
     };
   }
 

@@ -216,6 +216,12 @@ test('HIGH-008/K2: a pilot target registers the REAL repository, including the n
     assert.equal(result.taskStatus, 'WAITING_FOR_HUMAN_REVIEW');
     assert.equal(result.stoppedAt, 'complete');
 
+    // --- the attempt records which agent ran it ------------------------------
+    // The pilot verifier certifies the agent from this column, never from the
+    // manifest; left empty, no genuine run could ever pass it.
+    const attemptRow = await result.repos.attempts.getScoped(result.scope, result.attemptId);
+    assert.equal(attemptRow.agentProviderId, 'seam-test-agent');
+
     // --- the leased worktree path was published (defect 2) -------------------
     const publishedPath = published as string | null;
     assert.ok(publishedPath !== null, 'the driver must publish the leased worktree path');

@@ -156,7 +156,7 @@ export interface PullsApi {
     repo: string;
     head: string;          // `owner:branch`
     state: 'open' | 'closed' | 'all';
-  }): Promise<{ data: ReadonlyArray<{ number: number; html_url: string; head: { ref: string }; base: { ref: string } }> }>;
+  }): Promise<{ data: ReadonlyArray<{ number: number; html_url: string; head: { ref: string; sha?: string }; base: { ref: string } }> }>;
   create(params: {
     owner: string;
     repo: string;
@@ -164,14 +164,14 @@ export interface PullsApi {
     base: string;
     title: string;
     body: string;
-  }): Promise<{ data: { number: number; html_url: string; head: { ref: string }; base: { ref: string } } }>;
+  }): Promise<{ data: { number: number; html_url: string; head: { ref: string; sha?: string }; base: { ref: string } } }>;
   update(params: {
     owner: string;
     repo: string;
     pull_number: number;
     title: string;
     body: string;
-  }): Promise<{ data: { number: number; html_url: string; head: { ref: string }; base: { ref: string } } }>;
+  }): Promise<{ data: { number: number; html_url: string; head: { ref: string; sha?: string }; base: { ref: string } } }>;
   // NOTE: deliberately NO `merge` method — H5, no merge capability exists.
 }
 
@@ -204,6 +204,21 @@ export interface PullRequestResult {
   readonly url: string;
   readonly headBranch: string;
   readonly baseBranch: string;
+  // The commit GitHub reports the PR head at, when it reports one.
+  readonly headSha?: string;
+}
+
+// The adapter's result for a PR as GitHub returned it.
+function prResult(pr: {
+  number: number; html_url: string; head: { ref: string; sha?: string }; base: { ref: string };
+}): PullRequestResult {
+  return {
+    number: pr.number,
+    url: pr.html_url,
+    headBranch: pr.head.ref,
+    baseBranch: pr.base.ref,
+    ...(typeof pr.head.sha === 'string' && /^[0-9a-f]{40}$/.test(pr.head.sha) ? { headSha: pr.head.sha } : {}),
+  };
 }
 
 export interface UpsertPrInput {
@@ -362,12 +377,7 @@ export class GitHubAppForgeProvider {
           title: input.title,
           body: input.body,
         });
-        return {
-          number: updated.data.number,
-          url: updated.data.html_url,
-          headBranch: updated.data.head.ref,
-          baseBranch: updated.data.base.ref,
-        };
+        return prResult(updated.data);
       }
 
       const created = await octokit.pulls.create({
@@ -378,12 +388,7 @@ export class GitHubAppForgeProvider {
         title: input.title,
         body: input.body,
       });
-      return {
-        number: created.data.number,
-        url: created.data.html_url,
-        headBranch: created.data.head.ref,
-        baseBranch: created.data.base.ref,
-      };
+      return prResult(created.data);
     });
   }
 
@@ -441,13 +446,7 @@ export class GitHubAppForgeProvider {
         owner, repo, head: `${owner}:${input.headBranch}`, state: 'all',
       });
       const match = existing.data.find((pr) => pr.head.ref === input.headBranch);
-      if (!match) return null;
-      return {
-        number: match.number,
-        url: match.html_url,
-        headBranch: match.head.ref,
-        baseBranch: match.base.ref,
-      };
+      return match ? prResult(match) : null;
     });
   }
 }

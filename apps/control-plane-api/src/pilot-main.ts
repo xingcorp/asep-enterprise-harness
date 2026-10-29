@@ -60,6 +60,9 @@ export interface PilotEnv {
   readonly githubAppId: number;
   readonly githubPrivateKeyPath: string;
   readonly githubInstallationId: number;
+  // Where artifact and evidence bytes are kept. Durable on purpose: the pilot
+  // verifier fetches and re-hashes the evidence from here afterwards.
+  readonly objectStoreDir: string;
 
   // --- the REAL repository this attempt targets (HIGH-008/K2) ---------------
   // Without these the driver fell back to a synthetic seeded mirror registered
@@ -158,6 +161,7 @@ export function readEnv(): PilotEnv {
     githubAppId: requireIntEnv('ASEP_GITHUB_APP_ID'),
     githubPrivateKeyPath: requireEnv('ASEP_GITHUB_PRIVATE_KEY_PATH'),
     githubInstallationId: requireIntEnv('ASEP_GITHUB_INSTALLATION_ID'),
+    objectStoreDir: requireEnv('ASEP_OBJECT_STORE_DIR'),
 
     organizationName: requireEnv('ASEP_ORGANIZATION_NAME'),
     projectName: requireEnv('ASEP_PROJECT_NAME'),
@@ -288,6 +292,8 @@ async function main(): Promise<void> {
       client,
       sandbox,
       dir,
+      // Evidence bytes go to the durable store the pilot verifier reads.
+      objectStoreDir: env.objectStoreDir,
       checkCommand: checkCommandFor,
       // The two production seams. Passing them is what makes this a LIVE run:
       // `runVerticalSlice` only falls back to local doubles when they are absent.

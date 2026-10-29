@@ -71,6 +71,10 @@ export interface VerticalSliceInput {
   readonly sandbox: SandboxProvider;
   // Temp directory the root builds the mirror / worktrees / objects under.
   readonly dir: string;
+  // Where artifact and evidence bytes are written. Defaults to `<dir>/objects`;
+  // a pilot points it at a durable directory so the pilot verifier can fetch
+  // and re-hash the evidence afterwards.
+  readonly objectStoreDir?: string;
   // Builds the two mandatory R0 verification commands for the worktree path.
   // Injected because the command must be runnable in whatever execution context
   // the sandbox provides (host git vs. a minimal container image).
@@ -240,7 +244,7 @@ export async function runVerticalSlice(input: VerticalSliceInput): Promise<Verti
   const tasksRepo = new TaskRepository(client);
   const attemptsRepo = new AttemptRepository(client);
   const prsRepo = new PullRequestRepository(client);
-  const objects = new FilesystemObjectStore(join(dir, 'objects'));
+  const objects = new FilesystemObjectStore(input.objectStoreDir ?? join(dir, 'objects'));
   const artifacts = new ContentAddressedArtifactStore(client, objects);
   const evidenceStore = new ContentAddressedEvidenceStore(client, objects);
 
@@ -435,6 +439,8 @@ export interface ResumeVerticalSliceInput {
   readonly client: SqlClient;
   // The directory the crashed run used: its object store holds the evidence.
   readonly dir: string;
+  // The crashed run's object store, when it was not `<dir>/objects`.
+  readonly objectStoreDir?: string;
   readonly scope: TenantScope;
   readonly repositoryBindingId: RepositoryBindingId;
   readonly runId: RunId;
@@ -462,7 +468,7 @@ export async function resumeVerticalSlice(
   input: ResumeVerticalSliceInput,
 ): Promise<ResumeVerticalSliceResult> {
   const { client } = input;
-  const objects = new FilesystemObjectStore(join(input.dir, 'objects'));
+  const objects = new FilesystemObjectStore(input.objectStoreDir ?? join(input.dir, 'objects'));
   const evidenceStore = new ContentAddressedEvidenceStore(client, objects);
 
   let localForge: LocalBareForgeProvider | null = null;

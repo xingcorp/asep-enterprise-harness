@@ -28,6 +28,15 @@
 //      database and rejected on absence or disagreement. The CLI runs this by
 //      DEFAULT (disp. P2-FINAL-HIGH-009): the previous entrypoint called only
 //      layers 1-2, so a manifest of ten entirely invented tasks exited 0.
+//      Rows alone are not enough, so this layer also:
+//        - fetches the evidence BYTES, re-hashes them against the recorded
+//          sha256, and checks the bundle they hold names this task, this
+//          attempt, the attempt's result commit and the manifest's base;
+//        - asks the FORGE, through the forge port, which commit the PR's head
+//          points at now, and requires it to be the attempt's result commit;
+//        - requires the signed human authorization to bind this attempt, this
+//          result commit and this PR — a valid signature over another
+//          attempt's decision proves nothing about this one.
 //
 // Usage:
 //   ASEP_PG_URL=... ASEP_REVIEWER_PUBLIC_KEY=... \
@@ -64,6 +73,10 @@ const ISO_DATETIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\
 const VERDICTS = new Set(['COMPLETE', 'IMPLEMENTATION_COMPLETE_PILOT_PENDING']);
 const RISKS = new Set(['R0', 'R1', 'R2', 'R3', 'R4']);
 const DISPOSITIONS = new Set(['ACCEPTED', 'REJECTED', 'CHANGES_REQUESTED', 'PENDING']);
+const EVIDENCE_KIND = 'evidence-bundle';
+const RESOLVER_METHODS = [
+  'resolveAttempt', 'resolveEvidence', 'resolvePullRequest', 'resolveLivePullRequest', 'resolveHumanAuthorization',
+];
 const TRACE_IDS = [
   'pullRequestId', 'evidenceArtifactId', 'attemptId', 'taskId',
   'runId', 'projectId', 'organizationId', 'repositoryBindingId',
@@ -223,9 +236,19 @@ export function verifyManifest(manifest) {
 //     attemptId, taskId, runId, repositoryBindingId,
 //     resultSha, evidenceArtifactId, evidenceSha256, providerId
 //   } | null
-//   resolveEvidence(scopeTrace, evidenceArtifactId) -> { sha256, kind } | null
+//   resolveEvidence(scopeTrace, evidenceArtifactId) -> {
+//     sha256,          the recorded sha256 of the artifact row
+//     kind,
+//     bytesSha256,     sha256 of the bytes actually fetched (null if unreadable)
+//     bundle,          { taskId, attemptId, baseSha, resultSha } parsed from
+//                      those bytes, or null when they are not a bundle
+//   } | null
 //   resolvePullRequest(scopeTrace, pullRequestId) -> { number, url, headBranch, attemptId } | null
-//   resolveHumanAuthorization(taskId, scopeTrace) -> { disposition, signedBy, signatureValid } | null
+//   resolveLivePullRequest(scopeTrace, { repositoryBindingId, headBranch }) ->
+//     { number, url, headBranch, headSha } | null      (from the forge, now)
+//   resolveHumanAuthorization(taskId, scopeTrace) -> {
+//     disposition, signedBy, signatureValid, attemptId, reviewedResultSha, pullRequestId
+//   } | null
 //     NOTE the scopeTrace second argument: like every other resolver here, the
 //     lookup is TENANT-SCOPED. Omitting it makes the resolver query with an
 //     empty (org, project) pair, which matches zero rows for every task — the
@@ -249,6 +272,16 @@ export async function verifyManifestAgainstAuthority(manifest, resolver) {
 
   if (!resolver || typeof resolver.resolveAttempt !== 'function') {
     reasons.push('authoritative cross-check requires a resolver — refusing to honour a self-declared manifest (HIGH-009)');
+    return { ok: false, reasons };
+  }
+  // A resolver missing any lookup would silently skip that check.
+  const missing = RESOLVER_METHODS.filter((m) => typeof resolver[m] !== 'function');
+  if (missing.length > 0) {
+    for (const m of missing) {
+      reasons.push(m === 'resolveLivePullRequest'
+        ? 'the resolver cannot look the pull request up on the forge — refusing to trust a PR record without its live state'
+        : `the resolver lacks ${m} — refusing an incomplete authority cross-check`);
+    }
     return { ok: false, reasons };
   }
   // If the structural gate failed, the tasks array may be garbage; do not feed
@@ -317,8 +350,35 @@ export async function verifyManifestAgainstAuthority(manifest, resolver) {
     if (!evidence) {
       reasons.push(`${label}: no authoritative evidence artifact for trace.evidenceArtifactId "${trace.evidenceArtifactId}" (HIGH-009)`);
     } else {
+      if (evidence.kind !== EVIDENCE_KIND) {
+        reasons.push(`${label}: artifact "${trace.evidenceArtifactId}" is not an evidence bundle (kind "${evidence.kind}")`);
+      }
       if (evidence.sha256 !== declaredEvidenceSha) {
         reasons.push(`${label}: manifest evidenceChecksum "${declaredEvidenceSha}" != authoritative artifact sha256 "${evidence.sha256}" — forged evidence`);
+      }
+      // The row is metadata; the bytes are the evidence. They must hash to what
+      // the row records.
+      if (evidence.bytesSha256 !== evidence.sha256) {
+        const got = evidence.bytesSha256 ? `"${evidence.bytesSha256}"` : 'nothing (they could not be read)';
+        reasons.push(`${label}: stored evidence bytes hash to ${got}, not the recorded sha256 "${evidence.sha256}" — tampered or missing evidence`);
+      }
+      // …and the bundle they hold must be the one for THIS attempt's commit.
+      const bundle = evidence.bundle;
+      if (!bundle || typeof bundle !== 'object') {
+        reasons.push(`${label}: the stored evidence bytes are not an evidence bundle`);
+      } else {
+        if (bundle.taskId !== trace.taskId) {
+          reasons.push(`${label}: the evidence bundle names task "${bundle.taskId}", not "${trace.taskId}"`);
+        }
+        if (bundle.attemptId !== trace.attemptId) {
+          reasons.push(`${label}: the evidence bundle names attempt "${bundle.attemptId}", not "${trace.attemptId}"`);
+        }
+        if (bundle.resultSha !== attempt.resultSha) {
+          reasons.push(`${label}: the evidence bundle records result "${bundle.resultSha}", not the attempt result "${attempt.resultSha}"`);
+        }
+        if (bundle.baseSha !== t.baseSha) {
+          reasons.push(`${label}: the evidence bundle records base "${bundle.baseSha}", not the manifest base "${t.baseSha}"`);
+        }
       }
       if (attempt.evidenceSha256 && attempt.evidenceSha256 !== evidence.sha256) {
         reasons.push(`${label}: attempt.evidence_sha256 "${attempt.evidenceSha256}" != authoritative artifact sha256 "${evidence.sha256}"`);
@@ -346,6 +406,33 @@ export async function verifyManifestAgainstAuthority(manifest, resolver) {
       if (pr.attemptId !== trace.attemptId) {
         reasons.push(`${label}: authoritative PR belongs to attempt "${pr.attemptId}" != trace.attemptId "${trace.attemptId}"`);
       }
+
+      // The row says what the PR was; the forge says what it is. Its head must
+      // still be the commit verification, evidence and review were bound to.
+      let live;
+      try {
+        live = await resolver.resolveLivePullRequest(trace, {
+          repositoryBindingId: attempt.repositoryBindingId, headBranch: pr.headBranch,
+        });
+      } catch (e) {
+        live = undefined;
+        reasons.push(`${label}: the forge lookup of the pull request failed — fail closed (${e && e.message ? e.message : e})`);
+      }
+      if (live === null) {
+        reasons.push(`${label}: the forge has no pull request for head branch "${pr.headBranch}"`);
+      } else if (live) {
+        if (live.number !== pr.number) {
+          reasons.push(`${label}: live PR number ${live.number} != recorded PR number ${pr.number}`);
+        }
+        if (live.url !== pr.url) {
+          reasons.push(`${label}: live PR url "${live.url}" != recorded PR url "${pr.url}"`);
+        }
+        if (typeof live.headSha !== 'string' || live.headSha.length === 0) {
+          reasons.push(`${label}: the forge did not report the PR head commit — cannot confirm the PR shows the reviewed commit`);
+        } else if (live.headSha !== attempt.resultSha) {
+          reasons.push(`${label}: live PR head "${live.headSha}" != the attempt result "${attempt.resultSha}" — the PR no longer shows the commit evidence and review were bound to`);
+        }
+      }
     }
 
     // Human authorization: the disposition must come from a SIGNED authoritative
@@ -369,6 +456,17 @@ export async function verifyManifestAgainstAuthority(manifest, resolver) {
       }
       if (auth.disposition !== t.humanDisposition) {
         reasons.push(`${label}: manifest humanDisposition "${t.humanDisposition}" != authoritative disposition "${auth.disposition}" — self-declared disposition`);
+      }
+      // The signature covers attempt, reviewed commit and PR; they must be this
+      // task's, or the decision was about something else.
+      if (auth.attemptId !== trace.attemptId) {
+        reasons.push(`${label}: the human authorization was signed for attempt "${auth.attemptId}", not "${trace.attemptId}"`);
+      }
+      if (auth.reviewedResultSha !== attempt.resultSha) {
+        reasons.push(`${label}: the human authorization was signed for result "${auth.reviewedResultSha}", not the attempt result "${attempt.resultSha}"`);
+      }
+      if (auth.pullRequestId !== trace.pullRequestId) {
+        reasons.push(`${label}: the human authorization was signed for pull request "${auth.pullRequestId}", not "${trace.pullRequestId}"`);
       }
     }
   }

@@ -92,7 +92,7 @@ export interface SliceTaskPort {
 
 export interface SliceAttemptPort {
   create(scope: TenantScope, input: {
-    taskId: TaskId; repositoryBindingId: RepositoryBindingId; baseSha?: string;
+    taskId: TaskId; repositoryBindingId: RepositoryBindingId; baseSha?: string; agentProviderId?: string;
   }): Promise<{ id: AttemptId; version: number }>;
   setResultSha(
     scope: TenantScope, id: AttemptId, expectedVersion: number, resultSha: string,
@@ -286,8 +286,26 @@ export async function runVerticalSliceWorkflow(
   const task = await repos.tasks.create(scope, {
     runId: run.id, repositoryBindingId: binding.id, risk: input.risk, baseSha: input.baseSha,
   });
+  // Resolve the coding agent with the REAL registered scope (HIGH-008). The
+  // factory form is what makes the production Claude adapter reachable: it is
+  // constructed with the scope it will store its event-stream artifact under, so
+  // a root no longer has to hard-code a scope-free stand-in. Fail closed when a
+  // caller wires neither shape rather than proceeding agent-less.
+  const provider = input.providerFor
+    ? input.providerFor({ scope })
+    : input.provider;
+  if (!provider) {
+    throw new Error(
+      'vertical slice requires a coding agent: pass providerFor (scope-bound, e.g. the ' +
+      'real Claude adapter) or provider (a prebuilt instance)',
+    );
+  }
+
+  // The attempt records which agent runs it: the pilot verifier certifies the
+  // agent from this column, never from what a manifest claims.
   const attempt = await repos.attempts.create(scope, {
     taskId: task.id, repositoryBindingId: binding.id, baseSha: input.baseSha,
+    agentProviderId: provider.providerId,
   });
   const branch = input.branchFor({ runId: run.id, taskId: task.id, attemptId: attempt.id });
 
@@ -322,21 +340,6 @@ export async function runVerticalSliceWorkflow(
   // The Git backend is resolved only NOW: it is configured per repository
   // binding, and the binding id did not exist until the step above.
   const git = await input.workspaceBackend({ scope, repositoryBindingId: binding.id });
-
-  // Resolve the coding agent with the REAL registered scope (HIGH-008). The
-  // factory form is what makes the production Claude adapter reachable: it is
-  // constructed with the scope it will store its event-stream artifact under, so
-  // a root no longer has to hard-code a scope-free stand-in. Fail closed when a
-  // caller wires neither shape rather than proceeding agent-less.
-  const provider = input.providerFor
-    ? input.providerFor({ scope })
-    : input.provider;
-  if (!provider) {
-    throw new Error(
-      'vertical slice requires a coding agent: pass providerFor (scope-bound, e.g. the ' +
-      'real Claude adapter) or provider (a prebuilt instance)',
-    );
-  }
 
   // --- immutable agent inputs ----------------------------------------------
   //

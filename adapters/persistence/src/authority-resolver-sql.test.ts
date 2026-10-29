@@ -32,13 +32,21 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync } from 'node:crypto';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import type { ArtifactId, EvidenceBundle, TenantScope } from '@asep/contracts';
 import { PgliteClient } from './pglite-client.js';
 import { migrate } from './migrator.js';
+import { FilesystemObjectStore } from './object-store.js';
+import { ContentAddressedEvidenceStore } from './evidence-store.js';
 // One resolver, one copy of the SQL. Reaching across packages is the point: the
 // resolver's queries must be executed against the schema THIS package migrates,
 // and PGlite is only resolvable from here.
 import {
   createSqlAuthorityResolver,
+  filesystemObjectReader,
+  sqlBindingReader,
   // @ts-expect-error - .mjs has no type declarations; runtime import is fine under tsx.
 } from '../../../scripts/pilot/authority-resolver.mjs';
 import {
@@ -110,8 +118,12 @@ const trace = {
   taskId: TASK, attemptId: ATTEMPT, repositoryBindingId: BINDING,
 };
 
-function resolverFor(client: PgliteClient) {
-  return createSqlAuthorityResolver(client, { reviewerPublicKeyPem: REVIEWER_PUB });
+function resolverFor(client: PgliteClient, objectRoot = '/nonexistent-object-root') {
+  return createSqlAuthorityResolver(client, {
+    reviewerPublicKeyPem: REVIEWER_PUB,
+    objects: filesystemObjectReader(objectRoot),
+    forge: { findPullRequest: async () => null },
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -292,11 +304,76 @@ test('HIGH-009: resolveHumanAuthorization executes and verifies a real signed ro
     assert.equal(auth.signedBy, 'reviewer@acme');
     assert.equal(auth.attemptId, ATTEMPT);
     assert.equal(auth.reviewedResultSha, RESULT_SHA);
+    assert.equal(auth.pullRequestId, PR);
     // The signature must verify against the row as PERSISTED — proving the
     // resolver selects every field the signature covers. A dropped column here
     // would surface as signatureValid=false rather than as a SQL error.
     assert.equal(auth.signatureValid, true,
       'the persisted row verifies, so the selected columns cover the signed payload');
+  } finally {
+    await client.close?.();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 4 — evidence is checked by its BYTES. The real evidence store writes a
+//     bundle; the resolver reads it back through the filesystem reader over
+//     the same object root, re-hashes it, and reports its identity. Editing the
+//     stored file changes the hash it reports.
+// ---------------------------------------------------------------------------
+
+test('resolveEvidence re-hashes the bytes the real evidence store wrote, and sees them change', async () => {
+  const client = await PgliteClient.create();
+  const root = await mkdtemp(join(tmpdir(), 'asep-resolver-objects-'));
+  try {
+    await migrate(client);
+    await seed(client);
+    const scope: TenantScope = { organizationId: ORG as never, projectId: PROJ as never };
+    const store = new ContentAddressedEvidenceStore(client, new FilesystemObjectStore(root));
+    const id = store.allocateEvidenceId();
+    const bundle: EvidenceBundle = {
+      taskId: TASK as never, attemptId: ATTEMPT as never, baseSha: '0'.repeat(40), resultSha: RESULT_SHA,
+      createdAt: '2026-10-29T00:00:00.000Z',
+      environment: { imageDigest: `img@sha256:${'1'.repeat(64)}`, lockfileHash: '2'.repeat(64) },
+      diff: { artifactId: id as ArtifactId, sha256: '3'.repeat(64) },
+      checks: [],
+    };
+    const ref = await store.putEvidence(scope, id, bundle);
+
+    const resolver = resolverFor(client, root);
+    const ev = await resolver.resolveEvidence(trace, id);
+    assert.equal(ev.sha256, ref.sha256);
+    assert.equal(ev.bytesSha256, ref.sha256, 'the stored bytes hash to the recorded sha256');
+    assert.deepEqual(ev.bundle, { taskId: TASK, attemptId: ATTEMPT, baseSha: '0'.repeat(40), resultSha: RESULT_SHA });
+
+    const key = (await client.query('select storage_key from artifacts where id = $1', [id])).rows[0]!['storage_key'] as string;
+    await writeFile(join(root, key), JSON.stringify({ ...bundle, resultSha: 'e'.repeat(40) }));
+    const tampered = await resolver.resolveEvidence(trace, id);
+    assert.notEqual(tampered.bytesSha256, tampered.sha256, 'edited bytes no longer hash to the recorded sha256');
+    assert.equal(tampered.bundle.resultSha, 'e'.repeat(40));
+
+    await rm(join(root, key));
+    const vanished = await resolver.resolveEvidence(trace, id);
+    assert.equal(vanished.bytesSha256, null, 'missing bytes are reported, not assumed');
+  } finally {
+    await client.close?.();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('the forge binding reader runs against the real schema and stays in its tenant', async () => {
+  const client = await PgliteClient.create();
+  try {
+    await migrate(client);
+    await seed(client);
+    const reader = sqlBindingReader(client);
+    assert.deepEqual(await reader.getScoped({ organizationId: ORG, projectId: PROJ }, BINDING), {
+      githubHost: 'github.com', githubOwner: 'acme', githubRepo: 'web', githubRepositoryId: 4242,
+    });
+    await assert.rejects(
+      () => reader.getScoped({ organizationId: 'Z'.repeat(26), projectId: PROJ }, BINDING),
+      /not visible in this scope/,
+    );
   } finally {
     await client.close?.();
   }
