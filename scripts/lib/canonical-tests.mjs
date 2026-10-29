@@ -231,6 +231,9 @@ export const REQUIRED_SUITES = Object.freeze({
   // committed policy to a reviewer composition. It must reject gating, unknown
   // model families and same-family reviewers, so a dropped suite turns the gate RED.
   'asep-suite:review-policy': 'packages/policy/src/review.test.ts',
+  // Closure authority: only an independent reviewer, a human or a deterministic
+  // re-check verifies a fix; only humans waive, and waivers expire.
+  'asep-suite:finding-lifecycle': 'packages/domain/src/assurance.test.ts',
 });
 
 /** The machine-readable marker a suite prints at module load: `SUITE-ID: <id>`. */
