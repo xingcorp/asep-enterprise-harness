@@ -234,6 +234,11 @@ export const REQUIRED_SUITES = Object.freeze({
   // Closure authority: only an independent reviewer, a human or a deterministic
   // re-check verifies a fix; only humans waive, and waivers expire.
   'asep-suite:finding-lifecycle': 'packages/domain/src/assurance.test.ts',
+  // The review packet and prompt are the only reviewer input: whitelisted trusted
+  // sources, a bounded execution manifest, no silent truncation, and untrusted
+  // content spotlighted outside the instructions.
+  'asep-suite:review-packet': 'packages/application/src/assurance/packet.test.ts',
+  'asep-suite:review-prompt': 'packages/application/src/assurance/prompt.test.ts',
 });
 
 /** The machine-readable marker a suite prints at module load: `SUITE-ID: <id>`. */

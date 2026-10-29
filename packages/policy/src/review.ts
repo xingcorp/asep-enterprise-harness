@@ -512,7 +512,8 @@ export function isEgressEnabled(policy: ReviewPolicy, projectId: string): boolea
   return policy.egress.enabledProjects.includes(projectId);
 }
 
-function isNormalizedRepoPath(path: string): boolean {
+/** A repo-relative POSIX path with no empty, `.` or `..` segment, no backslash and no NUL. */
+export function isNormalizedRepoPath(path: string): boolean {
   if (path.length === 0 || path.startsWith('/') || path.includes('\\') || path.includes('\0')) return false;
   return path.split('/').every((segment) => segment !== '' && segment !== '.' && segment !== '..');
 }

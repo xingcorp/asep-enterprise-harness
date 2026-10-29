@@ -69,6 +69,7 @@ export {
   independentReviewRequirement,
   isEgressEnabled,
   isSensitivePath,
+  isNormalizedRepoPath,
   matchesPathGlob,
   type ReviewPolicy,
   type ReviewSeverity,
