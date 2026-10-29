@@ -760,6 +760,36 @@ alter table workspace_leases
   references attempts (id, organization_id, project_id, repository_binding_id);
 `;
 
+// ---------------------------------------------------------------------------
+// 0016 — lease liveness by the database clock at the moment of the decision.
+//
+// 0014's asep_lease_is_live compared expires_at with now(), which PostgreSQL
+// fixes at the start of the transaction. A transaction opened while a lease was
+// live therefore went on seeing it live after it expired, and could finish
+// that lease's side-effect record after a successor had been granted. The
+// check now reads clock_timestamp(), the clock at the statement that asks, and
+// takes a share lock on the lease row as the adapter does, so a sweep, release
+// or heartbeat of that lease waits for the decision's transaction to end
+// rather than change the answer under it. Append-only: 0014 is untouched; this
+// replaces the function its trigger calls.
+// ---------------------------------------------------------------------------
+const M0016 = `
+create or replace function asep_lease_is_live(lease char(26)) returns boolean
+language plpgsql
+volatile
+as $fn$
+declare
+  live boolean;
+begin
+  select (state = 'ACTIVE' and expires_at > clock_timestamp()) into live
+    from workspace_leases
+    where id = lease
+    for share;
+  return coalesce(live, false);
+end
+$fn$;
+`;
+
 // Ordered, immutable migration set. Order is by id; the runner asserts it.
 export const MIGRATIONS: readonly Migration[] = Object.freeze([
   { id: '0001_init_tenancy', sql: M0001 },
@@ -777,4 +807,5 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   { id: '0013_side_effect_records_closed', sql: M0013 },
   { id: '0014_fenced_lease_takeover', sql: M0014 },
   { id: '0015_lease_attempt_fk', sql: M0015 },
+  { id: '0016_lease_liveness_clock', sql: M0016 },
 ]);

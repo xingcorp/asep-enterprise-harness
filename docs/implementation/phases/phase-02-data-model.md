@@ -50,7 +50,7 @@ audit_events, idempotency_records span all.
 ### workspace_leases
 `id pk`, `organization_id`, `project_id`, `repository_binding_id fk`, `branch text`, `attempt_id fk`, `workspace_id text`, `state text check in ('ACTIVE','RELEASED','EXPIRED','QUARANTINED')`, `acquired_at`, `heartbeat_at`, `expires_at`, `ttl_ms integer > 0`, `fencing_epoch bigint > 0`, `version`.
 **Unique active-writer constraint**: `create unique index one_active_writer on workspace_leases (repository_binding_id, branch) where state = 'ACTIVE'`. A second concurrent acquire violates it → `LeaseDenied`.
-**Fencing epoch (migration 0014, cycle-6 HIGH-006).** Each granted lease takes `max(fencing_epoch) + 1` for its `(repository_binding_id, branch)`; `unique (repository_binding_id, branch, fencing_epoch)` refuses a duplicate, so two racing acquirers cannot share an epoch. `expires_at` is computed by the database clock (`now() + ttl_ms`), the same clock every liveness check uses. A lease is **live** iff `state = 'ACTIVE' and expires_at > now()`. A heartbeat renews a live lease by `ttl_ms` and fails (`LeaseLostError`) for one that is not live. Trigger `workspace_lease_guard`: the epoch is immutable and a lease that left ACTIVE can never return to it.
+**Fencing epoch (migration 0014, cycle-6 HIGH-006).** Each granted lease takes `max(fencing_epoch) + 1` for its `(repository_binding_id, branch)`; `unique (repository_binding_id, branch, fencing_epoch)` refuses a duplicate, so two racing acquirers cannot share an epoch. `expires_at` is computed by the database clock (`clock_timestamp() + ttl_ms`), the same clock every liveness check uses. A lease is **live** iff `state = 'ACTIVE' and expires_at > clock_timestamp()` — the clock at the statement that asks, never `now()`, which PostgreSQL freezes at the start of a transaction (migration 0016; before it, a transaction opened while a lease was live kept treating it as live after expiry). The trigger reads the owner lease `for share`, as the adapter does, so a sweep, release or heartbeat of that lease waits for the transaction that decided under it. A heartbeat renews a live lease by `ttl_ms` and fails (`LeaseLostError`) for one that is not live. Trigger `workspace_lease_guard`: the epoch is immutable and a lease that left ACTIVE can never return to it.
 **Attempt FK (migration 0015).** Composite FK `(attempt_id, organization_id, project_id, repository_binding_id)` → `attempts (id, organization_id, project_id, repository_binding_id)`: a lease names a real attempt of its own tenant and its attempt's binding. Upgrading a database holding a lease that names no such attempt fails rather than delete or re-point it.
 
 ### artifacts
@@ -126,6 +126,7 @@ Expiry is driven by `expires_at` + heartbeat; a stale `ACTIVE` lease past `expir
                                   COMPLETED)
 0015_lease_attempt_fk             workspace_leases → attempts composite FK (tenant + binding);
                                   refuses to upgrade over a lease that names no attempt
+0016_lease_liveness_clock         asep_lease_is_live reads clock_timestamp() under a share lock
 ```
 
 Each migration has a checksum recorded in a `schema_migrations` table; re-running an altered applied migration fails closed. A clean-DB forward test asserts the full set applies and the resulting schema matches expectation.

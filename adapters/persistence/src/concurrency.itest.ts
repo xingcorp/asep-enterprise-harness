@@ -29,8 +29,10 @@ import {
   RunRepository, TaskRepository, AttemptRepository,
 } from './repositories.js';
 import { SqlWorkspaceLeaseRepository } from './lease-repository.js';
+import { SqlSideEffectLog } from './side-effect-log.js';
 import { OptimisticConcurrencyError } from './sql.js';
-import type { SqlClient } from './sql.js';
+import type { SqlClient, SqlExecutor } from './sql.js';
+import { SideEffectFencingError } from '@asep/ports';
 import type { TenantScope, AttemptId, RepositoryBindingId } from '@asep/contracts';
 
 console.log('SUITE-ID: asep-suite:pg-concurrency');
@@ -193,6 +195,110 @@ test('C4 (multi-conn): N concurrent version-0 updates → exactly one wins, rest
       await Promise.all(pools.map((p) => p.end()));
     }
   } finally {
+    await setup.pool.end();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Lease liveness at the decision, across connections. Connection A opens a
+// transaction while its lease is live and waits past the expiry; connection B
+// is granted the successor lease meanwhile. A's late completion is then
+// refused by the adapter, and its late direct write by the trigger — neither
+// may treat the transaction's frozen start time as "now".
+// ---------------------------------------------------------------------------
+
+test('C3 (multi-conn): a transaction opened while its lease was live cannot act on it after it expired', async () => {
+  const setup = await migratedClient();
+  const poolA = makePool(1);
+  const poolB = makePool(1);
+  try {
+    const { scope, binding, newAttempt } = await seedScope(setup.client);
+    const attemptId = await newAttempt();
+    const branch = `asep/clock-${Math.random().toString(36).slice(2)}`;
+    const a = PgPoolClient.fromPool(poolA);
+    const b = PgPoolClient.fromPool(poolB);
+    const lease = await new SqlWorkspaceLeaseRepository(a).acquire(scope, {
+      repositoryBindingId: binding, branch, attemptId, ttlMs: 500,
+    });
+    assert.ok('leaseId' in lease);
+    const key = { operation: 'push' as const, repositoryBindingId: binding, attemptId };
+    await new SqlSideEffectLog(a).begin(scope, { ...key, requestFingerprint: 'push:x', ownerToken: lease.leaseId });
+    const pushed = { kind: 'push' as const, branch, commitSha: 'a'.repeat(40) };
+    const inside = (tx: SqlExecutor): SqlClient => ({
+      query: (t, p) => tx.query(t, p), transaction: (fn) => fn(tx), ping: () => a.ping(), close: async () => undefined,
+    });
+
+    for (const how of ['adapter', 'trigger'] as const) {
+      await assert.rejects(
+        a.transaction(async (tx) => {
+          await tx.query('select 1', []);
+          await new Promise((r) => setTimeout(r, 1_000));
+          if (how === 'adapter') {
+            await new SqlSideEffectLog(inside(tx)).complete(scope, { ...key, ownerToken: lease.leaseId, resultRef: pushed });
+          } else {
+            await tx.query(
+              `update side_effect_records set state = 'COMPLETED', result_ref = $1 where attempt_id = $2 and operation = 'push'`,
+              [JSON.stringify(pushed), attemptId],
+            );
+          }
+        }),
+        how === 'adapter' ? SideEffectFencingError : /not live/,
+        `the ${how} accepted a write under an expired lease`,
+      );
+    }
+    // The successor, on the other connection, is granted and takes the record over.
+    const successor = await new SqlWorkspaceLeaseRepository(b).acquire(scope, {
+      repositoryBindingId: binding, branch, attemptId, ttlMs: 60_000,
+    });
+    assert.ok('leaseId' in successor);
+    const taken = await new SqlSideEffectLog(b).begin(scope, { ...key, requestFingerprint: 'push:x', ownerToken: successor.leaseId });
+    assert.equal(taken.takenOver, true);
+  } finally {
+    await poolA.end();
+    await poolB.end();
+    await setup.pool.end();
+  }
+});
+
+// The trigger reads the owner lease under a share lock, as the adapter does. A
+// transaction that has just written a record under a live lease therefore holds
+// that lease row until it ends, and a successor's sweep of the lease waits for
+// it instead of expiring the lease under a decision already taken.
+test('C3 (multi-conn): a successor sweep waits for a transaction that wrote under the lease', async () => {
+  const setup = await migratedClient();
+  const poolA = makePool(1);
+  const poolB = makePool(1);
+  try {
+    const { scope, binding, newAttempt } = await seedScope(setup.client);
+    const attemptId = await newAttempt();
+    const branch = `asep/sweep-${Math.random().toString(36).slice(2)}`;
+    const a = PgPoolClient.fromPool(poolA);
+    const b = PgPoolClient.fromPool(poolB);
+    const lease = await new SqlWorkspaceLeaseRepository(a).acquire(scope, {
+      repositoryBindingId: binding, branch, attemptId, ttlMs: 700,
+    });
+    assert.ok('leaseId' in lease);
+    const key = { operation: 'push' as const, repositoryBindingId: binding, attemptId };
+    await new SqlSideEffectLog(a).begin(scope, { ...key, requestFingerprint: 'push:x', ownerToken: lease.leaseId });
+    let committedAt = 0;
+    const writer = a.transaction(async (tx) => {
+      // A direct write, so only the trigger's lock is in play.
+      await tx.query(`update side_effect_records set natural_key = 'k' where attempt_id = $1 and operation = 'push'`, [attemptId]);
+      await new Promise((r) => setTimeout(r, 1_500));
+      committedAt = Date.now();
+    });
+    await new Promise((r) => setTimeout(r, 1_000));
+    const successor = await new SqlWorkspaceLeaseRepository(b).acquire(scope, {
+      repositoryBindingId: binding, branch, attemptId, ttlMs: 60_000,
+    });
+    const grantedAt = Date.now();
+    await writer;
+    assert.ok('leaseId' in successor);
+    assert.ok(committedAt > 0 && grantedAt >= committedAt,
+      `the successor was granted ${committedAt - grantedAt}ms before the writer's transaction ended`);
+  } finally {
+    await poolA.end();
+    await poolB.end();
     await setup.pool.end();
   }
 });

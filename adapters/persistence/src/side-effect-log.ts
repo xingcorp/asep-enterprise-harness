@@ -293,8 +293,9 @@ export class SqlSideEffectLog implements SideEffectLog {
   }
 
   // The lease as the database sees it right now: its epoch, and whether it is
-  // still live (ACTIVE and not past expires_at). Scoped to this tenant, binding
-  // and attempt — a lease of another attempt is no lease at all here.
+  // still live (ACTIVE and not past expires_at by the clock at this statement,
+  // not the transaction's frozen `now()`). Scoped to this tenant, binding and
+  // attempt — a lease of another attempt is no lease at all here.
   private async lease(
     db: SqlExecutor,
     scope: TenantScope,
@@ -303,7 +304,7 @@ export class SqlSideEffectLog implements SideEffectLog {
     lock: boolean,
   ): Promise<LeaseView | undefined> {
     const r = await db.query(
-      `select fencing_epoch, branch, (state = 'ACTIVE' and expires_at > now()) as live
+      `select fencing_epoch, branch, (state = 'ACTIVE' and expires_at > clock_timestamp()) as live
        from workspace_leases
        where id = $1 and organization_id = $2 and project_id = $3
          and repository_binding_id = $4 and attempt_id = $5${lock ? ' for share' : ''}`,

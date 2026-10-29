@@ -21,6 +21,7 @@ import {
 } from './repositories.js';
 import { SqlSideEffectLog } from './side-effect-log.js';
 import { SqlWorkspaceLeaseRepository } from './lease-repository.js';
+import type { SqlClient, SqlExecutor } from './sql.js';
 import { SideEffectFingerprintError, SideEffectFencingError, LeaseLostError } from '@asep/ports';
 import type { Lease } from '@asep/ports';
 import type {
@@ -783,4 +784,124 @@ test('a COMPLETED outcome is read back already parsed into its closed shape', as
   const adopted = await log.begin(scope, input);
   assert.deepEqual(adopted.resultRef, { kind: 'commit', commitSha: SHA, evidenceId });
   await client.close();
+});
+
+// ---------------------------------------------------------------------------
+// Lease liveness is decided by the database's clock AT THE DECISION. `now()` is
+// frozen at the start of a transaction, so a check that used it let a
+// transaction opened while the lease was live go on treating the lease as live
+// after it had expired — and finish its owner's record. Each test below holds
+// one transaction open across the expiry, then asks the question inside it.
+// ---------------------------------------------------------------------------
+
+// A client whose every statement and transaction runs inside one transaction
+// that is already open, so an adapter call can be made from within it.
+function inside(tx: SqlExecutor, outer: SqlClient): SqlClient {
+  return {
+    query: (text, params) => tx.query(text, params),
+    transaction: (fn) => fn(tx),
+    ping: () => outer.ping(),
+    close: async () => undefined,
+  };
+}
+
+// Swap the fixture's long lease for a short one on the same branch.
+async function shortLease(f: Awaited<ReturnType<typeof fresh>>, ttlMs: number): Promise<Lease> {
+  await f.leases.release(f.scope, f.owner);
+  const l = await f.leases.acquire(f.scope, {
+    repositoryBindingId: f.binding.id, branch: BRANCH, attemptId: f.attemptId, ttlMs,
+  });
+  if ('denied' in l) throw new Error('short lease was denied');
+  return l;
+}
+
+const TTL = 400;
+const PAST_TTL = 900;
+
+test('a transaction opened before a lease expired cannot complete its record after: the adapter refuses', async () => {
+  const f = await fresh();
+  try {
+    const lease = await shortLease(f, TTL);
+    const key = { operation: 'push' as const, repositoryBindingId: f.binding.id, attemptId: f.attemptId };
+    await f.log.begin(f.scope, { ...key, requestFingerprint: 'push:x', ownerToken: lease.leaseId });
+    await assert.rejects(
+      f.client.transaction(async (tx) => {
+        await tx.query('select 1', []);
+        await sleep(PAST_TTL);
+        await new SqlSideEffectLog(inside(tx, f.client)).complete(f.scope, {
+          ...key, ownerToken: lease.leaseId, resultRef: PUSHED,
+        });
+      }),
+      (err: Error) => err instanceof SideEffectFencingError && /no longer live/.test(err.message),
+    );
+    assert.equal((await f.log.find(f.scope, key))!.state, 'PENDING');
+  } finally {
+    await f.client.close();
+  }
+});
+
+test('a transaction opened before a lease expired cannot write its record after: the trigger refuses', async () => {
+  const f = await fresh();
+  try {
+    const lease = await shortLease(f, TTL);
+    const key = { operation: 'push' as const, repositoryBindingId: f.binding.id, attemptId: f.attemptId };
+    await f.log.begin(f.scope, { ...key, requestFingerprint: 'push:x', ownerToken: lease.leaseId });
+    await assert.rejects(
+      f.client.transaction(async (tx) => {
+        await tx.query('select 1', []);
+        await sleep(PAST_TTL);
+        await tx.query(
+          `update side_effect_records set state = 'COMPLETED', result_ref = $1
+            where attempt_id = $2 and operation = 'push'`,
+          [JSON.stringify(PUSHED), f.attemptId],
+        );
+      }),
+      /not live/,
+    );
+    assert.equal((await f.log.find(f.scope, key))!.state, 'PENDING');
+  } finally {
+    await f.client.close();
+  }
+});
+
+test('a transaction opened before a lease expired cannot renew it after', async () => {
+  const f = await fresh();
+  try {
+    const lease = await shortLease(f, TTL);
+    await assert.rejects(
+      f.client.transaction(async (tx) => {
+        await tx.query('select 1', []);
+        await sleep(PAST_TTL);
+        await new SqlWorkspaceLeaseRepository(inside(tx, f.client)).heartbeat(f.scope, lease.leaseId);
+      }),
+      LeaseLostError,
+    );
+  } finally {
+    await f.client.close();
+  }
+});
+
+test('a transaction opened before a lease expired sees it expired when it acquires: the successor is granted', async () => {
+  const f = await fresh();
+  try {
+    const old = await shortLease(f, TTL);
+    const next = await f.client.transaction(async (tx) => {
+      await tx.query('select 1', []);
+      await sleep(PAST_TTL);
+      return new SqlWorkspaceLeaseRepository(inside(tx, f.client)).acquire(f.scope, {
+        repositoryBindingId: f.binding.id, branch: BRANCH, attemptId: f.attemptId, ttlMs: 60_000,
+      });
+    });
+    assert.ok('leaseId' in next, `the expired lease must not block its successor: ${JSON.stringify(next)}`);
+    assert.equal(next.fencingEpoch, old.fencingEpoch + 1);
+    // And its expiry is measured from when it was granted, not from when the
+    // transaction began: a full TTL ahead of the database clock now.
+    const ahead = await f.client.query(
+      `select extract(epoch from (expires_at - clock_timestamp())) * 1000 as ms from workspace_leases where id = $1`,
+      [next.leaseId],
+    );
+    assert.ok(Number(ahead.rows[0]!['ms']) > 60_000 - PAST_TTL / 2, `expiry ${String(ahead.rows[0]!['ms'])}ms ahead`);
+  } finally {
+    await f.client.close();
+  }
 });
