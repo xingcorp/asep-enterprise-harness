@@ -150,3 +150,248 @@ No finding was rejected. The review correctly cross-referenced real committed co
 All 20 findings dispositioned; 0 unresolved CRITICAL/HIGH. The canonical Phase 2 documents (`phase-02-plan.md`, `-architecture.md`, `-data-model.md`, `-threat-model-delta.md`, `-risk-register.md`, `-exit-criteria.md`, `-research-register.md`) incorporate every accepted change. Task DAG remains acyclic; every slice has tests + exit evidence; no Phase 3 functionality is required for Phase 2 success; no canonical Phase 1 contract is broken without governed versioning (RunEvent minor bump is additive); all operational data is multi-project scoped; the agent cannot approve/commit/push/merge; real artifacts replace the placeholder; the ten-task pilot cannot be satisfied by synthetic fixtures.
 
 **PLAN_STATUS: LOCKED** at disposition of Codex review `phase-02-plan-review-codex-v1.md`.
+
+---
+
+## Final review cycle 6 dispositions
+
+> Reviewer: Codex `gpt-5.6-sol`, re-review cycle 6 at `00a6889`
+> (`phase-02-final-rereview-codex-v6.md`), verdict **REQUEST_CHANGES** @ 0.99.
+> Repairs: repair cycle 7, on `phase/02-single-agent-vertical-slice` from
+> `00a6889`. Every disposition and every repair below was made and verified by
+> the implementer only; none has been independently reviewed. Mutation checks
+> named below were run by the implementer: each mutant was applied to the
+> source, the named suites were run, and the mutant was reverted.
+
+### Summary
+
+| ID | Cycle-6 verdict | Disposition | Commits |
+|---|---|---|---|
+| HIGH-001 | RESOLVED | no action | — |
+| HIGH-002 | PARTIAL | ACCEPTED — fixed | `ab580a6`, `37956ac` |
+| HIGH-003 | RESOLVED | no action | — |
+| HIGH-004 | RESOLVED | no action | — |
+| HIGH-005 | PARTIAL | ACCEPTED — fixed | `31aeca7` |
+| HIGH-006 | PARTIAL | ACCEPTED — fixed | `c11078e` |
+| HIGH-007 | RESOLVED | no action | — |
+| HIGH-008 | PARTIAL | ACCEPTED — fixed; live run not performed | `ab580a6` |
+| HIGH-009 | PARTIAL | ACCEPTED — fixed | `a52f6fa`, `0d23b31` |
+| MED-001 | RESOLVED | no action | — |
+| MED-002 | PARTIAL | ACCEPTED — fixed | `d5b2edd` |
+| MED-003 | RESOLVED | no action | — |
+| MED-004 | PARTIAL | ACCEPTED — fixed | `c7f7e59` |
+| MED-005 | PARTIAL | ACCEPTED — fixed | report commit + sentinel (see below) |
+| MED-006 | PARTIAL | ACCEPTED — fixed | `5981089` |
+| MED-NEW-001 | RESOLVED | no action | — |
+| MED-NEW-002 | RESOLVED | no action | — |
+| CYCLE5-PROVENANCE | RESOLVED | no action | — |
+| CYCLE5-PILOT-TEST | RESOLVED | no action | — |
+| MED-NEW-003 | REGRESSED | ACCEPTED — fixed | `5e171a3` |
+| MED-NEW-004 | REGRESSED | ACCEPTED — fixed | `367395b` |
+
+Also in this cycle: `94504b2` (finding codes removed from new comments and
+test names) and `a73ddb6` (PGlite wasm modules compiled once per process — an
+intermittent V8 abort, `Check failed: end > addr`, took down a whole suite
+during a full run).
+
+### HIGH-002 — the waiver was public; the regex guard was evadable — ACCEPTED
+
+**Concern:** a host-execution waiver was still exported, and the
+`forbidden-imports` regex could be evaded by an alias, a computed property or
+an object spread.
+**Change:** the agent adapter lost its host mode and waiver in `ab580a6`.
+`37956ac` removes the sandbox requirement and its pilot waiver from every
+public surface (`@asep/command-runner` no longer exports `SandboxRequirement`,
+`resolveSandboxRequirement`, `assertSandboxSatisfiesRequirement`,
+`SandboxRequiredError`; `verifyStep`, `completeToReview`, the workflow and
+`runVerticalSlice` take no input that relaxes isolation). The workflow probes
+the sandbox and refuses, before its first side effect, any handle that does not
+claim `isolationEnforced: true`; `verifyStep` re-checks the handle it runs
+commands in. The regex rule is replaced by `scripts/lib/ts-guard.mjs`, which
+uses the TypeScript 7 checker: only `adapters/command-runner/src/sandbox.ts`
+may produce a value whose type claims isolation, and the retired waiver names
+and constant-folded tokens may not return.
+**Tests:** `scripts/ts-guard.test.ts` (`asep-suite:ts-guard`) — alias, computed
+(folded, aliased, unresolvable), object spread (literal, real handle), untyped
+spread, shorthand/assignment/element write/`Object.assign`/destructured
+assign/`defineProperty`/`Reflect.set`/class member/getter/casts from `any`/
+double cast/`any` flow/property name in a string, honest code not flagged,
+retired waiver names and cross-module folded tokens.
+`packages/application/src/pipeline-steps.test.ts` — "no input waives isolation
+— a smuggled legacy waiver field is ignored".
+`apps/control-plane-api/src/vertical-integration.test.ts` — "the vertical
+slice refuses the honest host provider before any side effect", "… a provider
+whose handle is silent about isolation …".
+**Mutation check:** 7 guard mutants (no spread check, no identifier fold, empty
+claim allowlist, literal-only claim value, `any` treated as no claim,
+unresolvable computed key ignored, waiver re-added to shipped code), 2
+`verifyStep` gate mutants and 2 workflow-probe mutants — all killed.
+**Residual:** the guard is static; a value computed at run time can evade it,
+which is why the runtime refusal remains the enforcement point.
+
+### HIGH-005 — side-effect identity was nullable text and the outcome was JSONB — ACCEPTED
+
+**Change (`31aeca7`, migration 0013):** records carry `attempt_id` and
+`operation`; `repository_binding_id` is NOT NULL and composite-FK-bound to the
+attempt's own binding; uniqueness is on (org, project, binding, attempt,
+operation); the text `scope`/`semantic_key` columns are dropped. `result_ref`
+is NULL unless COMPLETED and then exactly the operation's closed shape
+(`side_effect_result_closed` CHECK); `parseSideEffectResultRef` in
+`@asep/ports` parses it; `complete()` validates before writing.
+**Tests:** `adapters/persistence/src/side-effect-log.test.ts` — "the text
+identity columns are gone and the binding is NOT NULL", "the DB refuses a
+side-effect row with no repository binding", "… whose binding is not its
+attempt's binding", "… a second row for the same (binding, attempt,
+operation)", "… any outcome that is not the operation's closed shape",
+"complete() validates the outcome before writing and leaves the record
+PENDING", "a COMPLETED outcome is read back already parsed into its closed
+shape".
+
+### HIGH-006 — a successor could not take over a crashed owner's PENDING record — ACCEPTED
+
+**Change (`c11078e`, migration 0014):** leases gain a per-(binding, branch)
+`fencing_epoch` and `ttl_ms`, with expiry on the database clock; records are
+owned by `owner_lease_id` + `owner_epoch`; the `side_effect_guard` trigger
+allows writes only under a live owner lease and ownership moves only from a
+dead lease to a strictly newer epoch on the same branch. `SqlSideEffectLog`
+takes over only from a dead lease; heartbeat throws `LeaseLostError`.
+`resumeAttemptToReview` acquires the lease, takes over, reconciles push and PR
+against the forge and persists the transitions; it resumes only attempts whose
+commit and evidence are durable.
+**Tests:** `side-effect-log.test.ts` takeover cases (expired owner, released
+owner, live owner refused, lapsed owner refused, newer epoch required, the
+database refuses a forbidden move); `apps/control-plane-api/src/crash-recovery.test.ts`
+(five cases); `apps/control-plane-api/src/crash-takeover.itest.ts` SIGKILLs a
+real executor child on real PostgreSQL.
+**Residual:** no FK from a lease to its attempt; the lease TTL must outlive the
+agent's wall-clock budget (`leaseTtlForBudget` refuses a shorter one).
+
+### HIGH-008 — the live agent could not run — ACCEPTED (live run not performed)
+
+**Change (`ab580a6`):** each attempt runs the real Claude CLI in a container on
+a per-attempt internal network whose only peer is an egress proxy forwarding
+`POST /v1/messages` and `/v1/messages/count_tokens` to the configured model
+origin; the credential reaches the proxy on stdin only; the work order and
+context pack are re-hashed, mounted read-only and re-checked; the real CLI
+flags and a stream-json parser are used; `system/init` is checked against the
+pins; the tool-call budget is enforced live; everything is torn down in
+`finally`.
+**Tests:** `adapters/agent-claude/src/agent-claude.test.ts` (strict fake CLI,
+fake docker client, real proxy, fake model API); `agent-sandbox.itest.ts`
+against the real daemon (canaries: every write/chmod outside the worktree is
+EROFS, direct egress ENETUNREACH, DNS fails, proxy refuses absolute-form,
+CONNECT and other paths, model reached with the real key upstream).
+`claude-live.live.ts` CONFORMANCE ran in this session against the host's
+Claude CLI 2.1.286 and passed. LIVE was not run: no model credential is
+available here.
+**Residual:** the model provider is a trusted data channel (the proxy limits
+method and path, not content); `--setting-sources user` is passed.
+
+### HIGH-009 — the verifier trusted rows, not bytes or the forge — ACCEPTED
+
+**Change (`a52f6fa`):** the resolver fetches the evidence bytes from the object
+store and re-hashes them; the verifier requires them to hash to the recorded
+sha256 and the bundle to name the task, attempt, the attempt's result commit
+and the manifest base. It asks the forge, through the `ForgeProvider` port, for
+the PR on the attempt's branch and requires its number, URL and live head
+(`PullRequestRef.headSha`, new and optional) to match. It requires the signed
+authorization to bind the attempt, the result commit and the PR. The
+production factory builds the GitHub App forge port from env and reads
+`ASEP_OBJECT_STORE_DIR`; the pilot writes its objects there. The workflow now
+records the agent's `providerId` on the attempt — it never did, so the verifier
+would have refused every genuine run. `0d23b31`: the forge binding resolver
+resolved the local repository eagerly, so every PR lookup without a worktree
+failed (the verifier's included); it now resolves it only for a push.
+**Tests:** `scripts/pilot/verify-pilot-manifest.test.ts` (tampered,
+unreadable, non-bundle and wrong-kind evidence; bundle of another task,
+attempt, base or result; PR missing on the forge, head moved, head unreported,
+number/URL mismatch; resolver without the forge lookup; authorization for
+another attempt, commit or PR; resolver construction; scoped forge lookup;
+filesystem reader traversal; binding reader; the verifier's GitHub forge
+looking a PR up); `adapters/persistence/src/authority-resolver-sql.test.ts`
+(bytes written by the real evidence store re-hashed and seen to change);
+`apps/control-plane-api/src/pilot-verifier.test.ts` (`asep-suite:pilot-verifier`:
+a real slice is accepted, then refused after the PR head moves, the evidence
+bytes change, or the authorization is re-signed for another commit);
+`adapters/github-app/src/port-adapter.test.ts` (head commit reported;
+lookups never ask for the local repository).
+**Mutation check:** 18 mutants across the verifier, the resolver, the GitHub
+adapter, the port, the local forge double and the workflow — all killed; the
+eager-locator mutant was killed by two tests.
+
+### MED-002 — `resolveRef` lacked bounded re-mint — ACCEPTED
+
+**Change (`d5b2edd`):** all four token-spending operations share one loop;
+expired mints are skipped, only expiry/revocation retries,
+`ForgeAuthExpiredError` names the operation, a non-auth probe failure is a
+scrubbed `ForgeReconcileError`; git's HTTPS auth wording counts as expiry;
+re-mints bypass the token cache.
+**Tests:** `adapters/github-app/src/github-app.test.ts` — the six cases added in
+`d5b2edd`.
+
+### MED-004 — the resolver called persistence; the fitness rule missed `projects` — ACCEPTED
+
+**Change (`c7f7e59`):** membership is the application use case
+`projectBelongsToOrganization` over a structural `ProjectMembershipPort`; the
+principal resolver forwards to it. The TypeScript guard gains
+`persistence-call-in-root` (any call in `apps/*`/`workers/*` that resolves, by
+symbol or by type, to a declaration in the persistence adapter; open, migrate
+and ping exempt) and `port-call-in-root` (the same call with the adapter
+retyped as a port from `packages/application` or `packages/ports`).
+**Tests:** `scripts/ts-guard.test.ts` — any receiver name, destructured,
+`.call`, `.apply`, `.bind(...)()`, element access, bound-then-called, cast,
+imported function, raw query, union receiver; port-typed laundering (application
+and ports interfaces); wiring not flagged; root selection.
+`apps/control-plane-api/src/control-plane.test.ts` — "projectBelongsToOrganization
+answers from the persisted row, and the resolver forwards to it".
+**Mutation check:** 12 mutants — all killed.
+**Residual:** a value retyped through an interface the root declares itself is
+beyond the static check.
+
+### MED-005 — the report overclaimed; the L1 sentinel was absent — ACCEPTED
+
+**Change:** `phase-02-report.md` is rewritten to state only what was observed
+by machine in this cycle, with each finding's status and the fact that the
+repairs are unreviewed. The `.phase-02-implementation-complete` sentinel is
+written last, after the final gate on the report commit, and holds the output
+of `git rev-parse HEAD` at that moment (exit L1). It is gitignored by design.
+
+### MED-006 — faults 3 and 5 were not injected into the pipeline — ACCEPTED
+
+**Change (`5981089`):** `apps/control-plane-api/src/pilot-faults.test.ts`
+(`asep-suite:pilot-faults`) injects both into a real `runVerticalSlice` run.
+Fault 3: the object store disappears after verification; the run stops with
+nothing published, artifacts re-verify after restore, the attempt is reported
+not resumable. Fault 5: a 403 rate limit through the real GitHub App adapter;
+the run stops with the push recorded and the PR pending; after back-off the
+resume opens exactly one PR. `phase-02-pilot-rehearsal.md` no longer calls
+itself a paper rehearsal; it names the test behind each fault and what is not
+live. The runbook's §3.1 and §3.3 now describe what the code does.
+**Residual:** fault 5's pushes go to a local bare remote; fault 1 is injected
+into the provider, not a whole pipeline run.
+
+### MED-NEW-003 — cold-cache reset swallowed errors — ACCEPTED
+
+**Change (`5e171a3`):** `scripts/cold-cache-reset.sh` checks every removal,
+rescans, and fails naming any survivor; symlinked `dist` entries are removed.
+**Tests:** `scripts/cold-cache-reset.test.ts` — five cases including a failing
+`rm` shim and one that silently does nothing.
+
+### MED-NEW-004 — PII scan ignored git metadata — ACCEPTED
+
+**Change (`367395b`):** the scan covers author and committer of every commit
+reachable from `refs/heads`, `refs/tags` and `refs/remotes`. By the owner's
+decision published history is kept: one legacy personal address is tolerated
+only on ancestors of the pinned `main`, `phase/01` and `phase/02` heads,
+matched by hash so the address is never written to the tree; anything newer,
+or any other personal address, fails.
+**Tests:** `scripts/pii-scan.test.ts` — five cases.
+
+### Findings raised by this repair cycle itself
+
+- The governed workflow never set `attempts.agent_provider_id` (fixed in
+  `a52f6fa`).
+- `SqlForgeBindingResolver` resolved the local repository for every operation
+  (fixed in `0d23b31`).
+- Many PGlite instances in one process intermittently aborted V8 (fixed in
+  `a73ddb6`).
