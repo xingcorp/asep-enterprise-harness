@@ -48,7 +48,7 @@ import {
   scripted,
   shaFor,
 } from './test-support/fixtures.js';
-import type { TaskCommand, TaskEffect, TaskEvent, TaskRequest, TaskRequestKind } from './types.js';
+import type { TaskCommand, TaskEffect, TaskEvent, TaskMessage, TaskRequest, TaskRequestKind } from './types.js';
 
 console.log('SUITE-ID: asep-suite:orchestration-core');
 
@@ -468,7 +468,7 @@ test('registration: when the lookup fails too, no attempt effect is emitted and 
 
 test('registration: a cancel during ensureAttempt waits for it, then cancels the registered attempt', () => {
   const trace = runTaskSequentially(baseInput(), scripted({}, {
-    messagesDuring: (request) => (request.kind === 'ensureAttempt' ? [cancel()] : []),
+    eventsDuring: (request) => (request.kind === 'ensureAttempt' ? [cancel()] : []),
   }));
   assert.equal(trace.aborts, 0, 'the registration is not interrupted');
   assert.deepEqual(requestKinds(trace.commands), ['admitTask', 'ensureAttempt']);
@@ -746,7 +746,7 @@ test('approval decisions are validated before any state change; duplicates retur
       () => ({ type: 'approvalDecisionReceived', decisionId: 'd1', approvalRequestId: 'asep-task-task-1:9', decision: 'approve', extensionUsd: null, principalId: 'h' }),
       () => ({ type: 'approvalDecisionReceived', decisionId: 'd1', approvalRequestId: 'asep-task-task-1:1', decision: 'approve', extensionUsd: null, principalId: 'h' }),
     ),
-    messagesDuring: (request) => (request.kind === 'verifyApprovalDecision'
+    eventsDuring: (request) => (request.kind === 'verifyApprovalDecision'
       ? [
           { type: 'approvalDecisionReceived', decisionId: 'd1', approvalRequestId: 'asep-task-task-1:1', decision: 'approve', extensionUsd: null, principalId: 'h' },
           { type: 'approvalDecisionReceived', decisionId: 'd2', approvalRequestId: 'asep-task-task-1:1', decision: 'reject', extensionUsd: null, principalId: 'h2' },
@@ -773,7 +773,7 @@ const cancel = (requestId = 'c1') => ({ type: 'cancelRequested' as const, reques
 
 test('pause takes effect at the next boundary; resume continues from the recorded phase', () => {
   const trace = runTaskSequentially(baseInput(), scripted({}, {
-    messagesDuring: (request) => (request.kind === 'runAgent' ? [pause('p1'), pause('p1'), pause('p2')] : []),
+    eventsDuring: (request) => (request.kind === 'runAgent' ? [pause('p1'), pause('p1'), pause('p2')] : []),
     whenIdle: idleScript(() => resume('r1')),
   }));
   assert.deepEqual(trace.receipts.map((r) => [r.accepted, r.duplicate, r.reason]), [
@@ -794,7 +794,7 @@ test('pause takes effect at the next boundary; resume continues from the recorde
 
 test('resume of a task that is not paused is refused', () => {
   const trace = runTaskSequentially(baseInput(), scripted({}, {
-    messagesDuring: (request) => (request.kind === 'runAgent' ? [resume('r1')] : []),
+    eventsDuring: (request) => (request.kind === 'runAgent' ? [resume('r1')] : []),
   }));
   assert.deepEqual(trace.receipts.map((r) => r.reason), ['not-paused']);
   assert.equal(trace.summary.outcome, 'WAITING_FOR_HUMAN_REVIEW');
@@ -802,7 +802,7 @@ test('resume of a task that is not paused is refused', () => {
 
 test('a pause that outlives maxPauseHours blocks the task and cleans up', () => {
   const trace = runTaskSequentially(baseInput(), scripted({}, {
-    messagesDuring: (request) => (request.kind === 'inspectWorkspace' ? [pause()] : []),
+    eventsDuring: (request) => (request.kind === 'inspectWorkspace' ? [pause()] : []),
     whenIdle: idleScript((timers) => ({ type: 'timerFired', timerId: timers[0]! })),
   }));
   assert.deepEqual(effectsOf(trace.commands, 'startTimer').map((t) => [t.timerId, t.seconds]), [['pause:1', 72 * 3600]]);
@@ -851,7 +851,7 @@ test('cancel during the agent aborts it, reaps, quarantines, releases and ignore
 
 test('cancel during commit finishes the commit section, then cancels without assurance or push', () => {
   const trace = runTaskSequentially(baseInput(), scripted({}, {
-    messagesDuring: (request) => (request.kind === 'commitAttempt' ? [cancel()] : []),
+    eventsDuring: (request) => (request.kind === 'commitAttempt' ? [cancel()] : []),
   }));
   const kinds = requestKinds(trace.commands);
   assert.ok(kinds.includes('persistEvidence'));
@@ -864,7 +864,7 @@ test('cancel during commit finishes the commit section, then cancels without ass
 
 test('cancel during the push finishes the PR, leaves it open and audits it', () => {
   const trace = runTaskSequentially(baseInput(), scripted({}, {
-    messagesDuring: (request) => (request.kind === 'publishBranch' ? [cancel()] : []),
+    eventsDuring: (request) => (request.kind === 'publishBranch' ? [cancel()] : []),
   }));
   assert.equal(requestKinds(trace.commands).filter((k) => k === 'upsertPullRequest').length, 1);
   assert.equal(trace.aborts, 0);
@@ -878,7 +878,7 @@ test('cancel during the push finishes the PR, leaves it open and audits it', () 
 
 test('cancel before any attempt leaves no attempt effects', () => {
   const trace = runTaskSequentially(baseInput(), scripted({}, {
-    messagesDuring: (request) => (request.kind === 'admitTask' ? [cancel()] : []),
+    eventsDuring: (request) => (request.kind === 'admitTask' ? [cancel()] : []),
   }));
   assert.deepEqual(requestKinds(trace.commands), ['admitTask']);
   assert.deepEqual(outcomes(trace), []);
@@ -888,7 +888,7 @@ test('cancel before any attempt leaves no attempt effects', () => {
 
 // Pause while waiting for an approval: nothing is in flight, so the pause applies at once.
 
-const timer = (prefix: string) => (timers: readonly string[]): TaskEvent => {
+const timer = (prefix: string) => (timers: readonly string[]): Extract<TaskEvent, { type: 'timerFired' }> => {
   const id = timers.find((t) => t.startsWith(prefix));
   if (id === undefined) throw new Error(`no ${prefix} timer among ${timers.join(',')}`);
   return { type: 'timerFired', timerId: id };
@@ -955,7 +955,7 @@ for (const wait of WAITS) {
 
 test('a pause that arrives while the approval request is opened applies once the task waits', () => {
   const trace = runTaskSequentially(WAITS[1].input, scripted({ verifyApprovalDecision: WAITS[1].verified }, {
-    messagesDuring: (request) => (request.kind === 'openApprovalRequest' ? [pause()] : []),
+    eventsDuring: (request) => (request.kind === 'openApprovalRequest' ? [pause()] : []),
     whenIdle: idleScript(() => resume(), WAITS[1].approve),
   }));
   const statuses = projections(trace);
@@ -983,7 +983,7 @@ test('a decision that releases the gate while paused is verified, and the push w
 test('a resume that arrives while a decision is verified returns the task to the wait when the decision is unconfirmed', () => {
   const unverified = () => ({ kind: 'verifyApprovalDecision' as const, verified: false, decision: null, extensionUsd: null });
   const trace = runTaskSequentially(WAITS[1].input, scripted({ verifyApprovalDecision: unverified }, {
-    messagesDuring: (request) => (request.kind === 'verifyApprovalDecision' ? [resume()] : []),
+    eventsDuring: (request) => (request.kind === 'verifyApprovalDecision' ? [resume()] : []),
     whenIdle: idleScript(() => pause(), WAITS[1].approve, timer('approval:')),
   }));
   const statuses = projections(trace);
@@ -992,6 +992,55 @@ test('a resume that arrives while a decision is verified returns the task to the
   assert.deepEqual([trace.summary.outcome, trace.summary.reason], ['BLOCKED', 'publication-expired']);
   assertLegalProjections(trace);
 });
+
+// Approval races: the expiry timer and controls can arrive while a decision is being verified.
+
+function assertGateHeld(trace: TaskTrace): void {
+  assert.deepEqual(effectsOf(trace.commands, 'recordExtension'), [], 'no extension recorded');
+  const kinds = requestKinds(trace.commands);
+  assert.ok(!kinds.includes('publishBranch'), 'nothing pushed');
+  const openedAt = kinds.indexOf('openApprovalRequest');
+  assert.ok(openedAt >= 0 && !kinds.slice(openedAt).includes('ensureAttempt'), 'no attempt after the approval request');
+}
+
+for (const wait of WAITS) {
+  const duringVerification = (events: readonly ((timers: readonly string[]) => Extract<TaskEvent, { type: 'timerFired' }> | TaskMessage)[]) =>
+    (request: TaskRequest, timers: readonly string[]) => (request.kind === 'verifyApprovalDecision' ? events.map((e) => e(timers)) : []);
+
+  test(`an expiry that fires while a ${wait.kind} decision is verified wins: the request expires though the decision verifies`, () => {
+    const trace = runTaskSequentially(wait.input, scripted({ verifyApprovalDecision: wait.verified }, {
+      eventsDuring: duringVerification([timer('approval:')]),
+      whenIdle: idleScript(wait.approve),
+    }));
+    assert.deepEqual(effectsOf(trace.commands, 'expireApprovalRequest').map((e) => e.approvalRequestId), ['asep-task-task-1:1']);
+    assertGateHeld(trace);
+    assert.deepEqual([trace.summary.outcome, trace.summary.reason], wait.rejectOutcome);
+    assertLegalProjections(trace);
+  });
+
+  test(`an unconfirmed ${wait.kind} decision never releases the gate, even with a valid decision and amount`, () => {
+    const unconfirmed = () => ({ ...wait.verified(), verified: false });
+    const trace = runTaskSequentially(wait.input, scripted({ verifyApprovalDecision: unconfirmed }, {
+      whenIdle: idleScript(wait.approve, timer('approval:')),
+    }));
+    assert.deepEqual(effectsOf(trace.commands, 'audit').filter((a) => a.action === 'approval.unverified').map((a) => a.detail['decisionId']), ['d1']);
+    assertGateHeld(trace);
+    assert.deepEqual(effectsOf(trace.commands, 'expireApprovalRequest').map((e) => e.approvalRequestId), ['asep-task-task-1:1']);
+    assert.deepEqual([trace.summary.outcome, trace.summary.reason], wait.rejectOutcome);
+    assertLegalProjections(trace);
+  });
+
+  test(`a cancel and the expiry while a ${wait.kind} decision is verified: the request expires, nothing is released, the task ends CANCELLED`, () => {
+    const trace = runTaskSequentially(wait.input, scripted({ verifyApprovalDecision: wait.verified }, {
+      eventsDuring: duringVerification([() => cancel(), timer('approval:')]),
+      whenIdle: idleScript(wait.approve),
+    }));
+    assert.deepEqual(effectsOf(trace.commands, 'expireApprovalRequest').map((e) => e.approvalRequestId), ['asep-task-task-1:1']);
+    assertGateHeld(trace);
+    assert.equal(trace.summary.outcome, 'CANCELLED');
+    assertLegalProjections(trace);
+  });
+}
 
 test('cancel while waiting for an approval cancels the approval request', () => {
   const trace = runTaskSequentially(tightBudget, scripted({}, { whenIdle: idleScript(() => cancel()) }));
@@ -1373,7 +1422,7 @@ for (const [mode, flagged, terminal, reason] of [
 
 test('cancel during the assurance round interrupts it: nothing is pushed, the attempt is cleaned up and the task CANCELLED', () => {
   const trace = runTaskSequentially(baseInput(), scripted({}, {
-    messagesDuring: (request) => (request.kind === 'assuranceRound' ? [cancel()] : []),
+    eventsDuring: (request) => (request.kind === 'assuranceRound' ? [cancel()] : []),
   }));
   assert.equal(trace.aborts, 1);
   const kinds = requestKinds(trace.commands);
@@ -1398,7 +1447,7 @@ test('cancel during the publication-approval wait ends the task at once and clos
 
 test('cancel during evidence binding lets the unit reconcile, then cancels before the assurance round', () => {
   const trace = runTaskSequentially(baseInput(), scripted({}, {
-    messagesDuring: (request) => (request.kind === 'persistEvidence' ? [cancel()] : []),
+    eventsDuring: (request) => (request.kind === 'persistEvidence' ? [cancel()] : []),
   }));
   assert.equal(trace.aborts, 0);
   const kinds = requestKinds(trace.commands);
@@ -1430,7 +1479,7 @@ function assertPublicationIncomplete(trace: TaskTrace, pushConfirmed: boolean, c
 for (const nonRetryable of [false, true]) {
   test(`publication: a cancel during a successful push, then a PR upsert that fails ${nonRetryable ? 'non-retryably' : 'after its retries'}, ends FAILED / publication-incomplete, never CANCELLED`, () => {
     const trace = runTaskSequentially(baseInput(), scripted({ upsertPullRequest: upsertFails(nonRetryable) }, {
-      messagesDuring: (request) => (request.kind === 'publishBranch' ? [cancel()] : []),
+      eventsDuring: (request) => (request.kind === 'publishBranch' ? [cancel()] : []),
     }));
     assert.equal(trace.aborts, 0);
     assertPublicationIncomplete(trace, true, true);
@@ -1446,7 +1495,7 @@ test('publication: an ambiguous push failure still runs the PR upsert; a non-ret
   // Ambiguous (retries exhausted): the branch may exist, so the PR upsert runs and here succeeds; the cancel then ends
   // the task CANCELLED with the PR left open and audited.
   const ambiguous = runTaskSequentially(baseInput(), scripted({ publishBranch: pushFails(false) }, {
-    messagesDuring: (request) => (request.kind === 'publishBranch' ? [cancel()] : []),
+    eventsDuring: (request) => (request.kind === 'publishBranch' ? [cancel()] : []),
   }));
   assert.equal(requestKinds(ambiguous.commands).filter((k) => k === 'upsertPullRequest').length, 1, 'the PR upsert runs');
   assert.equal(ambiguous.summary.outcome, 'CANCELLED');
@@ -1463,7 +1512,7 @@ test('publication: an ambiguous push failure still runs the PR upsert; a non-ret
   assert.equal(definite.summary.outcome, 'FAILED');
   assert.equal(definite.summary.reason, 'publication-failed');
   const definiteCancelled = runTaskSequentially(baseInput(), scripted({ publishBranch: pushFails(true) }, {
-    messagesDuring: (request) => (request.kind === 'publishBranch' ? [cancel()] : []),
+    eventsDuring: (request) => (request.kind === 'publishBranch' ? [cancel()] : []),
   }));
   assert.ok(!requestKinds(definiteCancelled.commands).includes('upsertPullRequest'), 'no PR upsert after a definite push failure');
   assert.equal(definiteCancelled.summary.outcome, 'CANCELLED');
@@ -1471,7 +1520,7 @@ test('publication: an ambiguous push failure still runs the PR upsert; a non-ret
 
 test('cancel during the PR upsert lets it complete; the PR stays open and the cancel is audited', () => {
   const trace = runTaskSequentially(baseInput(), scripted({}, {
-    messagesDuring: (request) => (request.kind === 'upsertPullRequest' ? [cancel()] : []),
+    eventsDuring: (request) => (request.kind === 'upsertPullRequest' ? [cancel()] : []),
   }));
   assert.equal(trace.aborts, 0);
   assert.ok(effectsOf(trace.commands, 'audit').some((a) => a.action === 'workflow.cancel.after-publication'), 'cancel after publication audited');

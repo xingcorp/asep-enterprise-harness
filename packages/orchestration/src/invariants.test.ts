@@ -3,7 +3,9 @@
 // A seeded generator drives the task reducer through the sequential interpreter
 // with random budgets and policy, activity results, activity failures, worker
 // deaths, cap stops and overruns, assurance outcomes (valid, out of contract and
-// unavailable), approvals, pauses, resumes, cancels and timer firings. Every generated trace must satisfy the safety invariants the
+// unavailable), approvals and their verification (confirmed or not), pauses,
+// resumes, cancels, and timer firings both while idle and while a request is in
+// flight. Every generated trace must satisfy the safety invariants the
 // durable workflow relies on. Seeds are fixed, so a failure is reproducible: the
 // assertion message names the seed.
 
@@ -227,17 +229,24 @@ function randomEnvironment(rng: Rng, input: TaskCoreInput): TaskEnvironment {
         case 'verifyApprovalDecision': {
           const sent = sentDecisions.get(request.decisionId);
           if (rng.chance(0.05)) return failure(rng);
-          if (!sent || rng.chance(0.2)) return { kind: 'verifyApprovalDecision', verified: false, decision: null, extensionUsd: null };
-          return { kind: 'verifyApprovalDecision', verified: true, decision: sent.decision, extensionUsd: sent.extensionUsd };
+          const r = rng.next();
+          if (!sent || r < 0.1) return { kind: 'verifyApprovalDecision', verified: false, decision: null, extensionUsd: null };
+          // PostgreSQL may not confirm a decision whose content is valid: the core must not release on content alone.
+          return { kind: 'verifyApprovalDecision', verified: r >= 0.3, decision: sent.decision, extensionUsd: sent.extensionUsd };
         }
         default:
           if (rng.chance(0.06)) return failure(rng);
           return happyAnswer(request);
       }
     },
-    messagesDuring(): readonly TaskMessage[] {
-      const out: TaskMessage[] = [];
+    eventsDuring(request: TaskRequest, timers: readonly string[]) {
+      const out: (TaskMessage | Extract<TaskEvent, { type: 'timerFired' }>)[] = [];
       while (rng.chance(0.12)) out.push(rng.chance(0.85) ? control() : decision(`asep-task-task-p:${rng.int(1, 3)}`));
+      // A running timer (an approval expiry or a pause timeout) can fire while the request is in flight, before or
+      // after the messages.
+      if (timers.length > 0 && rng.chance(request.kind === 'verifyApprovalDecision' ? 0.35 : 0.1)) {
+        out.splice(rng.int(0, out.length), 0, { type: 'timerFired', timerId: rng.pick(timers) });
+      }
       return out;
     },
     whenIdle(state: TaskState, timers: readonly string[]) {
@@ -597,6 +606,35 @@ function checkPauses(input: TaskCoreInput, trace: TaskTrace, label: string): voi
   }
 }
 
+// Approval gates, step by step: a gate is released (an extension recorded, or the publish-change push issued or
+// withheld for a pause) only by the result of a verifyApprovalDecision that is verified, says approve, and arrives
+// before that request's expiry fired. Such a result releases the gate unless a cancel is pending, and a result that
+// arrives after the expiry fired expires the request.
+function checkApprovalGates(input: TaskCoreInput, trace: TaskTrace, label: string): void {
+  const fired = new Set<string>();
+  for (const { before, event, decision } of replaySteps(input, trace)) {
+    const after = decision.state;
+    const recorded = effectsOf(decision.commands, 'recordExtension').length > 0;
+    const pushed = requests(decision.commands).some((r) => r.kind === 'publishBranch') || after.deferred?.kind === 'publishBranch';
+    const released = before.approval !== null && (recorded || (before.approval.kind === 'publish-change' && pushed));
+    const answersVerification = event.type === 'result' && before.pending !== null && before.pending.seq === event.seq
+      && before.pending.request.kind === 'verifyApprovalDecision' && before.approval !== null && before.outcome === null;
+    if (!answersVerification || event.type !== 'result' || event.result.kind !== 'verifyApprovalDecision' || before.approval === null) {
+      assert.ok(!released, `${label}: gate ${before.approval?.approvalRequestId} released by ${event.type}`);
+      if (event.type === 'timerFired') fired.add(event.timerId);
+      continue;
+    }
+    const id = before.approval.approvalRequestId;
+    const expired = fired.has(`approval:${id}`);
+    const approved = event.result.verified && event.result.decision === 'approve';
+    assert.ok(!released || (approved && !expired), `${label}: gate ${id} released by verified=${event.result.verified} decision=${event.result.decision} expired=${expired}`);
+    if (approved && !expired && !before.cancelPending) assert.ok(released, `${label}: a confirmed approve left gate ${id} closed`);
+    if (expired) {
+      assert.deepEqual(effectsOf(decision.commands, 'expireApprovalRequest').map((e) => e.approvalRequestId), [id], `${label}: ${id} expired while verifying`);
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Properties
 // ---------------------------------------------------------------------------
@@ -613,6 +651,7 @@ test('generated task traces satisfy the orchestration safety invariants', () => 
     const { input, trace } = generate(seed);
     checkTrace(input, trace, `seed ${seed}`);
     checkPauses(input, trace, `seed ${seed}`);
+    checkApprovalGates(input, trace, `seed ${seed}`);
     outcomes.set(trace.summary.outcome, (outcomes.get(trace.summary.outcome) ?? 0) + 1);
   }
   // The generator must actually reach every terminal outcome, or the invariants prove little.
@@ -646,6 +685,11 @@ test('the generator covers repair, replacement, approvals, pause and cancel path
     for (const { before, event, decision } of replaySteps(input, trace)) {
       if (event.type === 'pauseRequested' && waitsForApproval(before) && !before.paused && decision.receipt?.accepted) seen.add('paused-while-waiting');
       if (event.type === 'timerFired' && before.paused && event.timerId.startsWith('approval:')) seen.add('expired-while-paused');
+      if (event.type === 'timerFired' && before.pending !== null) {
+        seen.add(event.timerId.startsWith('approval:') ? 'expiry-during-verification' : 'pause-timeout-in-flight');
+      }
+      if (event.type === 'result' && event.result.kind === 'verifyApprovalDecision' && !event.result.verified && event.result.decision === 'approve'
+        && before.approval !== null && !before.approval.expiryFired) seen.add('unconfirmed-approve');
     }
     for (const e of trace.events) {
       if (e.type === 'result' && e.result.kind === 'findAttempt') seen.add(e.result.attemptId === null ? 'registration-absent' : 'registration-found');
@@ -664,11 +708,11 @@ test('the generator covers repair, replacement, approvals, pause and cancel path
         && e.result.status !== 'AGENT_DONE' && hostile.includes(e.result.failureClass)))) seen.add('hostile-policy-failure');
   }
   assert.deepEqual([...seen].sort(), [
-    'abort', 'approval-expired', 'assurance-unavailable', 'budget-approval', 'exhausted', 'expired-while-paused', 'extension-granted',
-    'hostile-policy-failure', 'lineage-retry', 'micro-overrun', 'overrun', 'pause-timeout', 'paused', 'paused-while-waiting',
-    'publication-incomplete',
+    'abort', 'approval-expired', 'assurance-unavailable', 'budget-approval', 'exhausted', 'expired-while-paused',
+    'expiry-during-verification', 'extension-granted', 'hostile-policy-failure', 'lineage-retry', 'micro-overrun', 'overrun',
+    'pause-timeout', 'pause-timeout-in-flight', 'paused', 'paused-while-waiting', 'publication-incomplete',
     'publish-approval', 'recovered', 'registration-absent', 'registration-found', 'registration-unknown',
-    'repair', 'retry', 'verification-stop', 'verified-within-grace', 'violation', 'wall-clock-overrun',
+    'repair', 'retry', 'unconfirmed-approve', 'verification-stop', 'verified-within-grace', 'violation', 'wall-clock-overrun',
   ]);
 });
 

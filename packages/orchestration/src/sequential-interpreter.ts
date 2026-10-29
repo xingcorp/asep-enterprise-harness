@@ -1,9 +1,10 @@
 // A sequential, in-memory interpreter for the task reducer.
 //
 // It drives the reducer exactly as the Temporal workflow does: it executes
-// effects in order, awaits one request at a time, delivers messages that arrive
-// while a request is in flight, and asks the environment for the next message
-// or timer when the reducer is idle (paused or waiting for an approval). The
+// effects in order, awaits one request at a time, delivers the messages and
+// timer firings that arrive while a request is in flight, and asks the
+// environment for the next message or timer when the reducer is idle (paused or
+// waiting for an approval). The
 // environment supplies activity results; no clock, timer or I/O is involved, so
 // a trace is a pure function of the input and the environment's answers.
 
@@ -36,8 +37,8 @@ export type Answer = TaskResult | ActivityFailure;
 export interface TaskEnvironment {
   /** The outcome of one request: its result, or the failure the engine reports after its retries. */
   respond(request: TaskRequest): Answer;
-  /** Messages that arrive while the request is in flight. */
-  messagesDuring(request: TaskRequest): readonly TaskMessage[];
+  /** Messages and firings of running timers that arrive while the request is in flight, in order. */
+  eventsDuring(request: TaskRequest, activeTimers: readonly string[]): readonly (TaskMessage | TimerFired)[];
   /** The next message or timer firing while the reducer awaits no request. */
   whenIdle(state: TaskState, activeTimers: readonly string[]): TaskEvent;
 }
@@ -59,6 +60,8 @@ export interface TaskTrace {
   readonly summary: TaskSummary;
   readonly state: TaskState;
 }
+
+type TimerFired = Extract<TaskEvent, { type: 'timerFired' }>;
 
 function isMessage(event: TaskEvent): event is TaskMessage {
   return event.type !== 'result' && event.type !== 'activityFailed' && event.type !== 'timerFired';
@@ -106,7 +109,10 @@ export function runTaskSequentially(input: TaskCoreInput, env: TaskEnvironment, 
       feed(env.whenIdle(state!, [...timers]));
       continue;
     }
-    for (const message of env.messagesDuring(pending.request)) feed(message);
+    for (const event of env.eventsDuring(pending.request, [...timers])) {
+      if (event.type === 'timerFired' && !timers.has(event.timerId)) throw new Error(`timer ${event.timerId} is not running`);
+      feed(event);
+    }
     if (summary !== null || state!.pending?.seq !== pending.seq) continue;
     const answer = env.respond(pending.request);
     feed(answer.kind === 'activityFailed'

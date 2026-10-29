@@ -127,7 +127,7 @@ export type Responder = (request: TaskRequest, occurrence: number) => Answer | u
 /** A scripted environment: per-kind overrides fall back to the happy path. */
 export function scripted(
   overrides: Partial<Record<TaskRequestKind, Responder>> = {},
-  hooks: Partial<Pick<TaskEnvironment, 'messagesDuring' | 'whenIdle'>> = {},
+  hooks: Partial<Pick<TaskEnvironment, 'eventsDuring' | 'whenIdle'>> = {},
 ): TaskEnvironment {
   const seen = new Map<TaskRequestKind, number>();
   return {
@@ -136,7 +136,7 @@ export function scripted(
       seen.set(request.kind, occurrence);
       return overrides[request.kind]?.(request, occurrence) ?? happyAnswer(request);
     },
-    messagesDuring: hooks.messagesDuring ?? (() => []),
+    eventsDuring: hooks.eventsDuring ?? (() => []),
     whenIdle:
       hooks.whenIdle ??
       ((_state, timers) => {
