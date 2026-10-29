@@ -1981,11 +1981,13 @@ const RENAMED: readonly (readonly [string, ForgeRepository])[] = [
   ['re-cased', { id: TASK_REPOSITORY.id, owner: 'Acme', name: 'Widgets' }],
 ];
 
-function assertRenameAudited(trace: TaskTrace, observed: ForgeRepository): void {
-  assert.deepEqual(effectsOf(trace.commands, 'audit').filter((a) => a.action === 'publication.repository-renamed').map((a) => a.detail), [{
-    workflowId: 'asep-task-task-1', attemptNumber: 1, repositoryId: TASK_REPOSITORY.id,
-    bound: `${TASK_REPOSITORY.owner}/${TASK_REPOSITORY.name}`, observed: `${observed.owner}/${observed.name}`,
-  }]);
+/** The read showed the binding repository under each of `observed`, in that order, and each is audited once. */
+function assertRenameAudited(trace: TaskTrace, ...observed: readonly ForgeRepository[]): void {
+  assert.deepEqual(effectsOf(trace.commands, 'audit').filter((a) => a.action === 'publication.repository-renamed').map((a) => a.detail),
+    observed.map((r) => ({
+      workflowId: 'asep-task-task-1', attemptNumber: 1, repositoryId: TASK_REPOSITORY.id,
+      bound: `${TASK_REPOSITORY.owner}/${TASK_REPOSITORY.name}`, observed: `${r.owner}/${r.name}`,
+    })));
 }
 
 for (const cancelled of [false, true]) {
@@ -2011,6 +2013,55 @@ for (const cancelled of [false, true]) {
     });
   }
 }
+
+// A rename only the PR shows: its head or base, or both, carries the binding's id under the new owner and name while
+// the branch read shows the bound ones. The reviewer's RENAME_PR_ONLY_MATRIX.
+const MOVED: ForgeRepository = { id: TASK_REPOSITORY.id, owner: 'acme-corp', name: 'gadgets' };
+const PR_ONLY_RENAMES: readonly (readonly [string, Partial<ObservedPullRequest>])[] = [
+  ['head', { headRepository: MOVED }],
+  ['base', { baseRepository: MOVED }],
+  ['head and base', { headRepository: MOVED, baseRepository: MOVED }],
+];
+
+for (const cancelled of [false, true]) {
+  const when = cancelled ? 'with a cancel pending' : 'without a cancel';
+  for (const [where, overrides] of PR_ONLY_RENAMES) {
+    test(`publication identity: after a failed PR upsert, a rename only the PR's ${where} shows is audited once, ${when}`, () => {
+      const trace = runTaskSequentially(baseInput(), scripted({
+        upsertPullRequest: publicationFails('unknown'), reconcilePublication: reconciled(shaFor(1), [prOfAttempt(9, overrides)]),
+      }, { eventsDuring: cancelled ? cancelDuring('publishBranch') : () => [] }));
+      assertPublished(trace, 9, cancelled);
+      assertRenameAudited(trace, MOVED);
+    });
+
+    test(`publication identity: after an unknown push, a rename only the PR's ${where} shows is audited once, ${when}`, () => {
+      const trace = runTaskSequentially(baseInput(), scripted({
+        publishBranch: publicationFails('unknown'), reconcilePublication: reconciled(shaFor(1), [prOfAttempt(9, overrides)]),
+      }, { eventsDuring: cancelled ? cancelDuring('publishBranch') : () => [] }));
+      assertPublished(trace, 7, cancelled);
+      assertRenameAudited(trace, MOVED);
+    });
+  }
+}
+
+test('publication identity: each owner and name the read shows under the binding id is audited once, in the order read', () => {
+  const branchMoved: ForgeRepository = { id: TASK_REPOSITORY.id, owner: TASK_REPOSITORY.owner, name: 'gadgets' };
+  const trace = runTaskSequentially(baseInput(), scripted({
+    upsertPullRequest: publicationFails('unknown'),
+    reconcilePublication: reconciled(shaFor(1), [prOfAttempt(9, { headRepository: MOVED, baseRepository: branchMoved })], branchMoved),
+  }));
+  assertPublished(trace, 9, false);
+  assertRenameAudited(trace, branchMoved, MOVED);
+});
+
+test('publication identity: a rename is audited also when the publication does not reconcile', () => {
+  const trace = runTaskSequentially(baseInput(), scripted({
+    upsertPullRequest: publicationFails('unknown'),
+    reconcilePublication: reconciled(shaFor(1), [prOfAttempt(9, { headRepository: MOVED, baseRepository: MOVED, state: 'closed' })], MOVED),
+  }));
+  assertPublicationIncomplete(trace, true, false, 'pull-request-closed');
+  assertRenameAudited(trace, MOVED);
+});
 
 // The reconciliation read rewrites a PR whose title or body diverged from the attempt's facts, and says so on that PR;
 // the core audits every repair it is told of, before and whatever it decides.

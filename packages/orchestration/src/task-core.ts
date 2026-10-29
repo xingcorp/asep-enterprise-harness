@@ -901,16 +901,26 @@ function sameRepository(observed: ForgeRepository, binding: ForgeRepository): bo
   return observed.id === binding.id;
 }
 
-/** A reconciled read found the binding repository under another owner or name: it was renamed or transferred. */
-function auditRepositoryMove(step: Step, a: MutableAttempt, observed: ForgeRepository): void {
+/**
+ * The read showed the binding repository (its id) under another owner or name: it was renamed or transferred. Each
+ * such owner and name, on the branch or on a listed PR's head or base, is audited once, in the order read, before
+ * and whatever the decision.
+ */
+function auditRepositoryMoves(step: Step, a: MutableAttempt, result: ReconciliationRead): void {
   const bound = step.s.input.repository;
-  if (observed.owner === bound.owner && observed.name === bound.name) return;
-  audit(step, 'publication.repository-renamed', {
-    attemptNumber: a.attemptNumber,
-    repositoryId: bound.id,
-    bound: `${bound.owner}/${bound.name}`,
-    observed: `${observed.owner}/${observed.name}`,
-  });
+  const audited: string[] = [];
+  for (const observed of [result.branch?.repository, ...result.pullRequests.flatMap((pr) => [pr.headRepository, pr.baseRepository])]) {
+    if (observed === undefined || !sameRepository(observed, bound)) continue;
+    const path = `${observed.owner}/${observed.name}`;
+    if ((observed.owner === bound.owner && observed.name === bound.name) || audited.includes(path)) continue;
+    audited.push(path);
+    audit(step, 'publication.repository-renamed', {
+      attemptNumber: a.attemptNumber,
+      repositoryId: bound.id,
+      bound: `${bound.owner}/${bound.name}`,
+      observed: path,
+    });
+  }
 }
 
 /** What a read found of the attempt branch: `own` when it is in the binding repository at the attempt's commit. */
@@ -959,21 +969,18 @@ function publicationReconciled(step: Step, result: ReconciliationRead): void {
   const s = step.s;
   const a = attempt(s, publication(s).attemptNumber);
   auditContentRepairs(step, a, result);
+  auditRepositoryMoves(step, a, result);
   const branch = branchFinding(s, a, result.branch);
   const pr = pullRequestFinding(s, a, result.pullRequests);
   if (!s.pushConfirmed) {
-    if (branch === 'own' && (pr === 'none' || pr === 'own') && result.branch !== null) {
-      auditRepositoryMove(step, a, result.branch.repository);
-      pushApplied(step);
-    } else if (branch === 'branch-missing' && pr === 'none') close(step, 'FAILED', 'publication-failed');
+    if (branch === 'own' && (pr === 'none' || pr === 'own')) pushApplied(step);
+    else if (branch === 'branch-missing' && pr === 'none') close(step, 'FAILED', 'publication-failed');
     else publicationIncomplete(step, branch === 'own' ? pr : branch, result);
     return;
   }
   const [own] = result.pullRequests;
-  if (branch === 'own' && pr === 'own' && own !== undefined && result.branch !== null) {
-    auditRepositoryMove(step, a, result.branch.repository);
-    pullRequestUpserted(step, own.number);
-  } else publicationIncomplete(step, branch !== 'own' ? branch : pr === 'none' ? 'pull-request-missing' : pr, result);
+  if (branch === 'own' && pr === 'own' && own !== undefined) pullRequestUpserted(step, own.number);
+  else publicationIncomplete(step, branch !== 'own' ? branch : pr === 'none' ? 'pull-request-missing' : pr, result);
 }
 
 function upsertPullRequest(step: Step): void {

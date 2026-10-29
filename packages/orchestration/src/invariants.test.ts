@@ -926,6 +926,19 @@ function checkPublicationEffects(input: TaskCoreInput, trace: TaskTrace, label: 
         read.pullRequests.filter((pr) => pr.contentRepaired).map((pr) => pr.number),
         `${label}: every content repair is audited`,
       );
+      // Every owner and name the read shows under the binding's id, other than the bound ones, is audited once, in the
+      // order read, also by a decision that does not reconcile.
+      const bound = input.repository;
+      const moves: string[] = [];
+      for (const r of [read.branch?.repository, ...read.pullRequests.flatMap((pr) => [pr.headRepository, pr.baseRepository])]) {
+        if (r === undefined || r.id !== bound.id || (r.owner === bound.owner && r.name === bound.name)) continue;
+        if (!moves.includes(`${r.owner}/${r.name}`)) moves.push(`${r.owner}/${r.name}`);
+      }
+      assert.deepEqual(
+        effectsOf(decision.commands, 'audit').filter((a) => a.action === 'publication.repository-renamed').map((a) => a.detail['observed']),
+        moves,
+        `${label}: every move of the binding repository the read shows is audited once`,
+      );
       const own = isThisAttempts(publicationIdentity(input, trace, n), read);
       const afterPush = event.seq < upsertSeq;
       if (afterPush && own) {
