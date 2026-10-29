@@ -1254,6 +1254,25 @@ reflected constructor of MED-001.
 - **Gate crashes.** If `verify:all` crashes again with `Check failed: end > addr.`, the step report records the
   suite, the run number and the machine load, and the crash rate; no silent rerun until green.
 
+### S2 follow-up commits (v5)
+
+One commit per finding or tight group, on top of the docs commit `5a3a801`. Each fix commit's new tests failed on the
+code before it, and removing the fix again turned them red. `pnpm verify:all` passed after each commit.
+
+| Finding | Commit | Proof |
+|---|---|---|
+| P3-S2R-HIGH-002 (P3-PLAN4-HIGH-001) | `56e8b61` | The reviewer's push probe (fencing error after the push, cancel pending) and the effect matrix for push and PR upsert, with and without a cancel, and the effect property: red before the fix. Treating an unknown push as failed, or skipping the upsert reconciliation, turns direct traces and the property red. |
+| P3-S2R-HIGH-001 (P3-PLAN4-HIGH-002) | `08681fb` | The reviewer's cap probe (cap at `MAX_USD`, usage one micro-dollar above), usage beyond the bound, invalid usage, micro-dollar boundaries next to the bound, and the property with caps near the bound: red before the fix. Dropping the out-of-bound overrun turns them red. |
+| P3-S2R-MED-001, P3-S2R-MED-002 | `9e2f708` | All 21 new seeds, including the four surviving probes, pass the previous AST detector. The reviewer's two mutations, applied to `task-core.ts` on disk, turn the production check red. Removing the resolution closure, the computed-key rule, the reflective-member rule or `Reflect` turns seeds red. |
+| Generator coverage (R24) | `3765c79` | The per-kind marker is red on the previous generator. Removing the core's content check was green on every test before; it is now red in two direct tests and the gate oracle. |
+
+While building the checker detector, five evasions of the rules as first written passed it and were added as seeds
+before the rule that catches them: a `"constructor"` key in a destructuring pattern, `"constructor"` passed as an
+argument, `Function` reached through `Object.getOwnPropertyDescriptors(Object.getPrototypeOf(…))` and an index,
+and clock reads through `Intl` (it formats the current time when given no date) and `Temporal.Now`. The deny set
+therefore also holds `Intl`, `Temporal` and the `Object` members that reach a prototype without naming it, and a string
+holding a reflective name is a literal key wherever it appears (architecture §3, exit B2).
+
 ### Freeze gate (v5)
 
 - [x] Every finding of the re-audit dispositioned: 7/7 new ACCEPTED; the three v3 PARTIAL findings closed through
