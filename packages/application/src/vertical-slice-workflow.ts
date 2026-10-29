@@ -51,7 +51,7 @@ import type { SpanTracer, AuditSink } from '@asep/observability';
 import { governedExecution } from './governed-execution.js';
 import { completionObserver, fencedBy } from './completion-observer.js';
 import {
-  completeToReview, SandboxIsolationRequiredError,
+  completeToReview, pullRequestFound, SandboxIsolationRequiredError,
   type VerificationCheckSpec,
 } from './pipeline-steps.js';
 
@@ -529,8 +529,40 @@ export async function runVerticalSliceWorkflow(
         });
       },
     });
+    // A PR that is closed, merged or on another base is not a publication under
+    // review: the task fails, on record with what was found, and no PR row is
+    // written. The PR itself is left exactly as the forge holds it.
+    if (result.gap !== undefined && result.pr !== undefined) {
+      const found = result.pr;
+      const gap = result.gap;
+      let attemptVersion = attemptVersionAtStart;
+      await observeFenced(
+        {
+          span: 'task.execute',
+          action: 'task.status.transition',
+          detail: {
+            to: 'FAILED', outcome: 'publication-incomplete', reason: gap,
+            found: pullRequestFound(found), expectedBase: input.binding.defaultBaseBranch,
+            commitSha: result.commitSha ?? null,
+          },
+        },
+        async () => {
+          if (result.commitSha !== undefined) {
+            attemptVersion = await repos.attempts.setResultSha(
+              scope, attempt.id, attemptVersion, result.commitSha,
+            );
+          }
+          if (result.evidence !== undefined) {
+            attemptVersion = await repos.attempts.attachEvidence(
+              scope, attempt.id, attemptVersion, result.evidence.ref,
+            );
+          }
+          await repos.tasks.updateStatus(scope, task.id, taskVersion, 'FAILED');
+        },
+      );
+    }
     if (result.stoppedAt !== 'complete') {
-      throw new Error(`completion stopped early at '${result.stoppedAt}'`);
+      throw new Error(`completion stopped early at '${result.stoppedAt}'${result.reason !== undefined ? `: ${result.reason}` : ''}`);
     }
     const commitSha = result.commitSha;
     const evidence = result.evidence;

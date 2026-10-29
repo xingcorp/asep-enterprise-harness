@@ -30,7 +30,7 @@ import type {
   ForgeProvider, PullRequestRef,
 } from '@asep/ports';
 import type { TenantScope, RepositoryBindingId } from '@asep/contracts';
-import type { GitHubAppForgeProvider, RepositoryForgeConfig } from './forge-provider.js';
+import type { GitHubAppForgeProvider, PullRequestResult, RepositoryForgeConfig } from './forge-provider.js';
 
 /**
  * Resolves a governed repository-binding identity into the concrete forge
@@ -57,6 +57,14 @@ export interface ForgeBindingResolver {
  * this class simply calls with resolved coordinates. It is a translation layer,
  * on purpose.
  */
+// The state and merged flag of a PR, when GitHub reported them.
+function stateOf(pr: PullRequestResult): Pick<PullRequestRef, 'state' | 'merged'> {
+  return {
+    ...(pr.state !== undefined ? { state: pr.state } : {}),
+    ...(pr.merged !== undefined ? { merged: pr.merged } : {}),
+  };
+}
+
 export class GitHubAppForgePort implements ForgeProvider {
   constructor(
     private readonly inner: GitHubAppForgeProvider,
@@ -104,12 +112,15 @@ export class GitHubAppForgePort implements ForgeProvider {
       title: input.title,
       body: input.body,
     });
-    // Narrow the adapter's result to the port's canonical ref shape.
+    // Narrow the adapter's result to the port's canonical ref shape, with the
+    // state GitHub reports, so the caller can tell a reviewable PR from one a
+    // human closed.
     return {
       number: pr.number,
       url: pr.url,
       headBranch: pr.headBranch,
       baseBranch: pr.baseBranch,
+      ...stateOf(pr),
     };
   }
 
@@ -143,8 +154,8 @@ export class GitHubAppForgePort implements ForgeProvider {
       headBranch: input.headBranch,
     });
     if (!pr) return null;
-    // A lookup carries the head commit, title and body GitHub reports, so a
-    // reader can check what the PR shows now.
+    // A lookup carries the head commit, title, body and state GitHub reports,
+    // so a reader can check what the PR shows now and whether it is open.
     return {
       number: pr.number,
       url: pr.url,
@@ -153,6 +164,7 @@ export class GitHubAppForgePort implements ForgeProvider {
       ...(pr.headSha !== undefined ? { headSha: pr.headSha } : {}),
       ...(pr.title !== undefined ? { title: pr.title } : {}),
       ...(pr.body !== undefined ? { body: pr.body } : {}),
+      ...stateOf(pr),
     };
   }
 

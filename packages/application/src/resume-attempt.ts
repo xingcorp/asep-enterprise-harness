@@ -21,11 +21,16 @@
 //      and the log only lets the current, live owner finish a record.
 //   4. It may still reach the forge: an executor paused inside a forge call
 //      keeps going when it wakes, and GitHub has no compare-and-set for a PR
-//      update. What it can write is held by construction — its push is a
-//      compare-and-set of the attempt's one commit, its PR content a pure
-//      function of the attempt's facts — and before any terminal state the
+//      update. What it can write is held by construction — the harness only
+//      ever pushes the attempt's pinned commit, under a compare-and-set on the
+//      branch's current value, and its PR content is a pure function of the
+//      attempt's facts — and before the resume's terminal transition the
 //      successor reconciles the branch and the PR with those facts, repairing a
 //      divergence on record ('forge.reconcile').
+//   5. Only an open, unmerged PR on the attempt's base completes to review. A
+//      PR a human closed or merged is never reopened, and one on another base
+//      is not the attempt's: the task ends FAILED (publication-incomplete),
+//      audited with what was found, and no PR row is recorded open.
 //
 // ADMISSION FIRST. A resume publishes (push, PR) just as a fresh run does, so
 // it is gated the same way: the task's risk is read from the authoritative task
@@ -52,10 +57,11 @@ import type {
 } from '@asep/ports';
 import type { SpanTracer, AuditSink } from '@asep/observability';
 import { completionObserver, fencedBy } from './completion-observer.js';
+import { isTaskTerminal } from '@asep/domain';
 import { admitRisk } from './risk-admission.js';
 import {
   pushStep, upsertPrStep, evidenceStep, settleCommitStep, reconcileBranchStep, reconcilePullRequestStep,
-  pullRequestFactsOf, type ReconcileRemoteInput,
+  pullRequestFactsOf, pullRequestFound, type ReconcileRemoteInput,
 } from './pipeline-steps.js';
 import type { SlicePullRequestPort } from './vertical-slice-workflow.js';
 
@@ -86,10 +92,19 @@ export interface ResumeTaskPort {
   ): Promise<number>;
 }
 
+// The attempt's base is the binding's, read from the authoritative row exactly
+// as the run that made the attempt read it — never supplied by the caller.
+export interface ResumeBindingPort {
+  getScoped(scope: TenantScope, id: RepositoryBindingId): Promise<{
+    readonly defaultBaseBranch: string;
+  }>;
+}
+
 export interface ResumeAttemptRepositories {
   readonly attempts: ResumeAttemptPort;
   readonly tasks: ResumeTaskPort;
   readonly pullRequests: SlicePullRequestPort;
+  readonly bindings: ResumeBindingPort;
 }
 
 export interface ResumeAttemptInput {
@@ -100,7 +115,6 @@ export interface ResumeAttemptInput {
   readonly attemptId: AttemptId;
   readonly baseSha: string;
   readonly branch: string;
-  readonly base: string;
   // No agent runs under this lease, so it only has to outlive the forge calls.
   readonly leaseTtlMs: number;
 
@@ -117,7 +131,7 @@ export interface ResumeAttemptInput {
   readonly actor?: string;
 }
 
-export type ResumeStop = 'complete' | 'admission' | 'lease-denied' | 'not-resumable';
+export type ResumeStop = 'complete' | 'admission' | 'lease-denied' | 'not-resumable' | 'publication-incomplete';
 
 export interface ResumeAttemptResult {
   readonly stoppedAt: ResumeStop;
@@ -156,8 +170,10 @@ function isLease(v: Lease | { readonly reason: string }): v is Lease {
  * Resume a crashed attempt from its durable state under a fresh lease. Returns
  * `admission` when the task's risk is not admitted (nothing was touched),
  * `lease-denied` when the previous holder's lease is still live, `not-resumable`
- * when the attempt has to be re-executed, and `complete` once the push, the PR
- * and the authoritative transitions all converged.
+ * when the attempt has to be re-executed, `publication-incomplete` when its PR
+ * is closed, merged or on another base (the task is failed, never reopened),
+ * and `complete` once the push, the PR and the authoritative transitions all
+ * converged.
  */
 export async function resumeAttemptToReview(
   input: ResumeAttemptInput,
@@ -226,6 +242,7 @@ async function resumeUnderLease(
   if (CLOSED_TASK.has(task.status)) {
     return { stoppedAt: 'not-resumable', reason: `task is ${task.status}` };
   }
+  const base = (await repos.bindings.getScoped(scope, input.repositoryBindingId)).defaultBaseBranch;
 
   // --- the harness commit: adopted when recorded, reconciled when the executor
   // died between the commit and its record --------------------------------------
@@ -286,7 +303,7 @@ async function resumeUnderLease(
     repositoryBindingId: input.repositoryBindingId,
     branch: input.branch,
     facts: pullRequestFactsOf({
-      taskId: input.taskId, attemptId: input.attemptId, commitSha, evidenceId, base: input.base,
+      taskId: input.taskId, attemptId: input.attemptId, commitSha, evidenceId, base,
     }),
     observe,
   };
@@ -309,7 +326,7 @@ async function resumeUnderLease(
   const upsert = await observe(
     {
       span: 'forge.pull_request', action: 'forge.pull_request.upsert',
-      detail: { headBranch: input.branch, base: input.base },
+      detail: { headBranch: input.branch, base },
     },
     () => upsertPrStep({
       forge: input.forge,
@@ -319,21 +336,68 @@ async function resumeUnderLease(
       taskId: input.taskId,
       attemptId: input.attemptId,
       headBranch: input.branch,
-      base: input.base,
+      base,
       commitSha,
       evidenceId,
       leaseId: lease.leaseId,
     }),
   );
 
-  // --- before any terminal state: the remote is what the facts say ------------
+  // --- before the terminal transition: the remote is what the facts say -------
   // A stale owner may have written to the forge after the records moved here;
-  // whatever it left, the branch and the PR are made the facts' again.
+  // whatever it left, the branch and the PR are made the facts' again — unless
+  // the PR is no longer the attempt's to write.
   const branch = await reconcileBranchStep(remote, 'repair');
   const reconciled = await reconcilePullRequestStep(remote);
   const pr = reconciled.pr;
   if (pr.number !== upsert.pr.number) {
     throw new Error(`the attempt's PR is #${pr.number} on the forge, not the recorded #${upsert.pr.number} — refusing to guess which is the attempt's`);
+  }
+  const published = {
+    commitSha,
+    evidenceArtifactId: evidenceRef.artifactId,
+    evidenceSha256: evidenceRef.sha256,
+    prNumber: pr.number,
+    prHeadBranch: pr.headBranch,
+    prBaseBranch: pr.baseBranch,
+    pushAdopted: push.adopted,
+    prAdopted: upsert.adopted,
+    branchRepaired: before.repaired || branch.repaired,
+    prRepaired: reconciled.repaired,
+  };
+
+  // --- a PR that is not a reviewable publication: the task fails --------------
+  if (reconciled.gap !== undefined) {
+    const reason = `publication incomplete: ${reconciled.gap}`;
+    // Already at review (an earlier resume completed it): a PR closed since is
+    // its reviewer's decision, and the harness has no transition past review.
+    // Otherwise the task fails from where the dead executor left it, exactly as
+    // the completion below advances it from there to review.
+    if (isTaskTerminal(task.status)) {
+      return { stoppedAt: 'publication-incomplete', reason, ...published, taskStatus: task.status };
+    }
+    await observe(
+      {
+        span: 'task.execute',
+        action: 'task.status.transition',
+        detail: {
+          to: 'FAILED', outcome: 'publication-incomplete', reason: reconciled.gap,
+          found: pullRequestFound(pr), expectedBase: base, commitSha, resumed: true,
+        },
+      },
+      async () => {
+        const attempt = await repos.attempts.getScoped(scope, input.attemptId);
+        let version = attempt.version;
+        if (attempt.resultSha !== commitSha) {
+          version = await repos.attempts.setResultSha(scope, input.attemptId, version, commitSha);
+        }
+        if (attempt.evidenceArtifactId !== evidenceRef.artifactId) {
+          version = await repos.attempts.attachEvidence(scope, input.attemptId, version, evidenceRef);
+        }
+        await repos.tasks.updateStatus(scope, input.taskId, task.version, 'FAILED');
+      },
+    );
+    return { stoppedAt: 'publication-incomplete', reason, ...published, taskStatus: 'FAILED' };
   }
 
   // --- the authoritative transitions, idempotently ------------------------------
@@ -371,18 +435,5 @@ async function resumeUnderLease(
     },
   );
 
-  return {
-    stoppedAt: 'complete',
-    commitSha,
-    evidenceArtifactId: evidenceRef.artifactId,
-    evidenceSha256: evidenceRef.sha256,
-    prNumber: pr.number,
-    prHeadBranch: pr.headBranch,
-    prBaseBranch: pr.baseBranch,
-    pushAdopted: push.adopted,
-    prAdopted: upsert.adopted,
-    branchRepaired: before.repaired || branch.repaired,
-    prRepaired: reconciled.repaired,
-    taskStatus,
-  };
+  return { stoppedAt: 'complete', ...published, taskStatus };
 }

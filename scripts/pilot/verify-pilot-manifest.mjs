@@ -511,6 +511,10 @@ export async function verifyManifestAgainstAuthority(manifest, resolver) {
       if (pr.attemptId !== trace.attemptId) {
         reasons.push(`${label}: authoritative PR belongs to attempt "${pr.attemptId}" != trace.attemptId "${trace.attemptId}"`);
       }
+      // The harness records a PR row only for a reviewable publication.
+      if (pr.state !== 'OPEN') {
+        reasons.push(`${label}: the authoritative PR row is recorded "${pr.state}", not OPEN`);
+      }
 
       // The row says what the PR was; the forge says what it is. Its head must
       // still be the commit verification, evidence and review were bound to.
@@ -531,6 +535,18 @@ export async function verifyManifestAgainstAuthority(manifest, resolver) {
         }
         if (live.url !== pr.url) {
           reasons.push(`${label}: live PR url "${live.url}" != recorded PR url "${pr.url}"`);
+        }
+        // Only an open, unmerged PR on the attempt's base is the publication a
+        // human reviews; what the forge does not report is not taken as open.
+        if (live.merged === true) {
+          reasons.push(`${label}: live PR #${live.number} is merged — not a publication under review`);
+        } else if (live.state !== 'open') {
+          reasons.push(`${label}: live PR #${live.number} is ${live.state === 'closed' ? 'closed' : 'not reported open'} — not a publication under review`);
+        } else if (live.merged !== false) {
+          reasons.push(`${label}: the forge did not report whether live PR #${live.number} is merged`);
+        }
+        if (live.baseBranch !== pr.baseBranch) {
+          reasons.push(`${label}: live PR base "${live.baseBranch}" != the attempt's recorded base "${pr.baseBranch}"`);
         }
         if (typeof live.headSha !== 'string' || live.headSha.length === 0) {
           reasons.push(`${label}: the forge did not report the PR head commit — cannot confirm the PR shows the reviewed commit`);

@@ -232,7 +232,9 @@ test('fault 5: a GitHub rate limit on the PR stops the run; after back-off the r
     const local = new LocalBareForgeProvider(remote);
 
     // GitHub's PR endpoint, rate-limited until `limited` is cleared.
-    const prs: Array<{ number: number; html_url: string; head: { ref: string }; base: { ref: string } }> = [];
+    const prs: Array<{
+      number: number; html_url: string; head: { ref: string }; base: { ref: string }; state: 'open'; merged: false;
+    }> = [];
     let limited = true;
     let creates = 0;
     const octokitFor = (): OctokitLike => ({
@@ -247,7 +249,7 @@ test('fault 5: a GitHub rate limit on the PR stops the run; after back-off the r
           }
           const pr = {
             number: prs.length + 1, html_url: `https://github.com/acme/web/pull/${prs.length + 1}`,
-            head: { ref: head }, base: { ref: base },
+            head: { ref: head }, base: { ref: base }, state: 'open' as const, merged: false as const,
           };
           prs.push(pr);
           return { data: pr };

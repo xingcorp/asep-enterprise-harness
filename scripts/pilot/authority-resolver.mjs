@@ -542,7 +542,7 @@ export function createSqlAuthorityResolver(db, opts) {
 
     async resolvePullRequest(trace, pullRequestId) {
       const r = await db.query(
-        `select id, number, url, head_branch, attempt_id
+        `select id, number, url, head_branch, base_branch, state, attempt_id
          from pull_requests
          where id = $1 and organization_id = $2 and project_id = $3`,
         [pullRequestId ?? '', ...scopeOf(trace)],
@@ -553,6 +553,8 @@ export function createSqlAuthorityResolver(db, opts) {
         number: row['number'] === null ? null : Number(row['number']),
         url: row['url'],
         headBranch: row['head_branch'],
+        baseBranch: row['base_branch'],
+        state: row['state'],
         attemptId: row['attempt_id'],
       };
     },
@@ -563,7 +565,10 @@ export function createSqlAuthorityResolver(db, opts) {
       const [organizationId, projectId] = scopeOf(trace);
       const pr = await forge.findPullRequest({ organizationId, projectId }, { repositoryBindingId, headBranch });
       if (!pr) return null;
-      return { number: pr.number, url: pr.url, headBranch: pr.headBranch, headSha: pr.headSha };
+      return {
+        number: pr.number, url: pr.url, headBranch: pr.headBranch, headSha: pr.headSha,
+        baseBranch: pr.baseBranch, state: pr.state, merged: pr.merged,
+      };
     },
 
     // The human handoff. Note the deliberate shape: we return `signatureValid`

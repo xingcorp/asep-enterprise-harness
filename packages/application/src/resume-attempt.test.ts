@@ -29,6 +29,9 @@ const baseSha = 'a'.repeat(40);
 const commitSha = 'c'.repeat(40);
 const evidenceId = 'E'.repeat(26) as ArtifactId;
 const branch = 'asep/attempt-1';
+// Not the forge's default branch, so a resume that used anything but the
+// attempt's base would be seen.
+const base = 'release/2';
 
 const bundle: EvidenceBundle = {
   taskId, attemptId, baseSha, resultSha: commitSha, createdAt: '2026-10-29T00:00:00.000Z',
@@ -42,12 +45,14 @@ const bundle: EvidenceBundle = {
 // `commitState` is the commit record as the dead executor left it; `landed` is
 // whether its commit is recorded under the attempt. `remote` is the forge's
 // branch and PR, which the forge double keeps as a forge would: a push is
-// compare-and-set, an upsert writes what it is given.
+// compare-and-set, an upsert writes what it is given to an open PR on the base
+// given and leaves a PR a human closed, merged or retargeted as it found it.
 interface Remote { ref: string | null; pr: PullRequestRef | null; afterUpsert?: (() => void) | undefined }
 function world(
   risk: RiskLevel, calls: string[],
   commitState: 'COMPLETED' | 'PENDING' | 'FAILED' | 'absent' = 'COMPLETED', landed = true,
   remote: Remote = { ref: null, pr: null },
+  taskStatus: TaskStatus = 'VERIFYING',
 ): ResumeAttemptInput {
   const lease: Lease = {
     leaseId: 'lease-2', repositoryBindingId, branch, attemptId,
@@ -99,9 +104,11 @@ function world(
     },
     upsertPullRequest: async (_s, i) => {
       calls.push('forge.pr');
+      if (remote.pr && (remote.pr.state !== 'open' || remote.pr.baseBranch !== i.base)) return remote.pr;
+      calls.push('forge.pr.write');
       remote.pr = {
         number: 7, url: 'https://example.invalid/pr/7', headBranch: i.headBranch, baseBranch: i.base,
-        title: i.title, body: i.body,
+        title: i.title, body: i.body, state: 'open', merged: false,
       };
       const written = remote.pr;
       remote.afterUpsert?.();
@@ -110,10 +117,10 @@ function world(
     resolveRef: async () => { calls.push('forge.resolve'); return remote.ref; },
     findPullRequest: async () => { calls.push('forge.find'); return remote.pr; },
   };
-  let status: TaskStatus = 'VERIFYING';
+  let status: TaskStatus = taskStatus;
   return {
     scope, repositoryBindingId, runId: 'run-1' as RunId, taskId, attemptId, baseSha, branch,
-    base: 'main', leaseTtlMs: 60_000,
+    leaseTtlMs: 60_000,
     leases, sideEffects, evidence, forge,
     committer: {
       reconcile: async () => { calls.push('git.reconcile'); return landed ? { commitSha, evidenceId } : null; },
@@ -129,6 +136,7 @@ function world(
         updateStatus: async (_s, _id, _v, to) => { calls.push(`task.status:${to}`); status = to; return 2; },
       },
       pullRequests: { upsert: async () => { calls.push('pr.persist'); return undefined; } },
+      bindings: { getScoped: async () => { calls.push('binding.get'); return { defaultBaseBranch: base }; } },
     },
   };
 }
@@ -188,7 +196,7 @@ for (const state of ['absent', 'FAILED'] as const) {
 // resume ends with the branch and the PR the attempt's facts say, every repair
 // on record, before the task reaches its terminal state.
 
-const facts = { taskId, attemptId, commitSha, evidenceId, base: 'main' };
+const facts = { taskId, attemptId, commitSha, evidenceId, base };
 
 function audited(): { actions: { action: string; detail: unknown }[]; input: Pick<ResumeAttemptInput, 'audit' | 'actor'> } {
   const actions: { action: string; detail: unknown }[] = [];
@@ -238,7 +246,10 @@ test('a resume over a remote that already is the facts\' repairs nothing', async
   const content = pullRequestContent(facts);
   const remote: Remote = {
     ref: commitSha,
-    pr: { number: 7, url: 'https://example.invalid/pr/7', headBranch: branch, baseBranch: 'main', ...content },
+    pr: {
+      number: 7, url: 'https://example.invalid/pr/7', headBranch: branch, baseBranch: base, ...content,
+      state: 'open', merged: false,
+    },
   };
   const { actions, input } = audited();
   const r = await resumeAttemptToReview({ ...world('R0', calls, 'COMPLETED', true, remote), ...input });
@@ -246,4 +257,82 @@ test('a resume over a remote that already is the facts\' repairs nothing', async
   assert.equal(r.branchRepaired, false);
   assert.equal(r.prRepaired, false);
   assert.equal(actions.filter((a) => a.action === 'forge.reconcile').length, 0);
+});
+
+test('a resume opens the attempt\'s PR on the attempt\'s base, not the forge\'s default', async () => {
+  const calls: string[] = [];
+  const remote: Remote = { ref: null, pr: null };
+  const r = await resumeAttemptToReview(world('R0', calls, 'COMPLETED', true, remote));
+  assert.equal(r.stoppedAt, 'complete', r.reason);
+  assert.equal(remote.pr?.baseBranch, base);
+  assert.equal(r.prBaseBranch, base);
+  assert.equal(remote.pr?.body, pullRequestContent(facts).body);
+});
+
+// A PR a human closed or merged, or one on another base, is not a publication
+// under review. The resume writes nothing to it, never records it open, and
+// fails the task with what it found on record.
+
+function foundPr(over: Partial<PullRequestRef>): PullRequestRef {
+  return {
+    number: 7, url: 'https://example.invalid/pr/7', headBranch: branch, baseBranch: base,
+    ...pullRequestContent(facts), state: 'open', merged: false, ...over,
+  };
+}
+
+const unreviewable: { name: string; pr: PullRequestRef; reason: RegExp }[] = [
+  { name: 'a human closed', pr: foundPr({ state: 'closed', merged: false }), reason: /PR #7 is closed/ },
+  { name: 'a human merged', pr: foundPr({ state: 'closed', merged: true }), reason: /PR #7 is merged/ },
+  { name: 'on another base', pr: foundPr({ baseBranch: 'main' }), reason: /PR #7 targets main, not the attempt's base release\/2/ },
+];
+
+for (const c of unreviewable) {
+  test(`a resume over a PR ${c.name} fails the task on record and never records the PR open`, async () => {
+    const calls: string[] = [];
+    const remote: Remote = { ref: commitSha, pr: c.pr };
+    const before = structuredClone(c.pr);
+    const { actions, input } = audited();
+    const r = await resumeAttemptToReview({ ...world('R0', calls, 'COMPLETED', true, remote), ...input });
+    assert.equal(r.stoppedAt, 'publication-incomplete');
+    assert.match(r.reason ?? '', c.reason);
+    assert.equal(r.taskStatus, 'FAILED');
+    assert.ok(calls.includes('task.status:FAILED'));
+    assert.ok(!calls.includes('task.status:WAITING_FOR_HUMAN_REVIEW'));
+    assert.ok(!calls.includes('pr.persist'), 'no PR row is recorded');
+    assert.ok(!calls.includes('forge.pr.write'), 'the PR is never reopened or edited');
+    assert.deepEqual(remote.pr, before);
+    assert.equal(actions.filter((a) => a.action === 'forge.reconcile').length, 0);
+    const transitions = actions.filter((a) => a.action === 'task.status.transition');
+    assert.deepEqual(transitions.map((a) => a.detail), [{
+      to: 'FAILED', outcome: 'publication-incomplete', reason: r.reason?.replace('publication incomplete: ', ''),
+      found: {
+        number: 7, url: c.pr.url, headBranch: branch, baseBranch: c.pr.baseBranch,
+        state: c.pr.state, merged: c.pr.merged,
+      },
+      expectedBase: base, commitSha, resumed: true,
+    }]);
+  });
+}
+
+test('a resume over a PR the forge reports without its state fails closed', async () => {
+  const calls: string[] = [];
+  const { state: _state, merged: _merged, ...stateless } = foundPr({});
+  const remote: Remote = { ref: commitSha, pr: stateless };
+  const r = await resumeAttemptToReview(world('R0', calls, 'COMPLETED', true, remote));
+  assert.equal(r.stoppedAt, 'publication-incomplete');
+  assert.match(r.reason ?? '', /did not report it open/);
+  assert.ok(!calls.includes('pr.persist'));
+});
+
+test('a resume of a task already under review leaves it there when its PR was closed since', async () => {
+  const calls: string[] = [];
+  const remote: Remote = { ref: commitSha, pr: foundPr({ state: 'closed', merged: false }) };
+  const r = await resumeAttemptToReview(
+    world('R0', calls, 'COMPLETED', true, remote, 'WAITING_FOR_HUMAN_REVIEW'),
+  );
+  assert.equal(r.stoppedAt, 'publication-incomplete');
+  assert.equal(r.taskStatus, 'WAITING_FOR_HUMAN_REVIEW');
+  assert.ok(!calls.some((c) => c.startsWith('task.status:')), 'review has no harness transition');
+  assert.ok(!calls.includes('pr.persist'));
+  assert.ok(!calls.includes('forge.pr.write'));
 });

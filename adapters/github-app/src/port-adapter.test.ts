@@ -261,7 +261,7 @@ test('HIGH-008: a binding outside the caller scope is rejected before any forge 
 // ---------------------------------------------------------------------------
 
 test('HIGH-008: PR upsert through the port is idempotent and returns the port ref shape', async () => {
-  const store: Array<{ number: number; html_url: string; head: { ref: string }; base: { ref: string } }> = [];
+  const store: Array<{ number: number; html_url: string; head: { ref: string }; base: { ref: string }; state: string; merged: boolean }> = [];
   let creates = 0;
   const octokitFor = (): OctokitLike => ({
     pulls: {
@@ -273,7 +273,7 @@ test('HIGH-008: PR upsert through the port is idempotent and returns the port re
         const pr = {
           number: store.length + 1,
           html_url: `https://github.com/acme/web/pull/${store.length + 1}`,
-          head: { ref: head }, base: { ref: base },
+          head: { ref: head }, base: { ref: base }, state: 'open', merged: false,
         };
         store.push(pr);
         return { data: pr };
@@ -300,8 +300,10 @@ test('HIGH-008: PR upsert through the port is idempotent and returns the port re
   assert.equal(first.headBranch, attemptBranchStr);
   assert.equal(first.baseBranch, 'main');
   assert.match(first.url, /^https:\/\/github\.com\/acme\/web\/pull\/1$/);
-  // Exactly the port's canonical shape — no adapter-specific fields leak.
-  assert.deepEqual(Object.keys(first).sort(), ['baseBranch', 'headBranch', 'number', 'url']);
+  // Exactly the port's canonical shape — no adapter-specific fields leak — with
+  // the state GitHub reported.
+  assert.deepEqual(Object.keys(first).sort(), ['baseBranch', 'headBranch', 'merged', 'number', 'state', 'url']);
+  assert.deepEqual([first.state, first.merged], ['open', false]);
 });
 
 // The pilot verifier asks the forge which commit a reviewed PR shows right now;
@@ -339,7 +341,12 @@ test('a PR looked up through the port reports the commit its head points at', as
   );
   Object.assign(prs[0]!, { body: 'B' });
   assert.equal((await port.findPullRequest(scope, { repositoryBindingId: BINDING, headBranch: attemptBranchStr }))?.body, 'B');
-  for (const k of ['title', 'body'] as const) delete (prs[0] as Record<string, unknown>)[k];
+  // And whether it is open and merged, so a closed or merged PR is never taken
+  // for the publication under review.
+  Object.assign(prs[0]!, { state: 'closed', merged_at: '2026-10-30T00:00:00Z' });
+  const closed = await port.findPullRequest(scope, { repositoryBindingId: BINDING, headBranch: attemptBranchStr });
+  assert.deepEqual([closed?.state, closed?.merged], ['closed', true]);
+  for (const k of ['title', 'body', 'state', 'merged_at'] as const) delete (prs[0] as Record<string, unknown>)[k];
 
   delete (prs[0]!.head as { sha?: string }).sha;
   const unreported = await port.findPullRequest(scope, { repositoryBindingId: BINDING, headBranch: attemptBranchStr });

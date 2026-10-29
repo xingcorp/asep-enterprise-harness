@@ -396,6 +396,8 @@ function genuineAuthority(over: {
         number: i + 1,
         url: `https://github.com/acme/repo/pull/${i + 1}`,
         headBranch: `asep/${trace.taskId}`,
+        baseBranch: 'main',
+        state: 'OPEN',
         attemptId: `att-${i}`,
       };
       return over.pr ? over.pr(i, base) : base;
@@ -408,6 +410,9 @@ function genuineAuthority(over: {
         url: `https://github.com/acme/repo/pull/${i + 1}`,
         headBranch: `asep/${trace.taskId}`,
         headSha: resultOf(i),
+        baseBranch: 'main',
+        state: 'open',
+        merged: false,
       };
       return over.livePr ? over.livePr(i, base) : base;
     },
@@ -576,6 +581,22 @@ test('a PR whose live head has moved off the reviewed commit is rejected', async
 test('a PR whose live head the forge does not report is rejected', async () => {
   await rejectsWith(genuineAuthority({ livePr: (i, b) => ({ ...b, headSha: undefined }) }),
     /did not report the PR head commit/);
+});
+
+// A PR a human closed or merged, or one retargeted onto another base, is not
+// the publication under review, whatever its head shows. The fixture is the
+// genuine pilot with only the live PR changed.
+test('a live PR that is closed, merged or on another base is rejected', async () => {
+  const closedPr = genuineAuthority({ livePr: (i, b) => ({ ...b, state: 'closed', merged: false }) });
+  await rejectsWith(closedPr, /live PR #\d+ is closed/);
+  const mergedPr = genuineAuthority({ livePr: (i, b) => ({ ...b, state: 'closed', merged: true }) });
+  await rejectsWith(mergedPr, /live PR #\d+ is merged/);
+  await rejectsWith(genuineAuthority({ livePr: (i, b) => ({ ...b, baseBranch: 'release/2' }) }),
+    /live PR base "release\/2" != the attempt's recorded base "main"/);
+  await rejectsWith(genuineAuthority({ livePr: (i, b) => ({ ...b, state: undefined }) }), /not reported open/);
+  await rejectsWith(genuineAuthority({ livePr: (i, b) => ({ ...b, merged: undefined }) }),
+    /did not report whether live PR #\d+ is merged/);
+  await rejectsWith(genuineAuthority({ pr: (i, b) => ({ ...b, state: 'CLOSED' }) }), /recorded "CLOSED", not OPEN/);
 });
 
 test('a live PR with another number or url than the record is rejected', async () => {
@@ -1441,7 +1462,10 @@ test('the resolver asks the forge for the live PR in the trace scope and reports
   const forge = {
     findPullRequest: async (scope: unknown, q: unknown) => {
       calls.push([scope, q]);
-      return { number: 4, url: 'https://github.com/acme/web/pull/4', headBranch: 'asep/x', baseBranch: 'main', headSha: 'c'.repeat(40) };
+      return {
+        number: 4, url: 'https://github.com/acme/web/pull/4', headBranch: 'asep/x', baseBranch: 'release/2',
+        headSha: 'c'.repeat(40), state: 'closed', merged: true, title: 'not reported on',
+      };
     },
   };
   const resolver = createSqlAuthorityResolver(fakeDb(() => []), resolverOpts({ forge }));
@@ -1450,7 +1474,10 @@ test('the resolver asks the forge for the live PR in the trace scope and reports
     { repositoryBindingId: 'rb-1', headBranch: 'asep/x' },
   );
   assert.deepEqual(calls, [[{ organizationId: 'org-1', projectId: 'proj-1' }, { repositoryBindingId: 'rb-1', headBranch: 'asep/x' }]]);
-  assert.deepEqual(live, { number: 4, url: 'https://github.com/acme/web/pull/4', headBranch: 'asep/x', headSha: 'c'.repeat(40) });
+  assert.deepEqual(live, {
+    number: 4, url: 'https://github.com/acme/web/pull/4', headBranch: 'asep/x', headSha: 'c'.repeat(40),
+    baseBranch: 'release/2', state: 'closed', merged: true,
+  });
 
   const none = createSqlAuthorityResolver(fakeDb(() => []), resolverOpts());
   assert.equal(await none.resolveLivePullRequest({ organizationId: 'o', projectId: 'p' }, { repositoryBindingId: 'r', headBranch: 'b' }), null);
@@ -1563,7 +1590,12 @@ test('the verifier forge looks a PR up through the GitHub App adapter and report
       pulls: {
         list: async (q: unknown) => {
           listed.push(q);
-          return { data: [{ number: 3, html_url: 'https://github.com/acme/web/pull/3', head: { ref: 'asep/x', sha: 'c'.repeat(40) }, base: { ref: 'main' } }] };
+          return {
+            data: [{
+              number: 3, html_url: 'https://github.com/acme/web/pull/3', head: { ref: 'asep/x', sha: 'c'.repeat(40) },
+              base: { ref: 'main' }, state: 'closed', merged_at: '2026-10-30T00:00:00Z',
+            }],
+          };
         },
         create: async () => { throw new Error('a lookup must not create'); },
         update: async () => { throw new Error('a lookup must not update'); },
@@ -1571,8 +1603,10 @@ test('the verifier forge looks a PR up through the GitHub App adapter and report
     }),
   });
   const pr = await forge.findPullRequest({ organizationId: 'org-1', projectId: 'proj-1' }, { repositoryBindingId: 'rb-1', headBranch: 'asep/x' });
+  // With its state: a listed PR says it was merged by its merge time.
   assert.deepEqual(pr, {
     number: 3, url: 'https://github.com/acme/web/pull/3', headBranch: 'asep/x', baseBranch: 'main', headSha: 'c'.repeat(40),
+    state: 'closed', merged: true,
   });
   assert.deepEqual(listed, [{ owner: 'acme', repo: 'web', head: 'acme:asep/x', state: 'all' }]);
   assert.deepEqual([...db.calls[0]!.params].sort(), ['org-1', 'proj-1', 'rb-1'], 'the binding is read in the trace scope');

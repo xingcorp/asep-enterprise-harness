@@ -46,6 +46,7 @@ export {
   type ResumeAttemptRepositories,
   type ResumeAttemptPort,
   type ResumeTaskPort,
+  type ResumeBindingPort,
   type ResumeStop,
 } from './resume-attempt.js';
 
@@ -93,6 +94,8 @@ export {
   reconcileBranchStep,
   reconcilePullRequestStep,
   pullRequestFactsOf,
+  pullRequestGap,
+  pullRequestFound,
   RemoteBranchDivergedError,
   setReviewStep,
   completeToReview,

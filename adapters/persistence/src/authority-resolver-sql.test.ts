@@ -270,6 +270,10 @@ test('HIGH-009: resolvePullRequest and resolveEvidence execute against the real 
     assert.equal(pr.headBranch, 'asep/attempt-1');
     assert.equal(pr.attemptId, ATTEMPT);
     assert.equal(pr.url, 'https://github.com/acme/web/pull/77');
+    // The base and state the harness recorded, for the verifier to hold the
+    // live PR to.
+    assert.equal(pr.baseBranch, 'main');
+    assert.equal(pr.state, 'OPEN');
 
     // Absent evidence is a null, not a crash — the verifier turns that into a
     // rejection rather than an unhandled error.
@@ -606,7 +610,10 @@ test('ten tasks seeded at risk R4 with a local double\'s provider and invented w
     const forge = {
       findPullRequest: async (_scope: unknown, q: { headBranch: string }) => {
         const n = Number(q.headBranch.replace('asep/probe-', ''));
-        return { number: 100 + n, url: `https://github.com/acme/web/pull/${100 + n}`, headBranch: q.headBranch, baseBranch: 'main', headSha: heads.get(q.headBranch) };
+        return {
+          number: 100 + n, url: `https://github.com/acme/web/pull/${100 + n}`, headBranch: q.headBranch, baseBranch: 'main',
+          headSha: heads.get(q.headBranch), state: 'open', merged: false,
+        };
       },
     };
     const manifest = { manifestVersion: '1.0.0', verdict: 'COMPLETE', generatedAt: '2026-10-29T00:00:00.000Z', tasks };

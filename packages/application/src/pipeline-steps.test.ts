@@ -59,6 +59,7 @@ import {
   reconcileBranchStep,
   reconcilePullRequestStep,
   pullRequestFactsOf,
+  pullRequestGap,
   RemoteBranchDivergedError,
   setReviewStep,
   completeToReview,
@@ -687,7 +688,8 @@ function fakeForge(
     async pushBranch(_s: TenantScope, i: PushCall) { pushCalls.push(i); },
     async upsertPullRequest(_s: TenantScope, i: UpsertCall) { upsertCalls.push(i); return pr; },
     async resolveRef() { return remote.ref ?? null; },
-    async findPullRequest() { return remote.pr ?? null; },
+    // Unless a test seeds it, the forge holds the PR once one was written.
+    async findPullRequest() { return remote.pr !== undefined ? remote.pr : (upsertCalls.length > 0 ? pr : null); },
   };
 }
 
@@ -696,6 +698,8 @@ const prRef: PullRequestRef = {
   url: 'https://forge.invalid/pr/7',
   headBranch: 'asep/attempt-1',
   baseBranch: 'main',
+  state: 'open',
+  merged: false,
 };
 
 // What an attempt's PR is made of: its head and base, and the facts its
@@ -1007,7 +1011,6 @@ test('reconcilePullRequestStep rewrites a missing or diverged PR from the facts,
     ['absent', null],
     ['other title', { ...prRef, ...content, title: 'written by someone else' }],
     ['other body', { ...prRef, ...content, body: `${content.body}fencing-epoch: 2\n` }],
-    ['other base', { ...prRef, ...content, baseBranch: 'release' }],
     ['no content read', prRef],
   ];
   for (const [name, found] of cases) {
@@ -1023,7 +1026,49 @@ test('reconcilePullRequestStep rewrites a missing or diverged PR from the facts,
     assert.equal(seen[0]!.action, 'forge.reconcile', name);
     assert.equal((seen[0]!.detail['found'] as { number?: number } | null)?.number ?? null,
       found === null ? null : 7, name);
+    assert.equal(res.gap, undefined, name);
   }
+});
+
+// Only an open, unmerged PR on the attempt's base is a reviewable publication.
+test('pullRequestGap: only an open, unmerged PR on the attempt\'s base is reviewable', () => {
+  const facts = pullRequestFactsOf(prFacts);
+  assert.equal(pullRequestGap(prRef, facts), undefined);
+  assert.equal(pullRequestGap({ ...prRef, state: 'closed', merged: false }, facts), 'PR #7 is closed');
+  assert.equal(pullRequestGap({ ...prRef, state: 'closed', merged: true }, facts), 'PR #7 is merged');
+  assert.equal(pullRequestGap({ ...prRef, baseBranch: 'release/2' }, facts),
+    'PR #7 targets release/2, not the attempt\'s base main');
+  const { state: _s, ...noState } = prRef;
+  assert.match(pullRequestGap(noState, facts) ?? '', /did not report it open/);
+  const { merged: _m, ...noMerged } = prRef;
+  assert.match(pullRequestGap(noMerged, facts) ?? '', /did not report it unmerged/);
+});
+
+test('reconcilePullRequestStep writes nothing to a closed, merged or retargeted PR and reports the gap', async () => {
+  const content = pullRequestContent(pullRequestFactsOf(prFacts));
+  const cases: readonly (readonly [string, PullRequestRef, RegExp])[] = [
+    ['closed', { ...prRef, title: 'stale', state: 'closed', merged: false }, /is closed/],
+    ['merged', { ...prRef, ...content, state: 'closed', merged: true }, /is merged/],
+    ['other base', { ...prRef, ...content, baseBranch: 'release' }, /targets release/],
+  ];
+  for (const [name, found, gap] of cases) {
+    const { seen, observe } = recordingObserve();
+    const forge = fakeForge(prRef, { pr: found });
+    const res = await reconcilePullRequestStep(remoteInput(forge, observe));
+    assert.equal(res.repaired, false, name);
+    assert.match(res.gap ?? '', gap, name);
+    assert.deepEqual(res.pr, found, name);
+    assert.equal(forge.upserts, 0, `${name}: never reopened, edited or retargeted`);
+    assert.equal(seen.length, 0, name);
+  }
+});
+
+test('reconcilePullRequestStep reports a gap when the PR it wrote is not reviewable', async () => {
+  const { observe } = recordingObserve();
+  const forge = fakeForge({ ...prRef, state: 'closed', merged: false }, { pr: null });
+  const res = await reconcilePullRequestStep(remoteInput(forge, observe));
+  assert.equal(res.repaired, true);
+  assert.match(res.gap ?? '', /is closed/);
 });
 
 // --- setReviewStep (I1/I2) --------------------------------------------------
@@ -1158,6 +1203,33 @@ test('a red verification gate records no verification provenance', async () => {
   }));
   assert.equal(res.stoppedAt, 'verify');
   assert.equal(records, 0);
+});
+
+test('completeToReview does not advance to review when the PR it published is not reviewable', async () => {
+  for (const shown of [
+    { ...prRef, state: 'closed' as const, merged: false },
+    { ...prRef, state: 'closed' as const, merged: true },
+    { ...prRef, baseBranch: 'release/2' },
+  ]) {
+    const res = await completeToReview(driverInput({ forge: fakeForge(shown) }));
+    assert.equal(res.stoppedAt, 'upsert-pr');
+    assert.match(res.reason ?? '', /^publication incomplete: PR #7 (is closed|is merged|targets release\/2)/);
+    assert.equal(res.task, undefined, 'the task is not advanced to review');
+  }
+});
+
+test('completeToReview asks the forge for the state of a PR adopted from its record', async () => {
+  const shared = driverInput();
+  assert.equal((await completeToReview(shared)).stoppedAt, 'complete');
+  // On the re-run the PR comes back from the record, which holds no state:
+  // the forge is asked, and a PR closed in between stops the review.
+  const forge = shared.forge as FakeForge;
+  const again = await completeToReview({
+    ...shared,
+    forge: { ...forge, findPullRequest: async () => ({ ...prRef, state: 'closed', merged: false }) },
+  });
+  assert.equal(again.stoppedAt, 'upsert-pr');
+  assert.match(again.reason ?? '', /is closed/);
 });
 
 test('completeToReview is crash-safe: a full re-run adopts the push+PR (single ref, single PR)', async () => {

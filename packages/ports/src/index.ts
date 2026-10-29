@@ -354,6 +354,12 @@ export interface PullRequestRef {
   // facts say they must be.
   readonly title?: string;
   readonly body?: string;
+  // Whether the PR is open, and whether it was merged, as the forge reports
+  // them at the time of the call. Only an open, unmerged PR on the attempt's
+  // base is a reviewable publication; a reader treats a state the forge did
+  // not report as not reviewable.
+  readonly state?: 'open' | 'closed';
+  readonly merged?: boolean;
 }
 
 // PUBLICATION UNDER TAKEOVER. A stale owner — an executor paused inside a forge
@@ -411,6 +417,10 @@ export interface ForgeProvider {
     commitSha: string;
     expectedRemoteSha: string | null;
   }): Promise<void>;
+  // Creates the PR for `headBranch` on `base`, or updates the title and body of
+  // the open one on `base` with exactly those given. A PR for the head branch
+  // that is closed, merged or on another base is a human's decision: it is
+  // returned as found, never reopened, retargeted, edited or duplicated.
   upsertPullRequest(scope: TenantScope, input: {
     repositoryBindingId: RepositoryBindingId;
     headBranch: string;
@@ -431,8 +441,9 @@ export interface ForgeProvider {
     repositoryBindingId: RepositoryBindingId;
     branch: string;
   }): Promise<string | null>;
-  // findPullRequest returns the PR whose head is `headBranch`, or null when no
-  // PR exists yet (the upsert never landed).
+  // findPullRequest returns the PR whose head is `headBranch` — open, closed or
+  // merged, with its state — or null when no PR exists yet (the upsert never
+  // landed).
   findPullRequest(scope: TenantScope, input: {
     repositoryBindingId: RepositoryBindingId;
     headBranch: string;

@@ -266,10 +266,14 @@ test('H7: a host outside the allowlist is rejected before minting or pushing', a
 // H6 — driven at the transport (REST) boundary, not mocked application logic.
 // ---------------------------------------------------------------------------
 
-interface FakePr { number: number; html_url: string; head: { ref: string }; base: { ref: string }; title?: string; body?: string }
+interface FakePr {
+  number: number; html_url: string; head: { ref: string }; base: { ref: string }; title?: string; body?: string;
+  state: 'open' | 'closed'; merged_at: string | null;
+}
 
-// An in-memory GitHub pulls API. Reads hand back copies, as a transport would;
-// a create for a head that already has a PR is refused, as GitHub refuses it.
+// An in-memory GitHub pulls API. Reads hand back copies, newest first, as the
+// REST API lists them (a listed PR says it was merged by `merged_at`); a create
+// for a head that already has an open PR is refused, as GitHub refuses it.
 function fakeOctokit(store: { prs: FakePr[]; nextNumber: number; calls: string[] }): (token: string) => OctokitLike {
   const copy = (pr: FakePr): FakePr => structuredClone(pr);
   return () => ({
@@ -277,26 +281,88 @@ function fakeOctokit(store: { prs: FakePr[]; nextNumber: number; calls: string[]
       list: async ({ head }) => {
         store.calls.push('list');
         const ref = head.split(':')[1];
-        return { data: store.prs.filter((p) => p.head.ref === ref).map(copy) };
+        return { data: store.prs.filter((p) => p.head.ref === ref).map(copy).reverse() };
       },
       create: async ({ head, base, title, body }) => {
         store.calls.push('create');
-        if (store.prs.some((p) => p.head.ref === head)) {
+        if (store.prs.some((p) => p.head.ref === head && p.state === 'open')) {
           throw { status: 422, message: `Validation Failed: A pull request already exists for acme:${head}.` };
         }
-        const pr: FakePr = { number: store.nextNumber++, html_url: `https://github.com/acme/web/pull/${store.nextNumber - 1}`, head: { ref: head }, base: { ref: base }, title, body };
+        const pr: FakePr = {
+          number: store.nextNumber++, html_url: `https://github.com/acme/web/pull/${store.nextNumber - 1}`,
+          head: { ref: head }, base: { ref: base }, title, body, state: 'open', merged_at: null,
+        };
         store.prs.push(pr);
-        return { data: copy(pr) };
+        return { data: { ...copy(pr), merged: false } };
       },
-      update: async ({ pull_number, title, body, base }) => {
+      update: async (params) => {
         store.calls.push('update');
-        const pr = store.prs.find((p) => p.number === pull_number)!;
-        Object.assign(pr, { title, body, base: { ref: base } });
-        return { data: copy(pr) };
+        const pr = store.prs.find((p) => p.number === params.pull_number)!;
+        // GitHub retargets a PR only when it is asked to.
+        const base = (params as { base?: string }).base;
+        Object.assign(pr, { title: params.title, body: params.body, ...(base !== undefined ? { base: { ref: base } } : {}) });
+        return { data: { ...copy(pr), merged: pr.merged_at !== null } };
       },
     },
   });
 }
+
+// A human closes the PR on GitHub, or merges it.
+function closeOnForge(store: { prs: FakePr[] }, number: number, merged: boolean): void {
+  Object.assign(store.prs.find((p) => p.number === number)!, {
+    state: 'closed', merged_at: merged ? '2026-10-30T00:00:00Z' : null,
+  });
+}
+
+test('a lookup reports whether the PR is open and whether it was merged', async () => {
+  const store = { prs: [] as FakePr[], nextNumber: 7, calls: [] as string[] };
+  const forge = new GitHubAppForgeProvider(
+    new GitHubAppCredentialProvider({ appId: 1, privateKey: 'PEM', installationId: 9 }, fakeAuth()), fakeOctokit(store), ['github.com'],
+  );
+  const opened = await forge.upsertPullRequest({ repository, headBranch: attemptBranchStr, base: 'main', title: 'T', body: 'B' });
+  assert.deepEqual([opened.state, opened.merged], ['open', false]);
+  const found = async () => {
+    const pr = await forge.findPullRequest({ repository, headBranch: attemptBranchStr });
+    return [pr?.state, pr?.merged];
+  };
+  assert.deepEqual(await found(), ['open', false]);
+  closeOnForge(store, 7, false);
+  assert.deepEqual(await found(), ['closed', false]);
+  closeOnForge(store, 7, true);
+  assert.deepEqual(await found(), ['closed', true]);
+});
+
+test('an upsert never reopens, edits or duplicates a PR a human closed or merged', async () => {
+  for (const merged of [false, true]) {
+    const store = { prs: [] as FakePr[], nextNumber: 7, calls: [] as string[] };
+    const forge = new GitHubAppForgeProvider(
+      new GitHubAppCredentialProvider({ appId: 1, privateKey: 'PEM', installationId: 9 }, fakeAuth()), fakeOctokit(store), ['github.com'],
+    );
+    await forge.upsertPullRequest({ repository, headBranch: attemptBranchStr, base: 'main', title: 'T', body: 'B' });
+    closeOnForge(store, 7, merged);
+    const before = JSON.stringify(store.prs);
+    store.calls.length = 0;
+    const again = await forge.upsertPullRequest({ repository, headBranch: attemptBranchStr, base: 'release', title: 'T2', body: 'B2' });
+    assert.deepEqual(store.calls, ['list'], 'read only: no update, no create');
+    assert.equal(JSON.stringify(store.prs), before, 'the closed PR is exactly as the human left it');
+    assert.deepEqual([again.number, again.state, again.merged], [7, 'closed', merged]);
+  }
+});
+
+test('the open PR for a head wins over an older closed one', async () => {
+  const store = { prs: [] as FakePr[], nextNumber: 7, calls: [] as string[] };
+  const forge = new GitHubAppForgeProvider(
+    new GitHubAppCredentialProvider({ appId: 1, privateKey: 'PEM', installationId: 9 }, fakeAuth()), fakeOctokit(store), ['github.com'],
+  );
+  store.prs.push({
+    number: 9, html_url: 'https://github.com/acme/web/pull/9', head: { ref: attemptBranchStr }, base: { ref: 'main' },
+    state: 'open', merged_at: null,
+  }, {
+    number: 3, html_url: 'https://github.com/acme/web/pull/3', head: { ref: attemptBranchStr }, base: { ref: 'main' },
+    state: 'closed', merged_at: null,
+  });
+  assert.equal((await forge.findPullRequest({ repository, headBranch: attemptBranchStr }))?.number, 9);
+});
 
 test('H4/H6: PR upsert creates on first call and updates on the second (idempotent)', async () => {
   const store = { prs: [] as FakePr[], nextNumber: 7, calls: [] as string[] };
@@ -307,15 +373,29 @@ test('H4/H6: PR upsert creates on first call and updates on the second (idempote
   assert.equal(first.number, 7);
   assert.equal(first.headBranch, attemptBranchStr);
 
-  const second = await forge.upsertPullRequest({ repository, headBranch: attemptBranchStr, base: 'release', title: 'T2', body: 'B2' });
+  const second = await forge.upsertPullRequest({ repository, headBranch: attemptBranchStr, base: 'main', title: 'T2', body: 'B2' });
   assert.equal(second.number, 7, 'same PR — no duplicate created');
   assert.equal(store.prs.length, 1, 'exactly one PR exists');
   assert.deepEqual(store.calls, ['list', 'create', 'list', 'update']);
   // Exactly what it was given, and nothing of its own.
   assert.deepEqual(
     { title: store.prs[0]!.title, body: store.prs[0]!.body, base: store.prs[0]!.base.ref },
-    { title: 'T2', body: 'B2', base: 'release' },
+    { title: 'T2', body: 'B2', base: 'main' },
   );
+});
+
+test('an upsert never retargets or edits an open PR that is on another base', async () => {
+  const store = { prs: [] as FakePr[], nextNumber: 7, calls: [] as string[] };
+  const forge = new GitHubAppForgeProvider(
+    new GitHubAppCredentialProvider({ appId: 1, privateKey: 'PEM', installationId: 9 }, fakeAuth()), fakeOctokit(store), ['github.com'],
+  );
+  await forge.upsertPullRequest({ repository, headBranch: attemptBranchStr, base: 'main', title: 'T', body: 'B' });
+  const before = JSON.stringify(store.prs);
+  store.calls.length = 0;
+  const again = await forge.upsertPullRequest({ repository, headBranch: attemptBranchStr, base: 'release', title: 'T2', body: 'B2' });
+  assert.deepEqual(store.calls, ['list'], 'read only: no update, no create');
+  assert.equal(JSON.stringify(store.prs), before);
+  assert.deepEqual([again.number, again.baseBranch, again.state], [7, 'main', 'open']);
 });
 
 // GitHub has no compare-and-set for a PR update, so an owner paused inside the
@@ -674,7 +754,7 @@ test('a non-auth resolveRef failure is not retried and never leaks the token', a
 // fifth operation added later without the shared recovery path has a template
 // to fail against.
 test('every forge operation re-mints once on expiry and bypasses the token cache', async () => {
-  const pr = { number: 3, html_url: 'https://github.com/acme/web/pull/3', head: { ref: attemptBranchStr, sha: SHA }, base: { ref: 'main' } };
+  const pr = { number: 3, html_url: 'https://github.com/acme/web/pull/3', head: { ref: attemptBranchStr, sha: SHA }, base: { ref: 'main' }, state: 'open' };
   const flakyOctokit = (failures: { left: number }) => (): OctokitLike => {
     const once = async <T>(v: T): Promise<T> => {
       if (failures.left-- > 0) throw { status: 401, message: 'Bad credentials' };

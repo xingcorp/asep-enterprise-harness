@@ -153,6 +153,21 @@ export function isAuthExpiryError(err: unknown): boolean {
   return credentialWording;
 }
 
+// A pull request as the REST API returns it, in the fields this adapter reads.
+// A listed PR reports whether it was merged by `merged_at`; a created or
+// updated one also by `merged`.
+export interface PullsApiPr {
+  number: number;
+  html_url: string;
+  head: { ref: string; sha?: string };
+  base: { ref: string };
+  title?: string;
+  body?: string | null;
+  state?: string;
+  merged?: boolean;
+  merged_at?: string | null;
+}
+
 // Minimal Octokit REST surface this adapter depends on, so it can be driven by
 // a transport-level fake (H6: mock the SDK/HTTP boundary, not application logic).
 export interface PullsApi {
@@ -161,7 +176,7 @@ export interface PullsApi {
     repo: string;
     head: string;          // `owner:branch`
     state: 'open' | 'closed' | 'all';
-  }): Promise<{ data: ReadonlyArray<{ number: number; html_url: string; head: { ref: string; sha?: string }; base: { ref: string }; title?: string; body?: string | null }> }>;
+  }): Promise<{ data: ReadonlyArray<PullsApiPr> }>;
   create(params: {
     owner: string;
     repo: string;
@@ -169,15 +184,14 @@ export interface PullsApi {
     base: string;
     title: string;
     body: string;
-  }): Promise<{ data: { number: number; html_url: string; head: { ref: string; sha?: string }; base: { ref: string } } }>;
+  }): Promise<{ data: PullsApiPr }>;
   update(params: {
     owner: string;
     repo: string;
     pull_number: number;
     title: string;
     body: string;
-    base: string;
-  }): Promise<{ data: { number: number; html_url: string; head: { ref: string; sha?: string }; base: { ref: string } } }>;
+  }): Promise<{ data: PullsApiPr }>;
   // NOTE: deliberately NO `merge` method — H5, no merge capability exists.
 }
 
@@ -218,13 +232,23 @@ export interface PullRequestResult {
   // The title and body GitHub holds, when it reports them.
   readonly title?: string;
   readonly body?: string;
+  // Open or closed, and whether merged, when GitHub reports them.
+  readonly state?: 'open' | 'closed';
+  readonly merged?: boolean;
+}
+
+// Whether GitHub says the PR was merged: `merged` when it sends one, else
+// `merged_at` (a listed PR's only signal); undefined when it says neither.
+function mergedOf(pr: PullsApiPr): boolean | undefined {
+  if (typeof pr.merged === 'boolean') return pr.merged;
+  if (pr.merged_at === null) return false;
+  if (typeof pr.merged_at === 'string') return pr.merged_at !== '';
+  return undefined;
 }
 
 // The adapter's result for a PR as GitHub returned it.
-function prResult(pr: {
-  number: number; html_url: string; head: { ref: string; sha?: string }; base: { ref: string };
-  title?: string; body?: string | null;
-}): PullRequestResult {
+function prResult(pr: PullsApiPr): PullRequestResult {
+  const merged = mergedOf(pr);
   return {
     number: pr.number,
     url: pr.html_url,
@@ -233,7 +257,16 @@ function prResult(pr: {
     ...(typeof pr.head.sha === 'string' && /^[0-9a-f]{40}$/.test(pr.head.sha) ? { headSha: pr.head.sha } : {}),
     ...(typeof pr.title === 'string' ? { title: pr.title } : {}),
     ...(typeof pr.body === 'string' ? { body: pr.body } : pr.body === null ? { body: '' } : {}),
+    ...(pr.state === 'open' || pr.state === 'closed' ? { state: pr.state } : {}),
+    ...(merged !== undefined ? { merged } : {}),
   };
+}
+
+// The PR for a head branch among those listed: the open one when there is one,
+// else the most recent (GitHub lists newest first).
+function prForHead(listed: ReadonlyArray<PullsApiPr>, headBranch: string): PullsApiPr | undefined {
+  const forHead = listed.filter((pr) => pr.head.ref === headBranch);
+  return forHead.find((pr) => pr.state === 'open') ?? forHead[0];
 }
 
 export interface UpsertPrInput {
@@ -358,12 +391,15 @@ export class GitHubAppForgeProvider {
     });
   }
 
-  // Idempotent PR upsert: find the PR by head branch and UPDATE it, else
-  // CREATE (H4). It writes exactly the title, body and base it is given. GitHub
-  // has no compare-and-set for a PR update, so this read-then-write cannot
-  // exclude another writer; what makes a late writer harmless is that every
-  // writer of an attempt's PR writes the same content (pullRequestContent). No
-  // merge is ever attempted (H5). Token minted JIT, opaque.
+  // Idempotent PR upsert: find the PR by head branch and UPDATE its title and
+  // body, else CREATE it on the base given (H4). GitHub has no compare-and-set
+  // for a PR update, so this read-then-write cannot exclude another writer;
+  // what makes a late writer harmless is that every writer of an attempt's PR
+  // writes the same content (pullRequestContent). A PR for the head that is
+  // closed, merged or on another base is not the attempt's to write — a human
+  // closed or retargeted it: it is returned as found, never reopened,
+  // retargeted, edited or duplicated by a create. No merge is ever attempted
+  // (H5). Token minted JIT, opaque.
   async upsertPullRequest(input: UpsertPrInput): Promise<PullRequestResult> {
     const { identity, repositoryId } = input.repository;
     const owner = identity.githubOwner;
@@ -382,8 +418,9 @@ export class GitHubAppForgeProvider {
         head: `${owner}:${input.headBranch}`,
         state: 'all',
       });
-      const match = existing.data.find((pr) => pr.head.ref === input.headBranch);
+      const match = prForHead(existing.data, input.headBranch);
 
+      if (match && (match.state !== 'open' || match.base.ref !== input.base)) return prResult(match);
       if (match) {
         const updated = await octokit.pulls.update({
           owner,
@@ -391,7 +428,6 @@ export class GitHubAppForgeProvider {
           pull_number: match.number,
           title: input.title,
           body: input.body,
-          base: input.base,
         });
         return prResult(updated.data);
       }
@@ -461,7 +497,7 @@ export class GitHubAppForgeProvider {
       const existing = await octokit.pulls.list({
         owner, repo, head: `${owner}:${input.headBranch}`, state: 'all',
       });
-      const match = existing.data.find((pr) => pr.head.ref === input.headBranch);
+      const match = prForHead(existing.data, input.headBranch);
       return match ? prResult(match) : null;
     });
   }

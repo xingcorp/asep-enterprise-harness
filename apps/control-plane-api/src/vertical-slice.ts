@@ -451,7 +451,6 @@ export interface ResumeVerticalSliceInput {
   readonly attemptId: AttemptId;
   readonly baseSha: string;
   readonly branch: string;
-  readonly base?: string;
   readonly leaseTtlMs?: number;
   // A real ForgeProvider, or — absent — the local bare-repo double pushing from
   // `pushFrom` (the bare mirror the crashed run's worktrees shared, which holds
@@ -503,7 +502,6 @@ export async function resumeVerticalSlice(
     attemptId: input.attemptId,
     baseSha: input.baseSha,
     branch: input.branch,
-    base: input.base ?? 'main',
     leaseTtlMs: input.leaseTtlMs ?? 60_000,
     leases: new SqlWorkspaceLeaseRepository(client),
     sideEffects: new SqlSideEffectLog(client),
@@ -514,6 +512,7 @@ export async function resumeVerticalSlice(
       attempts: new AttemptRepository(client),
       tasks: new TaskRepository(client),
       pullRequests: new PullRequestRepository(client),
+      bindings: new RepositoryBindingRepository(client),
     },
     audit: new SqlAuditSink(client),
     actor: 'harness',

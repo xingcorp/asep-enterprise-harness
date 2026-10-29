@@ -92,12 +92,16 @@ export class FileWritingAgent implements CodingAgentProvider {
  * successor process sees what its predecessor really left behind.
  *
  * Like the GitHub adapter, a push is compare-and-set (a real
- * `--force-with-lease` the bare remote enforces), and an upsert writes exactly
- * the title, body and base it is given.
+ * `--force-with-lease` the bare remote enforces), an upsert opens the PR on
+ * the base it is given and writes exactly the title and body it is given, and
+ * a PR a human closed, merged (`closePullRequest`) or retargeted
+ * (`retargetPullRequest`) is never reopened, retargeted or edited.
  */
 export interface LocalPullRequest extends PullRequestRef {
   readonly title: string;
   readonly body: string;
+  readonly state: 'open' | 'closed';
+  readonly merged: boolean;
 }
 
 export class LocalBareForgeProvider implements ForgeProvider {
@@ -130,6 +134,21 @@ export class LocalBareForgeProvider implements ForgeProvider {
     return this.readPrs();
   }
 
+  /** What a human does on the forge: close the head branch's PR, or merge it. */
+  async closePullRequest(headBranch: string, opts: { readonly merged: boolean }): Promise<void> {
+    const prs = await this.readPrs();
+    if (!prs.some((p) => p.headBranch === headBranch)) throw new Error(`no pull request for ${headBranch}`);
+    await this.writePrs(prs.map((p) => (p.headBranch === headBranch
+      ? { ...p, state: 'closed' as const, merged: opts.merged } : p)));
+  }
+
+  /** What a human does on the forge: move the head branch's PR to another base. */
+  async retargetPullRequest(headBranch: string, base: string): Promise<void> {
+    const prs = await this.readPrs();
+    if (!prs.some((p) => p.headBranch === headBranch)) throw new Error(`no pull request for ${headBranch}`);
+    await this.writePrs(prs.map((p) => (p.headBranch === headBranch ? { ...p, baseBranch: base } : p)));
+  }
+
   // Compare-and-set, as the port requires: the remote takes the commit only
   // while the branch holds the expected value (absent for null).
   async pushBranch(_scope: TenantScope, input: {
@@ -157,9 +176,12 @@ export class LocalBareForgeProvider implements ForgeProvider {
     const prs = await this.readPrs();
     const at = prs.findIndex((p) => p.headBranch === input.headBranch);
     if (at >= 0) {
-      // Idempotent: the one PR for the head branch is updated, never duplicated.
+      // Idempotent: the one PR for the head branch is updated, never duplicated
+      // — and never reopened, retargeted or edited once closed or on another
+      // base.
       const existing = prs[at]!;
-      const updated: LocalPullRequest = { ...existing, baseBranch: input.base, title: input.title, body: input.body };
+      if (existing.state !== 'open' || existing.baseBranch !== input.base) return refOf(existing);
+      const updated: LocalPullRequest = { ...existing, title: input.title, body: input.body };
       await this.writePrs(prs.map((p, i) => (i === at ? updated : p)));
       return refOf(updated);
     }
@@ -171,6 +193,8 @@ export class LocalBareForgeProvider implements ForgeProvider {
       baseBranch: input.base,
       title: input.title,
       body: input.body,
+      state: 'open',
+      merged: false,
     };
     await this.writePrs([...prs, pr]);
     return refOf(pr);
@@ -193,8 +217,8 @@ export class LocalBareForgeProvider implements ForgeProvider {
     return sha && /^[0-9a-f]{40}$/.test(sha) ? sha : null;
   }
 
-  // The PR, its title and body, and the commit its head branch points at on
-  // the remote NOW, like a forge that reports a PR's live state.
+  // The PR, its title, body and state, and the commit its head branch points
+  // at on the remote NOW, like a forge that reports a PR's live state.
   async findPullRequest(scope: TenantScope, input: {
     repositoryBindingId: RepositoryBindingId;
     headBranch: string;
@@ -210,5 +234,8 @@ export class LocalBareForgeProvider implements ForgeProvider {
 }
 
 function refOf(pr: LocalPullRequest): PullRequestRef {
-  return { number: pr.number, url: pr.url, headBranch: pr.headBranch, baseBranch: pr.baseBranch };
+  return {
+    number: pr.number, url: pr.url, headBranch: pr.headBranch, baseBranch: pr.baseBranch,
+    state: pr.state, merged: pr.merged,
+  };
 }
