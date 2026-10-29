@@ -771,6 +771,61 @@ test('a re-raised finding is reconciled with its prior before it blocks', () => 
   assert.deepEqual(summary(detPrior('OPEN')).blocking, ['current']);
 });
 
+test('a re-raise never downgrades a prior that still blocks', () => {
+  // The primary reviewer raises an earlier finding of its own again, at another severity. The
+  // pair counts once, at the higher severity, and the prior stays open until it is closed.
+  const reRaise = (priorSeverity: 'LOW' | 'HIGH' | 'CRITICAL', severity: 'LOW' | 'HIGH' | 'CRITICAL', over: Partial<ReviewFindingRecord> = {}, mode: Mode = 'gating') => {
+    const base = reReview({});
+    const output = reviewOutput({ verdict: 'REQUEST_CHANGES', findings: [modelFinding({ key: 'again', severity })] });
+    const adjudication = adjudicate({
+      ...base,
+      mode,
+      reviews: base.reviews.map((r) => (r.reviewerConfigId === PRIMARY ? completedReview(PRIMARY, output) : r)),
+      priorFindings: [{ record: priorFinding({ severity: priorSeverity, ...over }), waiverExpiresAt: null }],
+    });
+    const current = adjudication.findings.filter((f) => !f.ref.startsWith('prior:'));
+    const name = (ref: string) => (current.some((f) => f.ref === ref) ? 'current' : ref);
+    return {
+      outcome: adjudication.record.outcome,
+      wouldBe: adjudication.record.shadow?.wouldBe ?? null,
+      blocking: adjudication.record.blocking.map((b) => [name(b.findingRef), b.severity]),
+      current: current.map((f) => [f.priorFindingId ?? null, f.lifecycleState, f.blocking]),
+      prior: adjudication.record.closureDecisions.map((d) => [d.priorFindingId, d.effectiveState, d.rule]),
+    };
+  };
+  const stillOpen = [['prior-1', 'OPEN', 'unchanged']];
+  const cases = [
+    // The review's probe, and the same downgrade from CRITICAL.
+    ['HIGH re-raised at LOW', reRaise('HIGH', 'LOW'), 'REPAIR', [['current', 'HIGH']], stillOpen],
+    ['CRITICAL re-raised at LOW', reRaise('CRITICAL', 'LOW'), 'REPAIR', [['current', 'CRITICAL']], stillOpen],
+    // The surviving mutation's counterexample: CRITICAL again at CRITICAL.
+    ['CRITICAL re-raised at CRITICAL', reRaise('CRITICAL', 'CRITICAL'), 'REPAIR', [['current', 'CRITICAL']], stillOpen],
+    // Raising a finding higher than before takes the new severity.
+    ['LOW re-raised at HIGH', reRaise('LOW', 'HIGH'), 'REPAIR', [['current', 'HIGH']], stillOpen],
+    ['LOW re-raised at LOW', reRaise('LOW', 'LOW'), 'PROCEED', [], stillOpen],
+    // A regression of a verified HIGH re-raised at LOW blocks at HIGH.
+    ['verified HIGH re-raised at LOW', reRaise('HIGH', 'LOW', { lifecycleState: 'VERIFIED' }), 'REPAIR', [['current', 'HIGH']], [['prior-1', 'VERIFIED', 'regression']]],
+  ] as const;
+  for (const [label, result, outcome, blocking, prior] of cases) {
+    assert.deepEqual(
+      { outcome: result.outcome, blocking: result.blocking, current: result.current, prior: result.prior },
+      { outcome, blocking, current: [['prior-1', 'OPEN', outcome !== 'PROCEED']], prior },
+      label,
+    );
+  }
+  // Shadow mode records the same verdict.
+  assert.deepEqual([reRaise('HIGH', 'LOW', {}, 'shadow').outcome, reRaise('HIGH', 'LOW', {}, 'shadow').wouldBe], ['PROCEED', 'REPAIR']);
+  // A live waiver still shields the re-raise, whatever its severity.
+  const waived = adjudicate({
+    ...reReview({}),
+    reviews: reReview({}).reviews.map((r) =>
+      r.reviewerConfigId === PRIMARY ? completedReview(PRIMARY, reviewOutput({ verdict: 'REQUEST_CHANGES', findings: [modelFinding({ key: 'again', severity: 'CRITICAL' })] })) : r,
+    ),
+    priorFindings: [{ record: priorFinding({ lifecycleState: 'WAIVED' }), waiverExpiresAt: '2026-12-01T00:00:00.000Z' }],
+  }).record;
+  assert.deepEqual([waived.outcome, waived.blocking], ['PROCEED', []]);
+});
+
 test("waiver expiry is judged at the round's opening time", () => {
   const opened = '2026-10-29T09:00:00.000Z';
   const waived = (waiverExpiresAt: string) =>

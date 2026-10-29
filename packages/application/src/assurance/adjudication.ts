@@ -29,7 +29,7 @@ import {
 import { sha256Hex } from './canonical-json.js';
 import type { PushGuardResult, ScannerRun } from './checks.js';
 import type { DiffFileChange } from './diff.js';
-import { findingFingerprint, preferFinding, type CheckFinding } from './findings.js';
+import { bySeverityDescending, findingFingerprint, preferFinding, type CheckFinding } from './findings.js';
 import { groundFinding, groundResolution, type GroundingContext, type GroundingFailure, type GroundingResult } from './grounding.js';
 import type {
   BlockReason,
@@ -472,8 +472,10 @@ export function adjudicate(input: AdjudicationInput): Adjudication {
   // Reconcile this round's grounded findings with the priors of the same persisted identity.
   // The prior's disposition as persisted decides: a live waiver or a human refutation keeps
   // the re-raise non-blocking, a verified or closed prior makes it a regression, and any other
-  // prior is carried by the re-raise. A linked prior is not counted again below. An ungrounded
-  // finding links nothing, so it can never stand in for a prior that still blocks.
+  // prior is carried by the re-raise. The re-raise then stands for the pair at the higher
+  // severity, so it never downgrades a prior it does not shield, and a linked prior is not
+  // counted again below. An ungrounded finding links nothing, so it can never stand in for a
+  // prior that still blocks.
   const priors = sortBy(input.priorFindings, (p) => p.record.id).map((prior) => ({
     prior,
     state: effectiveFindingState(persistedAggregate(prior, input.roundOpenedAt), input.roundOpenedAt),
@@ -492,11 +494,13 @@ export function adjudicate(input: AdjudicationInput): Adjudication {
     }
     const settled = open.find((m) => m.state === 'VERIFIED' || m.state === 'CLOSED');
     if (settled !== undefined) regressions.add(settled.prior.record.id);
+    const severity = [f.severity, ...open.map((m) => m.prior.record.severity)].sort(bySeverityDescending)[0]!;
     evaluated[i] = {
       ...f,
+      severity,
       priorFindingId: (settled ?? open[0]!).prior.record.id,
       lifecycleState: 'OPEN',
-      blocking: blockingSeverity.has(f.severity),
+      blocking: blockingSeverity.has(severity),
     };
   }
 
