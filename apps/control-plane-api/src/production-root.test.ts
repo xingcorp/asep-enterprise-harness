@@ -16,23 +16,25 @@
 //   2. The seams satisfy the exact shape runVerticalSlice consumes, so wiring
 //      them is a type-checked fact rather than a claim in a comment.
 //   3. An unconfigured deployment FAILS CLOSED (ProductionConfigError) instead of
-//      silently degrading to the local doubles — including the case where the
-//      agent sandbox is omitted, which would otherwise hand back a
-//      host-execution agent (E8/G3).
-//   4. No forge credential is reachable from the agent seam (E4): the Claude
+//      silently degrading to the local doubles — including a missing or
+//      unpinned agent/proxy image and a missing model credential provider
+//      (E8/G3). There is no host-execution agent to fall back to.
+//   4. The agent works in the worktree the driver leased, resolved through the
+//      seam's `worktreePathOf` — not a path fixed at construction.
+//   5. No forge credential is reachable from the agent seam (E4): the Claude
 //      provider is constructed with only (config, scope, artifactStore).
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { GitHubAppForgePort } from '@asep/github-app';
-import { ClaudeCodingProvider } from '@asep/agent-claude';
+import { ClaudeCodingProvider, FileModelCredentialProvider } from '@asep/agent-claude';
 import {
   productionSeams, ProductionConfigError, type ProductionSeamConfig,
 } from './production-root.js';
 import type { SqlClient } from '@asep/persistence';
 import type { ArtifactStore } from '@asep/ports';
 import type {
-  TenantScope, RepositoryBindingId, WorkspaceId, ArtifactRef,
+  TenantScope, RepositoryBindingId, WorkspaceId, ArtifactRef, AttemptId,
 } from '@asep/contracts';
 
 console.log('SUITE-ID: asep-suite:production-root');
@@ -71,11 +73,11 @@ function config(over: Partial<ProductionSeamConfig> = {}): ProductionSeamConfig 
       model: 'claude-sonnet-4-20250514',
       cliVersion: '2.1.185',
       maxTurns: 12,
-      sandbox: {
-        image: 'alpine@sha256:' + 'a'.repeat(64),
-        runFlags: ['--network', 'none', '--read-only'],
-        workdir: '/workspace',
-      },
+      image: 'alpine@sha256:' + 'a'.repeat(64),
+      proxyImage: 'node@sha256:' + 'b'.repeat(64),
+      // Never read here: nothing in this suite executes an attempt to the point
+      // of asking for the credential.
+      credentials: new FileModelCredentialProvider({ apiKeyFile: '/run/secrets/anthropic-api-key' }),
     },
     github: { appId: 12345, privateKey: FAKE_PEM, installationId: 67890 },
     localRepoPathFor: () => '/tmp/asep/worktree',
@@ -136,15 +138,46 @@ test('HIGH-008: a missing Claude pin fails closed (no fallback to a test double)
   }
 });
 
-test('E8/G3: OMITTING the agent sandbox fails closed (no host-execution agent)', () => {
-  const cfg = config();
-  const claude = { ...cfg.claude } as Record<string, unknown>;
-  delete claude['sandbox'];
-  assert.throws(
-    () => productionSeams(client, { ...cfg, claude } as unknown as ProductionSeamConfig),
-    ProductionConfigError,
-    'a production root must not be able to obtain a non-sandboxed agent',
-  );
+test('E8/G3: OMITTING an image or the model credential provider fails closed', () => {
+  for (const field of ['image', 'proxyImage', 'credentials'] as const) {
+    const cfg = config();
+    const claude = { ...cfg.claude } as Record<string, unknown>;
+    delete claude[field];
+    assert.throws(
+      () => productionSeams(client, { ...cfg, claude } as unknown as ProductionSeamConfig),
+      ProductionConfigError,
+      `omitting claude.${field} must fail closed`,
+    );
+  }
+});
+
+// The agent's one writable mount is the worktree leased for THIS attempt. It
+// is resolved through the driver's worktreePathOf when the attempt runs — the
+// first thing execute() does after vetting the tool policy — so a fixed path
+// chosen at construction cannot be mounted instead.
+test('E8: the production agent works in the worktree the driver resolves per attempt', async () => {
+  const seams = productionSeams(client, config());
+  const asked: WorkspaceId[] = [];
+  const agent = seams.agentFor({
+    scope,
+    artifacts,
+    worktreePathOf: (id: WorkspaceId) => {
+      asked.push(id);
+      throw new Error('worktree-resolved-through-the-seam');
+    },
+  });
+  const obs = await agent.execute({
+    attemptId: 'A'.repeat(26) as AttemptId,
+    workOrderRef: { artifactId: 'x', sha256: 'a'.repeat(64), kind: 'work-order' } as unknown as ArtifactRef,
+    contextPackRef: { artifactId: 'y', sha256: 'b'.repeat(64), kind: 'context-pack' } as unknown as ArtifactRef,
+    workspace: { workspaceId: 'W'.repeat(26) as WorkspaceId, leaseId: 'lease-1' },
+    budget: { maxTurns: 1, maxToolCalls: 1, maxCostUsd: 0.01, maxWallClockMinutes: 1 },
+    toolPolicy: { allowedTools: ['read'], disallowedTools: [], networkProfile: 'restricted-egress' },
+    signal: new AbortController().signal,
+  });
+  assert.deepEqual(asked, ['W'.repeat(26)]);
+  assert.equal(obs.status, 'FAILED');
+  assert.match(obs.knownLimitations.join(' '), /worktree-resolved-through-the-seam/);
 });
 
 // E8/F5: the agent image must be pinned BY DIGEST, not merely non-empty.
@@ -170,10 +203,18 @@ test('E8/F5: a MUTABLE agent image tag fails closed (digest pinning is mandatory
     assert.throws(
       () => productionSeams(client, {
         ...cfg,
-        claude: { ...cfg.claude, sandbox: { ...cfg.claude.sandbox, image: unpinned } },
+        claude: { ...cfg.claude, image: unpinned },
       } as ProductionSeamConfig),
       ProductionConfigError,
       `image '${unpinned}' is not digest-pinned and must be refused`,
+    );
+    assert.throws(
+      () => productionSeams(client, {
+        ...cfg,
+        claude: { ...cfg.claude, proxyImage: unpinned },
+      } as ProductionSeamConfig),
+      ProductionConfigError,
+      `proxy image '${unpinned}' is not digest-pinned and must be refused`,
     );
   }
 });
@@ -186,7 +227,7 @@ test('E8/F5: a genuinely digest-pinned agent image is accepted', () => {
     ...cfg,
     claude: {
       ...cfg.claude,
-      sandbox: { ...cfg.claude.sandbox, image: 'ghcr.io/asep/agent@sha256:' + 'c'.repeat(64) },
+      image: 'ghcr.io/asep/agent@sha256:' + 'c'.repeat(64),
     },
   } as ProductionSeamConfig);
   assert.equal(typeof seams.agentFor, 'function');

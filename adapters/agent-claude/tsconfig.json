@@ -9,6 +9,9 @@
   ],
   "references": [
     {
+      "path": "../command-runner"
+    },
+    {
       "path": "../../packages/contracts"
     },
     {

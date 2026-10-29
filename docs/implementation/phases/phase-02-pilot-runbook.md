@@ -23,6 +23,66 @@
     (exit K4) — the integration gate fails rather than skips if any is down.
   - GitHub App installed on the pilot repo with the default branch protected so
     the installation token cannot update or merge it (exit H3).
+  - The agent images, model credential and live proofs of §0.1 in place, and
+    `pnpm test:live:claude` passing with the pilot's own configuration.
+
+### 0.1 Agent containment and the model credential
+
+The Claude provider has no host-execution mode. Every attempt runs like this
+(`adapters/agent-claude/src/claude-provider.ts`):
+
+1. An **internal** Docker network is created for the attempt (no gateway, no
+   route out, no external DNS).
+2. An **egress proxy** container (`adapters/agent-claude/assets/egress-proxy.mjs`)
+   starts on the egress network and is attached to the internal one. It forwards
+   only `POST /v1/messages` and `POST /v1/messages/count_tokens`, only to the
+   configured model API origin; absolute-form requests, `CONNECT` tunnels,
+   upgrades and every other path get 403. The model key reaches it on **stdin**
+   and it substitutes the key into each forwarded request. Its access log
+   (method, path, status — never headers or bodies) is stored as the
+   `claude-egress-log` artifact.
+3. The agent container runs on the internal network only, as the harness user,
+   with a read-only root filesystem, all capabilities dropped,
+   `no-new-privileges`, PID/CPU/memory limits and no Docker socket. The leased
+   worktree is its one writable bind; the worktree's `.git` indirection, the work
+   order and the context pack are read-only binds, and the mirror is not mounted.
+   It holds a placeholder API key and `ANTHROPIC_BASE_URL` pointing at the proxy.
+4. Containers and network are removed when the attempt ends, whatever happened.
+   Each carries the label `asep.attempt=<attemptId>`.
+
+Configuration (`apps/control-plane-api/src/pilot-main.ts`, all required unless
+marked):
+
+| Variable | Meaning |
+|---|---|
+| `ASEP_AGENT_IMAGE_DIGEST` | `image@sha256:…` with the pinned Claude CLI installed, e.g. built `FROM` the pinned node image with `npm install -g @anthropic-ai/claude-code@<version>`. |
+| `ASEP_CLAUDE_EXECUTABLE` | The CLI's path inside that image. |
+| `ASEP_CLAUDE_CLI_VERSION` | The CLI version baked into the image. The attempt fails closed if `system/init` reports anything else. |
+| `ASEP_CLAUDE_MODEL` | A full model id (not an alias). The attempt fails closed if `system/init` reports another model, or the CLI announces a model fallback. |
+| `ASEP_EGRESS_PROXY_IMAGE_DIGEST` | `image@sha256:…` with `node` on `PATH` (the pinned node image in `scripts/integration/images.mjs` works). |
+| `ASEP_ANTHROPIC_API_KEY_FILE` | A file holding the model key, mode `600` (a group/other-readable file is refused). Use a key scoped to the pilot (its own workspace and spend limit). It is read per attempt, so rotation needs no restart. |
+| `ASEP_ANTHROPIC_BASE_URL` (optional) | The model API origin, `https://` only. Defaults to `https://api.anthropic.com`. |
+
+Orphan sweep after a harness crash (nothing else is ever labelled this way):
+
+```sh
+docker rm -f $(docker ps -aq --filter label=asep.role)
+docker network rm $(docker network ls -q --filter label=asep.attempt)
+```
+
+**Live proofs (opt-in, never part of the gate).** `pnpm test:live:claude` runs
+`adapters/agent-claude/src/claude-live.live.ts`. Without configuration both tests
+skip and print why.
+
+- *LIVE* (`ASEP_LIVE_CLAUDE=1` plus the variables above): the real CLI in the
+  agent image, under real Docker, through the real proxy, against the real model
+  API — asked for one checkable change in a throwaway worktree. This is the
+  model half of K2; run it before the first pilot task and keep its output.
+- *CONFORMANCE* (`ASEP_CLAUDE_CONFORMANCE_CLI=<claude binary>`): the real CLI on
+  the operator's host, driven by the real provider through the fake docker
+  client, the real proxy and a fake model API. No credential and no network. It
+  checks that the CLI accepts the provider's exact argv and stdin prompt and
+  that its stream parses.
 
 ## 1. Dashboard & metrics requirements (M1)
 
@@ -81,6 +141,10 @@ Halt the pilot (stop dispatching new tasks) immediately on any of:
    catch before use.
 5. **Sandbox isolation failure**: a write from inside the sandbox reaches `.git`
    internals, refs, config, hooks, or the host mirror (exit E8).
+6. **Unexpected egress**: a `claude-egress-log` line other than an allowlisted
+   `POST /v1/messages…` or a 403 refusal.
+7. **Credential exposure**: an attempt failed with "model credential appeared in
+   … and was redacted". Rotate the model key before resuming.
 
 Rollback for a single task is inherently safe by design: the harness only ever
 pushes to an ASEP-namespaced branch and opens a PR — **there is no merge

@@ -17,15 +17,16 @@
 // workflow sequencing lives here (B2/B5).
 //
 // FAIL-CLOSED CONFIG. Every credential/pin is REQUIRED. A missing Anthropic CLI
-// path, model pin, GitHub App id, private key or installation id throws at
-// construction — never a silent downgrade to a stand-in. That is what makes the
-// pilot honest: with credentials the real adapters run; without them the root
-// refuses to build rather than pretending.
+// path, model pin, image digest, model credential provider, GitHub App id,
+// private key or installation id throws at construction — never a silent
+// downgrade to a stand-in. That is what makes the pilot honest: with
+// credentials the real adapters run; without them the root refuses to build
+// rather than pretending.
 
 import {
   RepositoryBindingRepository, type SqlClient,
 } from '@asep/persistence';
-import { ClaudeCodingProvider, type AgentSandboxConfig } from '@asep/agent-claude';
+import { ClaudeCodingProvider, type ModelCredentialProvider } from '@asep/agent-claude';
 import { isDigestPinned } from '@asep/command-runner';
 import {
   GitHubAppCredentialProvider, GitHubAppForgeProvider, GitHubAppForgePort,
@@ -45,9 +46,17 @@ export interface ProductionSeamConfig {
     readonly model: string;
     readonly cliVersion: string;
     readonly maxTurns: number;
-    // E8/G3: the agent runs IN a container. Required here — a production root
-    // must not be able to obtain a host-execution agent by omitting config.
-    readonly sandbox: AgentSandboxConfig;
+    // E8/G3: the agent runs IN a container, always. These are the only knobs a
+    // root has: the two digest-pinned images and, optionally, where the
+    // per-attempt inputs live and which network the egress proxy uses. The
+    // container flags, mounts and networks are the adapter's, not config — and
+    // the one writable mount is the leased worktree the driver resolves.
+    readonly image: string;
+    readonly proxyImage: string;
+    readonly inputRoot?: string;
+    readonly egressNetwork?: string;
+    // The model credential, delivered by the adapter to its egress proxy only.
+    readonly credentials: ModelCredentialProvider;
   };
   // --- GitHub App (H1: private key held in memory, never serialized) --------
   readonly github: {
@@ -107,26 +116,21 @@ export function productionSeams(
   const model = requireString(cfg.claude?.model, 'claude.model');
   const cliVersion = requireString(cfg.claude?.cliVersion, 'claude.cliVersion');
   const maxTurns = requireNumber(cfg.claude?.maxTurns, 'claude.maxTurns');
-  const sandbox = cfg.claude?.sandbox;
-  if (!sandbox || requireString(sandbox.image, 'claude.sandbox.image') === '') {
-    throw new ProductionConfigError('claude.sandbox');
+  // Both images must be pinned BY DIGEST, not merely non-empty (exit F5): a
+  // mutable tag means the evidence bundle no longer identifies what actually
+  // ran. Same predicate as the verification sandbox, imported rather than
+  // re-implemented, so the two paths cannot drift.
+  for (const [field, value] of [
+    ['claude.image', cfg.claude?.image], ['claude.proxyImage', cfg.claude?.proxyImage],
+  ] as const) {
+    const image = requireString(value, field);
+    if (!isDigestPinned(image)) {
+      throw new ProductionConfigError(`${field} must be digest-pinned (…@sha256:<64hex>), got '${image}'`);
+    }
   }
-  // The agent image must be pinned BY DIGEST, not merely non-empty (exit F5).
-  //
-  // THE FINDING (cycle 5, HIGH-002): this check accepted any non-empty string,
-  // so `claude-agent:latest` passed. A mutable tag means the thing that actually
-  // produced a change is not identified by the evidence bundle that attests to
-  // it — the image behind the tag can differ between the attempt and any later
-  // audit. DockerSandboxProvider already refuses an unpinned image for the
-  // VERIFICATION container; the agent container had no equivalent guard, so the
-  // stricter of the two paths was the one that mattered least.
-  //
-  // Same predicate as the sandbox provider, imported rather than re-implemented,
-  // so the two paths cannot drift.
-  if (!isDigestPinned(sandbox.image)) {
-    throw new ProductionConfigError(
-      `claude.sandbox.image must be digest-pinned (…@sha256:<64hex>), got '${sandbox.image}'`,
-    );
+  const modelCredentials = cfg.claude?.credentials;
+  if (!modelCredentials || typeof modelCredentials.credentialFor !== 'function') {
+    throw new ProductionConfigError('claude.credentials');
   }
   const appId = requireNumber(cfg.github?.appId, 'github.appId');
   const privateKey = requireString(cfg.github?.privateKey, 'github.privateKey');
@@ -139,12 +143,24 @@ export function productionSeams(
   // The adapter persists its raw event stream as a SCOPED artifact, so it is
   // constructed with the tenant scope the workflow registered (that is why the
   // driver takes a factory rather than a prebuilt instance).
+  //
+  // The agent's working directory is the worktree the driver leased for THIS
+  // attempt, resolved through `worktreePathOf` at execute() time — the only
+  // path the adapter mounts writable.
+  const { image, proxyImage, inputRoot, egressNetwork } = cfg.claude;
   const agentFor = (ctx: {
     scope: TenantScope;
     artifacts: ArtifactStore;
     worktreePathOf: (workspaceId: WorkspaceId) => string;
   }): CodingAgentProvider => new ClaudeCodingProvider(
-    { executable, model, cliVersion, maxTurns, sandbox },
+    {
+      executable, model, cliVersion, maxTurns, credentials: modelCredentials,
+      sandbox: {
+        image, proxyImage, workdirFor: ctx.worktreePathOf,
+        ...(inputRoot !== undefined ? { inputRoot } : {}),
+        ...(egressNetwork !== undefined ? { egressNetwork } : {}),
+      },
+    },
     ctx.scope,
     ctx.artifacts,
   );

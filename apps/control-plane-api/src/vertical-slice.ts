@@ -49,7 +49,7 @@ import {
 } from '@asep/application';
 import type {
   ForgeProvider, PullRequestRef, CodingAgentProvider, SandboxProvider,
-  AgentExecuteRequest, AgentAttemptObservation, CommandSpec, ArtifactStore,
+  AgentExecuteRequest, AgentAttemptObservation, CommandSpec, ArtifactStore, ToolPolicyProfile,
 } from '@asep/ports';
 import type {
   TenantScope, RepositoryBindingId, AttemptId, TaskId, RunId, ArtifactId,
@@ -174,6 +174,12 @@ export interface VerticalSliceInput {
   // TTL that would not outlive the agent's wall clock.
   readonly budget?: Budget;
   readonly leaseTtlMs?: number;
+
+  // What the agent may do. ABSENT keeps the local double's policy. A live run
+  // passes the Claude provider's policy: that provider runs only under
+  // 'restricted-egress' (the model API through its egress proxy) and refuses a
+  // policy it cannot honour before anything starts.
+  readonly toolPolicy?: ToolPolicyProfile;
 }
 
 const DEFAULT_BUDGET: Budget = { maxTurns: 5, maxToolCalls: 10, maxCostUsd: 1, maxWallClockMinutes: 5 };
@@ -330,7 +336,7 @@ export async function runVerticalSlice(input: VerticalSliceInput): Promise<Verti
     baseSha,
     leaseTtlMs: input.leaseTtlMs ?? leaseTtlForBudget(input.budget ?? DEFAULT_BUDGET),
     budget: input.budget ?? DEFAULT_BUDGET,
-    toolPolicy: {
+    toolPolicy: input.toolPolicy ?? {
       allowedTools: ['write'], disallowedTools: ['network'], networkProfile: 'no-network',
     },
     signal: new AbortController().signal,

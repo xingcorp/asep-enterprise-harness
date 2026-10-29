@@ -27,8 +27,13 @@ import { basename, join } from 'node:path';
 import { Pool } from 'pg';
 import { PgPoolClient, migrate } from '@asep/persistence';
 import { DockerSandboxProvider } from '@asep/command-runner';
-import type { CommandSpec } from '@asep/ports';
-import { productionSeams, ProductionConfigError } from './production-root.js';
+import {
+  FileModelCredentialProvider, parseModelBaseUrl, DEFAULT_MODEL_BASE_URL,
+} from '@asep/agent-claude';
+import type { CommandSpec, ToolPolicyProfile } from '@asep/ports';
+import {
+  productionSeams, ProductionConfigError, type ProductionSeamConfig,
+} from './production-root.js';
 import { runVerticalSlice } from './vertical-slice.js';
 
 // Every knob this entrypoint needs. Kept as one list so a missing value is a
@@ -46,6 +51,12 @@ export interface PilotEnv {
   readonly claudeMaxTurns: number;
   readonly agentImageDigest: string;
   readonly verifyImageDigest: string;
+  // The agent's only route out is a per-attempt egress proxy (this image runs
+  // it) to the model API at `anthropicBaseUrl`. The model credential is read
+  // from `anthropicApiKeyFile` per attempt and handed to that proxy only.
+  readonly egressProxyImageDigest: string;
+  readonly anthropicApiKeyFile: string;
+  readonly anthropicBaseUrl: string;
   readonly githubAppId: number;
   readonly githubPrivateKeyPath: string;
   readonly githubInstallationId: number;
@@ -111,6 +122,23 @@ function requireListEnv(name: string): readonly string[] {
   return parts;
 }
 
+// The model API origin. Optional (the public API by default), but a live
+// credential is only ever sent over TLS: an http:// origin is refused here.
+function modelBaseUrlEnv(): string {
+  const raw = process.env['ASEP_ANTHROPIC_BASE_URL'];
+  const value = raw === undefined || raw.trim() === '' ? DEFAULT_MODEL_BASE_URL : raw.trim();
+  let url: string;
+  try {
+    url = parseModelBaseUrl(value);
+  } catch (err) {
+    throw new ProductionConfigError(`ASEP_ANTHROPIC_BASE_URL (${(err as Error).message})`);
+  }
+  if (!url.startsWith('https://')) {
+    throw new ProductionConfigError('ASEP_ANTHROPIC_BASE_URL (must be https://)');
+  }
+  return url;
+}
+
 export function readEnv(): PilotEnv {
   const baseSha = requireEnv('ASEP_BASE_SHA');
   if (!SHA40.test(baseSha)) {
@@ -124,6 +152,9 @@ export function readEnv(): PilotEnv {
     claudeMaxTurns: requireIntEnv('ASEP_CLAUDE_MAX_TURNS'),
     agentImageDigest: requireEnv('ASEP_AGENT_IMAGE_DIGEST'),
     verifyImageDigest: requireEnv('ASEP_VERIFY_IMAGE_DIGEST'),
+    egressProxyImageDigest: requireEnv('ASEP_EGRESS_PROXY_IMAGE_DIGEST'),
+    anthropicApiKeyFile: requireEnv('ASEP_ANTHROPIC_API_KEY_FILE'),
+    anthropicBaseUrl: modelBaseUrlEnv(),
     githubAppId: requireIntEnv('ASEP_GITHUB_APP_ID'),
     githubPrivateKeyPath: requireEnv('ASEP_GITHUB_PRIVATE_KEY_PATH'),
     githubInstallationId: requireIntEnv('ASEP_GITHUB_INSTALLATION_ID'),
@@ -146,39 +177,45 @@ export function readEnv(): PilotEnv {
   };
 }
 
-// Hardened `docker run` flags for the AGENT container. Mirrors the verification
-// profile: no network, read-only root, dropped caps, no new privileges, and no
-// docker socket. The working tree is bind-mounted rw by the driver's mount spec;
-// the `.git` indirection nested inside it is pinned read-only there.
-export function agentRunFlags(worktreePath: string): readonly string[] {
-  return [
-    'run', '--rm',
-    '--network', 'none',
-    '--read-only',
-    '--cap-drop', 'ALL',
-    '--security-opt', 'no-new-privileges',
-    '--pids-limit', '256',
-    '--memory', '2g',
-    '--tmpfs', '/tmp:rw,noexec,nosuid,size=64m',
-    // ONLY the leased worktree is writable.
-    //
-    // THE FINDING (cycle 5, HIGH-002/E8/F5): this used to mount the pilot's temp
-    // ROOT rw. That root is where the driver keeps `objects/` — the filesystem
-    // bytes of the artifact + evidence stores — plus `mirror.git` and
-    // `remote.git`. So the agent, the one component the whole trust model treats
-    // as untrusted, had write access to the audit record that is supposed to
-    // attest to what it did, and to the Git mirror the harness commits from.
-    // Narrowing the bind is the fix: the agent gets the working tree and nothing
-    // else in the pilot's state directory is reachable from inside the container.
-    '-v', `${worktreePath}:${worktreePath}:rw`,
-    // The `.git` indirection of a linked worktree lives INSIDE the tree, so the
-    // rw bind above would make it writable and let the agent repoint the gitdir
-    // from within the sandbox. A nested `:ro` bind is applied over the writable
-    // parent (docker orders binds by destination depth) and the kernel refuses
-    // the write with EROFS — OS-enforced, matching what the verification
-    // container already does via readOnlyOverlayPaths.
-    '-v', `${worktreePath}/.git:${worktreePath}/.git:ro`,
-  ];
+// What the pilot agent may do: read and edit files in its worktree. No shell,
+// and no network tool — its only route out is the model API through the
+// egress proxy, which is what 'restricted-egress' means for the Claude
+// provider.
+export const PILOT_TOOL_POLICY: ToolPolicyProfile = {
+  allowedTools: ['read', 'write'],
+  disallowedTools: ['bash', 'network'],
+  networkProfile: 'restricted-egress',
+};
+
+// The production seam configuration for this pilot. Pure, so the wiring is
+// testable without credentials: the agent's images, model pins and credential
+// provider come from the environment; its container flags, networks and mounts
+// are the adapter's own, and its working directory is the leased worktree the
+// driver resolves per attempt.
+export function pilotSeamConfig(
+  env: PilotEnv,
+  privateKey: string,
+  localRepoPathFor: ProductionSeamConfig['localRepoPathFor'],
+): ProductionSeamConfig {
+  return {
+    claude: {
+      executable: env.claudeExecutable,
+      model: env.claudeModel,
+      cliVersion: env.claudeCliVersion,
+      maxTurns: env.claudeMaxTurns,
+      image: env.agentImageDigest,
+      proxyImage: env.egressProxyImageDigest,
+      credentials: new FileModelCredentialProvider({
+        apiKeyFile: env.anthropicApiKeyFile, baseUrl: env.anthropicBaseUrl,
+      }),
+    },
+    github: {
+      appId: env.githubAppId,
+      privateKey,
+      installationId: env.githubInstallationId,
+    },
+    localRepoPathFor,
+  };
 }
 
 // The mandatory R0 verification command, run INSIDE the sandbox against the
@@ -234,36 +271,12 @@ async function main(): Promise<void> {
 
   // REAL Claude + GitHub App adapters. Throws ProductionConfigError when any pin
   // or credential is absent, so an unconfigured deployment cannot fall through
-  // to a double.
-  const seams = productionSeams(client, {
-    claude: {
-      executable: env.claudeExecutable,
-      model: env.claudeModel,
-      cliVersion: env.claudeCliVersion,
-      maxTurns: env.claudeMaxTurns,
-      // Isolation is REQUIRED on this path: no waiver is passed anywhere here.
-      //
-      // The mount is the LEASED WORKTREE, resolved lazily. It does not exist at
-      // this point — the workflow creates it after registering the tenancy and
-      // acquiring the lease — so these are thunks the adapter calls at
-      // execute() time. Passing `dir` eagerly (what this did before) mounted the
-      // pilot's whole state directory rw, including `objects/`: the artifact and
-      // evidence bytes the agent must never be able to rewrite.
-      sandbox: {
-        image: env.agentImageDigest,
-        runFlags: () => agentRunFlags(requireWorktree()),
-        workdir: () => requireWorktree(),
-      },
-    },
-    github: {
-      appId: env.githubAppId,
-      privateKey,
-      installationId: env.githubInstallationId,
-    },
-    // The harness commit lives in the LEASED WORKTREE, not the temp root. The
-    // driver publishes that path the moment it creates the workspace.
-    localRepoPathFor: () => requireWorktree(),
-  });
+  // to a double. No waiver exists anywhere on this path: the agent is always
+  // contained, and its one writable mount is the leased worktree.
+  //
+  // The harness commit lives in the LEASED WORKTREE, not the temp root; the
+  // driver publishes that path the moment it creates the workspace.
+  const seams = productionSeams(client, pilotSeamConfig(env, privateKey, () => requireWorktree()));
 
   // A REAL digest-pinned Docker sandbox for verification. Constructing it throws
   // when the image is not digest-pinned, and `start()` throws when the daemon is
@@ -280,6 +293,7 @@ async function main(): Promise<void> {
       // `runVerticalSlice` only falls back to local doubles when they are absent.
       agentFor: seams.agentFor,
       forge: seams.forge,
+      toolPolicy: PILOT_TOOL_POLICY,
       // NOTE: no sandboxRequirement override — absent means 'required', so the
       // slice refuses to proceed if OS isolation is not actually enforced.
 

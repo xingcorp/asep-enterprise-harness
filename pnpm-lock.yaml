@@ -30,6 +30,9 @@ importers:
 
   adapters/agent-claude:
     dependencies:
+      '@asep/command-runner':
+        specifier: workspace:*
+        version: link:../command-runner
       '@asep/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts

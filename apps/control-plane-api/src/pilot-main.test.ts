@@ -12,14 +12,20 @@
 //      which is what makes it testable at all;
 //   2. readEnv() FAILS CLOSED on every missing knob — an unconfigured deployment
 //      cannot fall through to a local double;
-//   3. the agent container flags are hardened: --network none, read-only root,
-//      dropped caps, no-new-privileges, and NO docker socket mount (E8/F4/F5);
-//   4. the verification command is CONFIG, never a model-generated string (F1):
+//   3. the seam configuration it builds carries the agent's pins, both images
+//      and a model credential provider — and NO container flags or mounts of its
+//      own: the adapter owns the containment, and the agent's one writable mount
+//      is the worktree the driver leases (E8/F4/F5, G3);
+//   4. the agent's tool policy is the one the Claude provider runs under
+//      ('restricted-egress': the model API through its egress proxy, no shell,
+//      no network tool), and a live credential only ever goes to an https origin;
+//   5. the verification command is CONFIG, never a model-generated string (F1):
 //      an executable plus argv, shell-free.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readEnv, agentRunFlags, checkCommandFor } from './pilot-main.js';
+import { FileModelCredentialProvider, claudeToolGrant } from '@asep/agent-claude';
+import { readEnv, pilotSeamConfig, PILOT_TOOL_POLICY, checkCommandFor } from './pilot-main.js';
 import { ProductionConfigError } from './production-root.js';
 
 console.log('SUITE-ID: asep-suite:pilot-main');
@@ -41,6 +47,8 @@ const COMPLETE_ENV: Record<string, string> = {
   ASEP_CLAUDE_MAX_TURNS: '8',
   ASEP_AGENT_IMAGE_DIGEST: 'alpine@sha256:' + 'a'.repeat(64),
   ASEP_VERIFY_IMAGE_DIGEST: 'alpine@sha256:' + 'b'.repeat(64),
+  ASEP_EGRESS_PROXY_IMAGE_DIGEST: 'node@sha256:' + 'e'.repeat(64),
+  ASEP_ANTHROPIC_API_KEY_FILE: '/run/secrets/anthropic-api-key',
   ASEP_GITHUB_APP_ID: '12345',
   ASEP_GITHUB_PRIVATE_KEY_PATH: '/run/secrets/github-app.pem',
   ASEP_GITHUB_INSTALLATION_ID: '67890',
@@ -68,7 +76,7 @@ const COMPLETE_ENV: Record<string, string> = {
 // suites never leak configuration into one another.
 function withEnv<T>(vars: Record<string, string>, fn: () => T): T {
   const saved = new Map<string, string | undefined>();
-  for (const key of Object.keys(COMPLETE_ENV)) {
+  for (const key of [...Object.keys(COMPLETE_ENV), 'ASEP_ANTHROPIC_BASE_URL']) {
     saved.set(key, process.env[key]);
     delete process.env[key];
   }
@@ -92,6 +100,9 @@ test('HIGH-008: a fully-configured environment yields the pilot configuration', 
   assert.equal(env.githubInstallationId, 67890);
   assert.match(env.agentImageDigest, /@sha256:[0-9a-f]{64}$/);
   assert.match(env.verifyImageDigest, /@sha256:[0-9a-f]{64}$/);
+  assert.match(env.egressProxyImageDigest, /@sha256:[0-9a-f]{64}$/);
+  assert.equal(env.anthropicApiKeyFile, '/run/secrets/anthropic-api-key');
+  assert.equal(env.anthropicBaseUrl, 'https://api.anthropic.com', 'the public API unless configured');
 
   // The live target: a real owner/repo, the NUMERIC id the forge resolver needs,
   // and a real mirror + base SHA. None of this was configurable before, which is
@@ -155,54 +166,42 @@ test('HIGH-008: a non-integer numeric variable fails closed', () => {
   );
 });
 
-test('E8/F4/F5: the agent container flags are hardened and expose no docker socket', () => {
-  const flags = agentRunFlags('/tmp/asep-pilot-x').join(' ');
-  assert.match(flags, /--network none/, 'agent container must have NO network');
-  assert.match(flags, /--read-only/, 'container root fs must be read-only');
-  assert.match(flags, /--cap-drop ALL/, 'all capabilities must be dropped');
-  assert.match(flags, /--security-opt no-new-privileges/);
-  assert.match(flags, /--pids-limit/, 'a PID limit must bound fork bombs');
-  assert.match(flags, /--memory/, 'a memory limit must be set');
-  // The single most dangerous mount: handing the daemon socket to the agent
-  // would make every other restriction cosmetic.
-  assert.doesNotMatch(flags, /docker\.sock/, 'the docker socket must NEVER be mounted');
-  assert.doesNotMatch(flags, /--privileged/, 'the container must never be privileged');
+test('G3: a configured model API origin is used, and only over https', () => {
+  const env = withEnv({ ...COMPLETE_ENV, ASEP_ANTHROPIC_BASE_URL: 'https://llm-gateway.example.com/anthropic/' },
+    () => readEnv());
+  assert.equal(env.anthropicBaseUrl, 'https://llm-gateway.example.com/anthropic');
+  // Assembled, so the userinfo form is not mistaken for an address by the PII scan.
+  const withUserinfo = ['https://u:p', 'llm-gateway.example.com'].join('@');
+  for (const bad of ['http://llm-gateway.example.com', withUserinfo, 'not a url']) {
+    assert.throws(
+      () => withEnv({ ...COMPLETE_ENV, ASEP_ANTHROPIC_BASE_URL: bad }, () => readEnv()),
+      ProductionConfigError,
+      `model API origin '${bad}' must be refused`,
+    );
+  }
 });
 
-// E8/F5 (cycle-5 HIGH-002): the agent's writable mount is the LEASED WORKTREE
-// and nothing above it.
-//
-// THE FINDING. agentRunFlags used to receive the pilot's temp ROOT and mount it
-// `:rw`. That root is where the driver keeps `objects/` — the filesystem bytes
-// backing the artifact AND evidence stores — plus `mirror.git` and `remote.git`.
-// So the agent, the single component this design treats as untrusted, could
-// rewrite the evidence bundle that attests to its own attempt, and could rewrite
-// the Git mirror the harness commits from. Every other hardening flag is beside
-// the point if the audit record is writable.
-test('E8/F5: the agent mounts ONLY the leased worktree — never the pilot state root', () => {
-  const wt = '/tmp/asep-pilot-x/wt/binding-1/ws-1';
-  const flags = agentRunFlags(wt);
-  const joined = flags.join(' ');
+test('E8/G3: the pilot seam config carries pins, images and a credential provider — no flags or mounts', () => {
+  const env = withEnv(COMPLETE_ENV, () => readEnv());
+  const cfg = pilotSeamConfig(env, 'pem', () => '/tmp/asep-pilot-x/wt/binding-1/ws-1');
+  assert.equal(cfg.claude.image, COMPLETE_ENV['ASEP_AGENT_IMAGE_DIGEST']);
+  assert.equal(cfg.claude.proxyImage, COMPLETE_ENV['ASEP_EGRESS_PROXY_IMAGE_DIGEST']);
+  assert.equal(cfg.claude.model, 'claude-sonnet-4-20250514');
+  assert.ok(cfg.claude.credentials instanceof FileModelCredentialProvider,
+    'the model credential comes from the key file, per attempt');
+  // The containment is the adapter's: a root that could hand in docker flags or
+  // a mount list could hand in the state root (objects/, mirror.git) as well.
+  const keys = Object.keys(cfg.claude).sort();
+  assert.deepEqual(keys, ['cliVersion', 'credentials', 'executable', 'image', 'maxTurns', 'model', 'proxyImage']);
+  assert.ok(!JSON.stringify(cfg.claude).includes('/tmp/asep-pilot-x'),
+    'no path of the pilot state directory is part of the agent configuration');
+});
 
-  // Exactly one writable bind, and it is the worktree.
-  const writable = flags.filter((f) => f.endsWith(':rw'));
-  assert.deepEqual(writable, [`${wt}:${wt}:rw`],
-    'the ONLY writable mount must be the leased worktree');
-
-  // The nested `.git` indirection is pinned read-only OVER that writable parent,
-  // so an agent cannot repoint the gitdir from inside the container.
-  assert.ok(flags.includes(`${wt}/.git:${wt}/.git:ro`),
-    'the worktree .git must be re-bound read-only over the writable parent');
-
-  // The state root holds objects/ (evidence + artifact bytes), mirror.git and
-  // remote.git. None of them may be reachable as a writable mount.
-  const stateRoot = '/tmp/asep-pilot-x';
-  assert.doesNotMatch(joined, new RegExp(`${stateRoot}:${stateRoot}:rw`),
-    'mounting the pilot state root rw would expose objects/ + mirror.git to the agent');
-  for (const forbidden of ['objects', 'mirror.git', 'remote.git', 'upstream']) {
-    assert.doesNotMatch(joined, new RegExp(`${stateRoot}/${forbidden}`),
-      `${forbidden} must never be mounted into the agent container`);
-  }
+test('G3: the pilot agent policy is one the Claude provider runs under: read + write, no shell, no network', () => {
+  assert.equal(PILOT_TOOL_POLICY.networkProfile, 'restricted-egress');
+  const grant = claudeToolGrant(PILOT_TOOL_POLICY);
+  assert.deepEqual(grant.tools, ['Read', 'Glob', 'Grep', 'Edit', 'Write']);
+  for (const t of ['Bash', 'WebFetch', 'WebSearch']) assert.ok(grant.disallowed.includes(t), t);
 });
 
 test('F1: the verification command is executable + argv, never a shell string', () => {

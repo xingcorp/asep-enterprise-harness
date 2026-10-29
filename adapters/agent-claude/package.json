@@ -10,6 +10,7 @@
     "typecheck": "tsc -b --pretty false"
   },
   "dependencies": {
+    "@asep/command-runner": "workspace:*",
     "@asep/contracts": "workspace:*",
     "@asep/ports": "workspace:*"
   },

@@ -16,6 +16,11 @@ export const IMAGES = Object.freeze({
   // MinIO — S3-compatible object store for artifact bytes.
   minio:
     'minio/minio@sha256:a1ea29fa28355559ef137d71fc570e508a214ec84ff8083e39bc5428980b015e',
+  // node:20-alpine (multi-arch index) — runs the canary agent and the egress
+  // proxy in adapters/agent-claude/src/agent-sandbox.itest.ts, and is an egress
+  // proxy image a pilot can pin (ASEP_EGRESS_PROXY_IMAGE_DIGEST).
+  node:
+    'node@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293',
 });
 
 // The literal digest-pin guard the negative tests assert on: any value that is
