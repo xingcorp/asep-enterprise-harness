@@ -121,6 +121,51 @@ export const nested: SandboxHandle = { sandboxId: 's', profile: 'p', ...{ ...{ i
   }
 });
 
+// The cycle-7 review's probe: an object rest keeps the claim and drops the
+// fields that put a command in a container. No object literal, spread or write
+// appears, so only the binding pattern shows it. (The runner refuses such a copy
+// at run time whatever this guard sees; this closes the cheap way to write it.)
+test('evasion: an OBJECT REST of a handle, in a declaration or a parameter, is caught', () => {
+  const v = check({
+    'guard-fixture-rest.ts': `${HANDLE_IMPORTS}
+export async function strip(p: SandboxProvider): Promise<SandboxHandle> {
+  const { runFlags, image, ...handle } = (await p.start('verification-no-network', { workspaceId: 'w' as never, readOnlyPaths: [], writablePaths: [] })) as SandboxHandleEx;
+  void runFlags; void image;
+  return handle;
+}
+export function viaParameter({ dockerBinary, ...rest }: SandboxHandleEx): SandboxHandle {
+  void dockerBinary;
+  return rest;
+}
+export function viaAssignment(h: SandboxHandleEx): SandboxHandle {
+  let out: SandboxHandle;
+  let flags: unknown;
+  ({ runFlags: flags, ...out } = h);
+  void flags;
+  return out;
+}
+`,
+  }, 'isolation-claim');
+  for (const line of [5, 9]) {
+    assert.ok(v.some((x) => x.line === line && /rest/.test(x.message)), `line ${line} must be flagged: ${JSON.stringify(v)}`);
+  }
+  assert.ok(v.some((x) => x.line === 16), `the destructuring assignment must be flagged: ${JSON.stringify(v)}`);
+});
+
+test('an object rest that leaves the claim behind is not flagged', () => {
+  const v = check({
+    'guard-fixture-rest-honest.ts': `${HANDLE_IMPORTS}
+export function describe({ isolationEnforced, ...rest }: SandboxHandleEx): string {
+  return \`\${rest.sandboxId} \${String(isolationEnforced)}\`;
+}
+export function unrelated({ a, ...rest }: { a: number; b: string }): string {
+  return rest.b + String(a);
+}
+`,
+  }, 'isolation-claim');
+  assert.deepEqual(v, []);
+});
+
 // A spread of an untyped value makes the whole literal `any`, so the literal's
 // own type no longer shows the claim; the guard must still see it.
 test('evasion: a spread of an UNTYPED value — into a handle, or beside a claim — is caught', () => {

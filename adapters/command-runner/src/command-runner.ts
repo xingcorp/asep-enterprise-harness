@@ -22,7 +22,7 @@ import type {
 } from '@asep/ports';
 import { BoundedCapture } from './bounded-capture.js';
 import { resolveEnvironment } from './environment-profiles.js';
-import type { SandboxHandleEx } from './sandbox.js';
+import { executionOf } from './sandbox.js';
 import {
   dockerCaller, dockerClientEnv, removeLabelledContainers, SandboxTeardownError,
 } from './container-teardown.js';
@@ -35,6 +35,19 @@ export interface CommandRunnerConfig {
   // Absolute workspace root; a spec.cwd is resolved under it (containment is the
   // worktree adapter's job, but we refuse an absolute cwd escaping obvious bounds).
   readonly workspaceRoot: string;
+}
+
+// The handle is not one a sandbox provider of this package made, or its sandbox
+// has stopped: the runner cannot tell where a command would run, so it runs
+// nothing.
+export class SandboxHandleNotProvenError extends Error {
+  constructor(sandboxId: string) {
+    super(
+      `sandbox handle '${sandboxId}' was not made by a sandbox provider of this runner, or its sandbox ` +
+        'has stopped — refusing to run a command for it, on the host or anywhere else',
+    );
+    this.name = 'SandboxHandleNotProvenError';
+  }
 }
 
 // The runner needs the scope to store artifacts. It is constructed per attempt
@@ -54,28 +67,31 @@ export class TrustedCommandRunner implements CommandRunner {
     const stdoutCap = new BoundedCapture(spec.outputPolicy.maxEvidenceBytes);
     const stderrCap = new BoundedCapture(spec.outputPolicy.maxEvidenceBytes);
 
-    // Resolve the ACTUAL executable + argv to spawn. When the sandbox enforces
-    // isolation (a Docker handle carrying runFlags + image), the command runs
-    // INSIDE the container: `docker run <flags> -w <cwd> <image> <exe> <args…>`
-    // — OS-enforced no-network / read-only rootfs / dropped caps apply to the
-    // verification command itself, not just to a prefix we throw away (disp.
-    // P2-FINAL-HIGH-002). An honest local (unsandboxed) handle has no runFlags,
-    // so we spawn directly on the host and the handle already advertises
-    // isolationEnforced:false.
-    const ex = sandbox as SandboxHandleEx;
-    const inContainer = Array.isArray(ex.runFlags) && typeof ex.image === 'string';
+    // Where the command runs is what the provider that made this handle
+    // recorded for it — never what the handle's fields say. A Docker handle runs
+    // INSIDE its container: `docker run <flags> -w <cwd> <image> <exe> <args…>`,
+    // so OS-enforced no-network / read-only rootfs / dropped caps apply to the
+    // verification command itself (disp. P2-FINAL-HIGH-002). Only the honest
+    // local handle, which claims no isolation, runs on the host. Anything else —
+    // a copied, rebuilt or destructured handle, or one whose sandbox stopped —
+    // has no record and runs nothing.
+    const execution = executionOf(sandbox);
+    if (execution === undefined || (execution.kind === 'host' && sandbox.isolationEnforced !== false)) {
+      throw new SandboxHandleNotProvenError(sandbox.sandboxId);
+    }
+    const inContainer = execution.kind === 'container';
     // The container's identity, so it can be removed by name however its
     // client ends.
-    const container = inContainer ? `${ex.sandboxId}-${++this.seq}` : undefined;
-    const [exe, argv] = inContainer
+    const container = inContainer ? `${sandbox.sandboxId}-${++this.seq}` : undefined;
+    const [exe, argv] = execution.kind === 'container'
       ? [
-          ex.dockerBinary ?? 'docker',
+          execution.dockerBinary,
           [
-            ...(ex.runFlags as readonly string[]),
+            ...execution.runFlags,
             '--name', container as string,
             '--label', `asep.container=${container}`,
             '-w', spec.cwd,
-            ex.image as string,
+            execution.image,
             spec.executable,
             ...spec.args,
           ],

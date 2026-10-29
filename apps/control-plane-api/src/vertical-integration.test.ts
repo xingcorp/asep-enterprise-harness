@@ -26,7 +26,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, rm, mkdir, writeFile, realpath } from 'node:fs/promises';
+import { mkdtemp, rm, mkdir, writeFile, realpath, readFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { join, resolve } from 'node:path';
@@ -40,7 +41,10 @@ import {
 import {
   GitWorktreeManager, runGit, attemptBranch, safeRefspecFor,
 } from '@asep/git-worktree';
-import { TrustedCommandRunner, DockerSandboxProvider, LocalUnsandboxedProvider } from '@asep/command-runner';
+import {
+  TrustedCommandRunner, DockerSandboxProvider, LocalUnsandboxedProvider, SandboxHandleNotProvenError,
+  type SandboxHandleEx,
+} from '@asep/command-runner';
 import {
   admissionStep, agentStep, inspectStep, completeToReview, SandboxIsolationRequiredError,
   type VerificationCheckSpec,
@@ -462,3 +466,64 @@ for (const [label, make] of unclaimedSandboxes) {
     }
   });
 }
+
+// A provider that hands the governed path an object rest of a genuine Docker
+// handle keeps `isolationEnforced: true` but drops what puts a command in a
+// container. The claim gets it past the use case's refusal; the runner then
+// refuses the copy, because it was not made by a sandbox provider, so the
+// check never runs — not on the host, not anywhere — and nothing is committed,
+// recorded, pushed or opened.
+test('the vertical slice refuses a handle stripped down to its isolation claim, and runs nothing on the host', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'asep-stripped-handle-'));
+  const client = await PgliteClient.create();
+  try {
+    await migrate(client);
+    const docker = await fakeDockerSandbox(join(dir, 'sandbox'));
+    const sandbox: SandboxProvider = {
+      start: async (profile, mount) => {
+        const { runFlags: _flags, image: _image, ...handle } = (await docker.start(profile, mount)) as SandboxHandleEx;
+        return handle;
+      },
+      stop: (h) => docker.stop(h),
+    };
+    const marker = join(dir, 'host-canary');
+    const forgeCalls: string[] = [];
+    const forge: ForgeProvider = {
+      pushBranch: async () => { forgeCalls.push('push'); },
+      upsertPullRequest: async () => { forgeCalls.push('pr'); throw new Error('must not be reached'); },
+      resolveRef: async () => { forgeCalls.push('resolve'); return null; },
+      findPullRequest: async () => { forgeCalls.push('find'); return null; },
+    };
+    await assert.rejects(
+      () => runVerticalSlice({
+        client,
+        sandbox,
+        dir: join(dir, 'run'),
+        checkCommand: (wtPath) => ({
+          executable: 'node',
+          args: ['-e', `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'HOST_EXECUTION')`],
+          cwd: wtPath,
+          environmentProfile: 'verification-no-network', timeoutMs: 60_000,
+          outputPolicy: { maxEvidenceBytes: 65_536, displayHeadBytes: 4096, displayTailBytes: 4096 },
+        }),
+        forge,
+      }),
+      SandboxHandleNotProvenError,
+    );
+    assert.equal(existsSync(marker), false, 'the verification command ran on the host');
+    const invocations = existsSync(join(dir, 'sandbox', 'docker-state', 'invocations.jsonl'))
+      ? (await readFile(join(dir, 'sandbox', 'docker-state', 'invocations.jsonl'), 'utf8')).trim().split('\n')
+        .map((l) => (JSON.parse(l) as { argv?: string[] }).argv ?? [])
+      : [];
+    assert.deepEqual(invocations.filter((a) => a[0] === 'run'), [], 'and no container was started for it either');
+    assert.deepEqual(forgeCalls, [], 'the forge was never called');
+    const count = async (sql: string) => (await client.query(sql, [])).rows[0]!['n'];
+    assert.equal(await count('select count(*)::int as n from side_effect_records'), 0, 'no side effect was recorded');
+    assert.equal(await count('select count(*)::int as n from pull_requests'), 0, 'no pull request row');
+    assert.equal(await count('select count(*)::int as n from attempts where result_sha is not null'), 0,
+      'no attempt carries a result commit');
+  } finally {
+    await client.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

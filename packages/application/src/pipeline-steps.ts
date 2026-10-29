@@ -176,12 +176,13 @@ export async function verifyStep(input: VerifyStepInput): Promise<VerifyStepResu
   const missing = [...mandatoryLevels].filter((l) => !coveredMandatory.has(l));
 
   const handle = await input.sandbox.start('verification-no-network', input.mount);
-  // E8: assert the STARTED handle actually enforces isolation BEFORE any command
-  // runs. The check reads the port's own `isolationEnforced` flag (declared on
-  // SandboxHandle, so no adapter type is imported) and treats an ABSENT flag as
-  // NOT enforced — unknown isolation is never a permission. On breach the sandbox
-  // is stopped and the step throws, so an unsandboxed provider substituted
-  // anywhere below the port can never produce a verification verdict.
+  // E8: refuse a STARTED handle that does not claim isolation BEFORE any
+  // command runs. The check reads the port's own `isolationEnforced` flag
+  // (declared on SandboxHandle, so no adapter type is imported) and treats an
+  // ABSENT flag as NOT enforced — unknown isolation is never a permission. On
+  // breach the sandbox is stopped and the step throws. The flag is only a
+  // claim: a handle that makes it falsely is refused by the trusted runner,
+  // which runs a command only for a handle its own sandbox provider made.
   if (handle.isolationEnforced !== true) {
     await input.sandbox.stop(handle);
     throw new SandboxIsolationRequiredError(handle.sandboxId, handle.profile);

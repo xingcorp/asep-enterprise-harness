@@ -23,6 +23,7 @@ import {
   type SandboxHandleEx,
 } from './sandbox.js';
 import { SandboxTeardownError } from './container-teardown.js';
+import { SandboxHandleNotProvenError } from './command-runner.js';
 import { spawn } from 'node:child_process';
 import type { CommandSpec, SandboxHandle } from '@asep/ports';
 import type {
@@ -33,8 +34,13 @@ console.log('SUITE-ID: asep-suite:command-runner');
 
 const OUTPUT_POLICY = { maxEvidenceBytes: 1_000_000, displayHeadBytes: 4096, displayTailBytes: 4096 };
 
-// A dummy sandbox handle — the runner treats it as an opaque execution context.
-const HANDLE: SandboxHandle = { sandboxId: 'test', profile: 'verification-no-network' };
+// The honest local handle: the one handle the runner runs on the host, because
+// the provider that made it claims no isolation.
+function hostHandle(): Promise<SandboxHandle> {
+  return new LocalUnsandboxedProvider().start('verification-no-network', {
+    workspaceId: 'W'.repeat(26) as never, readOnlyPaths: [], writablePaths: [],
+  });
+}
 
 async function harness(): Promise<{
   client: SqlClient; store: ContentAddressedArtifactStore; scope: TenantScope; dir: string;
@@ -75,7 +81,7 @@ test('F2: a non-zero exit code is preserved exactly (no 1 -> 0 coercion)', async
   const { client, store, scope, dir } = await harness();
   try {
     const runner = new TrustedCommandRunner(scope, store);
-    const res = await runner.run(spec({ args: ['-e', 'process.exit(7)'] }), HANDLE);
+    const res = await runner.run(spec({ args: ['-e', 'process.exit(7)'] }), await hostHandle());
     assert.equal(res.exitCode, 7);
     assert.equal(res.signal, null);
     assert.equal(res.timedOut, false);
@@ -89,7 +95,7 @@ test('F2: raw stdout is captured to an immutable artifact and round-trips', asyn
   const { client, store, scope, dir } = await harness();
   try {
     const runner = new TrustedCommandRunner(scope, store);
-    const res = await runner.run(spec({ args: ['-e', 'process.stdout.write("hello-evidence")'] }), HANDLE);
+    const res = await runner.run(spec({ args: ['-e', 'process.stdout.write("hello-evidence")'] }), await hostHandle());
     assert.equal(res.exitCode, 0);
     const back = await store.get(scope, res.stdout);
     assert.equal(new TextDecoder().decode(back.content), 'hello-evidence');
@@ -111,7 +117,7 @@ test('F3: a command exceeding its timeout is killed and flagged timedOut', async
     // Sleeps far longer than the timeout; must be killed.
     const res = await runner.run(
       spec({ args: ['-e', 'setTimeout(()=>{}, 60000)'], timeoutMs: 300 }),
-      HANDLE,
+      await hostHandle(),
     );
     assert.equal(res.timedOut, true);
     // Killed by signal → exitCode null, signal set (SIGKILL).
@@ -131,7 +137,7 @@ test('F3: an already-aborted signal kills the command promptly', async () => {
     const runner = new TrustedCommandRunner(scope, store, ac.signal);
     const res = await runner.run(
       spec({ args: ['-e', 'setTimeout(()=>{}, 60000)'], timeoutMs: 60_000 }),
-      HANDLE,
+      await hostHandle(),
     );
     // Cancelled → killed by signal, not a clean exit.
     assert.equal(res.exitCode, null);
@@ -156,7 +162,7 @@ test('F1: shell metacharacters are inert (no shell interpretation)', async () =>
     const payload = 'safe; echo INJECTED';
     const res = await runner.run(
       spec({ args: ['-e', 'process.stdout.write(process.argv[1])', payload] }),
-      HANDLE,
+      await hostHandle(),
     );
     const back = await store.get(scope, res.stdout);
     const text = new TextDecoder().decode(back.content);
@@ -180,7 +186,7 @@ test('F1: a verification command runs with a sanitized allowlisted env only', as
     const runner = new TrustedCommandRunner(scope, store);
     const res = await runner.run(
       spec({ args: ['-e', 'process.stdout.write(String(process.env.ASEP_SECRET_CANARY))'] }),
-      HANDLE,
+      await hostHandle(),
     );
     const back = await store.get(scope, res.stdout);
     assert.equal(new TextDecoder().decode(back.content), 'undefined');
@@ -601,6 +607,89 @@ test('stopping a sandbox removes any container still carrying its id, and fails 
     }
   } finally {
     for (const pid of leftovers) try { process.kill(-pid, 'SIGKILL'); } catch { /* gone */ }
+    await client.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// The runner runs a command only for a handle a sandbox provider of this
+// package made, and only where that provider put it: in its container, or —
+// for the honest local handle, which claims no isolation — on the host. A
+// handle the runner cannot trace to a provider (built by hand, copied, or
+// destructured, whatever it claims) or whose sandbox has stopped is refused
+// before anything is spawned. A boolean on the handle decides nothing.
+// ---------------------------------------------------------------------------
+
+function canary(path: string): Partial<CommandSpec> {
+  return { executable: 'node', args: ['-e', `require('node:fs').writeFileSync(${JSON.stringify(path)}, 'ran')`] };
+}
+
+test('a handle no sandbox provider made is refused and runs nothing, on the host or in a container', async () => {
+  const { client, store, scope, dir } = await harness();
+  try {
+    const d = await fakeDaemon(dir);
+    const docker = new DockerSandboxProvider({ imageDigest: `alpine@sha256:${'a'.repeat(64)}`, dockerBinary: d.docker });
+    const mount = { workspaceId: 'W'.repeat(26) as never, readOnlyPaths: [], writablePaths: [d.wt] };
+    const genuine = await docker.start('verification-no-network', mount) as SandboxHandleEx;
+    const host = await hostHandle();
+    // The reviewer's probe: keep the claim, drop what would put the command in a container.
+    const { runFlags: _flags, image: _image, ...rest } = genuine;
+    const stopped = await docker.start('verification-no-network', mount);
+    await docker.stop(stopped);
+    const local = new LocalUnsandboxedProvider();
+    const stoppedHost = await local.start('verification-no-network', mount);
+    await local.stop(stoppedHost);
+    const refused: ReadonlyArray<readonly [string, SandboxHandle]> = [
+      ['an object rest of a Docker handle without its run flags and image', rest],
+      ['a spread copy of a Docker handle', { ...genuine }],
+      ['a hand-built handle that claims isolation', { sandboxId: 'x', profile: 'verification-no-network', isolationEnforced: true }],
+      ['a hand-built handle that claims nothing', { sandboxId: 'x', profile: 'verification-no-network' }],
+      ['a spread copy of the host handle', { ...host }],
+      ['a spread copy of the host handle that claims isolation', { ...host, isolationEnforced: true }],
+      ['a Docker handle whose sandbox has stopped', stopped],
+      ['a host handle whose sandbox has stopped', stoppedHost],
+    ];
+    const runner = new TrustedCommandRunner(scope, store);
+    for (const [i, [what, handle]] of refused.entries()) {
+      const marker = join(dir, `canary-${i}`);
+      await assert.rejects(runner.run(spec({ ...canary(marker), cwd: d.wt }), handle), SandboxHandleNotProvenError, what);
+      assert.equal(existsSync(marker), false, `${what}: the command ran`);
+    }
+    assert.deepEqual(d.invocations().filter((a) => a[0] === 'run'), [], 'no container was started');
+  } finally {
+    await client.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('a handle a provider made cannot be altered after the fact', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'asep-frozen-'));
+  try {
+    const d = await fakeDaemon(dir);
+    for (const handle of [await dockerHandle(d), await hostHandle()]) {
+      assert.ok(Object.isFrozen(handle), `${handle.sandboxId} is frozen`);
+      assert.throws(() => { (handle as { isolationEnforced?: boolean }).isolationEnforced = true; }, TypeError);
+      assert.throws(() => { delete (handle as { sandboxId?: string }).sandboxId; }, TypeError);
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('a genuine handle still runs where its provider put it', async () => {
+  const { client, store, scope, dir } = await harness();
+  try {
+    const d = await fakeDaemon(dir);
+    const runner = new TrustedCommandRunner(scope, store);
+    const onHost = join(dir, 'on-host');
+    assert.equal((await runner.run(spec({ ...canary(onHost), cwd: d.wt }), await hostHandle())).exitCode, 0);
+    assert.equal(existsSync(onHost), true, 'the local handle runs on the host');
+    assert.deepEqual(d.invocations().filter((a) => a[0] === 'run'), []);
+    const inContainer = join(dir, 'in-container');
+    assert.equal((await runner.run(spec({ ...canary(inContainer), cwd: d.wt }), await dockerHandle(d))).exitCode, 0);
+    assert.equal(d.invocations().filter((a) => a[0] === 'run').length, 1, 'the Docker handle runs through docker');
+  } finally {
     await client.close();
     await rm(dir, { recursive: true, force: true });
   }

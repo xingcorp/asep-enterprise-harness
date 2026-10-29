@@ -278,7 +278,9 @@ export interface SandboxHandle {
   // Docker adapter's handle — so a use case can fail closed when isolation is
   // mandatory without importing an adapter type (exit B3). Optional for
   // backwards compatibility, and every consumer must treat an absent value as
-  // NOT enforced: unknown isolation is never a permission.
+  // NOT enforced: unknown isolation is never a permission. It is a claim, not a
+  // capability: `true` is necessary, never sufficient. Whoever executes
+  // commands decides where from its own record of the handle, not from this.
   readonly isolationEnforced?: boolean;
 }
 

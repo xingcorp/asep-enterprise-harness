@@ -192,8 +192,10 @@ export interface VerticalSliceWorkflowInput {
   // registered the organization + project — so the root injects a FACTORY
   // rather than a prebuilt runner bound to a placeholder scope.
   readonly runnerFor: (input: { scope: TenantScope }) => CommandRunner;
-  // Must enforce OS isolation (exit E8): the slice refuses, before any side
+  // Must enforce OS isolation (exit E8). The slice refuses, before any side
   // effect, a provider whose handle does not claim `isolationEnforced: true`.
+  // That claim is only the first refusal: the trusted runner then runs nothing
+  // for a handle its own sandbox provider did not make.
   readonly sandbox: SandboxProvider;
   readonly forge: ForgeProvider;
 
@@ -464,11 +466,11 @@ export async function runVerticalSliceWorkflow(
     const sandboxIsolationEnforced =
       (probe as { isolationEnforced?: boolean }).isolationEnforced === true;
     await input.sandbox.stop(probe);
-    // E8: refuse the whole slice BEFORE the first side effect when isolation is
-    // mandatory but absent. Doing it here (not only inside verifyStep) means the
-    // run stops before any commit/push/PR, so an unsandboxed provider can never
-    // reach the forge. verifyStep re-asserts it on the handle it actually uses, so
-    // neither layer trusts the other's check.
+    // E8: refuse the whole slice BEFORE the first side effect when the handle
+    // does not even claim isolation. Doing it here (not only inside verifyStep)
+    // means the run stops before any commit/push/PR. verifyStep re-checks the
+    // handle it actually uses. A claim proves nothing by itself; the runner is
+    // what refuses a handle no sandbox provider made.
     if (!sandboxIsolationEnforced) {
       throw new SandboxIsolationRequiredError(probe.sandboxId, probe.profile);
     }

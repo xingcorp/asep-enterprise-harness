@@ -19,9 +19,13 @@
 // `isolationEnforced: true`; the TypeScript fitness guard
 // (scripts/lib/ts-guard.mjs) fails the build on a claim made anywhere else.
 //
-// The command runner treats a SandboxHandle as an opaque execution context; the
-// no-network / resource guarantees are the sandbox's responsibility, so a real
-// Docker handle enforces them and the local handle transparently does not.
+// Where a command runs is not read off the handle. Each provider records, for
+// the handle object it returns, how commands for it are executed — in a
+// container with these flags, image and client, or on the host — and freezes
+// the handle. The runner looks that record up by the handle's identity. A handle
+// with no record (built by hand, copied, spread or destructured, whatever it
+// claims) or whose sandbox has stopped runs nothing: `isolationEnforced` is a
+// description of a handle, never a key to the host.
 //
 // Every container a Docker handle runs is labelled with the handle's sandbox
 // id, its workspace and its attempt. The runner removes each one by name when
@@ -54,6 +58,34 @@ export interface SandboxHandleEx extends SandboxHandle {
   readonly image?: string;
   // The docker client the runner invokes. undefined for local.
   readonly dockerBinary?: string;
+}
+
+/** How commands for a handle are executed, as the provider that made it says. */
+export type SandboxExecution =
+  | {
+    readonly kind: 'container';
+    readonly runFlags: readonly string[];
+    readonly image: string;
+    readonly dockerBinary: string;
+  }
+  | { readonly kind: 'host' };
+
+// Keyed by the handle object a provider returned. Module-private: only the two
+// providers below write it; the runner only reads it.
+const EXECUTIONS = new WeakMap<SandboxHandle, SandboxExecution>();
+
+function issue(handle: SandboxHandleEx, execution: SandboxExecution): SandboxHandleEx {
+  const frozen: SandboxHandleEx = Object.freeze(handle);
+  EXECUTIONS.set(frozen, Object.freeze(execution));
+  return frozen;
+}
+
+/**
+ * How a command for this handle runs, or undefined when no provider of this
+ * module made this very object or its sandbox has stopped.
+ */
+export function executionOf(handle: SandboxHandle): SandboxExecution | undefined {
+  return EXECUTIONS.get(handle);
 }
 
 /** The labels every container of a Docker sandbox carries. */
@@ -188,7 +220,7 @@ export class DockerSandboxProvider implements SandboxProvider {
     const labelled = [...runFlags, ...sandboxLabels(sandboxId, profile, mount).flatMap((l) => ['--label', l])];
     // Back-compat prefix (flags + image) for the existing hardening assertions.
     const prefix = [dockerBinary, ...labelled, this.cfg.imageDigest];
-    return {
+    return issue({
       sandboxId,
       profile,
       isolationEnforced: true,
@@ -196,14 +228,18 @@ export class DockerSandboxProvider implements SandboxProvider {
       runFlags: labelled,
       image: this.cfg.imageDigest,
       dockerBinary,
-    };
+    }, { kind: 'container', runFlags: labelled, image: this.cfg.imageDigest, dockerBinary });
   }
 
   // The runner removes each container when its client ends; this removes
   // anything that still carries the sandbox's id, and refuses to report the
-  // sandbox stopped while it cannot show none is left.
+  // sandbox stopped while it cannot show none is left. The handle runs nothing
+  // from here on, whether or not the sweep succeeds.
   async stop(handle: SandboxHandle): Promise<void> {
-    const docker = dockerCaller((handle as SandboxHandleEx).dockerBinary ?? this.cfg.dockerBinary ?? 'docker', dockerClientEnv());
+    const execution = executionOf(handle);
+    EXECUTIONS.delete(handle);
+    const binary = execution?.kind === 'container' ? execution.dockerBinary : this.cfg.dockerBinary ?? 'docker';
+    const docker = dockerCaller(binary, dockerClientEnv());
     const left = await removeLabelledContainers(docker, `asep.sandbox=${handle.sandboxId}`);
     if (left !== undefined) throw new SandboxTeardownError(`sandbox ${handle.sandboxId}`, left);
   }
@@ -215,14 +251,17 @@ export class LocalUnsandboxedProvider implements SandboxProvider {
     profile: 'verification-no-network' | 'agent-restricted-egress',
     mount: WorkspaceMount,
   ): Promise<SandboxHandleEx> {
-    return {
+    return issue({
       sandboxId: `local-unsandboxed-${mount.workspaceId}`,
       // The profile name carries the pilot-only warning so it is visible in any
       // log, artifact or report that records the handle.
       profile: `${profile}-PILOT-ONLY-NO-ISOLATION`,
       isolationEnforced: false,
-    };
+    }, { kind: 'host' });
   }
 
-  async stop(_handle: SandboxHandle): Promise<void> { /* nothing to tear down */ }
+  // Nothing to tear down; the handle runs nothing from here on.
+  async stop(handle: SandboxHandle): Promise<void> {
+    EXECUTIONS.delete(handle);
+  }
 }

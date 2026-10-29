@@ -15,7 +15,7 @@ export {
 } from './environment-profiles.js';
 
 export type { CommandRunnerConfig } from './command-runner.js';
-export { TrustedCommandRunner } from './command-runner.js';
+export { TrustedCommandRunner, SandboxHandleNotProvenError } from './command-runner.js';
 
 export type { SandboxHandleEx, DockerSandboxConfig } from './sandbox.js';
 export {

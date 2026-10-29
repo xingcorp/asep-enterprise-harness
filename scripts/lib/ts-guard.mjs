@@ -19,7 +19,8 @@
 //     type, not by spelling: an object literal whose TYPE carries the claim
 //     (literal property, shorthand, const alias, computed key the checker or the
 //     folder resolves, spread), an unresolvable computed key in an object that
-//     is typed to carry the claim, an assignment or element write, the
+//     is typed to carry the claim, an object rest (`{ a, ...rest } = handle`)
+//     that copies the claim into a new object, an assignment or element write, the
 //     Object.assign / Object.defineProperty / Reflect.set / Reflect.defineProperty
 //     family, a class member of that name, a string carrying the property name,
 //     a type assertion that pins a claim-carrying type onto a value that does not
@@ -42,8 +43,9 @@
 //
 // The guard is a static net, not a proof: a value built at run time from
 // arbitrary computation can still evade it. It closes the shapes that are
-// cheap to write by accident or on purpose, and the runtime refusal of any
-// handle that does not claim isolation stays the enforcement point.
+// cheap to write by accident or on purpose. The enforcement point is at run
+// time: the command runner runs a command only for a handle object a sandbox
+// provider of @asep/command-runner made, and only where that provider put it.
 
 import { readdirSync, existsSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
@@ -194,6 +196,7 @@ class FileCheck {
   run() {
     const nodes = {
       identifiers: [], strings: [], objects: [], assignments: [], calls: [], members: [], casts: [], flows: [],
+      rests: [],
     };
     const visit = (n) => {
       switch (n.kind) {
@@ -203,6 +206,9 @@ class FileCheck {
           break;
         case SyntaxKind.ObjectLiteralExpression:
           nodes.objects.push(n);
+          break;
+        case SyntaxKind.ObjectBindingPattern:
+          for (const el of n.elements) if (el.dotDotDotToken) nodes.rests.push(el);
           break;
         case SyntaxKind.BinaryExpression:
           if (n.operatorToken.kind === SyntaxKind.PlusToken) nodes.strings.push(n);
@@ -478,6 +484,15 @@ class FileCheck {
         } else {
           this.report(rule, el, `'${CLAIM}' is defined by an accessor or method`);
         }
+      }
+    }
+
+    // `const { runFlags, ...rest } = handle`: the rest is a NEW object that
+    // still carries the claim — a copy the provider never made.
+    this.prefetchTypes(nodes.rests.map((el) => el.name));
+    for (const el of nodes.rests) {
+      if (this.claimOf(this.typeOf(el.name)) === 'claim') {
+        this.report(rule, el, `an object rest copies a '${CLAIM}' claim into a new object`);
       }
     }
 
