@@ -1498,6 +1498,18 @@ back within reach.
   in integer micro-USD (architecture §10), so Lane A's side is the wrapper rule in architecture §12: fill the block's
   money fields from those integers and read reported usage as non-negative safe integers or `null`. Exit J1.
 
+### S2 follow-up commits (v6)
+
+One commit per finding, on top of the docs commit `1c3153b`. Each fix commit's new tests failed on the code before
+it, and removing the fix again turned them red. `pnpm verify:all` passed after each commit.
+
+| Finding | Commit | Proof |
+|---|---|---|
+| P3-S2V5-HIGH-001 (P3-PLAN5-HIGH-002) | `0a2a427` | 22 of the 28 new direct tests (the reviewer's wrong-head probe, and a moved or missing branch or a PR at another head branch, head SHA or base on both paths, each with and without a cancel) and the strengthened oracle were red on the old decision with the new result shape. Dropping any one predicate clause turns direct tests and a property red, the latter through a new publication-focused generator that meets every clause on both paths. Seed 1351 is a test. |
+| P3-S2V5-HIGH-002 (P3-PLAN5-HIGH-001) | `f900294` | 10 of the 14 per-path tests and the per-attempt ordering oracle were red before the fix (repair, verification stop, `BLOCK` and handoff already recorded first). The reviewer's mutation, a release inserted before the `REPAIR` outcome, turns the per-path test and the property red; with the core's guard in place it fails 12 tests. A pre-lease oracle checks that an attempt that never asked for a lease ends only `cancelled`, or `failed` when found after a failed registration. |
+| P3-S2V5-MED-001 | `91ac97c` | All 15 new seeds, including the reviewer's locale and `navigator` probes, scan clean under the previous detector. Both probes, appended to `task-core.ts` on disk, turn the production check red. Removing the allowlist, the denied members, the shorthand or local re-export resolution, the `declare` rule or the `Symbol` registry rule turns seeds red. |
+| P3-S2V5-LOW-001 | — | Rejected (R27); no code change. |
+
 ### Freeze gate (v6)
 
 - [x] Every finding of the re-audit dispositioned: 6/7 new ACCEPTED, P3-S2V5-LOW-001 REJECTED with R27's reason; the
