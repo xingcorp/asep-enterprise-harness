@@ -62,6 +62,7 @@ import type {
   TaskMessage,
   TaskRequest,
   TaskRequestKind,
+  TaskState,
 } from './types.js';
 
 console.log('SUITE-ID: asep-suite:orchestration-core');
@@ -2162,6 +2163,24 @@ test('lease: every terminal write of a leased attempt carries the fence its acqu
 test('lease: an attempt that never asked for a lease records its terminal with fence null and releases nothing', () => {
   const trace = runTaskSequentially(baseInput(), scripted({}, { eventsDuring: (request) => (request.kind === 'ensureAttempt' ? [cancel()] : []) }));
   assert.deepEqual(leaseTrail(trace), { lookups: [], preLease: [], outcomes: [[1, 'cancelled', null]], releases: [] });
+});
+
+test('lease: the core refuses a terminal for an attempt whose lease request is not settled', () => {
+  // No valid path reaches this state: the lookup settles the lease first. The guard keeps a regression from writing
+  // a terminal without the fence of a lease that may have been granted.
+  const trace = runTaskSequentially(baseInput(), scripted());
+  let state = startTask(baseInput()).state;
+  for (const event of trace.events) {
+    const decision = decideTask(state, event);
+    if (effectsOf(decision.commands, 'recordAttemptOutcome').length > 0) {
+      assert.ok(state.attempts[0]!.leaseRequested, 'the attempt asked for a lease');
+      const unsettled: TaskState = { ...state, attempts: state.attempts.map((a) => (a.attemptNumber === 1 ? { ...a, fence: null } : a)) };
+      assert.throws(() => decideTask(unsettled, event), /terminal of attempt 1 before its lease is settled/);
+      return;
+    }
+    state = decision.state;
+  }
+  assert.fail('the happy path records a terminal');
 });
 
 // ---------------------------------------------------------------------------
