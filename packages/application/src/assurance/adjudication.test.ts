@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { AdjudicationInputError, adjudicate, type Adjudication, type AdjudicationInput, type ReviewInput } from './adjudication.js';
 import { sha256Hex } from './canonical-json.js';
 import { parseUnifiedDiff } from './diff.js';
+import { sarifFindings } from './checks.js';
 import { findingFingerprint, type CheckFinding } from './findings.js';
 import type { ReviewFindingRecord } from './local-types.js';
 import type { PriorFindingClaimOutput } from './prompt.js';
@@ -895,6 +896,87 @@ test('a re-raise never downgrades a prior that still blocks', () => {
     priorFindings: [{ record: priorFinding({ lifecycleState: 'WAIVED' }), waiverExpiresAt: '2026-12-01T00:00:00.000Z' }],
   }).record;
   assert.deepEqual([waived.outcome, waived.blocking], ['PROCEED', []]);
+});
+
+test('a SARIF re-raise never downgrades a prior that still blocks', () => {
+  // The scanner reports again, at a lower level, the result it raised in an earlier round: the
+  // same raiser and fingerprint. The pair counts once, at the higher severity, and the prior
+  // stays open.
+  const reRaise = (priorSeverity: 'HIGH' | 'CRITICAL', level: 'warning' | 'note', mode: Mode = 'gating') => {
+    const log = {
+      version: '2.1.0',
+      runs: [
+        {
+          tool: { driver: { name: 'semgrep', rules: [{ id: 'js.eval-use' }] } },
+          results: [
+            {
+              ruleIndex: 0,
+              level,
+              message: { text: 'eval() on user input' },
+              properties: { tags: ['security'] },
+              locations: [{ physicalLocation: { artifactLocation: { uri: 'src/feature.ts' }, region: { startLine: 2 } } }],
+            },
+          ],
+        },
+      ],
+    };
+    const findings = sarifFindings({ checkId: 'semgrep', content: new TextEncoder().encode(JSON.stringify(log)) });
+    assert.deepEqual(
+      findings.map((f) => [f.raisedBy, f.fingerprint]),
+      [['sarif:semgrep', SARIF_PRIOR.fingerprint]],
+    );
+    const base = reReview({});
+    const adjudication = adjudicate({
+      ...base,
+      mode,
+      checks: { ...base.checks, findings: [...base.checks.findings, ...findings] },
+      priorFindings: [{ record: { ...SARIF_PRIOR, severity: priorSeverity }, waiverExpiresAt: null }],
+    });
+    const current = adjudication.findings.filter((f) => f.source === 'sarif' && !f.ref.startsWith('prior:'));
+    return {
+      outcome: adjudication.record.outcome,
+      wouldBe: adjudication.record.shadow?.wouldBe ?? null,
+      blocking: adjudication.record.blocking.map((b) => [b.findingRef.startsWith('prior:') ? b.findingRef : 'current', b.severity]),
+      current: current.map((f) => [f.priorFindingId ?? null, f.severity, f.lifecycleState, f.blocking]),
+      prior: adjudication.record.closureDecisions.map((d) => [d.priorFindingId, d.effectiveState, d.rule]),
+    };
+  };
+  const stillOpen = [['prior-sarif', 'OPEN', 'unchanged']];
+  assert.deepEqual(reRaise('HIGH', 'warning'), {
+    outcome: 'REPAIR',
+    wouldBe: null,
+    blocking: [['current', 'HIGH']],
+    current: [['prior-sarif', 'HIGH', 'OPEN', true]],
+    prior: stillOpen,
+  });
+  assert.deepEqual(reRaise('CRITICAL', 'note'), {
+    outcome: 'REPAIR',
+    wouldBe: null,
+    blocking: [['current', 'CRITICAL']],
+    current: [['prior-sarif', 'CRITICAL', 'OPEN', true]],
+    prior: stillOpen,
+  });
+  // Shadow mode records the same verdict.
+  const shadow = reRaise('HIGH', 'warning', 'shadow');
+  assert.deepEqual([shadow.outcome, shadow.wouldBe, shadow.blocking], ['PROCEED', 'REPAIR', [['current', 'HIGH']]]);
+});
+
+test('blocking records are in canonical tuple order', () => {
+  // Two open priors whose raisers differ where a line feed and a slash sort differently
+  // escaped and raw. The record lists blocking entries by the canonical JSON of the tuple
+  // (raiser, reference), stated here independently of the adjudicator.
+  const raisers = ['a\nz', 'a/z'];
+  const priors = raisers.map((raisedBy, i) => ({ record: priorFinding({ id: `prior-${i}`, raisedBy }), waiverExpiresAt: null }));
+  for (const order of [priors, [...priors].reverse()]) {
+    const record = adjudicate({ ...reReview({}), priorFindings: order }).record;
+    const entries = record.blocking.map((b) => [b.raisedBy, b.findingRef]);
+    const canonical = [...entries].sort((x, y) => (JSON.stringify(x) < JSON.stringify(y) ? -1 : JSON.stringify(x) > JSON.stringify(y) ? 1 : 0));
+    assert.deepEqual(entries, canonical);
+    assert.deepEqual(entries, [
+      ['a/z', 'prior:prior-1'],
+      ['a\nz', 'prior:prior-0'],
+    ]);
+  }
 });
 
 test('identity keys are canonical tuples and never collide', () => {
