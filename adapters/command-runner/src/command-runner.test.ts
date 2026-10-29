@@ -34,6 +34,19 @@ console.log('SUITE-ID: asep-suite:command-runner');
 
 const OUTPUT_POLICY = { maxEvidenceBytes: 1_000_000, displayHeadBytes: 4096, displayTailBytes: 4096 };
 
+// The bound on a command in a test that is not about timeouts. Under host load
+// (load average 56 on 8 CPUs, with other gates running) a one-line `node -e`
+// once took over 10 s end to end; the earlier 10 s bound fired, the run came
+// back timed out with no output, and the test failed on the output instead.
+// Two minutes is far above anything observed, and a hang still ends the test.
+// Tests about timeouts set their own, short bound.
+const COMMAND_BOUND_MS = 120_000;
+
+// A run that hit its bound has no output; say that, rather than fail on it.
+function finished(res: { timedOut: boolean }): void {
+  assert.equal(res.timedOut, false, `the command did not finish within ${COMMAND_BOUND_MS} ms`);
+}
+
 // The honest local handle: the one handle the runner runs on the host, because
 // the provider that made it claims no isolation.
 function hostHandle(): Promise<SandboxHandle> {
@@ -68,7 +81,7 @@ async function harness(): Promise<{
 function spec(overrides: Partial<CommandSpec>): CommandSpec {
   return {
     executable: 'node', args: ['-e', 'process.exit(0)'], cwd: process.cwd(),
-    environmentProfile: 'verification-no-network', timeoutMs: 10_000,
+    environmentProfile: 'verification-no-network', timeoutMs: COMMAND_BOUND_MS,
     outputPolicy: OUTPUT_POLICY, ...overrides,
   };
 }
@@ -96,6 +109,7 @@ test('F2: raw stdout is captured to an immutable artifact and round-trips', asyn
   try {
     const runner = new TrustedCommandRunner(scope, store);
     const res = await runner.run(spec({ args: ['-e', 'process.stdout.write("hello-evidence")'] }), await hostHandle());
+    finished(res);
     assert.equal(res.exitCode, 0);
     const back = await store.get(scope, res.stdout);
     assert.equal(new TextDecoder().decode(back.content), 'hello-evidence');
@@ -164,6 +178,7 @@ test('F1: shell metacharacters are inert (no shell interpretation)', async () =>
       spec({ args: ['-e', 'process.stdout.write(process.argv[1])', payload] }),
       await hostHandle(),
     );
+    finished(res);
     const back = await store.get(scope, res.stdout);
     const text = new TextDecoder().decode(back.content);
     assert.equal(text, payload);
@@ -188,6 +203,7 @@ test('F1: a verification command runs with a sanitized allowlisted env only', as
       spec({ args: ['-e', 'process.stdout.write(String(process.env.ASEP_SECRET_CANARY))'] }),
       await hostHandle(),
     );
+    finished(res);
     const back = await store.get(scope, res.stdout);
     assert.equal(new TextDecoder().decode(back.content), 'undefined');
   } finally {
@@ -381,9 +397,10 @@ test('E8: a Docker handle runs commands through its configured docker client, in
     assert.equal((handle as SandboxHandleEx).dockerBinary, docker);
     const r = await new TrustedCommandRunner(scope, store).run({
       executable: 'node', args: ['-e', 'process.stdout.write("in the container")'], cwd: wt,
-      environmentProfile: 'verification-no-network', timeoutMs: 30_000,
+      environmentProfile: 'verification-no-network', timeoutMs: COMMAND_BOUND_MS,
       outputPolicy: { maxEvidenceBytes: 4096, displayHeadBytes: 100, displayTailBytes: 100 },
     }, handle);
+    finished(r);
     assert.equal(r.exitCode, 0);
     assert.equal(new TextDecoder().decode((await store.get(scope, r.stdout)).content), 'in the container');
     const runs = readFileSync(join(state, 'invocations.jsonl'), 'utf8').trim().split('\n')
@@ -465,7 +482,12 @@ const alive = (pid: number): boolean => {
   }
 };
 
-async function until(what: string, ok: () => boolean, ms = 15_000): Promise<void> {
+// How long a test waits for a container it started to appear. Under load
+// average 60–120 on 8 CPUs the fake daemon's containers started within 2.4 s;
+// the bound only matters when one never comes, so it is generous.
+const START_WAIT_MS = 60_000;
+
+async function until(what: string, ok: () => boolean, ms = START_WAIT_MS): Promise<void> {
   const end = Date.now() + ms;
   while (!ok()) {
     if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
@@ -488,6 +510,7 @@ test('a verification container is named and labelled for its sandbox, workspace 
     const d = await fakeDaemon(dir);
     const handle = await dockerHandle(d);
     const r = await new TrustedCommandRunner(scope, store).run(spec({ cwd: d.wt }), handle);
+    finished(r);
     assert.equal(r.exitCode, 0);
     const run = d.invocations().find((a) => a[0] === 'run')!;
     const name = run[run.indexOf('--name') + 1];
@@ -707,7 +730,7 @@ test('the flags a handle and a result expose are frozen copies, never the ones t
 
     const runner = new TrustedCommandRunner(scope, store);
     const first = await runner.run(spec({ cwd: d.wt }), handle);
-    assert.equal(first.timedOut, false);
+    finished(first);
     const where = first.provenance;
     assert.equal(where?.where, 'container');
     if (where?.where !== 'container') return;
@@ -718,7 +741,7 @@ test('the flags a handle and a result expose are frozen copies, never the ones t
 
     // The next run still executes exactly the provider's profile.
     const second = await runner.run(spec({ cwd: d.wt }), handle);
-    assert.equal(second.timedOut, false);
+    finished(second);
     const runs = d.invocations().filter((a) => a[0] === 'run');
     assert.equal(runs.length, 2);
     for (const [n, run] of runs.entries()) {

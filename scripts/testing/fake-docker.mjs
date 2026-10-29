@@ -29,7 +29,7 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
-  appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync,
+  appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
 
@@ -40,7 +40,17 @@ if (args[0] !== '--state' || !args[1]) {
 }
 const STATE = args[1];
 const cmd = args.slice(2);
-for (const d of ['containers', 'networks', 'tmp']) mkdirSync(join(STATE, d), { recursive: true });
+for (const d of ['containers', 'networks', 'tmp', 'partial']) mkdirSync(join(STATE, d), { recursive: true });
+
+// Records are read by other clients and by the tests while they are written, so
+// each is written whole beside them and renamed into place: a reader sees the
+// old record or the new one, never a half-written file.
+let partials = 0;
+const writeRecord = (path, value) => {
+  const partial = join(STATE, 'partial', `${process.pid}-${++partials}.json`);
+  writeFileSync(partial, JSON.stringify(value));
+  renameSync(partial, path);
+};
 
 const log = (rec) => appendFileSync(join(STATE, 'invocations.jsonl'), `${JSON.stringify({ at: Date.now(), ...rec })}\n`);
 log({ argv: cmd, env: process.env });
@@ -111,7 +121,7 @@ function network([sub, ...rest]) {
     if (existsSync(join(STATE, 'daemon-ignores-gateway-mode'))) {
       for (const k of Object.keys(options)) if (k.includes('gateway_mode')) delete options[k];
     }
-    writeFileSync(networkFile(name), JSON.stringify({ name, internal, labels, options }));
+    writeRecord(networkFile(name), { name, internal, labels, options });
     process.stdout.write(`${createHash('sha256').update(name).digest('hex')}\n`);
     return;
   }
@@ -121,7 +131,7 @@ function network([sub, ...rest]) {
     if (!existsSync(containerFile(container))) fail(`Error response from daemon: No such container: ${container}`);
     const c = readJson(containerFile(container));
     c.networks.push(net);
-    writeFileSync(containerFile(container), JSON.stringify(c));
+    writeRecord(containerFile(container), c);
     return;
   }
   if (sub === 'rm') {
@@ -348,7 +358,7 @@ async function run(rest) {
     name, pid: child.pid, image, network: netName, networks: [netName], labels: flags.labels, ports: {},
     flags: { ...flags, bool: [...flags.bool] }, mounts: map,
   };
-  writeFileSync(containerFile(name), JSON.stringify(record));
+  writeRecord(containerFile(name), record);
 
   const hash = createHash('sha256');
   if (child.stdin) {
@@ -368,7 +378,7 @@ async function run(rest) {
         record.ports[listenPort] = m[1];
         const current = existsSync(containerFile(name)) ? readJson(containerFile(name)) : record;
         current.ports = record.ports;
-        writeFileSync(containerFile(name), JSON.stringify(current));
+        writeRecord(containerFile(name), current);
       }
     }
     process.stdout.write(d);

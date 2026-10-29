@@ -62,7 +62,17 @@ const scope: TenantScope = {
 const POLICY: ToolPolicyProfile = {
   allowedTools: ['read', 'write'], disallowedTools: ['bash'], networkProfile: 'restricted-egress',
 };
-const BUDGET = { maxTurns: 5, maxToolCalls: 10, maxCostUsd: 1, maxWallClockMinutes: 1 };
+// The wall-clock budget of an attempt in a test that is not about it. Under
+// host load (load average 56 on 8 CPUs, other gates running) one ordinary
+// attempt took 53.8 s, close enough to a 1-minute budget for it to fire in a
+// test about something else. Five minutes is far above anything observed and
+// still well below the fake CLI's 10-minute hang.
+const BUDGET = { maxTurns: 5, maxToolCalls: 10, maxCostUsd: 1, maxWallClockMinutes: 5 };
+const BUDGET_MS = BUDGET.maxWallClockMinutes * 60_000;
+// The budget of the test that is about the wall clock: it must outlast the
+// setup before the agent starts, which took at most 2.4 s at load average 120
+// on 8 CPUs, or the deadline fires while the proxy is still starting.
+const SHORT_WALL_CLOCK_MINUTES = 0.2;
 const ATTEMPT = 'D'.repeat(26) as AttemptId;
 const BINDING = 'E'.repeat(26);
 
@@ -597,8 +607,9 @@ for (const c of failClosed) {
       const obs = await (await h.provider(c.scenario)).execute(request(h));
       assert.equal(obs.status, c.status, obs.knownLimitations.join('; '));
       assert.match(obs.knownLimitations.join(' '), c.match);
-      // A violation stops the agent at once; nothing waits for the hang.
-      assert.ok(Date.now() - started < 15_000, `returned after ${Date.now() - started}ms`);
+      // A violation stops the agent at once: the status says which stop it was,
+      // and nothing waited for the wall-clock budget.
+      assert.ok(Date.now() - started < BUDGET_MS, `returned after ${Date.now() - started}ms`);
       if (c.scenario !== 'nonzero') await eventStream(h, obs.eventArtifactRefs);
       assertTornDown(h);
     } finally {
@@ -637,7 +648,7 @@ test('G3: the tool-call budget is enforced while the agent runs', async () => {
     assert.equal(obs.status, 'BUDGET_EXHAUSTED');
     assert.match(obs.knownLimitations.join(' '), /tool-call budget of 3 exceeded/);
     assert.equal(obs.usage.toolCalls, 4, 'stopped at the first call over the budget');
-    assert.ok(Date.now() - started < 15_000);
+    assert.ok(Date.now() - started < BUDGET_MS, 'stopped by the tool-call budget, not the wall clock');
     assertTornDown(h);
   } finally {
     await h.close();
@@ -649,11 +660,11 @@ test('G3: a hung agent is removed by the wall-clock budget, with no external abo
   try {
     const started = Date.now();
     const obs = await (await h.provider('hang')).execute(
-      request(h, { budget: { ...BUDGET, maxWallClockMinutes: 0.03 } }),
+      request(h, { budget: { ...BUDGET, maxWallClockMinutes: SHORT_WALL_CLOCK_MINUTES } }),
     );
-    assert.equal(obs.status, 'BUDGET_EXHAUSTED');
+    assert.equal(obs.status, 'BUDGET_EXHAUSTED', obs.knownLimitations.join('; '));
     assert.match(obs.knownLimitations.join(' '), /wall-clock/);
-    assert.ok(Date.now() - started < 15_000);
+    assert.ok(Date.now() - started < BUDGET_MS, 'removed at its own budget, long before the hang ends');
     assert.ok(argvOf(h.invocations()).some((a) => a[0] === 'rm' && a[2]!.startsWith('asep-agent-')),
       'the container itself is removed, not just its client');
     assertTornDown(h);
@@ -672,7 +683,7 @@ test('G3: cancellation stops a running agent promptly; an already-aborted signal
     const obs = await p;
     assert.equal(obs.status, 'BLOCKED');
     assert.match(obs.knownLimitations.join(' '), /cancelled during execution/);
-    assert.ok(Date.now() - started < 15_000);
+    assert.ok(Date.now() - started < BUDGET_MS, 'stopped by the cancellation, not the wall clock');
     assertTornDown(h);
 
     const before = h.invocations().length;
@@ -710,7 +721,12 @@ function runClientPid(h: Harness, role: string): number {
   return Number(line.split(' ')[0]);
 }
 
-async function until(what: string, ok: () => boolean, ms = 15_000): Promise<void> {
+// How long a test waits for a container it started to appear. Under load
+// average 60–120 on 8 CPUs the agent container started within 2.4 s; the bound
+// only matters when one never comes, so it is generous.
+const START_WAIT_MS = 60_000;
+
+async function until(what: string, ok: () => boolean, ms = START_WAIT_MS): Promise<void> {
   const end = Date.now() + ms;
   while (!ok()) {
     if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
@@ -739,15 +755,23 @@ test('G3: killing the agent and proxy docker clients mid-run leaves no container
 test('G3: an attempt whose containers cannot be shown removed fails closed', async () => {
   const h = await harness({ refuseRemoval: true });
   const pids: number[] = [];
+  // Stopped by a cancellation once it runs, so the test does not depend on how
+  // long the setup before the agent takes.
+  const ac = new AbortController();
+  const running = (await h.provider('hang')).execute(request(h, { signal: ac.signal }));
   try {
-    const running = (await h.provider('hang')).execute(request(h, { budget: { ...BUDGET, maxWallClockMinutes: 0.03 } }));
     await until('the agent container to start', () => containerRecords(h).some((c) => String(c['name']).startsWith('asep-agent-')));
     pids.push(...containerRecords(h).map((c) => c['pid'] as number));
+    ac.abort();
     const obs = await running;
-    assert.equal(obs.status, 'FAILED', 'not BUDGET_EXHAUSTED: a container may still be running beside the worktree');
+    assert.equal(obs.status, 'FAILED', 'not BLOCKED: a container may still be running beside the worktree');
     assert.match(obs.summary, /could not be shown removed/);
     assert.match(obs.knownLimitations.join(' '), /labelled asep\.attempt=.* could not be shown removed/);
   } finally {
+    ac.abort();
+    // The attempt's own teardown restores its input directory; let it finish
+    // before the harness removes the directory under it.
+    await running.catch(() => undefined);
     for (const p of pids) try { process.kill(-p, 'SIGKILL'); } catch { /* gone */ }
     await h.close();
   }
