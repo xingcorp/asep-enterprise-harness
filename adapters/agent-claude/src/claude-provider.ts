@@ -9,9 +9,11 @@
 //      is mounted READ-ONLY into the agent container;
 //   3. a model credential is requested for this attempt from the credential
 //      provider;
-//   4. an INTERNAL Docker network is created (no gateway, no route out, no
-//      external DNS), and an egress proxy container is started on the egress
-//      network and attached to it. The credential is written to the proxy's
+//   4. an INTERNAL Docker network is created with an ISOLATED gateway (no
+//      route out, no external DNS, and no host address on its bridge, so no
+//      host service is reachable through it — confirmed from the daemon before
+//      anything is attached), and an egress proxy container is started on the
+//      egress network and attached to it. The credential is written to the proxy's
 //      STDIN — it is never in an argv, an environment variable or a file;
 //   5. the agent runs in a hardened, digest-pinned container on the internal
 //      network, with the real `claude` CLI flags, a placeholder API key and
@@ -110,6 +112,40 @@ const PROXY_START_TIMEOUT_MS = 30_000;
 export const MODEL_KEY_PLACEHOLDER = 'asep-placeholder-the-egress-proxy-holds-the-real-key';
 // The only paths the proxy forwards (mirrors assets/egress-proxy.mjs).
 export const EGRESS_ALLOWLIST: readonly string[] = ['POST /v1/messages', 'POST /v1/messages/count_tokens'];
+
+// The agent network. `--internal` alone removes the route out but still gives
+// the host an address on the bridge, and anything listening on the host's
+// wildcard address answers there. The `isolated` gateway mode (which the daemon
+// accepts only for an internal network) assigns the bridge no address at all.
+export const AGENT_NETWORK_FLAGS: readonly string[] = [
+  '--internal',
+  '-o', 'com.docker.network.bridge.gateway_mode_ipv4=isolated',
+  '-o', 'com.docker.network.bridge.gateway_mode_ipv6=isolated',
+];
+
+/**
+ * Why the daemon's own view of the agent network (`docker network inspect`
+ * JSON) does not show it isolated from the host, or undefined when it does: it
+ * must be internal, both gateway modes isolated, and no subnet may carry a
+ * gateway address.
+ */
+export function agentNetworkIsolationGap(shown: unknown): string | undefined {
+  const n = shown as {
+    Internal?: unknown; Options?: Record<string, unknown>; IPAM?: { Config?: unknown };
+  } | null;
+  if (n === null || typeof n !== 'object') return 'the daemon did not describe the network';
+  if (n.Internal !== true) return 'it is not internal';
+  for (const family of ['ipv4', 'ipv6']) {
+    const mode = n.Options?.[`com.docker.network.bridge.gateway_mode_${family}`];
+    if (mode !== 'isolated') return `its ${family} gateway mode is ${String(mode ?? 'unset')}, not isolated`;
+  }
+  const config = n.IPAM?.Config;
+  if (!Array.isArray(config)) return 'the daemon reported no address configuration';
+  const gateway = config.find((c) => typeof (c as { Gateway?: unknown })?.Gateway === 'string'
+    && (c as { Gateway: string }).Gateway !== '');
+  if (gateway !== undefined) return `the host holds ${(gateway as { Gateway: string }).Gateway} on its bridge`;
+  return undefined;
+}
 
 const MAX_STDOUT_BYTES = 32 * 1024 * 1024;
 const MAX_STDERR_BYTES = 64 * 1024;
@@ -553,15 +589,32 @@ export class ClaudeCodingProvider implements CodingAgentProvider {
         return;
       }
 
-      // --- the internal network --------------------------------------------
+      // --- the internal network, isolated from the host --------------------
       const net = await runDocker(this.docker, [
-        'network', 'create', '--internal', '--label', `asep.attempt=${req.attemptId}`, network,
+        'network', 'create', ...AGENT_NETWORK_FLAGS, '--label', `asep.attempt=${req.attemptId}`, network,
       ]);
       if (net.code !== 0) {
         setup('FAILED', `docker network create failed: ${net.stderr.trim().slice(0, 300)}`);
         return;
       }
       created.network = true;
+      // A daemon that accepted the options but did not apply them must not get
+      // an agent: confirm from its own description, before anything attaches.
+      const shown = await runDocker(this.docker, ['network', 'inspect', '--format', '{{json .}}', network]);
+      let gap: string | undefined;
+      if (shown.code !== 0) {
+        gap = `docker network inspect failed: ${shown.stderr.trim().slice(0, 300)}`;
+      } else {
+        try {
+          gap = agentNetworkIsolationGap(JSON.parse(shown.stdout));
+        } catch {
+          gap = 'the daemon described it in a form that is not JSON';
+        }
+      }
+      if (gap !== undefined) {
+        setup('FAILED', `the agent network is not isolated from the host: ${gap}`);
+        return;
+      }
 
       // --- the egress proxy, credential on stdin ----------------------------
       const proxyReady = await new Promise<string | undefined>((resolve) => {

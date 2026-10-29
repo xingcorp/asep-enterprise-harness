@@ -21,6 +21,7 @@ import { basename, join } from 'node:path';
 import http from 'node:http';
 import net from 'node:net';
 import dns from 'node:dns';
+import { networkInterfaces } from 'node:os';
 
 const VERSION = process.env.FAKE_CLAUDE_VERSION ?? '2.1.286';
 const SCENARIO = process.env.FAKE_CLAUDE_SCENARIO ?? 'ok';
@@ -175,6 +176,30 @@ function tcpProbe(host, port, ms = 3000) {
     s.setTimeout(ms, () => done('timeout'));
     s.on('connect', () => done('connected'));
     s.on('error', (e) => done(`error:${e.code ?? e.message}`));
+  });
+}
+
+// The first host address of this container's IPv4 subnet: where the host's
+// address on the bridge would be (Docker gives the gateway the first address).
+function wouldBeGateway() {
+  const v4 = Object.values(networkInterfaces()).flat().find((a) => a && a.family === 'IPv4' && !a.internal);
+  if (!v4) return null;
+  const toInt = (ip) => ip.split('.').reduce((n, o) => ((n << 8) | Number(o)) >>> 0, 0);
+  const first = ((toInt(v4.address) & toInt(v4.netmask)) + 1) >>> 0;
+  return [24, 16, 8, 0].map((sh) => (first >>> sh) & 255).join('.');
+}
+
+// Every IPv6 address this container holds other than loopback.
+function ipv6Addresses() {
+  return Object.values(networkInterfaces()).flat()
+    .filter((a) => a && a.family === 'IPv6' && !a.internal).map((a) => a.address);
+}
+
+function directDns(server, name, ms = 4000) {
+  return new Promise((resolve) => {
+    const r = new dns.Resolver({ timeout: ms, tries: 1 });
+    r.setServers([server]);
+    r.resolve4(name, (e, a) => resolve(e ? `error:${e.code}` : `resolved:${a.join(',')}`));
   });
 }
 
@@ -420,6 +445,24 @@ async function main() {
         direct: await tcpProbe(t.directIp ?? '1.1.1.1', t.directPort ?? 80),
         upstreamDirect: t.upstreamIp ? await tcpProbe(t.upstreamIp, t.upstreamPort ?? 8080) : 'skipped',
         dns: await new Promise((r) => dns.lookup(t.dnsName ?? 'example.com', (e, a) => r(e ? `error:${e.code}` : `resolved:${a}`))),
+        // A public resolver asked directly, past the embedded one.
+        dnsDirect: await directDns(t.dnsServer ?? '1.1.1.1', t.dnsName ?? 'example.com'),
+        // The host and its services: the would-be bridge gateway and every host
+        // address the test names, on every host port it names.
+        gateway: wouldBeGateway(),
+        hostReach: await (async () => {
+          const out = {};
+          const hosts = [wouldBeGateway(), ...(t.hostAddresses ?? [])].filter(Boolean);
+          for (const h of hosts) {
+            for (const port of t.hostPorts ?? []) out[`${h}:${port}`] = await tcpProbe(h, port, 2000);
+          }
+          return out;
+        })(),
+        hostDockerInternal: await new Promise((r) => dns.lookup('host.docker.internal', (e, a) => r(e ? `error:${e.code}` : `resolved:${a}`))),
+        ipv6: {
+          addresses: ipv6Addresses(),
+          publicProbe: await tcpProbe(t.directIpv6 ?? '2606:4700:4700::1111', 80, 2000),
+        },
         proxyAbsoluteForm: await rawHttp(base, `GET http://example.com/ HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n`),
         proxyConnect: await rawHttp(base, `CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n`),
         proxyOtherPath: (await modelCall('/v1/models', 'GET')).status,

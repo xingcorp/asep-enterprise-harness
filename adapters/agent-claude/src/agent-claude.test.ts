@@ -33,7 +33,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   ClaudeCodingProvider, FileModelCredentialProvider, AgentConfigError, MODEL_KEY_PLACEHOLDER,
   claudeToolGrant, ToolPolicyError, buildClaudeArgs, parseModelBaseUrl, ModelCredentialError,
-  parseStream, MalformedEventError, redactSecrets,
+  parseStream, MalformedEventError, redactSecrets, agentNetworkIsolationGap,
   type AgentSandboxConfig, type ModelCredentialProvider,
 } from './index.js';
 import {
@@ -274,13 +274,20 @@ test('a contained attempt: internal network, proxy, agent, teardown — and an u
     // stopped then removed by name, then everything labelled with the attempt
     // is shown gone before and after the network goes.
     assert.deepEqual(verbs(h.invocations()), [
-      'network create', 'run', 'network connect', 'run', 'rm', 'kill', 'rm', 'ps', 'network rm', 'network ls',
+      'network create', 'network inspect', 'run', 'network connect', 'run', 'rm', 'kill', 'rm', 'ps', 'network rm',
+      'network ls',
     ]);
     const sweeps = argvOf(h.invocations()).filter((a) => a[0] === 'ps' || (a[0] === 'network' && a[1] === 'ls'));
     for (const a of sweeps) assert.ok(a.includes(`label=asep.attempt=${ATTEMPT}`), `${a.join(' ')} sweeps by the attempt label`);
-    const [create, proxy, connect, agent] = argvOf(h.invocations());
-    assert.ok(create!.includes('--internal'), 'the agent network is internal: no gateway, no route out');
+    const [create, inspect, proxy, connect, agent] = argvOf(h.invocations());
+    assert.ok(create!.includes('--internal'), 'the agent network is internal: no route out');
+    for (const family of ['ipv4', 'ipv6']) {
+      const opt = `com.docker.network.bridge.gateway_mode_${family}=isolated`;
+      assert.equal(create![create!.indexOf(opt) - 1], '-o', `the host gets no ${family} address on the agent bridge`);
+    }
     const netName = create!.at(-1)!;
+    assert.deepEqual(inspect, ['network', 'inspect', '--format', '{{json .}}', netName],
+      'the isolation is confirmed from the daemon before anything is attached');
     assert.equal(proxy![proxy!.indexOf('--network') + 1], 'bridge', 'the proxy alone sits on the egress network');
     assert.deepEqual(connect, ['network', 'connect', netName, proxy![proxy!.indexOf('--name') + 1]]);
     assert.equal(agent![agent!.indexOf('--network') + 1], netName, 'the agent sits on the internal network only');
@@ -832,6 +839,47 @@ test('inputs whose bytes do not match their refs are never mounted', async () =>
     assertTornDown(h);
   } finally {
     await h.close();
+  }
+});
+
+test('a daemon that does not isolate the agent network from the host fails the attempt before anything starts', async () => {
+  const h = await harness();
+  try {
+    // A daemon that accepts the gateway mode and ignores it: the bridge gets
+    // an address on the host.
+    await mkdir(h.state, { recursive: true });
+    await writeFile(join(h.state, 'daemon-ignores-gateway-mode'), '');
+    const obs = await (await h.provider('ok')).execute(request(h));
+    assert.equal(obs.status, 'FAILED');
+    assert.match(obs.knownLimitations.join(' '), /agent network is not isolated from the host/);
+    assert.ok(!verbs(h.invocations()).includes('run'), 'no proxy or agent ever started');
+    assert.equal(readFileSync(join(h.wt, 'feature.txt'), { encoding: 'utf8', flag: 'a+' }), '', 'the agent did nothing');
+    assertTornDown(h);
+  } finally {
+    await h.close();
+  }
+});
+
+test('the agent network counts as isolated only as the daemon describes an isolated one', () => {
+  const isolated = {
+    Internal: true,
+    Options: {
+      'com.docker.network.bridge.gateway_mode_ipv4': 'isolated',
+      'com.docker.network.bridge.gateway_mode_ipv6': 'isolated',
+    },
+    IPAM: { Config: [{ Subnet: '172.26.0.0/16' }] },
+  };
+  assert.equal(agentNetworkIsolationGap(isolated), undefined);
+  const cases: readonly (readonly [string, unknown, RegExp])[] = [
+    ['not internal', { ...isolated, Internal: false }, /not internal/],
+    ['ipv4 gateway mode unset', { ...isolated, Options: { 'com.docker.network.bridge.gateway_mode_ipv6': 'isolated' } }, /ipv4 gateway mode is unset/],
+    ['ipv6 gateway mode nat', { ...isolated, Options: { ...isolated.Options, 'com.docker.network.bridge.gateway_mode_ipv6': 'nat' } }, /ipv6 gateway mode is nat/],
+    ['a gateway address on the bridge', { ...isolated, IPAM: { Config: [{ Subnet: '172.26.0.0/16', Gateway: '172.26.0.1' }] } }, /holds 172\.26\.0\.1/],
+    ['no address configuration', { ...isolated, IPAM: {} }, /no address configuration/],
+    ['nothing at all', null, /did not describe/],
+  ];
+  for (const [label, shown, why] of cases) {
+    assert.match(agentNetworkIsolationGap(shown) ?? 'isolated', why, label);
   }
 });
 

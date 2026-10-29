@@ -33,8 +33,33 @@
 The Claude provider has no host-execution mode. Every attempt runs like this
 (`adapters/agent-claude/src/claude-provider.ts`):
 
-1. An **internal** Docker network is created for the attempt (no gateway, no
-   route out, no external DNS).
+1. An **internal** Docker network is created for the attempt with an
+   **isolated** gateway (`-o com.docker.network.bridge.gateway_mode_ipv4=isolated`
+   and `…_ipv6=isolated`). `--internal` removes the route out and external DNS
+   but still gives the host an address on the network's bridge, where any host
+   service listening on a wildcard address answers; the isolated mode gives the
+   bridge no address. Before anything is attached the provider reads the
+   network back from the daemon (`docker network inspect`) and fails the attempt
+   unless it is internal, both gateway modes are `isolated` and no subnet has a
+   gateway address. The daemon must support the isolated gateway mode, which
+   Docker Engine added in 28.0.0 and accepts only for internal networks; an
+   older daemon fails every attempt closed. The proof below ran on Docker
+   Engine 29.6.1 (Docker Desktop).
+
+   What is proven, by the real-daemon canary in
+   `adapters/agent-claude/src/agent-sandbox.itest.ts`, from inside the agent
+   container: a public IPv4 address, the model API's own address and a public
+   IPv6 address are unreachable; DNS for a public name fails through the
+   embedded resolver and when a public resolver is asked directly; the agent
+   holds no IPv6 address; and a service listening on the wildcard address of
+   the daemon's host network namespace — plus the integration gate's PostgreSQL
+   and MinIO ports — is unreachable at the would-be bridge gateway, the default
+   bridge gateway (`172.17.0.1`), Docker Desktop's host address
+   (`192.168.65.254`) and `host.docker.internal`. The same test shows a
+   container on a plain `--internal` network DOES reach that service through
+   its gateway. Not proven: reachability of other networks' containers by
+   address (they are on other subnets with no route), and anything the egress
+   proxy itself can reach (it is trusted harness code on the egress network).
 2. An **egress proxy** container (`adapters/agent-claude/assets/egress-proxy.mjs`)
    starts on the egress network and is attached to the internal one. It forwards
    only `POST /v1/messages` and `POST /v1/messages/count_tokens`, only to the

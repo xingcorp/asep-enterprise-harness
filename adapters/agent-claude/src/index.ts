@@ -28,5 +28,5 @@ export type { ClaudeProviderConfig, AgentSandboxConfig } from './claude-provider
 export {
   ClaudeCodingProvider, AgentConfigError,
   buildClaudeArgs, buildPrompt, buildAgentRunArgs, buildProxyRunArgs, initViolation,
-  MODEL_KEY_PLACEHOLDER, EGRESS_ALLOWLIST,
+  MODEL_KEY_PLACEHOLDER, EGRESS_ALLOWLIST, AGENT_NETWORK_FLAGS, agentNetworkIsolationGap,
 } from './claude-provider.js';

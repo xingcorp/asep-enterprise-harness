@@ -90,16 +90,28 @@ function network([sub, ...rest]) {
   if (sub === 'create') {
     let internal = false;
     const labels = [];
+    const options = {};
     let name;
     for (let i = 0; i < rest.length; i++) {
       if (rest[i] === '--internal') internal = true;
       else if (rest[i] === '--label') labels.push(rest[++i]);
-      else if (rest[i].startsWith('-')) fail(`unknown flag: ${rest[i]}`, 125);
+      else if (rest[i] === '-o' || rest[i] === '--opt') {
+        const [k, ...v] = (rest[++i] ?? '').split('=');
+        options[k] = v.join('=');
+      } else if (rest[i].startsWith('-')) fail(`unknown flag: ${rest[i]}`, 125);
       else name = rest[i];
     }
     if (!name) fail('"docker network create" requires exactly 1 argument.', 1);
     if (existsSync(networkFile(name))) fail(`Error response from daemon: network with name ${name} already exists`);
-    writeFileSync(networkFile(name), JSON.stringify({ name, internal, labels }));
+    // As the daemon does: `isolated` is refused unless the network is internal.
+    if (Object.values(options).includes('isolated') && !internal) {
+      fail('Error response from daemon: gateway mode "isolated" can only be used with an internal network');
+    }
+    // A test can stand in for a daemon that silently ignores the gateway mode.
+    if (existsSync(join(STATE, 'daemon-ignores-gateway-mode'))) {
+      for (const k of Object.keys(options)) if (k.includes('gateway_mode')) delete options[k];
+    }
+    writeFileSync(networkFile(name), JSON.stringify({ name, internal, labels, options }));
     process.stdout.write(`${createHash('sha256').update(name).digest('hex')}\n`);
     return;
   }
@@ -126,6 +138,24 @@ function network([sub, ...rest]) {
       }
     }
     process.exit(bad ? 1 : 0);
+  }
+  if (sub === 'inspect') {
+    // Only `network inspect --format '{{json .}}' <name>`, the provider's call,
+    // in the daemon's shape: an isolated bridge has no gateway address.
+    if (rest[0] !== '--format' || rest[1] !== '{{json .}}' || rest.length !== 3) {
+      fail('fake docker: only `network inspect --format {{json .}} <name>` is emulated', 125);
+    }
+    if (!existsSync(networkFile(rest[2]))) fail(`Error response from daemon: network ${rest[2]} not found`);
+    const n = readJson(networkFile(rest[2]));
+    const isolated = n.options?.['com.docker.network.bridge.gateway_mode_ipv4'] === 'isolated';
+    process.stdout.write(`${JSON.stringify({
+      Name: n.name,
+      Internal: n.internal,
+      EnableIPv6: false,
+      Options: n.options ?? {},
+      IPAM: { Config: [isolated ? { Subnet: '172.30.0.0/16' } : { Subnet: '172.30.0.0/16', Gateway: '172.30.0.1' }] },
+    })}\n`);
+    return;
   }
   if (sub === 'ls') {
     const { quiet, labels } = listFlags(rest);

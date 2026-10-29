@@ -12,7 +12,16 @@
 // What the canary proves from INSIDE the agent container:
 //   * no route out: a direct TCP connection to a public address fails, a
 //     direct connection to the model API's own address fails, DNS for a public
-//     name fails;
+//     name fails, through the embedded resolver or asked of a public one;
+//   * no way to the host: a service listening on the wildcard address of the
+//     daemon's host network namespace, and the gate's PostgreSQL and MinIO
+//     ports, are unreachable at the would-be bridge gateway, the default
+//     bridge's gateway, Docker Desktop's host address and host.docker.internal
+//     — while a container on a plain `--internal` network DOES reach that
+//     service through its gateway, so the refusal is the isolation, not a
+//     probe that cannot connect;
+//   * no IPv6: the container holds no IPv6 address but loopback, and a public
+//     IPv6 address is unreachable;
 //   * the proxy is not a general proxy: absolute-form and CONNECT requests and
 //     an unlisted API path are refused 403;
 //   * the model API IS reachable through the proxy, and the upstream sees the
@@ -252,6 +261,50 @@ function request(workOrderRef: ArtifactRef, contextPackRef: ArtifactRef, over: P
   };
 }
 
+// A service on the wildcard address of the daemon's host network namespace —
+// the host itself on a native daemon, the VM on Docker Desktop: what a bridge
+// address on the host would expose to a container.
+async function hostService(): Promise<{ port: number; stop(): Promise<void> }> {
+  const name = `asep-itest-hostsvc-${randomUUID().slice(0, 8)}`;
+  const port = 40_000 + Math.floor(Math.random() * 20_000);
+  await mustDocker([
+    'run', '-d', '--rm', '--name', name, '--network', 'host', NODE, 'node', '-e',
+    // A client that drops the connection must not take the service down.
+    `require('net').createServer((s) => { s.on('error', () => {}); s.end('host\\n'); })` +
+      `.listen(${port}, '0.0.0.0', () => console.log('listening'))`,
+  ]);
+  for (let i = 0; i < 100; i++) {
+    if ((await docker(['logs', name])).stdout.includes('listening')) break;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  assert.match((await docker(['logs', name])).stdout, /listening/, 'the host service came up');
+  return { port, stop: async () => { await docker(['rm', '-f', name]); } };
+}
+
+// Whether a container on a network made with `flags` reaches the host service
+// through that network's gateway.
+async function reachesHostThroughGateway(flags: readonly string[], port: number): Promise<string> {
+  const net = `asep-itest-ctl-${randomUUID().slice(0, 8)}`;
+  await mustDocker(['network', 'create', ...flags, net]);
+  try {
+    const shown = JSON.parse(await mustDocker(['network', 'inspect', '--format', '{{json .}}', net]));
+    const gateway = (shown.IPAM?.Config ?? []).map((c: { Gateway?: string }) => c.Gateway).find(Boolean);
+    if (!gateway) return 'no-gateway';
+    const r = await docker(['run', '--rm', '--network', net, NODE, 'node', '-e',
+      `const s = require('net').connect(${port}, '${gateway}'); s.setTimeout(3000, () => { console.log('timeout'); process.exit(); });` +
+      ` s.on('connect', () => { console.log('connected'); process.exit(); }); s.on('error', (e) => { console.log('error:' + e.code); process.exit(); });`]);
+    return r.stdout.trim();
+  } finally {
+    await docker(['network', 'rm', net]);
+  }
+}
+
+function portOf(url: string | undefined): number[] {
+  if (!url) return [];
+  const p = Number(new URL(url).port);
+  return Number.isInteger(p) && p > 0 ? [p] : [];
+}
+
 async function leftovers(attemptId: string): Promise<string> {
   const c = await mustDocker(['ps', '-aq', '--filter', `label=asep.attempt=${attemptId}`]);
   const n = await mustDocker(['network', 'ls', '-q', '--filter', `label=asep.attempt=${attemptId}`]);
@@ -267,12 +320,23 @@ test('preflight: docker is reachable (fail closed, never skip)', async () => {
 test('the agent container has no route out, reaches the model only through the proxy, and can write only the worktree', async () => {
   const w = await world();
   const { db, store: s } = await store(w.dir);
+  const host = await hostService();
   process.env['GITHUB_TOKEN'] = 'ghp_must_not_reach_the_agent';
   process.env['AWS_SECRET_ACCESS_KEY'] = 'aws_must_not_reach_the_agent';
   try {
+    // The control: a plain internal network leaves the host an address on its
+    // bridge, and the host service answers there.
+    assert.equal(await reachesHostThroughGateway(['--internal'], host.port), 'connected',
+      'a plain internal network reaches the host service through its gateway');
+    const hostPorts = [host.port, ...portOf(process.env['ASEP_PG_URL']), ...portOf(process.env['ASEP_S3_ENDPOINT'])];
     const mirrorBefore = treeDigest(w.mirror);
     const workOrderRef = await put(s, 'work-order', {
-      objective: 'canary', canary: { upstreamIp: w.modelIp, upstreamPort: 8080 },
+      objective: 'canary',
+      canary: {
+        upstreamIp: w.modelIp, upstreamPort: 8080,
+        hostAddresses: ['172.17.0.1', '192.168.65.254', 'host.docker.internal'],
+        hostPorts,
+      },
     });
     const contextPackRef = await put(s, 'context-pack', { relevantFiles: [] });
     const req = request(workOrderRef, contextPackRef);
@@ -287,6 +351,19 @@ test('the agent container has no route out, reaches the model only through the p
     assert.notEqual(r['direct'], 'connected', `direct egress must fail: ${r['direct']}`);
     assert.notEqual(r['upstreamDirect'], 'connected', `the model API is reachable only through the proxy: ${r['upstreamDirect']}`);
     assert.match(r['dns'], /^error:/, `public DNS must fail: ${r['dns']}`);
+    assert.match(r['dnsDirect'], /^error:/, `a public resolver must be unreachable: ${r['dnsDirect']}`);
+    // No way to the host or its services, on any address it could hold.
+    const reach = r['hostReach'] as Record<string, string>;
+    assert.ok(r['gateway'], 'the canary computed the would-be gateway');
+    for (const port of hostPorts) {
+      assert.ok(`${r['gateway']}:${port}` in reach, `the would-be gateway was probed on ${port}`);
+    }
+    for (const [target, result] of Object.entries(reach)) {
+      assert.notEqual(result, 'connected', `the host is reachable from the agent at ${target}`);
+    }
+    // No IPv6.
+    assert.deepEqual(r['ipv6'].addresses, [], 'the agent holds no IPv6 address');
+    assert.notEqual(r['ipv6'].publicProbe, 'connected', 'IPv6 egress must fail');
     // The proxy is not a general proxy.
     assert.match(r['proxyAbsoluteForm'], /^HTTP\/1\.1 403/);
     assert.match(r['proxyConnect'], /^HTTP\/1\.1 403/);
@@ -324,7 +401,8 @@ test('the agent container has no route out, reaches the model only through the p
 
     // The leak test, from outside.
     const invocations = readFileSync(w.dockerLog, 'utf8');
-    assert.match(invocations, /ARGV network create --internal/);
+    assert.match(invocations,
+      /ARGV network create --internal -o com\.docker\.network\.bridge\.gateway_mode_ipv4=isolated -o com\.docker\.network\.bridge\.gateway_mode_ipv6=isolated /);
     assert.ok(!invocations.includes(w.secret), 'no docker argv or client environment carries the key');
     assert.ok(!invocations.includes('ghp_must_not'), 'the docker client environment is the allowlist');
     const objects = readdirSync(join(w.dir, 'objects'), { recursive: true, withFileTypes: true }).filter((e) => e.isFile());
@@ -337,7 +415,11 @@ test('the agent container has no route out, reaches the model only through the p
       ['claude-egress-log', 'claude-event-stream', 'claude-invocation']);
 
     assert.equal(await leftovers(req.attemptId), '', 'no container or network outlives the attempt');
+    // The host service was up all along: the agent's refusals were the network's.
+    assert.equal(await reachesHostThroughGateway(['--internal'], host.port), 'connected',
+      'the host service still answers through a plain internal network');
   } finally {
+    await host.stop();
     delete process.env['GITHUB_TOKEN'];
     delete process.env['AWS_SECRET_ACCESS_KEY'];
     await db.close();
