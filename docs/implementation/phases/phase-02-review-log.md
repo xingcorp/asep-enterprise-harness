@@ -604,3 +604,324 @@ Items 2 and 4 changed the Claude provider's teardown and artifact linking. The
 opt-in CONFORMANCE proof (`pnpm test:live:claude` with
 `ASEP_CLAUDE_CONFORMANCE_CLI` set to the host's Claude CLI 2.1.286) was re-run
 at `dec962b` and passed: 1 pass, 1 skipped (LIVE, no credential), 0 fail.
+
+---
+
+## Final review cycle 7 dispositions
+
+> Reviewer: Codex `gpt-6.1-sol`, re-review cycle 7 at `863fed0`
+> (`phase-02-final-rereview-codex-v7.md`), verdict **REQUEST_CHANGES** @ 0.99.
+> The review covers `863fed0` only; the cycle-7 follow-up (`ec280f8`..`f3bb704`)
+> came after its snapshot. Repairs: repair cycle 8, on
+> `phase/02-single-agent-vertical-slice` from `f3bb704`. As before, every
+> disposition, repair, test and mutation check below was made and verified by
+> the implementer only; none has been independently reviewed. A mutation check
+> applies each mutant to the source, rebuilds, runs the named suites, and
+> reverts it; "killed" means at least one named test failed.
+
+### What the review accepted, and what it did not
+
+Of the cycle-6 findings it re-checked, the review marked these **RESOLVED**:
+HIGH-001, HIGH-004, HIGH-007, MED-001, MED-002, MED-003, MED-004, MED-006,
+MED-NEW-001, MED-NEW-002, CYCLE5-PROVENANCE, CYCLE5-PILOT-TEST.
+
+It did not accept the rest. HIGH-002, HIGH-005, HIGH-006, HIGH-008, HIGH-009,
+MED-005, MED-NEW-003 and MED-NEW-004 were **PARTIAL**; HIGH-003 was
+**REGRESSED** by the new resume path. It restated what remained as eleven new
+findings, CYCLE7-HIGH-001..007 and CYCLE7-MED-001..004, plus the report's
+honesty (tracked here as MED-005). From its implementer-limitations table it
+required (5), (7) and (8) to be fixed in Phase 2. (5) and (7) were fixed in
+the follow-up (`dec962b`, `7d1b4df`); (8) by `d5e4bb3` and CYCLE7-HIGH-005
+below.
+
+### Summary
+
+| ID | Restates | Disposition | Commits |
+|---|---|---|---|
+| CYCLE7-HIGH-001 | HIGH-002 | ACCEPTED — fixed | `de0fba1` |
+| CYCLE7-HIGH-002 | HIGH-005 | ACCEPTED — fixed | `54af435`, `0e7eb0d` |
+| CYCLE7-HIGH-003 | HIGH-006 | ACCEPTED — fixed; residuals below | `0e7eb0d`, `7fdd47d`, `3de3f08` |
+| CYCLE7-HIGH-004 | HIGH-008 | ACCEPTED — fixed | `9d782c1` |
+| CYCLE7-HIGH-005 | HIGH-009, limitation (8) | ACCEPTED — fixed | `f11d49b` |
+| CYCLE7-HIGH-006 | limitation (5), F3 | ACCEPTED — fixed in the follow-up, after the reviewed snapshot | `dec962b` |
+| CYCLE7-HIGH-007 | HIGH-003 (REGRESSED) | ACCEPTED — fixed | `946ba77` |
+| CYCLE7-MED-001 | — | ACCEPTED — fixed | `8c3f970` |
+| CYCLE7-MED-002 | MED-NEW-003 | ACCEPTED — fixed | `61138bd` |
+| CYCLE7-MED-003 | follow-up item 1 | ACCEPTED — fixed in the follow-up; agent-side reachability proven by the CYCLE7-HIGH-004 canary | `ec280f8`, `9d782c1` |
+| CYCLE7-MED-004 | MED-NEW-004 | ACCEPTED — controller-attested user decision recorded | this log |
+| MED-005 | report honesty | ACCEPTED — report rewritten | report commit + sentinel |
+
+Also: `215db41` and `78413e3` add the cycle-7 transcript with its provenance
+note.
+
+### CYCLE7-HIGH-001 — an object rest kept the isolation claim and ran on the host — ACCEPTED
+
+**Invariant:** a command runs where the sandbox provider that made its handle
+put it, never where the handle's own fields say.
+**Change (`de0fba1`):** each provider records, for the handle object it
+returns, how commands for it execute (a container with these flags, image and
+client, or the host), and freezes the handle. The runner looks that record up
+by the handle's identity and never reads the handle's fields to decide. A
+copied, spread, destructured or hand-built handle, or one whose sandbox has
+stopped, has no record and runs nothing (`SandboxHandleNotProvenError`). The
+host path also refuses a handle that claims isolation. The type guard flags an
+object rest that copies the claim. The use-case check on `isolationEnforced`
+is described as what it is: a first refusal on a claim, not proof of
+containment.
+**Tests:** `command-runner.test.ts` — "a handle no sandbox provider made is
+refused and runs nothing, on the host or in a container", "a handle a provider
+made cannot be altered after the fact", "a genuine handle still runs where its
+provider put it"; `vertical-integration.test.ts` — "the vertical slice refuses
+a handle stripped down to its isolation claim, and runs nothing on the host"
+(the reviewer's probe); `ts-guard.test.ts` — object-rest evasion and its
+negative control.
+**Mutation check:** re-run in this cycle at `f11d49b`, 8 mutants, 7 killed:
+runner falls back to the host for an unrecorded handle; runner decides from the
+handle's own fields; Docker stop does not retire the handle; local stop does
+not retire the handle; handles not frozen; the guard ignores object rests; the
+old logic end to end (killed by the vertical-slice probe). One **survived**:
+dropping the host path's refusal of a handle that claims isolation. It is
+equivalent under the current code: the only host record is issued by
+`LocalUnsandboxedProvider` for a frozen handle with `isolationEnforced: false`,
+and nothing else can issue one, so no test can reach that branch. It is kept
+as defence in depth.
+
+### CYCLE7-HIGH-002 — hierarchy and authoritative references were not closed — ACCEPTED
+
+**Invariant:** every authoritative reference is a scoped key with checksum and
+kind that the database checks.
+**Change:**
+- `54af435`, migration 0017: a PR names an attempt of its own binding. The
+  product spec, work order, context pack and both evidence links are
+  `<name>_artifact_id` + `<name>_sha256` (both or neither) with a generated
+  kind, composite-FK-bound to `artifacts (id, organization, project, sha256,
+  kind)`. The upgrade keeps JSONB references that name such an artifact and
+  fails on one that does not. The workflow attaches the WorkOrder to its task
+  and the context pack to its attempt.
+- `0e7eb0d`, migration 0018: the commit record's evidence id, the attempt's
+  evidence and the PR's evidence are FK-bound to an evidence reservation of
+  the same attempt, whose draft is an artifact of that attempt.
+**Tests:** `persistence.test.ts` — "the DB refuses a pull request whose
+attempt belongs to another binding", one "is a scoped artifact reference with
+checksum and kind" test per reference column, "no reference column is free
+JSONB any more", the repository round-trip, the upgrade over JSONB; the
+reservation tests in `evidence-store.test.ts` and `side-effect-log.test.ts`;
+`vertical-integration.test.ts` — "the vertical slice attaches the WorkOrder to
+its task and the context pack to its attempt".
+**Mutation check:** re-run in this cycle, 7 mutants, all killed: PR
+attempt/binding FK absent; reference FK ignores the checksum; id and checksum
+need not be paired; JSONB columns kept; workflow does not attach the work
+order; work-order kind not enforced; work-order FK by id and tenant only.; reservation and evidence binding: 13 mutants,
+all killed (one first survived — the draft's attempt was not checked on read;
+a test was added and it was then killed).
+
+### CYCLE7-HIGH-003 — recovery narrowed the mandatory crash windows — ACCEPTED
+
+**Invariant:** a restart converges on one commit, one ref and one PR after a
+crash at any boundary, and an owner whose records were taken over reaches no
+external system.
+**Change:**
+- `0e7eb0d` — between commit and evidence: the evidence draft is reserved
+  before the commit, so a resume completes it with the committed SHA instead
+  of re-executing. An unreadable draft publishes nothing.
+- `7fdd47d` — commit landed, record not completed: the commit is made with
+  `git commit-tree` and recorded create-only at `refs/asep/attempts/<attemptId>`
+  before HEAD moves; `reconcile` finds it without the dead executor's worktree.
+  A second commit for an attempt, a mismatched parent or trailer, and an empty
+  commit are refused. A PENDING commit record is completed with that commit; a
+  commit that never landed asks for re-execution.
+- `3de3f08` — in-flight race: `confirmOwner` (current owner, PENDING, live
+  lease by database clock; renews; returns the epoch) runs immediately before
+  the commit, the push and the PR. The forge calls carry `fencingEpoch`; the PR
+  body records it and an upsert refuses a PR a newer epoch wrote.
+**Tests:** `crash-recovery.test.ts` and `pilot-faults.test.ts` now expect the
+same attempt to resume (fault 3, the commit/evidence crash, the unreadable
+draft, the commit-landed-before-record crash); `git-worktree.test.ts` — six
+commit/reconcile tests; `pipeline-steps.test.ts`, `resume-attempt.test.ts`,
+`side-effect-log.test.ts` (four `confirmOwner` tests), `github-app.test.ts`.
+Real PostgreSQL (`crash-takeover.itest.ts`): SIGKILL at three crash points
+including `at-commit-record`, and "a paused executor cannot act after a
+successor took its records over (in-flight race)" — both passed in this cycle.
+**Mutation check:** commit reconciliation 9 mutants, all killed; fencing 9
+mutants, all killed. One of these hung the in-flight itest at its pause point
+for 27 minutes; it was killed by hand and the test now has a 120 s timeout.
+**Residual:** a git ref cannot record an epoch, so a push relies on the
+confirmation, on one commit per attempt and on a non-force push. GitHub has no
+compare-and-set on a PR, so the epoch check narrows but does not close a race
+between two upserts inside one read-then-update. An owner that confirmed and
+then stalls in the call longer than its renewed TTL can still reach the forge
+after a takeover.
+
+### CYCLE7-HIGH-004 — `--internal` did not prove the agent reaches only the proxy — ACCEPTED
+
+**Invariant:** the agent's network gives it no host address; only the proxy is
+reachable.
+**Change (`9d782c1`):** the agent network is created `--internal` with
+`com.docker.network.bridge.gateway_mode_ipv4=isolated` and `…_ipv6=isolated`
+(Docker Engine 28.0.0 or later), so the bridge holds no gateway address on the
+host. After creating it the provider inspects it and fails the attempt before
+anything starts unless the daemon describes it as internal, isolated in both
+families and without an IPAM gateway. Verified by hand on Docker Desktop
+29.6.1: a plain `--internal` network's gateway reached a listener on the host
+network namespace; the isolated network had no gateway and did not.
+**Tests:** `agent-claude.test.ts` — "a daemon that does not isolate the agent
+network from the host fails the attempt before anything starts", "the agent
+network counts as isolated only as the daemon describes an isolated one".
+Real daemon (`agent-sandbox.itest.ts`): the canary in the agent container
+probes a host-network listener, the integration gate's PostgreSQL and MinIO
+ports, `172.17.0.1`, `192.168.65.254`, `host.docker.internal` and the would-be
+gateway, public DNS and a public resolver, and IPv6; all fail. A control
+container on a plain `--internal` network reaches the same listener, checked
+before and after the run.
+**Mutation check:** 5 mutants, all killed. The first canary run was vacuous:
+the control probe's reset crashed the host listener, so later probes reached
+nothing. The listener now ignores socket errors, and the control is re-checked
+after the run; the plain-`--internal` mutant then failed with "the host is
+reachable from the agent at 172.28.0.1:<port>". The gateway-address mutant
+first survived; a unit test of `agentNetworkIsolationGap` killed it.
+**Residual:** the CI runner's Docker Engine version (≥ 28.0.0 required) is not
+verified here.
+
+### CYCLE7-HIGH-005 — the verifier could certify a pilot that was not genuine — ACCEPTED
+
+**Invariant:** every fact the verdict rests on is read from what the harness
+wrote — the task, its work order, the canonical evidence and where each check
+ran — never from the manifest.
+**Change (`f11d49b`):**
+- The resolver reports, with the attempt, the task's status, risk and work
+  order and the attempt's base and context pack; the whole evidence bundle;
+  any artifact of the tenant by id (kind, recorded checksum, hash of its
+  bytes); and the attempt's `verification-provenance` records. The pins add
+  the verification image (`ASEP_VERIFY_IMAGE_DIGEST`).
+- The verifier requires, per task: `WAITING_FOR_HUMAN_REVIEW`; the manifest's
+  risk, base and work order to be the task's, at R0 or R1 (what Phase-2
+  admission admits); intact `work-order` and `context-pack` artifacts that the
+  agent's invocation manifest names as its only inputs; a bundle in the
+  canonical shape, closed at every level, with the pinned agent image, an
+  intact `git-diff` artifact and checks linked to intact raw output; the
+  attempt to carry that very evidence; and one intact provenance record that
+  matches the bundle check for check, with every check run in a container of
+  the pinned verification image under `--network none`, `--read-only`,
+  `--cap-drop ALL` and `--security-opt no-new-privileges` (and no other
+  network, `--privileged` or `--cap-add`), and every mandatory check passed.
+- Producer side: `CommandResult.provenance` says where the runner ran a
+  command, from the provider's record of the handle; verification keeps it per
+  check; `completeToReview` hands a provenance record to `recordVerification`
+  before it reserves the evidence; the workflow stores it as an artifact of the
+  attempt.
+**Tests:**
+- The reviewer's probe, twice: "ten tasks run by a local double at risk R4,
+  with invented work orders and sessions, are refused" (fake authority), and
+  "ten tasks seeded at risk R4 with a local double's provider and invented work
+  orders and sessions are refused" (`authority-resolver-sql.test.ts`: real
+  schema, real evidence store, genuine Ed25519 signatures, PR heads equal to the
+  results). Each task is refused for its provider, its risk, its work order, its
+  missing agent evidence, its missing provenance and its empty checks; and not
+  for its bytes, PR or signature, which are genuine.
+- Each property alone in `verify-pilot-manifest.test.ts` (task state, risk,
+  base, work order, context pack, agent inputs, attached evidence, bundle shape,
+  checks, diff and raw output, provenance presence, identity, match, sandbox
+  image and flags, mandatory checks).
+- `pilot-verifier.test.ts` no longer treats a fabricated work order as genuine:
+  the manifest carries the work order the task carries, the bundle records the
+  agent image as the pilot does, and the pins carry the sandbox image. It
+  refuses the same run once the task leaves review, the manifest claims another
+  risk or work order, the work order or the provenance record is rewritten, or
+  the verification image differs. A new test ties `ADMISSIBLE_RISKS` to
+  `admitRisk`.
+- Producer: `pipeline-steps.test.ts` (record before reservation, unknown
+  provenance stays unknown, none on a red gate), `command-runner.test.ts` (the
+  result says host or container, with the provider's image and flags and the
+  container's name).
+**Mutation check:** 29 mutants — 21 in the verifier, 4 in the resolver, 4 in
+the producer — all killed.
+**Residual:** as for the agent evidence, the provenance record is written by
+the harness to the database and object store; whoever can write both could
+fabricate it. It is not FK-bound to the evidence reservation.
+
+### CYCLE7-HIGH-006 — verification timeout did not stop the container — ACCEPTED
+
+Fixed by `dec962b` in the cycle-7 follow-up, after the reviewed snapshot; the
+change, tests and mutation checks are under "2 / 6" in "Cycle 7 follow-up
+dispositions" above. No further change in this cycle.
+
+### CYCLE7-HIGH-007 — resume bypassed risk admission — ACCEPTED
+
+**Invariant:** no path takes a lease or publishes for a risk Phase 2 does not
+admit.
+**Change (`946ba77`):** `resumeAttemptToReview` reads the authoritative task
+row first and runs the same admission a fresh run does; R2–R4 stop at
+`admission` having touched nothing but that read.
+**Tests:** `resume-attempt.test.ts` — one test per risk R0–R4 with recording
+fakes; `crash-recovery.test.ts` — "a resume of a task whose authoritative risk
+is deferred stops at admission and touches nothing" on real persistence. The
+suite is required.
+**Mutation check:** re-run in this cycle, 3 mutants, all killed: no admission
+on resume; admission from a caller-side constant instead of the task row;
+admission after the lease.
+
+### CYCLE7-MED-001 — lease liveness used transaction-start time — ACCEPTED
+
+**Change (`8c3f970`, migration 0016):** liveness, renewal, expiry and sweeps
+use `clock_timestamp()`; the trigger reads the owner lease `for share`, as the
+adapter does.
+**Tests:** `side-effect-log.test.ts` — four "a transaction opened before a
+lease expired …" tests; `concurrency.itest.ts` — the same across two real
+PostgreSQL connections, and "a successor sweep waits for a transaction that
+wrote under the lease".
+**Mutation check:** re-run in this cycle, 5 mutants, all killed: adapter
+liveness, trigger liveness, heartbeat renewal, acquire sweep and acquire expiry
+each on `now()`.
+
+### CYCLE7-MED-002 — cold-cache discovery failed open — ACCEPTED
+
+**Change (`61138bd`):** both `find` passes write to a scratch file instead of
+a process substitution, so a failing `find` fails the step.
+**Tests:** `cold-cache-reset.test.ts` — discovery failing outright, after
+partial output, only on the leftover scan, and the reviewer's
+exported-function probe.
+**Mutation check:** 2 mutants, both killed: a failing discovery ignored; the
+leftover scan not re-run.
+
+### CYCLE7-MED-003 — the gate published its backends on every interface — ACCEPTED
+
+Fixed by `ec280f8` in the cycle-7 follow-up ("1" above). The review also asked
+for reachability from the agent network: the CYCLE7-HIGH-004 canary probes the
+gate's PostgreSQL and MinIO ports on every host address the agent could hold,
+and all fail.
+
+### CYCLE7-MED-004 — the PII exception had no owner disposition — ACCEPTED
+
+**Controller-attested user decision.** The repository's history contains one
+legacy personal address in commit metadata (`pii-scan.sh` tolerates it only on
+ancestors of the pinned heads, matched by hash). Rewriting published history
+is the owner's call, not the implementer's.
+- **Who decided:** the user (repository owner), asked by the controller.
+- **When:** 2026-10-29.
+- **Choice:** "keep published history, block it from now on".
+- **Options offered:** the controller's message to this lane states the choice
+  but does not list the options that were put to the user, so they are not
+  recorded here. The controller is asked to add them.
+- **Attestation:** the controller relayed this decision to the implementer in
+  the cycle-8 instructions. The implementer did not observe the exchange.
+
+The scanner already implements the choice (`367395b`): the tolerated address
+passes only on history reachable from the pinned heads; anything newer, and
+any other personal address, fails `scan:pii`. No code changed.
+
+### MED-005 — the report overclaimed — ACCEPTED
+
+The report no longer says cycle 7 "repaired all eleven". It states what the
+independent review accepted, as above, and calls the use case's isolation
+check what it is: a first refusal on the handle's claim, behind which the
+runner refuses any handle no sandbox provider made. The numbers it states were
+observed in this cycle; the L1 sentinel is written last.
+
+### Mutation checks re-run in this cycle
+
+The mutation checks for `de0fba1`, `946ba77`, `8c3f970`,
+`54af435` and `61138bd` were first run before an interruption of this cycle's
+session lost their results; they were re-run at `f11d49b` and the numbers above
+are from that re-run. The reservation, commit-reconciliation, fencing,
+network-isolation and verifier checks were run once, at their commits. In all,
+90 mutants: 89 killed, 1 survived (equivalent, under CYCLE7-HIGH-001).
