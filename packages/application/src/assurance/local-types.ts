@@ -199,7 +199,10 @@ export interface ReviewPacket {
   readonly priorFindings: readonly ReviewFindingRecord[];
   readonly budget: {
     readonly maxBytes: number;
-    /** Content bytes the prompt would carry: diffs, post-images and output excerpts. */
+    /**
+     * The UTF-8 length of this canonical packet with `includedBytes` 0 and `overBudget`
+     * false, plus the bytes of the diffs and every post-image the prompt embeds.
+     */
     readonly includedBytes: number;
     readonly overBudget: boolean;
     readonly omissions: readonly PacketOmission[];

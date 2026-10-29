@@ -8,7 +8,8 @@
 // so content cannot carry a valid marker for the packet that contains it.
 //
 // The renderer refuses an over-budget packet: such a packet is flagged and never
-// sent, so no partial prompt exists.
+// sent, so no partial prompt exists. It then measures the rendered prompt against the
+// same budget and refuses a larger one with PromptOverBudgetError.
 
 import type { ArtifactRef } from '@asep/contracts';
 import { canonicalBytes, canonicalJson, sha256Hex } from './canonical-json.js';
@@ -20,6 +21,18 @@ export class PromptRenderError extends Error {
   constructor(message: string) {
     super(`review prompt: ${message}`);
     this.name = 'PromptRenderError';
+  }
+}
+
+/** The rendered prompt is larger than the packet's byte budget; it is never sent. */
+export class PromptOverBudgetError extends Error {
+  readonly promptBytes: number;
+  readonly maxBytes: number;
+  constructor(promptBytes: number, maxBytes: number) {
+    super(`review prompt: ${promptBytes} bytes exceed the budget of ${maxBytes}; it is recorded over budget, never sent`);
+    this.name = 'PromptOverBudgetError';
+    this.promptBytes = promptBytes;
+    this.maxBytes = maxBytes;
   }
 }
 
@@ -247,6 +260,7 @@ export function renderReviewPrompt(built: Pick<BuiltPacket, 'packet' | 'bytes'>,
     input,
     outputSchema: REVIEW_OUTPUT_SCHEMA,
   });
+  if (bytes.byteLength > packet.budget.maxBytes) throw new PromptOverBudgetError(bytes.byteLength, packet.budget.maxBytes);
   return {
     templateVersion: REVIEW_PROMPT_TEMPLATE_VERSION,
     templateSha256: TEMPLATE_SHA256,

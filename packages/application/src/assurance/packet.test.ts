@@ -6,11 +6,12 @@ import {
   assertPacketWhitelist,
   buildReviewPacket,
   packetFieldPaths,
+  type BuiltPacket,
   type PacketSources,
 } from './packet.js';
 import { renderReviewPrompt, PromptRenderError } from './prompt.js';
 import { excerptTail, parseTestSummary } from './execution-manifest.js';
-import { fixtureWorld, utf8, refFor, type FixtureWorld } from './test-support.js';
+import { fixtureWorld, utf8, refFor, worldFromDiff, type FixtureWorld } from './test-support.js';
 
 console.log('SUITE-ID: asep-suite:review-packet');
 
@@ -105,6 +106,38 @@ test('packet schema whitelists trusted sources only', () => {
   assert.throws(() => assertPacketWhitelist(missing), PacketBuildError);
 });
 
+// Independent count of a packet's budget: key-sorted JSON.stringify of the packet with the
+// budget's own figures zeroed, plus the bytes of every content part the prompt embeds, read
+// from the artifacts.
+function sortedJson(value: unknown): string {
+  return JSON.stringify(value, (_key, v: unknown) =>
+    v !== null && typeof v === 'object' && !Array.isArray(v)
+      ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
+      : v,
+  );
+}
+
+function expectedBudget(world: FixtureWorld, built: BuiltPacket): number {
+  const zeroed = { ...built.packet, budget: { ...built.packet.budget, includedBytes: 0, overBudget: false } };
+  const { change } = built.packet;
+  const embedded = [change.cumulativeDiff, change.repairDelta, ...change.files.map((f) => f.postImage)]
+    .filter((ref) => ref !== null)
+    .reduce((n, ref) => n + world.contents.get(ref.artifactId)!.byteLength, 0);
+  return Buffer.byteLength(sortedJson(zeroed), 'utf8') + embedded;
+}
+
+/**
+ * The smallest budget the world's packet fits, by the independent count. The packet carries
+ * its own budget, so its size depends on the number of digits of `maxBytes`: measure under
+ * the budget being tested.
+ */
+function smallestBudget(world: FixtureWorld): number {
+  let maxBytes = world.limits.maxBytes;
+  for (let i = 0; i < 3; i += 1) maxBytes = expectedBudget(world, buildReviewPacket(world.sources, { ...world.limits, maxBytes }));
+  assert.equal(String(maxBytes - 1).length, String(maxBytes).length, 'the boundary keeps the digit count');
+  return maxBytes;
+}
+
 test('over-budget packet is flagged, never cut', () => {
   // A diff the source reader could not fit is flagged; nothing is dropped from the file list.
   const base = fixtureWorld();
@@ -125,11 +158,12 @@ test('over-budget packet is flagged, never cut', () => {
   assert.throws(() => renderReviewPrompt(flagged, overLimit.contents), PromptRenderError);
 
   // Content beyond the byte budget is flagged with the full count, not trimmed to fit.
-  const full = buildReviewPacket(base.sources, base.limits);
-  const tight = buildReviewPacket(base.sources, { ...base.limits, maxBytes: full.packet.budget.includedBytes - 1 });
+  const fits = smallestBudget(base);
+  const full = buildReviewPacket(base.sources, { ...base.limits, maxBytes: fits });
+  const tight = buildReviewPacket(base.sources, { ...base.limits, maxBytes: fits - 1 });
   assert.equal(full.overBudget, false);
   assert.equal(tight.overBudget, true);
-  assert.equal(tight.packet.budget.includedBytes, full.packet.budget.includedBytes);
+  assert.deepEqual([full.packet.budget.includedBytes, tight.packet.budget.includedBytes], [fits, fits]);
   assert.deepEqual(tight.packet.change, full.packet.change);
   assert.deepEqual(tight.packet.execution, full.packet.execution);
   assert.throws(() => renderReviewPrompt(tight, base.contents), PromptRenderError);
@@ -156,6 +190,36 @@ test('over-budget packet is flagged, never cut', () => {
     { path: 'src/util.ts', reason: 'too-large' },
   ]);
   assert.equal(large.packet.change.files.find((f) => f.path === 'src/util.ts')?.postImage, null);
+});
+
+test('the budget counts the canonical packet bytes and every embedded part', () => {
+  const worlds: readonly (readonly [string, FixtureWorld])[] = [
+    ['first round', fixtureWorld()],
+    ['re-review with a repair delta', fixtureWorld({ round: 2 })],
+    ['multi-byte objective', fixtureWorld({ objective: 'é'.repeat(1000) })],
+    ['long output excerpt', fixtureWorld({ unitStdout: `ℹ tests 1\nℹ pass 1\nℹ fail 0\n${'log line\n'.repeat(400)}` })],
+    // A post-image the packet leaves out is not embedded, so it is not counted.
+    ['unsafe path', worldFromDiff([{ path: 'src/line\nbreak.ts', status: 'A', added: ['export const a = 1;'] }], { allowedPaths: ['**'] })],
+  ];
+  for (const [label, world] of worlds) {
+    const built = buildReviewPacket(world.sources, world.limits);
+    assert.equal(built.packet.budget.includedBytes, expectedBudget(world, built), label);
+    assert.equal(built.overBudget, false, label);
+    // The boundary: exactly the budget fits, one byte less is flagged.
+    const at = (maxBytes: number) => buildReviewPacket(world.sources, { ...world.limits, maxBytes });
+    const fits = smallestBudget(world);
+    assert.equal(at(fits).packet.budget.includedBytes, expectedBudget(world, at(fits)), label);
+    assert.deepEqual([at(fits).overBudget, at(fits - 1).overBudget], [false, true], label);
+  }
+
+  // The review's probe: a 450 000-character objective under a 400 000-byte budget.
+  const long = fixtureWorld({ objective: 'x'.repeat(450_000) });
+  assert.equal(long.limits.maxBytes, 400_000);
+  const flagged = buildReviewPacket(long.sources, long.limits);
+  assert.equal(flagged.packet.budget.includedBytes, expectedBudget(long, flagged));
+  assert.ok(flagged.packet.budget.includedBytes > 450_000);
+  assert.deepEqual([flagged.overBudget, flagged.packet.budget.overBudget], [true, true]);
+  assert.throws(() => renderReviewPrompt(flagged, long.contents), PromptRenderError);
 });
 
 test('packet carries a bounded execution manifest', () => {

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { buildReviewPacket } from './packet.js';
 import {
+  PromptOverBudgetError,
   PromptRenderError,
   REVIEW_OUTPUT_SCHEMA,
   REVIEW_PROMPT_TEMPLATE_VERSION,
@@ -128,6 +129,28 @@ test('prompt is bound to the packet content it renders', () => {
   const repair = fixtureWorld({ round: 2 });
   const repairPrompt = renderReviewPrompt(buildReviewPacket(repair.sources, repair.limits), repair.contents);
   assert.equal(repairPrompt.input.includes(`<<<UNTRUSTED ${repairPrompt.nonce} repair-delta>>>`), true);
+});
+
+test('a rendered prompt over the budget is refused', () => {
+  // Large enough that the prompt size and a budget just under it have the same number of
+  // digits, so the packet bytes, and with them the prompt, keep their length.
+  const world = fixtureWorld({ objective: 'x'.repeat(120_000) });
+  const at = (maxBytes: number) => buildReviewPacket(world.sources, { ...world.limits, maxBytes });
+  const size = renderReviewPrompt(at(999_999), world.contents).bytes.byteLength;
+  assert.ok(size >= 100_000 && size < 999_999);
+
+  // The packet fits, but the instructions, datamarks and output schema push the prompt over.
+  const tight = at(size - 1);
+  assert.equal(tight.overBudget, false);
+  assert.ok(tight.packet.budget.includedBytes < size - 1);
+  assert.throws(
+    () => renderReviewPrompt(tight, world.contents),
+    (err: unknown) => err instanceof PromptOverBudgetError && err.promptBytes === size && err.maxBytes === size - 1,
+  );
+  // The error is distinct from a render failure, so the review is recorded over budget.
+  assert.throws(() => renderReviewPrompt(tight, world.contents), (err: unknown) => !(err instanceof PromptRenderError));
+  // Exactly the budget is sent.
+  assert.equal(renderReviewPrompt(at(size), world.contents).bytes.byteLength, size);
 });
 
 test('model-facing output schema is strict', () => {

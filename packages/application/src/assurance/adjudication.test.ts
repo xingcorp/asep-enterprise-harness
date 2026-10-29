@@ -371,6 +371,13 @@ test('over-budget and context overflow escalate in gating and are recorded in sh
   assert.deepEqual([gating.ruleFired, gating.outcome, gating.reason], ['A3', 'ESCALATE', 'packet-over-budget']);
   const shadow = adjudicate({ ...overflow, mode: 'shadow' }).record;
   assert.deepEqual([shadow.outcome, shadow.shadow?.wouldBe, shadow.shadow?.reason], ['PROCEED', 'ESCALATE', 'packet-over-budget']);
+
+  // A rendered prompt over the budget is decided like an over-budget packet.
+  const tooLarge = { ...adjudicationBase(), reviews: [failed(PRIMARY, 'prompt-over-budget')] };
+  const refused = adjudicate(tooLarge).record;
+  assert.deepEqual([refused.ruleFired, refused.outcome, refused.reason], ['A3', 'ESCALATE', 'packet-over-budget']);
+  const shadowRefused = adjudicate({ ...tooLarge, mode: 'shadow' }).record;
+  assert.deepEqual([shadowRefused.outcome, shadowRefused.shadow?.wouldBe], ['PROCEED', 'ESCALATE']);
 });
 
 function priorFinding(over: Partial<ReviewFindingRecord> = {}): ReviewFindingRecord {

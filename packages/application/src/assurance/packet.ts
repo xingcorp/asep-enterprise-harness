@@ -5,7 +5,9 @@
 // manifest, and (re-review only) prior adjudicated findings. Every field is picked
 // explicitly; nothing is spread from a source object, so coder self-report, context
 // packs, events, commit messages, PR text or another reviewer's output cannot ride
-// along. Content over the byte budget is flagged, never cut.
+// along. Content over the byte budget is flagged, never cut. The budget counts the
+// canonical packet itself, so every content-bearing field is in it, plus each content
+// part the prompt embeds next to the packet.
 //
 // Pure: callers resolve artifacts and pass bytes in; the packet is canonical JSON.
 
@@ -163,7 +165,7 @@ function buildFiles(change: PacketSources['change']): PacketFile[] {
   return files;
 }
 
-function buildChecks(execution: PacketSources['execution'], limits: PacketLimits): { checks: PacketCheck[]; excerptBytes: number } {
+function buildChecks(execution: PacketSources['execution'], limits: PacketLimits): PacketCheck[] {
   let remaining = limits.excerptBytesTotal;
   const stream = (artifactId: string | undefined): { ref: PacketStreamRef; content: Uint8Array } | null => {
     if (artifactId === undefined) return null;
@@ -201,7 +203,7 @@ function buildChecks(execution: PacketSources['execution'], limits: PacketLimits
       testSummary,
     };
   });
-  return { checks, excerptBytes: limits.excerptBytesTotal - remaining };
+  return checks;
 }
 
 /** A review-finding/v1 record with exactly its own fields, whatever else the source object carries. */
@@ -239,7 +241,7 @@ export function buildReviewPacket(sources: PacketSources, limits: PacketLimits):
   const omissions: PacketOmission[] = files
     .filter((f) => f.omittedReason !== null)
     .map((f) => ({ path: f.path, reason: f.omittedReason! }));
-  const { checks, excerptBytes } = buildChecks(execution, limits);
+  const checks = buildChecks(execution, limits);
 
   const statements = new Map(sources.requirements.map((r) => [r.id, r] as const));
   const requirements = [...new Set(workOrder.requirementIds)].flatMap((id) => {
@@ -247,14 +249,9 @@ export function buildReviewPacket(sources: PacketSources, limits: PacketLimits):
     return r === undefined ? [] : [{ id: r.id, statement: r.statement, priority: r.priority }];
   });
 
-  const postImageBytes = change.postImages.reduce((n, b) => n + (b.blob === null ? 0 : b.bytes), 0);
-  const includedBytes = change.cumulativeDiff.bytes + (change.repairDelta?.bytes ?? 0) + postImageBytes + excerptBytes;
-  const overBudget =
-    includedBytes > limits.maxBytes || change.cumulativeDiff.overLimit || (change.repairDelta?.overLimit ?? false);
-
   const priorFindings = [...sources.priorFindings].map(pickFindingRecord).sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 
-  const packet: ReviewPacket = {
+  const measured: ReviewPacket = {
     packetVersion: 'review-packet/v1',
     identity: {
       organizationId: identity.organizationId,
@@ -295,8 +292,19 @@ export function buildReviewPacket(sources: PacketSources, limits: PacketLimits):
       checks,
     },
     priorFindings,
-    budget: { maxBytes: limits.maxBytes, includedBytes, overBudget, omissions },
+    budget: { maxBytes: limits.maxBytes, includedBytes: 0, overBudget: false, omissions },
   };
+  // The budget: the canonical packet measured with its own figures zeroed, plus the diffs and
+  // every post-image the prompt embeds.
+  const embeddedPostImageBytes = files.reduce(
+    (n, f) => n + (f.postImage === null ? 0 : (change.postImages.find((b) => b.path === f.path)?.bytes ?? 0)),
+    0,
+  );
+  const includedBytes =
+    canonicalBytes(measured).byteLength + change.cumulativeDiff.bytes + (change.repairDelta?.bytes ?? 0) + embeddedPostImageBytes;
+  const overBudget =
+    includedBytes > limits.maxBytes || change.cumulativeDiff.overLimit || (change.repairDelta?.overLimit ?? false);
+  const packet: ReviewPacket = { ...measured, budget: { ...measured.budget, includedBytes, overBudget } };
   assertPacketWhitelist(packet);
   const bytes = canonicalBytes(packet);
   return { packet, bytes, sha256: sha256Hex(bytes), overBudget, omissions };

@@ -529,7 +529,9 @@ export function adjudicate(input: AdjudicationInput): Adjudication {
   type Decision = { readonly rule: AdjudicationRule; readonly kind: 'PROCEED' | 'REPAIR' | 'ESCALATE'; readonly reason: EscalationReason | null };
   const gatingDecision = (): Decision => {
     const reviews = input.reviews;
-    if (input.packet.budget.overBudget || reviews.some((r) => r.status === 'FAILED' && r.failureReason === 'context-overflow')) {
+    const overflow = (r: ReviewInput) =>
+      r.status === 'FAILED' && (r.failureReason === 'context-overflow' || r.failureReason === 'prompt-over-budget');
+    if (input.packet.budget.overBudget || reviews.some(overflow)) {
       return { rule: 'A3', kind: 'ESCALATE', reason: 'packet-over-budget' };
     }
     if (input.checks.egress.decision !== 'CLEAR' || reviews.some((r) => r.status === 'EGRESS_STOPPED')) {
