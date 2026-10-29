@@ -58,7 +58,7 @@ import type {
   FailureClass,
   ObservedPullRequest,
   PublicationEffect,
-  RepositoryId,
+  ForgeRepository,
   TaskCommand,
   TaskEffect,
   TaskEvent,
@@ -323,31 +323,40 @@ test('input rules: git still answers the committed branch-name table as recorded
   }
 });
 
-// The repository is the binding's, normalized: lower-case owner and name, in the forge's name rules.
+// The repository is the binding's: the forge's numeric id, with an owner and name in the forge's name rules.
 const REFUSED_REPOSITORIES: readonly (readonly [string, unknown])[] = [
   ['missing', undefined],
-  ['an upper-case owner', { owner: 'Acme', name: 'widgets' }],
-  ['an upper-case name', { owner: 'acme', name: 'Widgets' }],
-  ['an empty owner', { owner: '', name: 'widgets' }],
-  ['an empty name', { owner: 'acme', name: '' }],
-  ['an owner with a slash', { owner: 'acme/x', name: 'widgets' }],
-  ['an owner with a leading dash', { owner: '-acme', name: 'widgets' }],
-  ['an owner over 39 characters', { owner: 'a'.repeat(40), name: 'widgets' }],
-  ['a name with a space', { owner: 'acme', name: 'wid gets' }],
-  ['the name ..', { owner: 'acme', name: '..' }],
-  ['a name over 100 characters', { owner: 'acme', name: 'w'.repeat(101) }],
+  ['without an id', { owner: 'acme', name: 'widgets' }],
+  ['an id of zero', { id: 0, owner: 'acme', name: 'widgets' }],
+  ['a negative id', { id: -4242, owner: 'acme', name: 'widgets' }],
+  ['a fractional id', { id: 42.5, owner: 'acme', name: 'widgets' }],
+  ['an id beyond the safe integers', { id: 2 ** 53, owner: 'acme', name: 'widgets' }],
+  ['an id given as a string', { id: '4242', owner: 'acme', name: 'widgets' }],
+  ['an empty owner', { id: 4242, owner: '', name: 'widgets' }],
+  ['an empty name', { id: 4242, owner: 'acme', name: '' }],
+  ['an owner with a slash', { id: 4242, owner: 'acme/x', name: 'widgets' }],
+  ['an owner with a leading dash', { id: 4242, owner: '-acme', name: 'widgets' }],
+  ['an owner over 39 characters', { id: 4242, owner: 'a'.repeat(40), name: 'widgets' }],
+  ['a name with a space', { id: 4242, owner: 'acme', name: 'wid gets' }],
+  ['the name ..', { id: 4242, owner: 'acme', name: '..' }],
+  ['a name over 100 characters', { id: 4242, owner: 'acme', name: 'w'.repeat(101) }],
 ];
 
 for (const [name, repository] of REFUSED_REPOSITORIES) {
   test(`input rules: a repository that is ${name} is refused`, () => {
-    const errors = taskInputErrors(baseInput({ repository: repository as RepositoryId }));
+    const errors = taskInputErrors(baseInput({ repository: repository as ForgeRepository }));
     assert.equal(errors.length, 1, JSON.stringify(errors));
     assert.match(errors[0]!, /^repository: must be a forge repository/);
   });
 }
 
-test('input rules: a normalized repository passes', () => {
-  for (const repository of [TASK_REPOSITORY, { owner: 'a-b-1', name: 'x.y_z-1' }, { owner: 'a'.repeat(39), name: 'w'.repeat(100) }]) {
+test('input rules: a repository with its forge id passes, its owner and name in any case', () => {
+  for (const repository of [
+    TASK_REPOSITORY,
+    { id: 1, owner: 'a-b-1', name: 'x.y_z-1' },
+    { id: Number.MAX_SAFE_INTEGER, owner: 'a'.repeat(39), name: 'w'.repeat(100) },
+    { id: 4242, owner: 'Acme-Corp', name: 'Widgets.JS' },
+  ]) {
     assert.deepEqual(taskInputErrors(baseInput({ repository })), [], JSON.stringify(repository));
   }
 });
@@ -1709,7 +1718,7 @@ const publicationFails = (effect?: PublicationEffect, failureClass: FailureClass
   kind: 'activityFailed' as const, failureClass, timedOut: false, ...(effect === undefined ? {} : { effect }),
 });
 /** A reconciliation read: the attempt branch at `branchHeadSha` (null: absent) in `branchRepository`, and the PRs listed for it. */
-const reconciled = (branchHeadSha: string | null, pullRequests: readonly ObservedPullRequest[] = [], branchRepository: RepositoryId = TASK_REPOSITORY) => () => ({
+const reconciled = (branchHeadSha: string | null, pullRequests: readonly ObservedPullRequest[] = [], branchRepository: ForgeRepository = TASK_REPOSITORY) => () => ({
   kind: 'reconcilePublication' as const,
   branch: branchHeadSha === null ? null : { repository: branchRepository, headSha: branchHeadSha },
   pullRequests,
@@ -1922,9 +1931,12 @@ for (const cancelled of [false, true]) {
 
 // The full observation: a candidate that matches the attempt's branch, head SHA and base is still not the attempt's
 // when it comes from a fork, is closed or merged, or is one of several, or when the branch or the PR's base lies in
-// another repository. The first four rows are the reviewer's IDENTITY_MATRIX.
-const FORK: RepositoryId = { owner: 'attacker', name: 'fork' };
-const NOT_THIS_ATTEMPTS_PR: readonly (readonly [string, readonly ObservedPullRequest[], string, RepositoryId])[] = [
+// another repository. A repository is its forge id, so another repository that took over the binding's owner and
+// name after a rename is another repository too. The first four rows are the reviewer's IDENTITY_MATRIX; the last
+// three are its RENAME_SLUG_REUSE.
+const FORK: ForgeRepository = { id: 9001, owner: 'attacker', name: 'fork' };
+const REUSED_PATHNAME: ForgeRepository = { id: 202, owner: TASK_REPOSITORY.owner, name: TASK_REPOSITORY.name };
+const NOT_THIS_ATTEMPTS_PR: readonly (readonly [string, readonly ObservedPullRequest[], string, ForgeRepository])[] = [
   ['a PR from a fork with the same branch name', [prOfAttempt(9, { headRepository: FORK })], 'pull-request-fork-head', TASK_REPOSITORY],
   ['a closed PR', [prOfAttempt(9, { state: 'closed' })], 'pull-request-closed', TASK_REPOSITORY],
   ['a merged PR', [prOfAttempt(9, { state: 'closed', merged: true })], 'pull-request-merged', TASK_REPOSITORY],
@@ -1932,6 +1944,9 @@ const NOT_THIS_ATTEMPTS_PR: readonly (readonly [string, readonly ObservedPullReq
   ['the attempt\'s PR beside a closed one', [prOfAttempt(9), prOfAttempt(8, { state: 'closed' })], 'pull-requests-multiple', TASK_REPOSITORY],
   ['a PR into another repository', [prOfAttempt(9, { baseRepository: FORK })], 'pull-request-other-base', TASK_REPOSITORY],
   ['the branch in another repository', [prOfAttempt(9)], 'branch-other-repository', FORK],
+  ['the branch in another repository at the binding\'s owner and name', [prOfAttempt(9)], 'branch-other-repository', REUSED_PATHNAME],
+  ['a PR from another repository at the binding\'s owner and name', [prOfAttempt(9, { headRepository: REUSED_PATHNAME })], 'pull-request-fork-head', TASK_REPOSITORY],
+  ['a PR into another repository at the binding\'s owner and name', [prOfAttempt(9, { baseRepository: REUSED_PATHNAME })], 'pull-request-other-base', TASK_REPOSITORY],
 ];
 
 for (const cancelled of [false, true]) {
@@ -1954,18 +1969,51 @@ for (const cancelled of [false, true]) {
   }
 }
 
-test('publication identity: repositories compare case-insensitively, as the forge names them', () => {
-  const upper: RepositoryId = { owner: 'Acme', name: 'Widgets' };
-  const pr = prOfAttempt(9, { headRepository: upper, baseRepository: upper });
-  const afterUpsert = runTaskSequentially(baseInput(), scripted({
-    upsertPullRequest: publicationFails('unknown'), reconcilePublication: reconciled(shaFor(1), [pr], upper),
+// The binding repository renamed or transferred: the forge keeps its id, so the publication is still the attempt's,
+// and the new owner and name are audited.
+const RENAMED: readonly (readonly [string, ForgeRepository])[] = [
+  ['renamed', { id: TASK_REPOSITORY.id, owner: TASK_REPOSITORY.owner, name: 'gadgets' }],
+  ['transferred', { id: TASK_REPOSITORY.id, owner: 'acme-corp', name: TASK_REPOSITORY.name }],
+  ['re-cased', { id: TASK_REPOSITORY.id, owner: 'Acme', name: 'Widgets' }],
+];
+
+function assertRenameAudited(trace: TaskTrace, observed: ForgeRepository): void {
+  assert.deepEqual(effectsOf(trace.commands, 'audit').filter((a) => a.action === 'publication.repository-renamed').map((a) => a.detail), [{
+    workflowId: 'asep-task-task-1', attemptNumber: 1, repositoryId: TASK_REPOSITORY.id,
+    bound: `${TASK_REPOSITORY.owner}/${TASK_REPOSITORY.name}`, observed: `${observed.owner}/${observed.name}`,
+  }]);
+}
+
+for (const cancelled of [false, true]) {
+  const when = cancelled ? 'with a cancel pending' : 'without a cancel';
+  for (const [how, moved] of RENAMED) {
+    const pr = prOfAttempt(9, { headRepository: moved, baseRepository: moved });
+
+    test(`publication identity: after a failed PR upsert, the binding repository ${how} (same forge id) is still the attempt's and the move is audited, ${when}`, () => {
+      const trace = runTaskSequentially(baseInput(), scripted({
+        upsertPullRequest: publicationFails('unknown'), reconcilePublication: reconciled(shaFor(1), [pr], moved),
+      }, { eventsDuring: cancelled ? cancelDuring('publishBranch') : () => [] }));
+      assertPublished(trace, 9, cancelled);
+      assertRenameAudited(trace, moved);
+    });
+
+    test(`publication identity: after an unknown push, the binding repository ${how} (same forge id) is a confirmed push and the move is audited, ${when}`, () => {
+      const trace = runTaskSequentially(baseInput(), scripted({
+        publishBranch: publicationFails('unknown'), reconcilePublication: reconciled(shaFor(1), [pr], moved),
+      }, { eventsDuring: cancelled ? cancelDuring('publishBranch') : () => [] }));
+      assert.equal(requestKinds(trace.commands).filter((k) => k === 'upsertPullRequest').length, 1, 'a confirmed push');
+      assertPublished(trace, 7, cancelled);
+      assertRenameAudited(trace, moved);
+    });
+  }
+}
+
+test('publication identity: a reconciled read under the bound owner and name audits no move', () => {
+  const trace = runTaskSequentially(baseInput(), scripted({
+    upsertPullRequest: publicationFails('unknown'), reconcilePublication: reconciled(shaFor(1), [prOfAttempt(9)]),
   }));
-  assertPublished(afterUpsert, 9, false);
-  const afterPush = runTaskSequentially(baseInput(), scripted({
-    publishBranch: publicationFails('unknown'), reconcilePublication: reconciled(shaFor(1), [pr], upper),
-  }));
-  assert.equal(requestKinds(afterPush.commands).filter((k) => k === 'upsertPullRequest').length, 1, 'a confirmed push');
-  assertPublished(afterPush, 7, false);
+  assertPublished(trace, 9, false);
+  assert.ok(!effectsOf(trace.commands, 'audit').some((a) => a.action === 'publication.repository-renamed'));
 });
 
 test('publication: a task based on another branch publishes and reconciles against that branch, never a default', () => {

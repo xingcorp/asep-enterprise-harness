@@ -35,7 +35,7 @@ import type {
   ProjectedTaskStatus,
   PublicationEffect,
   RepairLineage,
-  RepositoryId,
+  ForgeRepository,
   RunEventDetail,
   RunEventType,
   TaskCommand,
@@ -896,9 +896,21 @@ function reconcilePublication(step: Step): void {
 
 type ReconciliationRead = Extract<TaskResult, { kind: 'reconcilePublication' }>;
 
-/** The forge names repositories case-insensitively. */
-function sameRepository(observed: RepositoryId, binding: RepositoryId): boolean {
-  return observed.owner.toLowerCase() === binding.owner.toLowerCase() && observed.name.toLowerCase() === binding.name.toLowerCase();
+/** A repository is its forge id: a rename or a transfer keeps it, and another repository at the old owner and name has another. */
+function sameRepository(observed: ForgeRepository, binding: ForgeRepository): boolean {
+  return observed.id === binding.id;
+}
+
+/** A reconciled read found the binding repository under another owner or name: it was renamed or transferred. */
+function auditRepositoryMove(step: Step, a: MutableAttempt, observed: ForgeRepository): void {
+  const bound = step.s.input.repository;
+  if (observed.owner === bound.owner && observed.name === bound.name) return;
+  audit(step, 'publication.repository-renamed', {
+    attemptNumber: a.attemptNumber,
+    repositoryId: bound.id,
+    bound: `${bound.owner}/${bound.name}`,
+    observed: `${observed.owner}/${observed.name}`,
+  });
 }
 
 /** What a read found of the attempt branch: `own` when it is in the binding repository at the attempt's commit. */
@@ -939,14 +951,18 @@ function publicationReconciled(step: Step, result: ReconciliationRead): void {
   const branch = branchFinding(s, a, result.branch);
   const pr = pullRequestFinding(s, a, result.pullRequests);
   if (!s.pushConfirmed) {
-    if (branch === 'own' && (pr === 'none' || pr === 'own')) pushApplied(step);
-    else if (branch === 'branch-missing' && pr === 'none') close(step, 'FAILED', 'publication-failed');
+    if (branch === 'own' && (pr === 'none' || pr === 'own') && result.branch !== null) {
+      auditRepositoryMove(step, a, result.branch.repository);
+      pushApplied(step);
+    } else if (branch === 'branch-missing' && pr === 'none') close(step, 'FAILED', 'publication-failed');
     else publicationIncomplete(step, branch === 'own' ? pr : branch, result);
     return;
   }
   const [own] = result.pullRequests;
-  if (branch === 'own' && pr === 'own' && own !== undefined) pullRequestUpserted(step, own.number);
-  else publicationIncomplete(step, branch !== 'own' ? branch : pr === 'none' ? 'pull-request-missing' : pr, result);
+  if (branch === 'own' && pr === 'own' && own !== undefined && result.branch !== null) {
+    auditRepositoryMove(step, a, result.branch.repository);
+    pullRequestUpserted(step, own.number);
+  } else publicationIncomplete(step, branch !== 'own' ? branch : pr === 'none' ? 'pull-request-missing' : pr, result);
 }
 
 function upsertPullRequest(step: Step): void {

@@ -11,7 +11,7 @@ import type {
 import { DEFAULT_ORCHESTRATION_POLICY } from '../defaults.js';
 import type {
   OrchestrationPolicy,
-  RepositoryId,
+  ForgeRepository,
   TaskCommand,
   TaskCoreInput,
   TaskEffect,
@@ -24,8 +24,8 @@ import type { Answer, TaskEnvironment } from '../sequential-interpreter.js';
 export const TASK_BASE = 'b'.repeat(40);
 /** Not `main`, so a base the core takes from anywhere but the input shows up in every scenario. */
 export const TASK_BASE_BRANCH = 'release/2026.10';
-/** The repository binding's repository, normalized. */
-export const TASK_REPOSITORY: RepositoryId = { owner: 'acme', name: 'widgets' };
+/** The repository binding's repository: the forge's numeric id, with the owner and name the binding records. */
+export const TASK_REPOSITORY: ForgeRepository = { id: 4242, owner: 'acme', name: 'widgets' };
 
 export function shaFor(attemptNumber: number): string {
   return attemptNumber.toString(16).padStart(40, 'c');

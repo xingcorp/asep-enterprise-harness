@@ -27,7 +27,7 @@ import type {
   FailureClass,
   ObservedPullRequest,
   ProjectedTaskStatus,
-  RepositoryId,
+  ForgeRepository,
   TaskCommand,
   TaskCoreInput,
   TaskDecision,
@@ -105,7 +105,7 @@ function randomInput(rng: Rng, side: Rng, bases: Rng): TaskCoreInput {
     runId: 'run-p' as RunId,
     risk: 'R0',
     baseSha: TASK_BASE,
-    repository: { owner: 'acme', name: 'widgets' },
+    repository: { id: 4242, owner: 'acme', name: 'widgets' },
     baseBranch: bases.pick(BASE_BRANCHES),
     attemptBudget: { maxTurns: 10, maxToolCalls: 50, maxCostUsd: attemptCost, maxWallClockMinutes: rng.int(10, 60) },
     taskBudget: {
@@ -138,7 +138,7 @@ function failure(rng: Rng): Answer {
   return { kind: 'activityFailed', failureClass: rng.pick(CLASSES), timedOut: rng.chance(0.4) };
 }
 
-const OTHER_REPOSITORY: RepositoryId = { owner: 'attacker', name: 'fork' };
+const OTHER_REPOSITORY: ForgeRepository = { id: 9001, owner: 'attacker', name: 'fork' };
 
 /**
  * The PRs a reconciliation read reports for the branch: mostly one, the attempt's own or one that differs in a single
@@ -783,7 +783,7 @@ function checkTrace(input: TaskCoreInput, trace: TaskTrace, label: string): void
 }
 
 interface PublicationIdentity {
-  readonly repository: RepositoryId;
+  readonly repository: ForgeRepository;
   readonly branch: string;
   readonly head: string;
   readonly base: string;
@@ -804,8 +804,9 @@ function publicationIdentity(input: TaskCoreInput, trace: TaskTrace, n: number):
   return { repository: input.repository, branch, head, base: input.baseBranch };
 }
 
-function sameRepository(a: RepositoryId, b: RepositoryId): boolean {
-  return a.owner.toLowerCase() === b.owner.toLowerCase() && a.name.toLowerCase() === b.name.toLowerCase();
+/** A repository is its forge id; owner and name are informational (a rename or a transfer keeps the id). */
+function sameRepository(a: ForgeRepository, b: ForgeRepository): boolean {
+  return a.id === b.id;
 }
 
 /** How a listed PR differs from the attempt's own, the first difference found; `own` when it does not. */

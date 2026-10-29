@@ -174,8 +174,12 @@ export interface VerificationReserve {
   readonly wallClockMinutes: number;
 }
 
-/** A forge repository. The input carries it normalized (lower case); the forge compares names case-insensitively. */
-export interface RepositoryId {
+/**
+ * A forge repository. Its identity is the forge's numeric id, which a rename or a transfer keeps; the owner and name
+ * are those the binding records or the forge reports now, informational only.
+ */
+export interface ForgeRepository {
+  readonly id: number;
   readonly owner: string;
   readonly name: string;
 }
@@ -186,7 +190,7 @@ export interface TaskCoreInput {
   readonly risk: RiskLevel;
   readonly baseSha: string;
   /** The repository binding's repository: every publication of the task goes there. */
-  readonly repository: RepositoryId;
+  readonly repository: ForgeRepository;
   /** The branch the task's PR targets; the PR upsert uses it and a publication reconciliation checks the PR's base. */
   readonly baseBranch: string;
   readonly attemptBudget: Budget;
@@ -267,7 +271,7 @@ export type TaskRequest =
       readonly kind: 'reconcilePublication';
       readonly attemptNumber: number;
       /** The binding repository the attempt branch was pushed to. */
-      readonly repository: RepositoryId;
+      readonly repository: ForgeRepository;
       readonly remoteBranch: string;
       /** The attempt's commit: the push applied exactly when the branch head is this commit. */
       readonly expectedHeadSha: string;
@@ -433,17 +437,17 @@ export type TaskResult =
 
 /** The attempt branch as a reconciliation read observed it. */
 export interface ObservedBranch {
-  readonly repository: RepositoryId;
+  readonly repository: ForgeRepository;
   readonly headSha: string;
 }
 
 /** A PR as a reconciliation read observed it; the core, not the activity, decides whether it is the attempt's. */
 export interface ObservedPullRequest {
   readonly number: number;
-  readonly headRepository: RepositoryId;
+  readonly headRepository: ForgeRepository;
   readonly headBranch: string;
   readonly headSha: string;
-  readonly baseRepository: RepositoryId;
+  readonly baseRepository: ForgeRepository;
   readonly baseBranch: string;
   readonly state: 'open' | 'closed';
   readonly merged: boolean;
