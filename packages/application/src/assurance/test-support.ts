@@ -246,7 +246,8 @@ export function fixtureWorld(options: FixtureOptions = {}): FixtureWorld {
 
 export interface DiffEntry {
   readonly path: string;
-  readonly status: 'A' | 'M' | 'D' | 'R';
+  /** `C`: a copy of `oldPath`, which git reports only with copy detection. */
+  readonly status: 'A' | 'M' | 'D' | 'R' | 'C';
   readonly oldPath?: string;
   readonly binary?: boolean;
   /** Unchanged lines at the top of the hunk. */
@@ -274,6 +275,7 @@ export function gitDiff(entries: readonly DiffEntry[]): string {
     if (e.status === 'A') out.push('new file mode 100644');
     if (e.status === 'D') out.push('deleted file mode 100644');
     if (e.status === 'R') out.push('similarity index 90%', `rename from ${gitPath('', oldPath)}`, `rename to ${gitPath('', e.path)}`);
+    if (e.status === 'C') out.push('similarity index 90%', `copy from ${gitPath('', oldPath)}`, `copy to ${gitPath('', e.path)}`);
     if (e.binary) {
       out.push(`Binary files ${e.status === 'A' ? '/dev/null' : gitPath('a/', oldPath)} and ${e.status === 'D' ? '/dev/null' : gitPath('b/', e.path)} differ`);
       continue;
@@ -298,7 +300,8 @@ export function gitDiff(entries: readonly DiffEntry[]): string {
 export function worldFromDiff(entries: readonly DiffEntry[], options: Omit<FixtureOptions, 'diff' | 'files'> = {}): FixtureWorld {
   const files: FixtureFile[] = entries.map((e) => ({
     path: e.path,
-    status: e.status,
+    // The reader reports a copy's target as an added file.
+    status: e.status === 'C' ? 'A' : e.status,
     ...(e.binary ? { binary: true } : {}),
     ...(e.status === 'D' || e.binary ? {} : { content: [...(e.context ?? []), ...(e.added ?? [])].map((l) => `${l}\n`).join('') }),
   }));

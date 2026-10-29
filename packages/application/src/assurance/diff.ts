@@ -18,9 +18,10 @@ export interface DiffHunk {
 export interface DiffFileChange {
   /** Post-image path (pre-image path for a deletion). */
   readonly path: string;
-  /** Pre-image path of a rename; null otherwise. */
+  /** Pre-image path when it differs from `path`: the source of a rename or a copy; null otherwise. */
   readonly oldPath: string | null;
-  readonly status: 'A' | 'M' | 'D' | 'R';
+  /** `C`: a copy, reported only when git detects copies. */
+  readonly status: 'A' | 'M' | 'D' | 'R' | 'C';
   readonly binary: boolean;
   readonly added: readonly DiffLine[];
   readonly removed: readonly DiffLine[];
@@ -91,7 +92,7 @@ interface Building {
   oldPath: string | null;
   aPath: string | null;
   bPath: string | null;
-  status: 'A' | 'M' | 'D' | 'R';
+  status: 'A' | 'M' | 'D' | 'R' | 'C';
   binary: boolean;
   added: DiffLine[];
   removed: DiffLine[];
@@ -112,9 +113,11 @@ export function parseUnifiedDiff(text: string): DiffFileChange[] {
     if (oldLeft !== 0 || newLeft !== 0) throw new DiffParseError(`hunk of ${current.path ?? '?'} ends early`);
     const path = current.status === 'D' ? (current.aPath ?? current.path) : (current.bPath ?? current.path);
     if (path === null || path === '') throw new DiffParseError('file without a path');
+    // Whatever the headers call it, a pre-image path other than the post-image path is kept.
+    const before = current.status === 'R' || current.status === 'C' ? current.oldPath : current.aPath;
     files.push({
       path,
-      oldPath: current.status === 'R' ? current.oldPath : null,
+      oldPath: current.status === 'A' || current.status === 'D' || before === null || before === path ? null : before,
       status: current.status,
       binary: current.binary,
       added: current.added,
@@ -205,6 +208,14 @@ export function parseUnifiedDiff(text: string): DiffFileChange[] {
       current.status = 'R';
       current.path = unquote(line.slice('rename to '.length));
       current.bPath = current.path;
+    } else if (line.startsWith('copy from ')) {
+      current.status = 'C';
+      current.oldPath = unquote(line.slice('copy from '.length));
+      current.aPath = current.oldPath;
+    } else if (line.startsWith('copy to ')) {
+      current.status = 'C';
+      current.path = unquote(line.slice('copy to '.length));
+      current.bPath = current.path;
     } else if (line.startsWith('--- ')) {
       current.aPath = sidePath(line.slice(4), 'a/') ?? current.aPath;
       if (line.slice(4).trim() === '/dev/null') current.status = 'A';
@@ -215,7 +226,7 @@ export function parseUnifiedDiff(text: string): DiffFileChange[] {
     } else if (line.startsWith('Binary files ')) {
       current.binary = true;
     }
-    // Other extended headers (index, mode, similarity, copy) carry no content.
+    // Other extended headers (index, mode, similarity) carry no content.
   }
   finish();
   return files;

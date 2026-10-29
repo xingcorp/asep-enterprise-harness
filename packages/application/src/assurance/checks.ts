@@ -177,7 +177,8 @@ function pushGuardFindings(
 
   const { allowedPaths, forbiddenChanges } = packet.workOrder;
   const touched = new Set(packet.change.files.map((f) => f.path));
-  for (const file of diff) if (file.oldPath !== null) touched.add(file.oldPath);
+  // A rename changes its source path; a copy leaves its source as it was.
+  for (const file of diff) if (file.status === 'R' && file.oldPath !== null) touched.add(file.oldPath);
   for (const path of [...touched].sort()) {
     if (!isNormalizedRepoPath(path)) continue;
     const forbiddenBy = forbiddenChanges.find((glob) => matchesPathGlob(glob, path));

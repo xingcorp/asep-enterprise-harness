@@ -97,17 +97,22 @@ export function decideEgress(
     scanned.set(part, text);
   }
 
-  // Renames carry their pre-image path only in the diff.
-  const diffText = scanned.get('diff');
-  if (diffText !== undefined) {
+  // Both sides of every entry of both diffs: a rename's or a copy's source, a deletion, or a
+  // file only the repair delta touches never appears among the packet's own paths.
+  const named = new Map<string, string>([...paths].map((path) => [path, 'packet']));
+  for (const part of ['diff', 'repair-delta']) {
+    const text = scanned.get(part);
+    if (text === undefined) continue;
     try {
-      for (const file of parseUnifiedDiff(diffText)) if (file.oldPath !== null) paths.add(file.oldPath);
+      for (const file of parseUnifiedDiff(text)) {
+        for (const path of [file.path, file.oldPath]) if (path !== null && !named.has(path)) named.set(path, part);
+      }
     } catch {
-      hits.push({ kind: 'unscannable', part: 'diff', detail: 'the diff cannot be parsed for renamed paths' });
+      hits.push({ kind: 'unscannable', part, detail: 'the diff cannot be parsed for the paths it names' });
     }
   }
-  for (const path of [...paths].sort()) {
-    if (isSensitivePath(policy, path)) hits.push({ kind: 'deny-path', part: 'packet', detail: path });
+  for (const [path, part] of [...named].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
+    if (isSensitivePath(policy, path)) hits.push({ kind: 'deny-path', part, detail: path });
   }
 
   for (const [part, text] of scanned) {

@@ -207,6 +207,60 @@ test('a path that is not normalizable is refused before the gateway', async () =
   assert.equal(provider.calls, 1);
 });
 
+test('both sides of every entry of both diffs are classified', async () => {
+  const content = ['customer = first record'];
+  const round2 = (entries: Parameters<typeof worldFromDiff>[0], delta: string) =>
+    worldFromDiff(entries, { allowedPaths: ['**'], round: 2, repairDelta: delta });
+  const stops: readonly (readonly [string, FixtureWorld, string])[] = [
+    // The review's probe: the repair moves a classified file to an ordinary path; the
+    // cumulative diff shows only the target.
+    [
+      'rename out of a classified path, in the repair delta only',
+      round2([{ path: 'src/customer.txt', status: 'A', added: content }], gitDiff([{ path: 'src/customer.txt', oldPath: 'secrets/customer.txt', status: 'R', context: content }])),
+      'secrets/customer.txt',
+    ],
+    [
+      'copy of a classified file, in the cumulative diff',
+      worldFromDiff([{ path: 'src/settings.txt', oldPath: '.env', status: 'C', added: content }], { allowedPaths: ['**'] }),
+      '.env',
+    ],
+    [
+      'copy of a classified file, in the repair delta only',
+      round2([{ path: 'src/settings.txt', status: 'A', added: content }], gitDiff([{ path: 'src/settings.txt', oldPath: 'config/.env.local', status: 'C', added: content }])),
+      'config/.env.local',
+    ],
+    [
+      'deletion of a classified file, in the repair delta only',
+      round2([{ path: 'src/a.ts', status: 'A', added: ['export const a = 1;'] }], gitDiff([{ path: 'deploy/tls.key', status: 'D', removed: content }])),
+      'deploy/tls.key',
+    ],
+    [
+      'a classified file only the repair delta changes',
+      round2([{ path: 'src/a.ts', status: 'A', added: ['export const a = 1;'] }], gitDiff([{ path: 'secrets/db.yaml', status: 'M', context: ['a: 1'], removed: content }])),
+      'secrets/db.yaml',
+    ],
+  ];
+  for (const [label, world, sensitive] of stops) {
+    const { built, checks, requestBytes } = prepare(world);
+    assert.equal(checks.egress.decision, 'STOP_CLASSIFIED', label);
+    assert.ok(checks.egress.hits.some((h) => h.kind === 'deny-path' && h.detail === sensitive), `${label}: ${JSON.stringify(checks.egress.hits)}`);
+    const sent = await sendsUnder(checks, built, requestBytes);
+    assert.equal(sent.calls, 0, label);
+  }
+
+  // A repair delta that cannot be parsed cannot be classified, so nothing is sent.
+  const garbled = prepare(round2([{ path: 'src/a.ts', status: 'A', added: ['export const a = 1;'] }], 'diff --git a/src/a.ts b/src/a.ts\n@@ -1 +1 @@\n+a\n+b\n'));
+  assert.equal(garbled.checks.egress.decision, 'STOP_UNSCANNABLE');
+  assert.ok(garbled.checks.egress.hits.some((h) => h.kind === 'unscannable' && h.part === 'repair-delta'));
+  assert.equal((await sendsUnder(garbled.checks, garbled.built, garbled.requestBytes)).calls, 0);
+
+  // Positive control: both sides of both diffs are ordinary paths, and the round is clear.
+  const ordinary = prepare(
+    round2([{ path: 'src/customer.txt', status: 'A', added: content }], gitDiff([{ path: 'src/customer.txt', oldPath: 'src/draft.txt', status: 'R', context: content }])),
+  );
+  assert.equal(ordinary.checks.egress.decision, 'CLEAR', JSON.stringify(ordinary.checks.egress.hits));
+});
+
 test('egress decision scans every part the prompt carries', () => {
   const policy = optedIn();
   const decide = (world: FixtureWorld) => decideEgress(policy, buildReviewPacket(world.sources, world.limits), world.contents);

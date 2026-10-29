@@ -435,6 +435,10 @@ test('git diffs are read line by line', () => {
     'diff --git a/bin.dat b/bin.dat',
     'deleted file mode 100644',
     'Binary files a/bin.dat and /dev/null differ',
+    'diff --git a/src/a.ts b/src/copy.ts',
+    'similarity index 100%',
+    'copy from src/a.ts',
+    'copy to src/copy.ts',
     '',
   ].join('\n');
   const files = parseUnifiedDiff(diff);
@@ -445,6 +449,7 @@ test('git diffs are read line by line', () => {
       ['new name.ts', 'old name.ts', 'R', false],
       ['café.ts', null, 'A', false],
       ['bin.dat', null, 'D', true],
+      ['src/copy.ts', 'src/a.ts', 'C', false],
     ],
   );
   const a = files[0]!;
