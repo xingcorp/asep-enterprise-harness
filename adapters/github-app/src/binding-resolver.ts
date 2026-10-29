@@ -101,9 +101,16 @@ export class SqlForgeBindingResolver implements ForgeBindingResolver {
       repositoryId: row.githubRepositoryId,
     };
 
+    // Only a push reads the local repository. Resolving it on access keeps a PR
+    // lookup or a remote-ref probe from depending on a worktree that need not
+    // exist — a resume in a fresh process, or the pilot verifier, which never
+    // pushes.
+    const locator = this.locator;
     return {
       repository,
-      localRepoPath: this.locator.localRepoPathFor(scope, repositoryBindingId),
+      get localRepoPath(): string {
+        return locator.localRepoPathFor(scope, repositoryBindingId);
+      },
     };
   }
 }

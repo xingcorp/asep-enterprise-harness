@@ -353,7 +353,7 @@ export async function createResolverFromEnv(env = process.env) {
     },
   };
   try {
-    const forge = await githubForgePort(db, github);
+    const forge = await createGitHubForgePort(db, github);
     return {
       resolver: createSqlAuthorityResolver(db, {
         reviewerPublicKeyPem, objects: filesystemObjectReader(objectDir), forge,
@@ -389,10 +389,17 @@ function githubAppFromEnv(env) {
   return { appId, privateKey, installationId };
 }
 
-// The real GitHub App forge behind the ForgeProvider port. The verifier only
-// LOOKS UP pull requests; it never pushes, so the local repository locator
-// refuses.
-async function githubForgePort(db, { appId, privateKey, installationId }) {
+/**
+ * The real GitHub App forge behind the ForgeProvider port, as the verifier uses
+ * it: the built @asep/github-app adapter, JIT installation tokens scoped to the
+ * binding's repository, and the binding resolved from the database in the
+ * caller's tenant scope. The verifier only LOOKS UP pull requests; it never
+ * pushes, so the local repository locator refuses.
+ *
+ * `overrides` replaces the GitHub transport (`octokitFor`) and the token
+ * minting (`auth`) — for tests only; production passes neither.
+ */
+export async function createGitHubForgePort(db, { appId, privateKey, installationId }, overrides = {}) {
   const adapterUrl = new URL('../../adapters/github-app/dist/index.js', import.meta.url);
   let adapter;
   try {
@@ -400,9 +407,13 @@ async function githubForgePort(db, { appId, privateKey, installationId }) {
   } catch (e) {
     throw new Error(`cannot load the GitHub App adapter (${adapterUrl.pathname}) — run \`pnpm build\` first: ${e.message}`);
   }
-  const { Octokit } = await import('@octokit/rest');
-  const credentials = new adapter.GitHubAppCredentialProvider({ appId, privateKey, installationId });
-  const inner = new adapter.GitHubAppForgeProvider(credentials, (token) => new Octokit({ auth: token }), ['github.com']);
+  let octokitFor = overrides.octokitFor;
+  if (!octokitFor) {
+    const { Octokit } = await import('@octokit/rest');
+    octokitFor = (token) => new Octokit({ auth: token });
+  }
+  const credentials = new adapter.GitHubAppCredentialProvider({ appId, privateKey, installationId }, overrides.auth);
+  const inner = new adapter.GitHubAppForgeProvider(credentials, octokitFor, ['github.com']);
   const bindings = new adapter.SqlForgeBindingResolver(sqlBindingReader(db), {
     localRepoPathFor: () => {
       throw new Error('the pilot verifier never pushes; it has no local repository');

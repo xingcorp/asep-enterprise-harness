@@ -25,6 +25,7 @@ import {
   createResolverFromEnv,
   filesystemObjectReader,
   sqlBindingReader,
+  createGitHubForgePort,
   // @ts-expect-error - .mjs sibling has no type declarations; runtime import is fine under tsx.
 } from './authority-resolver.mjs';
 import {
@@ -744,6 +745,39 @@ test('HIGH-009 (resolver): createResolverFromEnv fails closed on missing env', a
   await assert.rejects(
     () => createResolverFromEnv({ ...withObjects, ASEP_GITHUB_APP_ID: 'one', ASEP_GITHUB_PRIVATE_KEY_PATH: pub, ASEP_GITHUB_INSTALLATION_ID: '2' }),
     /ASEP_GITHUB_APP_ID must be a positive integer/,
+  );
+});
+
+// The verifier's forge is the real GitHub App adapter behind the forge port: a
+// lookup resolves the binding in the trace's tenant, queries the PR by head
+// branch, and reports its head commit — without needing a local repository.
+test('the verifier forge looks a PR up through the GitHub App adapter and reports its head', async () => {
+  const db = fakeDb((text) => (/repository_bindings/.test(text)
+    ? [{ github_host: 'github.com', github_owner: 'acme', github_repo: 'web', github_repository_id: 42 }]
+    : []));
+  const listed: unknown[] = [];
+  const forge = await createGitHubForgePort(db, { appId: 1, privateKey: 'unused', installationId: 9 }, {
+    auth: async () => ({ token: 'ghs_verifier', expiresAt: new Date(Date.now() + 3_600_000).toISOString() }),
+    octokitFor: () => ({
+      pulls: {
+        list: async (q: unknown) => {
+          listed.push(q);
+          return { data: [{ number: 3, html_url: 'https://github.com/acme/web/pull/3', head: { ref: 'asep/x', sha: 'c'.repeat(40) }, base: { ref: 'main' } }] };
+        },
+        create: async () => { throw new Error('a lookup must not create'); },
+        update: async () => { throw new Error('a lookup must not update'); },
+      },
+    }),
+  });
+  const pr = await forge.findPullRequest({ organizationId: 'org-1', projectId: 'proj-1' }, { repositoryBindingId: 'rb-1', headBranch: 'asep/x' });
+  assert.deepEqual(pr, {
+    number: 3, url: 'https://github.com/acme/web/pull/3', headBranch: 'asep/x', baseBranch: 'main', headSha: 'c'.repeat(40),
+  });
+  assert.deepEqual(listed, [{ owner: 'acme', repo: 'web', head: 'acme:asep/x', state: 'all' }]);
+  assert.deepEqual([...db.calls[0]!.params].sort(), ['org-1', 'proj-1', 'rb-1'], 'the binding is read in the trace scope');
+  await assert.rejects(
+    () => forge.pushBranch({ organizationId: 'org-1', projectId: 'proj-1' }, { repositoryBindingId: 'rb-1', branch: 'asep/x', commitSha: 'c'.repeat(40) }),
+    /never pushes/,
   );
 });
 

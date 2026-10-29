@@ -459,3 +459,40 @@ test('HIGH-008: a binding with no numeric forge id fails closed (no broader toke
     'a missing numeric forge id must fail closed, never mint an unscoped token',
   );
 });
+
+// Only a push needs the local repository. A PR lookup or a remote-ref probe
+// through the production resolver must work when no worktree can be located —
+// a resume in a fresh process, or the pilot verifier, which never pushes.
+test('PR and ref lookups through the production resolver never ask for the local repository', async () => {
+  let located = 0;
+  const reader = {
+    getScoped: async (s: TenantScope, bindingId: RepositoryBindingId) => {
+      assert.deepEqual(s, scope);
+      assert.equal(bindingId, BINDING);
+      return { githubHost: 'github.com', githubOwner: 'acme', githubRepo: 'web', githubRepositoryId: REPO_ID };
+    },
+  };
+  const resolver = new SqlForgeBindingResolver(reader, {
+    localRepoPathFor: () => { located++; throw new Error('no local repository here'); },
+  });
+  const octokitFor = (): OctokitLike => ({
+    pulls: {
+      list: async () => ({ data: [] }),
+      create: async () => { throw new Error('a lookup must not create'); },
+      update: async () => { throw new Error('a lookup must not update'); },
+    },
+  });
+  const creds = new GitHubAppCredentialProvider(
+    { appId: 1, privateKey: 'PEM', installationId: 9 }, fakeAuth(),
+  );
+  const port = new GitHubAppForgePort(new GitHubAppForgeProvider(creds, octokitFor, ['github.com']), resolver);
+
+  assert.equal(await port.findPullRequest(scope, { repositoryBindingId: BINDING, headBranch: attemptBranchStr }), null);
+  assert.equal(located, 0, 'the lookup never located a repository');
+  await assert.rejects(
+    () => port.pushBranch(scope, { repositoryBindingId: BINDING, branch: attemptBranchStr, commitSha: 'a'.repeat(40) }),
+    /no local repository here/,
+    'a push still needs it, and fails closed without it',
+  );
+  assert.equal(located, 1);
+});
