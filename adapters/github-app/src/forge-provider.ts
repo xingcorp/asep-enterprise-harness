@@ -53,6 +53,22 @@ export class ForgeAuthExpiredError extends Error {
   }
 }
 
+// A read-only reconciliation probe (resolveRef) failed for a reason OTHER than
+// credential expiry — the remote is unreachable, the repository is gone, git
+// itself failed. Kept distinct from ForgePushError: nothing was being pushed,
+// and a caller deciding retry-vs-adopt must not read a failed probe as a failed
+// publish. The message is token-scrubbed like every other forge error.
+export class ForgeReconcileError extends Error {
+  constructor(reason: string) {
+    super(`forge reconciliation probe failed: ${reason}`);
+    this.name = 'ForgeReconcileError';
+  }
+}
+
+// The operations that spend a JIT credential. Named so an exhausted budget says
+// which one could not recover.
+export type ForgeOperation = 'push' | 'resolve-ref' | 'pr-upsert' | 'pr-find';
+
 // Bound on JIT-credential re-mints per operation (MED-002). A token that
 // expires or is revoked BETWEEN mint and use is recoverable by minting a fresh
 // one, but only a bounded number of times — an unbounded loop against a
@@ -108,6 +124,19 @@ export function isAuthExpiryError(err: unknown): boolean {
   if (status === 401) return true;
 
   // A 403 (or a message-only error) counts as expiry ONLY with credential wording.
+  // Git over HTTPS never says "bad credentials". An expired or revoked
+  // installation token in the push/ls-remote URL comes back as one of these, so
+  // without them a mid-operation expiry on the two git-based operations was
+  // reported as an ordinary push failure and never re-minted. A git 403 is a
+  // ruleset/permission refusal and deliberately stays out.
+  if (
+    /authentication failed for/.test(msg) ||
+    /invalid username or (password|token)/.test(msg) ||
+    /requested url returned error: 401/.test(msg)
+  ) {
+    return true;
+  }
+
   const credentialWording =
     /bad credentials/.test(msg) ||
     /token (has )?expired/.test(msg) ||
@@ -220,12 +249,44 @@ export class GitHubAppForgeProvider {
   // strategy, a revoked installation replaying an old value) was used anyway and
   // failed deep inside the transport. Checking here turns that into a bounded
   // re-mint at the call site, or a clean ForgeAuthExpiredError.
-  private async mintUsable(repositoryId: number): Promise<string | null> {
-    const { token, expiresAt } = await this.credentials.mintForRepository(repositoryId);
+  private async mintUsable(repositoryId: number, refresh: boolean): Promise<string | null> {
+    const { token, expiresAt } = await this.credentials.mintForRepository(
+      repositoryId, refresh ? { refresh: true } : {},
+    );
     if (typeof expiresAt === 'string' && expiresAt !== '') {
       if (isExpired(expiresAt, this.now(), this.expirySkewMs)) return null;
     }
     return token;
+  }
+
+  // The ONE credential-recovery loop every token-spending operation goes through
+  // (MED-002). Each attempt mints a fresh token — bypassing the auth strategy's
+  // cache on every re-mint — skips a token that is already expired at use time,
+  // and retries only when the failure is credential expiry/revocation. Anything
+  // else propagates unchanged on the first occurrence. Exhausting the bound is a
+  // ForgeAuthExpiredError naming the operation, never a push or probe failure.
+  //
+  // Before this, the loop was hand-copied into three operations and the fourth
+  // (resolveRef, the probe crash recovery depends on) minted once and wrapped an
+  // expired credential as ForgePushError. Routing all four through one function
+  // makes "this operation recovers from expiry" a property of the class rather
+  // than of whichever method remembered to.
+  private async withCredential<T>(
+    op: ForgeOperation,
+    repositoryId: number,
+    fn: (token: string) => Promise<T>,
+  ): Promise<T> {
+    for (let attempt = 0; attempt <= MAX_REMINT_ATTEMPTS; attempt++) {
+      const token = await this.mintUsable(repositoryId, attempt > 0);
+      if (token === null) continue;
+      try {
+        return await fn(token);
+      } catch (err) {
+        if (isAuthExpiryError(err)) continue;
+        throw err;
+      }
+    }
+    throw new ForgeAuthExpiredError(op, MAX_REMINT_ATTEMPTS + 1);
   }
 
   // Push the harness commit to the EXACT ASEP-namespaced ref. The refspec is
@@ -251,14 +312,10 @@ export class GitHubAppForgeProvider {
       pushArgsTemplate.push(`--force-with-lease=${safe.branch}:${safe.forceWithLeaseExpectedSha}`);
     }
 
-    // MED-002: mint JIT, and if the credential is expired/revoked at USE time,
-    // re-mint a fresh token and retry — bounded. Each attempt mints a NEW token
-    // (never reuses a stale one), injected only into that one git child.
-    for (let attempt = 0; attempt <= MAX_REMINT_ATTEMPTS; attempt++) {
-      // An already-expired mint is never used: treat it exactly like an
-      // expiry observed at use time and re-mint within the bound (MED-002).
-      const token = await this.mintUsable(input.repository.repositoryId);
-      if (token === null) continue;
+    // MED-002: one bounded recovery loop; the token is injected only into this
+    // one git child. A credential failure is rethrown raw so the loop re-mints;
+    // any other failure is a genuine push error, scrubbed, and fails fast.
+    return this.withCredential('push', input.repository.repositoryId, async (token) => {
       const authedUrl = baseUrl.replace(
         /^https:\/\//,
         'https://x-access-token:' + token + '@',
@@ -268,15 +325,11 @@ export class GitHubAppForgeProvider {
         await this.runGit(pushArgs, { cwd: input.localWorktreePath, timeoutMs: 120_000 });
         return { ref: `refs/heads/${safe.branch}` };
       } catch (err) {
+        if (isAuthExpiryError(err)) throw err;
         const msg = err instanceof Error ? err.message : String(err);
-        // An auth-expiry/revocation is recoverable by a fresh mint; retry within
-        // the bound. Any other failure is a genuine push error — fail fast.
-        if (isAuthExpiryError(err)) continue;
         throw new ForgePushError(scrub(msg, token));
       }
-    }
-    // Exhausted the re-mint budget against a persistently-invalid credential.
-    throw new ForgeAuthExpiredError('push', MAX_REMINT_ATTEMPTS + 1);
+    });
   }
 
   // Idempotent PR upsert: find an open PR by head branch and UPDATE it, else
@@ -287,62 +340,51 @@ export class GitHubAppForgeProvider {
     const repo = identity.githubRepo.replace(/\.git$/, '');
 
     // MED-002: the upsert is a find-or-create against REST; a credential that
-    // expired/was revoked between mint and call is recovered by a bounded
-    // re-mint. The upsert is idempotent (find-by-head-branch → update, else
+    // expired/was revoked between mint and call is recovered by the bounded
+    // re-mint loop. The upsert is idempotent (find-by-head-branch → update, else
     // create) so a retry after a partial auth failure cannot open a duplicate.
-    for (let attempt = 0; attempt <= MAX_REMINT_ATTEMPTS; attempt++) {
-      // MED-002: reject an already-expired token BEFORE the call rather than
-      // discovering it inside the transport; a null means "re-mint" (bounded).
-      const token = await this.mintUsable(repositoryId);
-      if (token === null) continue;
+    return this.withCredential('pr-upsert', repositoryId, async (token) => {
       const octokit = this.octokitFor(token);
-      try {
-        // find-by-head-branch: GitHub's head filter is `owner:branch`.
-        const existing = await octokit.pulls.list({
+      // find-by-head-branch: GitHub's head filter is `owner:branch`.
+      const existing = await octokit.pulls.list({
+        owner,
+        repo,
+        head: `${owner}:${input.headBranch}`,
+        state: 'all',
+      });
+      const match = existing.data.find((pr) => pr.head.ref === input.headBranch);
+
+      if (match) {
+        const updated = await octokit.pulls.update({
           owner,
           repo,
-          head: `${owner}:${input.headBranch}`,
-          state: 'all',
-        });
-        const match = existing.data.find((pr) => pr.head.ref === input.headBranch);
-
-        if (match) {
-          const updated = await octokit.pulls.update({
-            owner,
-            repo,
-            pull_number: match.number,
-            title: input.title,
-            body: input.body,
-          });
-          return {
-            number: updated.data.number,
-            url: updated.data.html_url,
-            headBranch: updated.data.head.ref,
-            baseBranch: updated.data.base.ref,
-          };
-        }
-
-        const created = await octokit.pulls.create({
-          owner,
-          repo,
-          head: input.headBranch,
-          base: input.base,
+          pull_number: match.number,
           title: input.title,
           body: input.body,
         });
         return {
-          number: created.data.number,
-          url: created.data.html_url,
-          headBranch: created.data.head.ref,
-          baseBranch: created.data.base.ref,
+          number: updated.data.number,
+          url: updated.data.html_url,
+          headBranch: updated.data.head.ref,
+          baseBranch: updated.data.base.ref,
         };
-      } catch (err) {
-        // Recoverable credential failure → re-mint and retry within the bound.
-        if (isAuthExpiryError(err)) continue;
-        throw err;
       }
-    }
-    throw new ForgeAuthExpiredError('pr-upsert', MAX_REMINT_ATTEMPTS + 1);
+
+      const created = await octokit.pulls.create({
+        owner,
+        repo,
+        head: input.headBranch,
+        base: input.base,
+        title: input.title,
+        body: input.body,
+      });
+      return {
+        number: created.data.number,
+        url: created.data.html_url,
+        headBranch: created.data.head.ref,
+        baseBranch: created.data.base.ref,
+      };
+    });
   }
 
   // --- crash-recovery reconciliation (disp. P2-FINAL-HIGH-006, exit C7) ------
@@ -361,25 +403,26 @@ export class GitHubAppForgeProvider {
   }): Promise<string | null> {
     const safe = safeRefspecFor(input.branch);
     const baseUrl = buildCloneUrl(input.repository.identity, this.allowedHosts);
-    // MED-002: assert the minted credential is usable before spending it on the
-    // probe, so an already-expired token surfaces as ForgeAuthExpiredError rather
-    // than an opaque transport failure that a caller might read as "no ref".
-    const token = await this.mintUsable(input.repository.repositoryId);
-    if (token === null) throw new ForgeAuthExpiredError('resolve-ref', 1);
-    const authedUrl = baseUrl.replace(/^https:\/\//, 'https://x-access-token:' + token + '@');
-    try {
-      const res = await this.runGit(
-        ['ls-remote', '--', authedUrl, `refs/heads/${safe.branch}`],
-        { timeoutMs: 60_000 },
-      );
-      const line = res.stdout.trim();
-      if (line === '') return null;                    // ref does not exist yet
-      const sha = line.split(/\s+/)[0] ?? '';
-      return /^[0-9a-f]{40}$/.test(sha) ? sha : null;
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      throw new ForgePushError(scrub(msg, token));
-    }
+    // MED-002: the same bounded recovery as every other operation. A resume that
+    // finds a PENDING push calls this first, so a probe that died on an expired
+    // token wedged the whole recovery path.
+    return this.withCredential('resolve-ref', input.repository.repositoryId, async (token) => {
+      const authedUrl = baseUrl.replace(/^https:\/\//, 'https://x-access-token:' + token + '@');
+      try {
+        const res = await this.runGit(
+          ['ls-remote', '--', authedUrl, `refs/heads/${safe.branch}`],
+          { timeoutMs: 60_000 },
+        );
+        const line = res.stdout.trim();
+        if (line === '') return null;                    // ref does not exist yet
+        const sha = line.split(/\s+/)[0] ?? '';
+        return /^[0-9a-f]{40}$/.test(sha) ? sha : null;
+      } catch (err) {
+        if (isAuthExpiryError(err)) throw err;
+        const msg = err instanceof Error ? err.message : String(err);
+        throw new ForgeReconcileError(scrub(msg, token));
+      }
+    });
   }
 
   // The PR whose head is `headBranch`, or null when none exists. Reuses the same
@@ -392,29 +435,20 @@ export class GitHubAppForgeProvider {
     const { identity, repositoryId } = input.repository;
     const owner = identity.githubOwner;
     const repo = identity.githubRepo.replace(/\.git$/, '');
-    for (let attempt = 0; attempt <= MAX_REMINT_ATTEMPTS; attempt++) {
-      // MED-002: skip an already-expired mint and re-mint within the bound.
-      const token = await this.mintUsable(repositoryId);
-      if (token === null) continue;
+    return this.withCredential('pr-find', repositoryId, async (token) => {
       const octokit = this.octokitFor(token);
-      try {
-        const existing = await octokit.pulls.list({
-          owner, repo, head: `${owner}:${input.headBranch}`, state: 'all',
-        });
-        const match = existing.data.find((pr) => pr.head.ref === input.headBranch);
-        if (!match) return null;
-        return {
-          number: match.number,
-          url: match.html_url,
-          headBranch: match.head.ref,
-          baseBranch: match.base.ref,
-        };
-      } catch (err) {
-        if (isAuthExpiryError(err)) continue;
-        throw err;
-      }
-    }
-    throw new ForgeAuthExpiredError('pr-find', MAX_REMINT_ATTEMPTS + 1);
+      const existing = await octokit.pulls.list({
+        owner, repo, head: `${owner}:${input.headBranch}`, state: 'all',
+      });
+      const match = existing.data.find((pr) => pr.head.ref === input.headBranch);
+      if (!match) return null;
+      return {
+        number: match.number,
+        url: match.html_url,
+        headBranch: match.head.ref,
+        baseBranch: match.base.ref,
+      };
+    });
   }
 }
 

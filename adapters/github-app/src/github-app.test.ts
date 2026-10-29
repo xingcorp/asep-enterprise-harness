@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   GitHubAppCredentialProvider, MINIMUM_PERMISSIONS, isExpired,
-  GitHubAppForgeProvider, ForgePushError, ForgeAuthExpiredError,
+  GitHubAppForgeProvider, ForgePushError, ForgeAuthExpiredError, ForgeReconcileError,
   isAuthExpiryError, MAX_REMINT_ATTEMPTS, scrubToken,
 } from './index.js';
 import type {
@@ -395,4 +395,164 @@ test('MED-002: PR upsert re-mints on a revoked credential and does NOT open a du
   assert.equal(pr.number, 5, 'the PR was created after the credential recovery');
   assert.equal(store.prs.length, 1, 'exactly one PR exists — no duplicate from the retry');
   assert.ok(minted.length >= 2, 'a fresh token was minted for the retry');
+});
+
+// ---------------------------------------------------------------------------
+// MED-002 (cycle 6) — the credential-recovery rule is one invariant over EVERY
+// operation that mints a JIT token: reject an already-expired mint, re-mint on
+// expiry/revocation within the bound (bypassing the auth strategy's token
+// cache), and surface exhaustion as ForgeAuthExpiredError — never as a push
+// failure. resolveRef, the read the crash-recovery path depends on, minted once
+// and wrapped expiry as ForgePushError.
+// ---------------------------------------------------------------------------
+
+// Real git wording for a rejected HTTPS credential. Git does not say "bad
+// credentials"; this is what an expired or revoked installation token produces.
+const GIT_AUTH_FAILURE =
+  "remote: Invalid username or token. Password authentication is not supported for Git operations.\n" +
+  "fatal: Authentication failed for 'https://github.com/acme/web.git/'";
+
+interface MintLog { tokens: string[]; refresh: boolean[] }
+
+// Each mint returns a fresh token and records whether the cache was bypassed.
+// `expiredFirst` makes the FIRST mint already expired at use time.
+function recordingAuth(log: MintLog, opts: { expiredFirst?: boolean } = {}): InstallationAuth {
+  return async (o) => {
+    const n = log.tokens.length;
+    const token = `ghs_mint_${n}`;
+    log.tokens.push(token);
+    log.refresh.push((o as { refresh?: boolean }).refresh === true);
+    const expired = opts.expiredFirst === true && n === 0;
+    return { token, expiresAt: new Date(Date.now() + (expired ? -60_000 : 3600_000)).toISOString() };
+  };
+}
+
+const SHA = 'a'.repeat(40);
+
+test('MED-002: git HTTPS authentication failures are recognised as credential expiry', () => {
+  assert.equal(isAuthExpiryError(new Error(GIT_AUTH_FAILURE)), true);
+  assert.equal(isAuthExpiryError(new Error("fatal: Authentication failed for 'https://github.com/a/b/'")), true);
+  assert.equal(isAuthExpiryError(new Error('remote: Invalid username or password.')), true);
+  assert.equal(isAuthExpiryError(new Error('fatal: unable to access: The requested URL returned error: 401')), true);
+  // A 403 from git is a permission/ruleset refusal, not an expired token.
+  assert.equal(isAuthExpiryError(new Error('fatal: unable to access: The requested URL returned error: 403')), false);
+});
+
+test('MED-002: resolveRef re-mints after a revoked credential and returns the remote SHA', async () => {
+  const log: MintLog = { tokens: [], refresh: [] };
+  let calls = 0;
+  const runner: GitRunner = async () => {
+    calls++;
+    if (calls === 1) throw new Error(GIT_AUTH_FAILURE);
+    return { stdout: `${SHA}\trefs/heads/${attemptBranchStr}\n`, stderr: '', exitCode: 0 };
+  };
+  const creds = new GitHubAppCredentialProvider({ appId: 1, privateKey: 'PEM', installationId: 9 }, recordingAuth(log));
+  const forge = new GitHubAppForgeProvider(creds, throwingOctokit, ['github.com'], runner);
+  assert.equal(await forge.resolveRef({ repository, branch: attemptBranchStr }), SHA);
+  assert.equal(calls, 2, 'the probe was retried once after the revoked token');
+  assert.equal(log.tokens.length, 2, 'a fresh token was minted for the retry');
+});
+
+test('MED-002: resolveRef skips an already-expired mint instead of failing on it', async () => {
+  const log: MintLog = { tokens: [], refresh: [] };
+  const used: string[] = [];
+  const runner: GitRunner = async (args) => {
+    used.push(args.join(' '));
+    return { stdout: '', stderr: '', exitCode: 0 };
+  };
+  const creds = new GitHubAppCredentialProvider(
+    { appId: 1, privateKey: 'PEM', installationId: 9 }, recordingAuth(log, { expiredFirst: true }),
+  );
+  const forge = new GitHubAppForgeProvider(creds, throwingOctokit, ['github.com'], runner);
+  assert.equal(await forge.resolveRef({ repository, branch: attemptBranchStr }), null);
+  assert.equal(log.tokens.length, 2);
+  assert.equal(used.length, 1, 'the expired token never reached git');
+  assert.ok(!used[0]!.includes(log.tokens[0]!), 'the expired token was not used');
+});
+
+test('MED-002: resolveRef fails closed with ForgeAuthExpiredError, not ForgePushError, when the budget runs out', async () => {
+  let calls = 0;
+  const runner: GitRunner = async () => { calls++; throw new Error(GIT_AUTH_FAILURE); };
+  const creds = new GitHubAppCredentialProvider({ appId: 1, privateKey: 'PEM', installationId: 9 }, fakeAuth());
+  const forge = new GitHubAppForgeProvider(creds, throwingOctokit, ['github.com'], runner);
+  await assert.rejects(
+    () => forge.resolveRef({ repository, branch: attemptBranchStr }),
+    (err: unknown) => {
+      assert.ok(err instanceof ForgeAuthExpiredError, `expected ForgeAuthExpiredError, got ${String(err)}`);
+      assert.ok(!(err instanceof ForgePushError));
+      return true;
+    },
+  );
+  assert.equal(calls, MAX_REMINT_ATTEMPTS + 1);
+});
+
+test('MED-002: a non-auth resolveRef failure is not retried and never leaks the token', async () => {
+  const token = 'ghs_probeLeak42';
+  let calls = 0;
+  const runner: GitRunner = async () => {
+    calls++;
+    throw new Error(`fatal: unable to access 'https://x-access-token:${token}@github.com/acme/web.git/': Could not resolve host`);
+  };
+  const creds = new GitHubAppCredentialProvider({ appId: 1, privateKey: 'PEM', installationId: 9 }, fakeAuth(token));
+  const forge = new GitHubAppForgeProvider(creds, throwingOctokit, ['github.com'], runner);
+  await assert.rejects(
+    () => forge.resolveRef({ repository, branch: attemptBranchStr }),
+    (err: unknown) => {
+      // A failed read-only probe is a reconciliation failure: nothing was being
+      // pushed, so it must not masquerade as a push error either.
+      assert.ok(err instanceof ForgeReconcileError, `expected ForgeReconcileError, got ${String(err)}`);
+      assert.ok(!(err instanceof ForgePushError));
+      assert.ok(!err.message.includes(token), 'token must be scrubbed');
+      return true;
+    },
+  );
+  assert.equal(calls, 1);
+});
+
+// The same invariant, table-driven over all four token-using operations, so a
+// fifth operation added later without the shared recovery path has a template
+// to fail against.
+test('MED-002: every forge operation re-mints once on expiry and bypasses the token cache', async () => {
+  const pr = { number: 3, html_url: 'https://github.com/acme/web/pull/3', head: { ref: attemptBranchStr, sha: SHA }, base: { ref: 'main' } };
+  const flakyOctokit = (failures: { left: number }) => (): OctokitLike => {
+    const once = async <T>(v: T): Promise<T> => {
+      if (failures.left-- > 0) throw { status: 401, message: 'Bad credentials' };
+      return v;
+    };
+    return {
+      pulls: {
+        list: () => once({ data: [pr] }),
+        create: () => once({ data: pr }),
+        update: () => once({ data: pr }),
+      },
+    };
+  };
+  const ops: ReadonlyArray<{
+    name: string;
+    run: (f: GitHubAppForgeProvider) => Promise<unknown>;
+    git: boolean;
+  }> = [
+    { name: 'pushBranch', git: true, run: (f) => f.pushBranch({ repository, localWorktreePath: '/tmp/wt', branch: attemptBranchStr }) },
+    { name: 'resolveRef', git: true, run: (f) => f.resolveRef({ repository, branch: attemptBranchStr }) },
+    { name: 'upsertPullRequest', git: false, run: (f) => f.upsertPullRequest({ repository, headBranch: attemptBranchStr, base: 'main', title: 'T', body: 'B' }) },
+    { name: 'findPullRequest', git: false, run: (f) => f.findPullRequest({ repository, headBranch: attemptBranchStr }) },
+  ];
+  for (const op of ops) {
+    const log: MintLog = { tokens: [], refresh: [] };
+    let gitCalls = 0;
+    const runner: GitRunner = async () => {
+      gitCalls++;
+      if (gitCalls === 1) throw new Error(GIT_AUTH_FAILURE);
+      return { stdout: `${SHA}\trefs/heads/${attemptBranchStr}\n`, stderr: '', exitCode: 0 };
+    };
+    const creds = new GitHubAppCredentialProvider({ appId: 1, privateKey: 'PEM', installationId: 9 }, recordingAuth(log));
+    const forge = new GitHubAppForgeProvider(
+      creds, op.git ? throwingOctokit : flakyOctokit({ left: 1 }), ['github.com'], runner,
+    );
+    await op.run(forge);
+    assert.equal(log.tokens.length, 2, `${op.name}: expected exactly one re-mint`);
+    // The octokit auth strategy caches installation tokens; a re-mint that does
+    // not ask for a refresh hands back the same revoked token.
+    assert.deepEqual(log.refresh, [false, true], `${op.name}: the re-mint must bypass the token cache`);
+  }
 });

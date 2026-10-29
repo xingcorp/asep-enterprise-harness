@@ -13,10 +13,10 @@ export {
 
 export type {
   OctokitLike, PullsApi, RepositoryForgeConfig, PushInput, UpsertPrInput,
-  PullRequestResult, GitRunner,
+  PullRequestResult, GitRunner, ForgeOperation,
 } from './forge-provider.js';
 export {
-  GitHubAppForgeProvider, ForgePushError, ForgeAuthExpiredError,
+  GitHubAppForgeProvider, ForgePushError, ForgeAuthExpiredError, ForgeReconcileError,
   isAuthExpiryError, MAX_REMINT_ATTEMPTS, scrubToken,
 } from './forge-provider.js';
 

@@ -48,6 +48,10 @@ export interface InstallationAuth {
     installationId: number;
     repositoryIds?: readonly number[];
     permissions?: Record<string, string>;
+    // Bypass the strategy's installation-token cache. @octokit/auth-app caches
+    // tokens per (installation, repositories, permissions), so without this a
+    // re-mint after a revocation hands back the same dead token.
+    refresh?: boolean;
   }): Promise<{ token: string; expiresAt: string }>;
 }
 
@@ -69,13 +73,19 @@ export class GitHubAppCredentialProvider {
 
   // Mint a fresh installation token scoped to EXACTLY `repositoryId` with the
   // minimum permission set. Called JIT for each bounded forge op; the result is
-  // never cached or persisted by this provider.
-  async mintForRepository(repositoryId: number): Promise<InstallationToken> {
+  // never cached or persisted by this provider. `refresh` forces a new token
+  // past the auth strategy's own cache — required for every re-mint, because a
+  // cached token is exactly the one that just expired or was revoked.
+  async mintForRepository(
+    repositoryId: number,
+    opts: { readonly refresh?: boolean } = {},
+  ): Promise<InstallationToken> {
     const res = await this.auth({
       type: 'installation',
       installationId: this.cfg.installationId,
       repositoryIds: [repositoryId],
       permissions: { ...MINIMUM_PERMISSIONS },
+      ...(opts.refresh === true ? { refresh: true } : {}),
     });
     if (typeof res.token !== 'string' || res.token.length === 0) {
       throw new Error('github-app: installation auth returned no token');
