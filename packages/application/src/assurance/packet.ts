@@ -85,8 +85,10 @@ export interface BuiltPacket {
   readonly sha256: string;
   /**
    * The packet's measured size, reported beside it and never inside it: the UTF-8 length of
-   * the canonical packet as it is sent (with `overBudget: false`), plus the bytes of the diffs
-   * and every post-image the prompt embeds. For a packet that is sent these are its final bytes.
+   * the canonical packet as it is stored, measured after `overBudget` is set, plus the bytes of
+   * the diffs and every post-image the prompt embeds. A packet that is sent is at most
+   * `maxBytes`; a rejected packet's stored `true` is one byte shorter than the `false` its
+   * budget decision was taken on.
    */
   readonly includedBytes: number;
   readonly overBudget: boolean;
@@ -301,20 +303,21 @@ export function buildReviewPacket(sources: PacketSources, limits: PacketLimits):
     priorFindings,
     budget: { maxBytes: limits.maxBytes, overBudget: false, omissions },
   };
-  // The budget: the canonical packet exactly as it is sent, plus the diffs and every
-  // post-image the prompt embeds. An over-budget packet only changes its flag and is never sent.
-  const embeddedPostImageBytes = files.reduce(
-    (n, f) => n + (f.postImage === null ? 0 : (change.postImages.find((b) => b.path === f.path)?.bytes ?? 0)),
-    0,
-  );
-  const includedBytes =
-    canonicalBytes(measured).byteLength + change.cumulativeDiff.bytes + (change.repairDelta?.bytes ?? 0) + embeddedPostImageBytes;
+  // The budget decision: the canonical packet exactly as it would be sent, plus the diffs and
+  // every post-image the prompt embeds. An over-budget packet only changes its flag and is never
+  // sent. The size reported is then measured again on the packet as it is stored.
+  const embeddedBytes =
+    change.cumulativeDiff.bytes +
+    (change.repairDelta?.bytes ?? 0) +
+    files.reduce((n, f) => n + (f.postImage === null ? 0 : (change.postImages.find((b) => b.path === f.path)?.bytes ?? 0)), 0);
   const overBudget =
-    includedBytes > limits.maxBytes || change.cumulativeDiff.overLimit || (change.repairDelta?.overLimit ?? false);
+    canonicalBytes(measured).byteLength + embeddedBytes > limits.maxBytes ||
+    change.cumulativeDiff.overLimit ||
+    (change.repairDelta?.overLimit ?? false);
   const packet: ReviewPacket = overBudget ? { ...measured, budget: { ...measured.budget, overBudget } } : measured;
   assertPacketWhitelist(packet);
   const bytes = canonicalBytes(packet);
-  return { packet, bytes, sha256: sha256Hex(bytes), includedBytes, overBudget, omissions };
+  return { packet, bytes, sha256: sha256Hex(bytes), includedBytes: bytes.byteLength + embeddedBytes, overBudget, omissions };
 }
 
 // --- whitelist -------------------------------------------------------------------------

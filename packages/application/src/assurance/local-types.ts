@@ -202,8 +202,9 @@ export interface ReviewPacket {
   readonly budget: {
     readonly maxBytes: number;
     /**
-     * Set when the packet's measured size (the builder's `includedBytes`, kept outside the
-     * packet) exceeds `maxBytes`, or a diff did not fit its reader limit. A decision, not a size.
+     * Set when the packet as it would be sent (with this flag false), plus the parts the prompt
+     * embeds, exceeds `maxBytes`, or a diff did not fit its reader limit. A decision, not a size:
+     * the size is the builder's `includedBytes`, kept outside the packet.
      */
     readonly overBudget: boolean;
     readonly omissions: readonly PacketOmission[];

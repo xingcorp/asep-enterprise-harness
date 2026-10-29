@@ -164,7 +164,7 @@ test('over-budget packet is flagged, never cut', () => {
   const tight = buildReviewPacket(base.sources, { ...base.limits, maxBytes: fits - 1 });
   assert.equal(full.overBudget, false);
   assert.equal(tight.overBudget, true);
-  assert.deepEqual([full.includedBytes, tight.includedBytes], [fits, fits]);
+  assert.deepEqual([full.includedBytes, tight.includedBytes], [fits, fits - 1]);
   assert.deepEqual(tight.packet.change, full.packet.change);
   assert.deepEqual(tight.packet.execution, full.packet.execution);
   assert.throws(() => renderReviewPrompt(tight, base.contents), PromptRenderError);
@@ -242,10 +242,49 @@ test('the budget is the final packet bytes, at the cap and one byte over', () =>
     // One byte under that cap the same packet is one byte over: flagged, never sent.
     assert.deepEqual([over.overBudget, over.packet.budget.overBudget], [true, true], label);
     assert.throws(() => renderReviewPrompt(over, world.contents), PromptRenderError, label);
-    assert.deepEqual([atCap.includedBytes, over.includedBytes], [expectedBudget(world, atCap), cap], label);
+    assert.deepEqual([atCap.includedBytes, over.includedBytes], [expectedBudget(world, atCap), cap - 1], label);
     // The measured size is reported beside the packet, never inside it.
     assert.deepEqual(Object.keys(atCap.packet.budget).sort(), ['maxBytes', 'omissions', 'overBudget'], label);
   }
+});
+
+test("included bytes are the stored packet's final size", () => {
+  // Independent count on the packet object the builder returns, flagged or not: its canonical
+  // bytes plus every part the prompt embeds.
+  const stored = (world: FixtureWorld, built: BuiltPacket) => {
+    const { change } = built.packet;
+    const embedded = [change.cumulativeDiff, change.repairDelta, ...change.files.map((f) => f.postImage)]
+      .filter((ref) => ref !== null)
+      .reduce((n, ref) => n + world.contents.get(ref.artifactId)!.byteLength, 0);
+    return Buffer.byteLength(sortedJson(built.packet), 'utf8') + embedded;
+  };
+  for (const [label, world] of [
+    ['first round', fixtureWorld()],
+    ['re-review with a repair delta', fixtureWorld({ round: 2 })],
+  ] as const) {
+    const cap = smallestBudget(world);
+    const accepted = buildReviewPacket(world.sources, { ...world.limits, maxBytes: cap });
+    const rejected = buildReviewPacket(world.sources, { ...world.limits, maxBytes: cap - 1 });
+    assert.deepEqual([accepted.overBudget, rejected.overBudget], [false, true], label);
+    // Accepted: the stored bytes are the bytes sent, within the cap.
+    assert.equal(accepted.includedBytes, stored(world, accepted), label);
+    assert.ok(accepted.includedBytes <= cap, label);
+    // Rejected: measured after the flag is set, so the stored `true` is one byte shorter than
+    // the `false` the decision was taken on.
+    assert.equal(rejected.includedBytes, stored(world, rejected), label);
+    assert.equal(rejected.includedBytes, cap - 1, label);
+  }
+  // Far over the cap, and over a diff's reader limit, the size is still the stored one.
+  const long = fixtureWorld({ objective: 'x'.repeat(450_000) });
+  const far = buildReviewPacket(long.sources, long.limits);
+  assert.deepEqual([far.overBudget, far.includedBytes], [true, stored(long, far)]);
+  const base = fixtureWorld();
+  const overLimit = {
+    ...base.sources,
+    change: { ...base.sources.change, cumulativeDiff: { ...base.sources.change.cumulativeDiff, overLimit: true } },
+  };
+  const limited = buildReviewPacket(overLimit, base.limits);
+  assert.deepEqual([limited.overBudget, limited.includedBytes], [true, stored(base, limited)]);
 });
 
 test('packet carries a bounded execution manifest', () => {
