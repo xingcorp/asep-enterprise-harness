@@ -202,6 +202,10 @@ export const REQUIRED_SUITES = Object.freeze({
   // accepts what the run backs, and refuses it once the PR head moves, the
   // stored evidence bytes change, or the signature binds another commit.
   'asep-suite:pilot-verifier': 'apps/control-plane-api/src/pilot-verifier.test.ts',
+  // Pilot rehearsal faults 3 (object-store outage at the evidence write) and 5
+  // (GitHub rate limit on the PR) injected into a real run of the governed
+  // pipeline, with the runbook's recovery followed on the state it leaves.
+  'asep-suite:pilot-faults': 'apps/control-plane-api/src/pilot-faults.test.ts',
 });
 
 /** The machine-readable marker a suite prints at module load: `SUITE-ID: <id>`. */

@@ -9,9 +9,10 @@
 // change to the side-effect log, lease repo, or object store that breaks a
 // recovery path turns this suite RED — it is not a paper claim.
 //
-// The two faults that require a live Claude/GitHub (provider timeout, forge
-// rate-limit) are covered by their own adapter suites (agent-claude timeout +
-// github-app MED-002 bounded re-mint) and are referenced here, not re-faked.
+// The provider timeout is covered by the agent-claude suite. The object-store
+// outage and GitHub rate limiting are also injected into a real run of the
+// governed pipeline (apps/control-plane-api/src/pilot-faults.test.ts); the
+// Fault 3 and Fault 5 cases here cover the persistence mechanisms underneath.
 //
 // Machine-readable suite marker (K4) so a dropped/renamed suite turns the gate RED.
 import test from 'node:test';

@@ -211,6 +211,10 @@ merged code is possible because nothing is auto-merged.
      is an orphan (defined in D7) — reconcile/delete orphans; metadata rows
      without a verifiable object are quarantined, not served.
   4. Re-verify a sample of recent artifacts by checksum before resuming.
+  5. An attempt that stopped at the evidence step is not resumed: its commit is
+     local only (nothing was pushed), and a resume reports it not resumable
+     because the harness never re-derives evidence it did not persist. Run the
+     task again as a new attempt.
 
 ### 3.2 Database (PostgreSQL) outage / restart
 
@@ -242,8 +246,11 @@ merged code is possible because nothing is auto-merged.
   re-mint reconciles **without replaying a completed side effect**. PR
   create/update is idempotent (find-by-head-branch upsert — exit H4).
 - **Recovery:**
-  1. On rate-limit, back off and pause dispatch; do not hammer. The push/PR
-     steps are idempotent, so a delayed retry converges (exit C7/H4).
+  1. On rate-limit, back off and pause dispatch; do not hammer. A rate limit is
+     not treated as token expiry, so the adapter does not re-mint and retry; the
+     run stops with whatever already landed recorded. After back-off, resume the
+     attempt: a recorded push is adopted, the forge is asked for the PR by head
+     branch, and at most one PR is opened (exit C7/H4).
   2. On token expiry during a push/PR, the adapter re-mints and reconciles; a
      completed push/PR is adopted, not replayed.
   3. If 403s persist, treat as a permission/branch-protection problem: verify the
