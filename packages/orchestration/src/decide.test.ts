@@ -2014,6 +2014,39 @@ for (const cancelled of [false, true]) {
   }
 }
 
+// An observed repository id the forge could never report for the binding: missing, zero, negative, unsafe, or the
+// binding's id as a string. Ids compare strictly, so none of them is the binding's, wherever it appears.
+const MALFORMED_IDS: readonly (readonly [string, unknown])[] = [
+  ['missing', undefined],
+  ['zero', 0],
+  ['negative', -TASK_REPOSITORY.id],
+  ['unsafe', 2 ** 53 + 2],
+  ['the binding id as a string', String(TASK_REPOSITORY.id)],
+];
+const withObservedId = (id: unknown): ForgeRepository =>
+  (id === undefined ? { owner: TASK_REPOSITORY.owner, name: TASK_REPOSITORY.name } : { ...TASK_REPOSITORY, id }) as unknown as ForgeRepository;
+const OBSERVED_AT: readonly (readonly [string, (r: ForgeRepository) => readonly [ObservedPullRequest, ForgeRepository], string])[] = [
+  ['branch', (r) => [prOfAttempt(9), r], 'branch-other-repository'],
+  ['PR head', (r) => [prOfAttempt(9, { headRepository: r }), TASK_REPOSITORY], 'pull-request-fork-head'],
+  ['PR base', (r) => [prOfAttempt(9, { baseRepository: r }), TASK_REPOSITORY], 'pull-request-other-base'],
+];
+
+for (const [idName, id] of MALFORMED_IDS) {
+  for (const [where, place, finding] of OBSERVED_AT) {
+    test(`publication identity: a ${where} repository observed with an id that is ${idName} is not the binding's, on both paths, with and without a cancel`, () => {
+      const [pr, branchRepository] = place(withObservedId(id));
+      for (const failing of ['publishBranch', 'upsertPullRequest'] as const) {
+        for (const cancelled of [false, true]) {
+          const trace = runTaskSequentially(baseInput(), scripted({
+            [failing]: publicationFails('unknown'), reconcilePublication: reconciled(shaFor(1), [pr], branchRepository),
+          }, { eventsDuring: cancelled ? cancelDuring('publishBranch') : () => [] }));
+          assertPublicationIncomplete(trace, failing === 'upsertPullRequest', cancelled, finding);
+        }
+      }
+    });
+  }
+}
+
 // A rename only the PR shows: its head or base, or both, carries the binding's id under the new owner and name while
 // the branch read shows the bound ones. The reviewer's RENAME_PR_ONLY_MATRIX.
 const MOVED: ForgeRepository = { id: TASK_REPOSITORY.id, owner: 'acme-corp', name: 'gadgets' };

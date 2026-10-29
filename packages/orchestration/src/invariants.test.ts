@@ -152,11 +152,32 @@ function failure(rng: Rng): Answer {
 const OTHER_REPOSITORY: ForgeRepository = { id: 9001, owner: 'attacker', name: 'fork' };
 
 /**
+ * The binding repository under an id the forge could never report for it: missing, zero, negative, unsafe, or the
+ * binding's id as a string. None of them is the binding's id.
+ */
+function malformedId(remote: Rng, repository: ForgeRepository): ForgeRepository {
+  const { owner, name } = repository;
+  switch (remote.pick(['missing', 'zero', 'negative', 'unsafe', 'string'] as const)) {
+    case 'missing':
+      return { owner, name } as unknown as ForgeRepository;
+    case 'zero':
+      return { id: 0, owner, name };
+    case 'negative':
+      return { id: -repository.id, owner, name };
+    case 'unsafe':
+      return { id: 2 ** 53 + 2, owner, name };
+    case 'string':
+      return { id: String(repository.id), owner, name } as unknown as ForgeRepository;
+  }
+}
+
+/**
  * The binding repository as a read reports it: mostly as bound; sometimes renamed, transferred or re-cased, which
- * keeps its id; and sometimes another repository that took over its owner and name, which has another id.
+ * keeps its id; sometimes another repository that took over its owner and name, which has another id; and sometimes
+ * under a malformed id.
  */
 function asObserved(remote: Rng, repository: ForgeRepository): ForgeRepository {
-  switch (remote.pick(['bound', 'bound', 'bound', 'bound', 'bound', 'renamed', 'recased', 'reused'] as const)) {
+  switch (remote.pick(['bound', 'bound', 'bound', 'bound', 'bound', 'renamed', 'recased', 'reused', 'malformed'] as const)) {
     case 'bound':
       return repository;
     case 'renamed':
@@ -165,6 +186,8 @@ function asObserved(remote: Rng, repository: ForgeRepository): ForgeRepository {
       return { ...repository, owner: repository.owner.toUpperCase(), name: repository.name.toUpperCase() };
     case 'reused':
       return { ...repository, id: repository.id + 1 };
+    case 'malformed':
+      return malformedId(remote, repository);
   }
 }
 
@@ -875,6 +898,27 @@ function isThisAttempts(identity: PublicationIdentity, read: Extract<TaskResult,
   return branchOwn && others.length === 0 && (pr === undefined || prDifference(identity, pr) === 'own');
 }
 
+const MALFORMED_ID_KINDS = ['missing', 'zero', 'negative', 'unsafe', 'string'] as const;
+
+/** Which malformed id an observed repository carries, or null for a positive safe integer. */
+function malformedIdKind(id: unknown): (typeof MALFORMED_ID_KINDS)[number] | null {
+  if (id === undefined) return 'missing';
+  if (typeof id === 'string') return 'string';
+  if (id === 0) return 'zero';
+  if (typeof id === 'number' && id < 0) return 'negative';
+  return typeof id === 'number' && !Number.isSafeInteger(id) ? 'unsafe' : null;
+}
+
+/** The read with every repository id read as a number, as a coercing comparison would see it. */
+function withNumericIds(read: Extract<TaskResult, { kind: 'reconcilePublication' }>): Extract<TaskResult, { kind: 'reconcilePublication' }> {
+  const numeric = (r: ForgeRepository): ForgeRepository => ({ ...r, id: Number(r.id) });
+  return {
+    ...read,
+    branch: read.branch === null ? null : { ...read.branch, repository: numeric(read.branch.repository) },
+    pullRequests: read.pullRequests.map((pr) => ({ ...pr, headRepository: numeric(pr.headRepository), baseRepository: numeric(pr.baseRepository) })),
+  };
+}
+
 interface ReplayedStep {
   readonly before: TaskState;
   readonly event: TaskEvent;
@@ -1270,6 +1314,12 @@ test('generated publication traces satisfy the invariants and meet every kind of
       if (moved && isThisAttempts(identity, read)) seen.add(`${path}:moved-reconciled`);
       if (read.branch !== null && read.branch.repository.id !== identity.repository.id
         && read.branch.repository.owner === identity.repository.owner && read.branch.repository.name === identity.repository.name) seen.add(`${path}:pathname-reused`);
+      // A read that would be the attempt's if a malformed id were read as a number: only strict identity refuses it.
+      if (!isThisAttempts(identity, read) && isThisAttempts(identity, withNumericIds(read))) seen.add(`${path}:coerced-id-only`);
+      for (const r of [read.branch?.repository, ...read.pullRequests.flatMap((pr) => [pr.headRepository, pr.baseRepository])]) {
+        const kind = r === undefined ? null : malformedIdKind(r.id);
+        if (kind !== null) seen.add(`${path}:id-${kind}`);
+      }
     }
   }
   assert.ok(published >= PUBLICATION_SEEDS / 4, `only ${published} of ${PUBLICATION_SEEDS} traces published`);
@@ -1283,7 +1333,7 @@ test('generated publication traces satisfy the invariants and meet every kind of
     for (const branch of ['absent', 'moved', 'other-repository']) {
       assert.ok(seen.has(`${path}:branch-${branch}:pr-none`), `no ${path} reconciliation read a ${branch} branch: ${[...seen].sort().join(' ')}`);
     }
-    for (const kind of ['head-branch-case', 'moved-reconciled', 'pathname-reused']) {
+    for (const kind of ['head-branch-case', 'moved-reconciled', 'pathname-reused', 'coerced-id-only', ...MALFORMED_ID_KINDS.map((k) => `id-${k}`)]) {
       assert.ok(seen.has(`${path}:${kind}`), `no ${path} reconciliation read a ${kind} remote: ${[...seen].sort().join(' ')}`);
     }
   }
