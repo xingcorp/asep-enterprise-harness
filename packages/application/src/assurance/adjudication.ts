@@ -491,4 +491,3 @@ export function adjudicate(input: AdjudicationInput): Adjudication {
   };
   return { record, findings: evaluated };
 }
-
