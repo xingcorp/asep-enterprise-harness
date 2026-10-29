@@ -17,6 +17,9 @@
 > below.
 > v6: the re-check of v5, the slot block and the code fixes (`phase-04-review-codex-v5.md`, Codex `gpt-6.1-sol`,
 > snapshot `fb2e432`, REQUEST_CHANGES 0.99) and controller decision R32 are dispositioned in "Review v5" below.
+> v7: the re-check of v6, the slot block and the code fixes (`phase-04-review-codex-v6.md`, Codex `gpt-6.1-sol`,
+> snapshot `d0907b9`, REQUEST_CHANGES 0.98, `HAND-OFF: READY`) and controller decision R37 are dispositioned in
+> "Review v6" below.
 >
 > Each finding is dispositioned `ACCEPTED` / `PARTIALLY_ACCEPTED` / `REJECTED_WITH_EVIDENCE`. Nothing was
 > auto-accepted: each finding's cited code was re-read before deciding. An accepted finding names its design
@@ -1265,6 +1268,175 @@ Every numbered finding of the review is dispositioned (9 accepted, 0 rejected) a
 consistent with R29 and R31. Remaining before the corpus freeze and before Lane A receives the block: the controller's
 re-check of the v6 block and of the code fixes at the lane head, and confirmation of v6.
 
+## Review v6 (Codex `gpt-6.1-sol`, snapshot `d0907b9`)
+
+> Raw review: `phase-04-review-codex-v6.md` (verbatim copy with provenance). Verdict: REQUEST_CHANGES, confidence
+> 0.98, **`HAND-OFF: READY`**. Controller decision applied alongside: `reconciliation-v1.md` R37 (final decisions for
+> this re-check; applied as written), with R36 (Lane B's turn-8 notes), which R37 supersedes for SARIF ingestion. Each
+> finding's cited text was re-read at `d0907b9` before deciding; line numbers below refer to `d0907b9`. The
+> controller's gate run at that snapshot, on a clean detached worktree: `pnpm verify:all` exit 0, 625 pass, 0 fail,
+> 0 skipped, 60 files, 37 required suites.
+
+### Summary
+
+| Severity | Count | ACCEPTED | PARTIAL | REJECTED |
+|---|---|---|---|---|
+| HIGH — code (P4-CODE6) | 2 | 2 | 0 | 0 |
+| MEDIUM — code (P4-CODE6) | 2 | 2 | 0 | 0 |
+| LOW — plan (P4-PLAN6) | 1 | 1 | 0 | 0 |
+| LOW — slot block (P4-SLOT6) | 1 | 1 | 0 | 0 |
+| **Total numbered** | **6** | **6** | **0** | **0** |
+| Unnumbered: surviving mutation (non-object `rule`); history-secret scan conflates "no match" and failure; `--scan-paths --` | 3 | 3 | 0 | 0 |
+
+The re-check confirmed every v5 plan and slot finding FOLDED, the block (892 lines, sha256 `023f16dc…3a04d`) as
+type-checking with 0 diagnostics and 18/18 controls, its helper as rejecting 27/27 hostile payloads, and P4-CODE5-HIGH-002,
+HIGH-003, MED-001, LOW-001, both v5 mutations, P4-CODE4-HIGH-002 and v3 P4-CODE-HIGH-005 as RESOLVED. P4-CODE5-HIGH-001
+stayed PARTIAL; R37 settles it with the new SARIF findings by not parsing SARIF in Phase 4.
+
+The plan and slot-block changes land in the docs-only commit that carries this section; each code finding lands in its
+own commit with a failing-first test and a mutation check, reported in the lane report.
+
+### P4-CODE6-HIGH-001 — A `message.id` result turned a SARIF log into a self-closing deterministic diagnostic — ACCEPTED
+**Concern:** a valid result with `message: { "id": "M" }` (SARIF §3.11) failed the `message.text` requirement and the
+log-level catch replaced every result with one deterministic `sarif-malformed` finding, which a clean later round then
+closed by `deterministic-recheck` (`checks.ts:573`, `:632`; `adjudication.ts:275`).
+**Disposition:** Correct: `checks.ts:573` reads only `message.text`, `:632` catches for the whole log, and
+`adjudication.ts:275` verifies a deterministic prior that no longer fires. SARIF §3.11.2 allows `id` in place of `text`
+(research register). R37: SARIF is not parsed in Phase 4.
+**Locked change:** plan §5.3 DF-10 (with §3.11 message references and per-result failure isolation among its entry
+criteria), §14 item 6 (one `sarif-unparsed` finding per log, source `sarif`, never a deterministic finding), §12, §13;
+architecture §11; data model §2.1, §2.8, `review_findings_sarif_ck`; exit F3; threat T4-28; risk PR4-44. Code: remove
+the parser and the `sarif-malformed` rule.
+**Validation:** exit F3 (`checks.test.ts` › "a SARIF log is one blocking finding a human must close, never parsed": the
+review's `message.id` log yields exactly one blocking `sarif-unparsed` finding); exit E6 (`adjudication.test.ts` › "a
+SARIF finding blocks until a human closes it": a later round without the log, or a deterministic re-check, changes
+nothing).
+
+### P4-CODE6-HIGH-002 — An omitted `level` ignored the rule's configured level — ACCEPTED
+**Concern:** a result without `level` became `warning` (MEDIUM) although its rule's `defaultConfiguration.level` was
+`error`; the round returned `PROCEED` (`checks.ts:575`, `:619`).
+**Disposition:** Correct: `checks.ts:575` falls back to `'warning'` directly; SARIF §3.27.10 derives an absent level
+from the rule's configuration (research register). R37: not parsed; the one finding per log is HIGH and blocks whatever
+the severity policy says.
+**Locked change:** as HIGH-001; plan §12 (`B` holds every SARIF finding of the round at any severity); DF-10 lists
+§3.27.10 effective level.
+**Validation:** exit F3 (the review's omitted-level log yields the one blocking finding); exit E4 (`adjudication.test.ts`
+› "a SARIF finding blocks whatever the severity policy says").
+
+### P4-CODE6-MED-001 — The harness could refute an ungrounded SARIF finding — ACCEPTED
+**Concern:** `harness-rule:citation-unresolvable` with `REJECTED_WITH_EVIDENCE` moved a SARIF aggregate with
+`grounded: false` to `REFUTED`, so human-only closure was not enforced for every non-blocking transition
+(`packages/domain/src/assurance.ts:226`; `phase-04-data-model.md:475`).
+**Disposition:** Correct: `assurance.ts:226-228` checks the rule and `grounded` only, not the source. The review notes
+no production path calls it today (check findings are grounded, `adjudication.ts:364`); the domain must refuse it
+anyway. R37: refuse every non-human transition out of `OPEN` for source `sarif`, whatever `grounded` says.
+**Locked change:** plan §13 (the domain refuses verify, refute, waive, accept and claim by any non-human actor on a SARIF
+finding; only a harness reopen of an expired waiver remains); data model `finding_dispositions_sarif_ck`; exit E6;
+threat T4-28.
+**Validation:** exit E6 (`assurance.test.ts` › "only a human disposes of a SARIF finding": one negative test per
+transition and actor, the review's `grounded: false` probe included, and the waiver-expiry reopen still accepted); DDL
+re-validation below.
+
+### P4-CODE6-MED-002 — `rule: null` was read as an absent rule — ACCEPTED (moot under R37)
+**Concern:** `result.rule ?? {}` turned `null` into an empty reference, so the result was not flagged and could inherit a
+waived prior's shield (`checks.ts:493`, `:494`; `checks.test.ts:495`).
+**Disposition:** Correct: `?? {}` maps `null` to `{}` at `:493`. R37 removes the parser and its reference resolution,
+so no reference is read; R36's non-object-rule rule moves to DF-10's entry criteria.
+**Locked change:** plan §5.3 DF-10; §14 item 6. Code: the resolver is removed with the parser.
+**Validation:** exit F3: a SARIF log's bytes are never decoded, so no reference form can relabel or drop a result.
+
+### P4-PLAN6-LOW-001 — The R36 ingestion rules were not written into the plan — ACCEPTED (superseded by R37)
+**Concern:** R36 accepted hierarchical rule IDs and the extra unresolved cases; the plan did not list them and the
+architecture still said the IDs must be equal (`phase-04-plan.md:1001`; `phase-04-architecture.md:448`).
+**Disposition:** Correct at `d0907b9` (both lines re-read). R37 removes SARIF parsing, so the ingestion text is moot; as
+the controller asked, it is replaced by the DF-10 pointer, and R36's rules are recorded as DF-10 entry criteria.
+**Locked change:** plan §5.3 DF-10, §12 ("SARIF identity"), §14 item 6; architecture §11.
+**Validation:** wording; `grep -n "unresolved-reference\|ruleIndex" docs/implementation/phases/phase-04-plan.md` finds
+the terms only in the version history (the v6 status paragraph and the v6 and v7 change tables).
+
+### P4-SLOT6-LOW-001 — `not-configured` was listed among the stateless slots — ACCEPTED
+**Concern:** the stateless list named `not-configured`, but Lane A's `NotConfiguredAssuranceSlot` persists outcome
+events and must use the stateful fixture (`phase-04-plan.md:1939`, `:2034`, `:2072`).
+**Disposition:** Correct (all three lines re-read). R37: wording only, no TypeScript change.
+**Locked change:** the block's `StatelessConformanceFixture` doc comment (block lines 805–807 become 805–809); §18.2 default
+slots and the conformance preamble; risk PR4-41. Nothing else in the block changes (below).
+**Validation:** the block diff below shows only the comment; the comment-free emit of the block is identical before and
+after.
+
+### Surviving mutation: non-object `rule` unflagged — ACCEPTED (moot under R37)
+`if (!isRecord(rule)) return fail(...)` → `return null` left 71/71 tests green (`checks.ts:494`). The resolver is
+removed with the parser; nothing is left to mutate.
+
+### History-secret scan conflates "no match" and failure — ACCEPTED
+`check_history_secrets` wraps `git grep … | grep -vE … || true` in one assignment, so a `git grep` that fails reads as
+clean (`scripts/check-publication.sh:182`). R37: distinguish 0, 1 and ≥2 and fail closed. Locked change: plan §7.5,
+exit I13, threat T4-29. Validation: `collect.test.ts` › "the publication history scan fails closed".
+
+### `--scan-paths --` read `--` as a file name — ACCEPTED
+`--scan-paths -- clean.txt` scanned a file named `--` (`scripts/check-publication.sh:213`). R37 leaves the choice;
+`--scan-paths` now takes one leading `--` as the end of its options, like `grep`. Locked change: plan §7.5, exit I13.
+Validation: `collect.test.ts` › "the path scanner takes -- as the end of its options".
+
+### R37 applied
+
+| Item | Applied as | Where |
+|---|---|---|
+| SARIF parsing deferred | DF-10 with DF-9's criteria, §3.27.10, §3.11, per-result isolation, R36's rules and the v4–v6 probes | plan §5.3 |
+| `sarif-unparsed` | one finding per log: source `sarif`, raiser `sarif:unparsed`, HIGH, `EVIDENCE_INTEGRITY`, grounded to the log, no location, identity per check and log digest | plan §12, §14; architecture §11; data model §2.1, §2.8, `review_findings_sarif_ck`; exit F3 |
+| Blocking | every SARIF finding blocks whatever the severity policy says | plan §12; exit E4 |
+| Human-only closure | domain refuses verify, refute, waive, accept and claim by a non-human actor on a SARIF finding; DDL `finding_dispositions_sarif_ck` | plan §13; data model §3.1; exit E6 |
+| Parser removed | the parser, reference resolution, `sarif-malformed` and the `unresolvedReference` flag go away | code commit; data model DDL |
+| Default slot fixture | stateful for `NotConfiguredAssuranceSlot`; wording only | block doc comment; plan §18.2; risk PR4-41 |
+| Publication scanner | history scan 0/1/≥2 fail closed; `--` ends `--scan-paths` options | plan §7.5; exit I13; threat T4-29 |
+
+### Slot block (v7)
+
+The block was extracted from plan §18 with the same `awk` as in v6 before and after the edit. Before: 892 lines,
+sha256 `023f16dc7135ec32cdddffead29ad2bfd6ac3daee2918138d8b469a37943a04d` (equal to the hand-off sha). After: 894
+lines, sha256 `9cc21c980d552d607c01bb0a330749eb88070b1cbdce55747fbfdc742960871a` — **not** equal to `023f16dc…`, and the
+only difference is the SLOT6-LOW-001 wording. `diff` of the two extractions:
+
+```text
+805,807c805,809
+<  * The fixture of an implementation that persists nothing. Only the disabled, not-configured
+<  * and scripted slots declare it (R32); the fencing, pre-lease, atomicity, persistence and
+<  * "no state change" parts of the cases then report not-applicable.
+---
+>  * The fixture of an implementation that persists nothing: the disabled and scripted slots
+>  * (R32, R37). A slot that persists anything presents a StatefulConformanceFixture, Lane A's
+>  * NotConfiguredAssuranceSlot included because it persists outcome events. With this fixture the
+>  * fencing, pre-lease, atomicity, persistence and "no state change" parts of the cases report
+>  * not-applicable.
+```
+
+In the v6 scratch project (TypeScript 7.0.2, the same options and aliases): `tsc -p tsconfig.json` on the new block,
+exit 0; `tsc -p tsconfig.control.json`, exit 1 with exactly 18 errors, one per control line; both blocks emitted with
+`--removeComments` give identical `.js` and `.d.ts` files (`diff -r`, no output), so no TypeScript changed. The helper,
+run from the new block text and from its emit (`probe.mjs`), gives the same 27 rejections and 8 acceptances, 65 536 bytes
+accepted and 65 537 rejected, identical output both ways; the review's own `stripTypeScriptTypes` probe over the new
+plan text prints `HELPER 27/27 9/9`, `65536 ACCEPT`, `65537 ReviewLoopContractError invalid-payload`, and
+`lease-granted ReviewLoopContractError lease-granted`; exit 0.
+
+### DDL re-validation (v7)
+
+The §3.1–§3.3 blocks and the §3.6 rollback were extracted again and applied on PGlite `0.5.4` after the twelve Phase 2
+migrations in a fresh scratch directory outside the repository: all applied, and the rollback applied. The v6 probe was
+re-run without its `unresolved_reference` probes and with the R37 probes added; 50 of 50 as expected. New: a
+`sarif-unparsed` finding and its re-raise linked to a prior are accepted; another raiser, another rule, no rule, MEDIUM,
+another category, a file and a line are rejected by `review_findings_sarif_ck` (an ungrounded row trips
+`review_findings_grounded_ck` first); on a `sarif:` finding a harness refutation of an ungrounded row and a reviewer
+`RESOLUTION_CLAIMED` are rejected by `finding_dispositions_sarif_ck`, a harness verification by
+`finding_dispositions_harness_verify_ck`; a harness `REOPENED` and a human verification, refutation and waiver are
+accepted; a harness refutation of an ungrounded deterministic finding is still accepted. With the constraint that fires
+first dropped, `finding_dispositions_sarif_ck` rejects the harness verification and `review_findings_sarif_ck` the
+ungrounded SARIF row on their own.
+
+### Freeze gate (v7)
+
+Every finding of the review is dispositioned (6 numbered and 3 unnumbered accepted, 0 rejected) and R37 is applied in
+the documents. Remaining: the controller's diff check of the block against `023f16dc…` (G-LB), the controller's check
+of the code fixes at the lane head, and confirmation of v7.
+
 ---
 
 ## Disposition template
@@ -1291,4 +1463,7 @@ v4 record: **LOCKED v4 (pending controller confirmation)**, superseded by v5 bef
 
 v5 record: **LOCKED v5 (pending controller confirmation)**, superseded by v6 before confirmation.
 
-**PLAN_STATUS: LOCKED v6 (pending controller confirmation)**
+v6 record: **LOCKED v6 (pending controller confirmation)**, superseded by v7 before confirmation; its slot block was
+found `HAND-OFF: READY`.
+
+**PLAN_STATUS: LOCKED v7 (pending controller confirmation)**

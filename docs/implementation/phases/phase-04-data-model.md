@@ -1,4 +1,4 @@
-# Phase 4 — Data Model (LOCKED v6, pending controller confirmation)
+# Phase 4 — Data Model (LOCKED v7, pending controller confirmation)
 
 > Companion to `phase-04-plan.md`. PostgreSQL 17 (digest-pinned in `compose.yaml`). Base `00a6889`; v1 reviewed at
 > `a2a7b8a`; v2 lock-checked at `3201335`; v3 reviewed at `9e3a1c3` (v4: §2.1 identity, §2.3 budget, §2.4 closure
@@ -7,7 +7,9 @@
 scanner runs, `review_rounds.packet_included_bytes`, `prompt-over-budget` and integer micro-USD cost in
 `review_records`, money in events); v5 re-checked at `fb2e432` (v6, R32: §2.1 and `review_findings` unresolved-reference
 flag, §2.3 `includedBytes` as the stored size, §2.4 and `finding_dispositions_harness_verify_ck` without scanner-recheck
-closure, §2.8 without scanner runs). Conventions inherited from `phase-02-data-model.md` §1: ULID `char(26)` ids, `timestamptz` UTC,
+closure, §2.8 without scanner runs); v6 re-checked at `d0907b9` (v7, R37: §2.1 and `review_findings` without the
+unresolved-reference flag and with `review_findings_sarif_ck`, §2.8 one `sarif-unparsed` finding per SARIF log,
+`finding_dispositions_sarif_ck`: no machine disposition of a SARIF finding but a harness reopen). Conventions inherited from `phase-02-data-model.md` §1: ULID `char(26)` ids, `timestamptz` UTC,
 > optimistic `version` columns on mutable aggregates, `TenantScope` first on every repository method, composite
 > foreign keys onto `(id, organization_id, project_id)`, append-only checksummed migrations
 > (`adapters/persistence/src/migrator.ts`: strictly ascending ids, checksum per applied id). v2 writes the full DDL
@@ -37,7 +39,7 @@ Lane B adds five schema files; the compat-gate count and `COMPATIBILITY.md` are 
 |---|---|---|---|
 | `id` | string | yes | record-local key |
 | `source` | enum `model, deterministic, sarif` | yes | |
-| `raisedBy` | string | yes | `reviewerConfigId`, `deterministic:<ruleId>` or `sarif:<tool>` |
+| `raisedBy` | string | yes | `reviewerConfigId`, `deterministic:<ruleId>`, or `sarif:unparsed` (the only SARIF raiser in Phase 4, R37) |
 | `fingerprint` | string, 64 hex | yes | sha256(category, normalized path, line bucket, ruleId) |
 | `severity` | enum `INFO, LOW, MEDIUM, HIGH, CRITICAL` | yes | |
 | `category` | enum `SPEC, ARCHITECTURE, CORRECTNESS, SECURITY, PERFORMANCE, TEST_QUALITY, MAINTAINABILITY, EVIDENCE_INTEGRITY` | yes | |
@@ -46,7 +48,6 @@ Lane B adds five schema files; the compat-gate count and `COMPATIBILITY.md` are 
 | `groundingReason` | string | no | required when `grounded` is false |
 | `lifecycleState` | enum `OPEN, ACKNOWLEDGED, FIXED, VERIFIED, CLOSED, REFUTED, ADJUDICATED, WAIVED` | yes | `docs/architecture/04-state-machines.md:40-48` |
 | `requirementId`, `file`, `lineStart`, `lineEnd`, `ruleId`, `priorFindingId` | | no | `file` a normalized repo path (plan §10.1); `priorFindingId` links a re-raised finding to the prior it matched (plan §12) |
-| `unresolvedReference` | const `true` | no | SARIF only (R32): the result's rule or artifact reference could not be resolved (plan §14 item 6); the unresolved part is absent, the evidence names the reference, and the finding is never linked to a prior |
 
 Identity within a round (plan §12): `(raisedBy, fingerprint, requirementId, finding key)`; findings are never merged
 across requirement ids or keys, and a merge keeps grounded and the highest severity. Identity across rounds, for
@@ -54,9 +55,10 @@ reconciliation with prior findings: `(raisedBy, fingerprint, requirementId)`. Ev
 itself (`[category, file|null, lineBucket|null, ruleId|null]`), is encoded as a canonical JSON array before it is
 hashed or compared, never as a joined string, so `null` and `""` differ and a separator inside a field cannot make
 two tuples equal (R28). A re-raise linked to a prior it does not shield blocks at the highest severity of the pair
-(plan §12). A SARIF finding flagged `unresolvedReference` has the fingerprint `[category, file|null, lineBucket|null,
-ruleId|null, "unresolved-reference", rawReference]` (`rawReference` the canonical JSON of the result's reference
-fields), so it never shares an identity with a resolved finding, and it is never matched to a prior (R32).
+(plan §12). A SARIF finding is the `sarif-unparsed` finding of one log (R37, plan §14 item 6): `ruleId`
+`sarif-unparsed`, severity `HIGH`, category `EVIDENCE_INTEGRITY`, no `file` or lines, `grounded: true`, and the
+fingerprint `[EVIDENCE_INTEGRITY, subject, null, "sarif-unparsed"]` with `subject` the canonical JSON text of
+`["sarif-log", checkId, sha256]`, so each log, and each new log of the same check, is its own finding.
 
 ### 2.2 `review-record/v1`
 
@@ -93,7 +95,7 @@ BLOCK`), `reason` (escalation/block reason or null), `ruleFired` (`A1`…`A11`, 
 `verdictMismatches` (`[{reviewId, verdict, groundedBlockingCount}]`), `closureDecisions` (`[{priorFindingId,
 raisedBy, claims: [{by, status}], effectiveState, rule: deterministic-recheck|human|independent-reviewer|raiser-claim|closure-without-change|regression|unchanged}]`;
 `regression` names a prior that a finding of this round re-raised after it was verified or closed; there is no
-scanner-recheck rule in Phase 4: a SARIF finding closes only by a human disposition, R32, plan DF-9),
+scanner-recheck rule in Phase 4: a SARIF finding closes only by a human disposition, R32, R37, plans DF-9 and DF-10),
 `policyVersion`, `inputs` (`{packetSha256, checkReportSha256, reviewRecordSha256s[]}`), `fence` (`{leaseId,
 fencingEpoch}`). `adjudicationId` = sha256 of the canonical JSON array `[roundKey, policyVersion, packetSha256,
 checkReportSha256, sorted reviewRecordSha256s]` (R28). No timestamp field: the decision time lives in the `adjudications.decided_at` column only (plan §11).
@@ -118,14 +120,14 @@ Plan §18.4 lists the one new `eventType` (`review.finding_dispositioned`) and t
 
 `check-report` (canonical JSON, `check-report/v1`, built and parsed by `packages/application/src/assurance/check-report.ts`,
 S6): the packet sha256, push-guard decision, egress decision with its hits (`{kind, part, detail}`, where `detail` is
-a path, a pattern label or a fixed reason — never the matched text), every deterministic and SARIF finding (each with
-`unresolvedReference`, `true` only for a SARIF result whose reference could not be resolved, plan §14 item 6), and the
-sha256 and size of each SARIF log the checks read (the raw outputs themselves are artifacts the check step stores,
-S12). v6 records no scanner runs: with scanner-recheck closure deferred (R32), nothing in Phase 4 reads them. There is no timestamp in it. There is no JSON Schema file: the harness writes it and re-reads it by content
+a path, a pattern label or a fixed reason — never the matched text), every deterministic finding and the one
+`sarif-unparsed` finding of each SARIF log (R37, plan §14 item 6), and the sha256 and size of each SARIF log the
+checks read (the raw outputs themselves are artifacts the check step stores, S12). SARIF logs are not parsed (plan
+DF-10) and no scanner run is recorded. There is no timestamp in it. There is no JSON Schema file: the harness writes it and re-reads it by content
 address, and a strict structural parser guards every read (v3; replaces the v2 schema file, which would have needed
 a new `ajv` dependency in `@asep/application`). Unknown or missing keys, wrong types, a sha256 mismatch, an egress
-decision for another packet, and a push-guard or egress decision that does not follow from the report's own findings
-and hits fail closed.
+decision for another packet, a push-guard or egress decision that does not follow from the report's own findings
+and hits, and SARIF findings other than exactly one `sarif-unparsed` finding per listed log fail closed.
 `review-prompt`: instructions, rendered input, output schema, template hash.
 `gateway-appendix`: the text the gateway appended to the sent `instructions`, as returned in the response (gateway-controlled; stored so its drift is visible).
 
@@ -368,14 +370,16 @@ create table review_findings (
   grounding_reason text,
   blocking         boolean     not null,
   prior_finding_id char(26),
-  unresolved_reference boolean not null default false,
   lifecycle_state  text        not null,
   created_at       timestamptz not null,
   version          integer     not null default 0,
   constraint review_findings_source_ck      check (source in ('model','deterministic','sarif')),
-  -- an unresolved SARIF reference is flagged and kept, never linked to a prior (R32)
-  constraint review_findings_unresolved_ck  check (not unresolved_reference
-                                              or (source = 'sarif' and prior_finding_id is null)),
+  -- a SARIF log is not parsed in Phase 4: its one finding is sarif-unparsed, HIGH, grounded, with no location (R37)
+  constraint review_findings_sarif_ck       check (source <> 'sarif'
+                                              or (raised_by = 'sarif:unparsed' and coalesce(rule_id, '') = 'sarif-unparsed'
+                                                  and severity = 'HIGH' and category = 'EVIDENCE_INTEGRITY'
+                                                  and grounded and file is null and line_start is null
+                                                  and line_end is null)),
   constraint review_findings_record_ck      check ((source = 'model') = (review_record_id is not null)),
   constraint review_findings_raiser_ck      check ((source = 'model') = (raised_by !~ '^(deterministic|sarif):')),
   constraint review_findings_fingerprint_ck check (fingerprint ~ '^[0-9a-f]{64}$'),
@@ -472,6 +476,9 @@ create table finding_dispositions (
   constraint finding_dispositions_reviewer_verify_ck check (not (actor_kind = 'reviewer'
                                                    and disposition = 'RESOLUTION_VERIFIED')
                                                    or finding_raised_by !~ '^(deterministic|sarif):'),
+  -- only a human disposes of a SARIF finding; a harness rule may only reopen it (an expired waiver) (R37)
+  constraint finding_dispositions_sarif_ck       check (finding_raised_by !~ '^sarif:' or actor_kind = 'human'
+                                                   or (actor_kind = 'harness-rule' and disposition = 'REOPENED')),
   -- only a human can reject a grounded finding
   constraint finding_dispositions_refute_ck      check (disposition <> 'REJECTED_WITH_EVIDENCE'
                                                    or actor_kind = 'human' or not finding_grounded),
@@ -705,6 +712,17 @@ by `harness-rule:scanner-recheck` on a `sarif:` finding is now rejected by `find
 while `harness-rule:deterministic-recheck` on a `deterministic:` finding and a human `RESOLUTION_VERIFIED` on a
 `sarif:` finding are accepted; a `sarif` finding with `unresolved_reference` and no prior is accepted, and one linked to
 a prior, or a `model` or `deterministic` finding with the flag, is rejected by `review_findings_unresolved_ck`.
+For v7 (R37) the blocks were extracted and applied again in the same way and the probe re-run with the
+`unresolved_reference` probes removed (the column and `review_findings_unresolved_ck` are gone) and these added;
+results are recorded in the review log ("Review v6", "DDL re-validation (v7)"): a `sarif:unparsed` finding with rule
+`sarif-unparsed`, `HIGH`, `EVIDENCE_INTEGRITY`, grounded and without a location is accepted, and one with another
+raiser, another rule, another severity, `grounded` false or a file is rejected by `review_findings_sarif_ck`; on a
+`sarif:` finding, a harness `REJECTED_WITH_EVIDENCE` (on an ungrounded row, foreign keys off), a harness
+`RESOLUTION_VERIFIED` and a reviewer `RESOLUTION_CLAIMED` are rejected by `finding_dispositions_sarif_ck`, while a
+harness `REOPENED` and a human `RESOLUTION_VERIFIED`, `REJECTED_WITH_EVIDENCE` and `WAIVED` are accepted; on a
+`deterministic:` finding a harness `REJECTED_WITH_EVIDENCE` of an ungrounded row is still accepted. With the constraint
+that fires first dropped (`finding_dispositions_harness_verify_ck`, `review_findings_grounded_ck`), the two SARIF
+constraints reject a harness verification and an ungrounded SARIF row on their own.
 
 ### 3.6 Rollback (forward compensating migrations; applied only by operator decision, never by editing `02xx`)
 

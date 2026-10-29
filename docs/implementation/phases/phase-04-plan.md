@@ -1,6 +1,20 @@
-# Phase 4 — Independent Assurance — Plan (LOCKED v6, pending controller confirmation)
+# Phase 4 — Independent Assurance — Plan (LOCKED v7, pending controller confirmation)
 
-> Status: **LOCKED v6 (pending controller confirmation).** v5, its slot block and the code fixes at `fb2e432` received
+> Status: **LOCKED v7 (pending controller confirmation).** v6, its slot block and the code fixes at `d0907b9` received
+> an independent re-check (`phase-04-review-codex-v6.md`, Codex `gpt-6.1-sol`, REQUEST_CHANGES 0.98, **`HAND-OFF:
+> READY`**: every v5 plan and slot finding folded, the block type-checks with 18/18 controls and its helper rejects 27/27
+> hostile payloads, every v5 code finding resolved except SARIF ingestion; new 1 plan LOW, 1 slot LOW, 2 code HIGH and
+> 2 code MEDIUM, one surviving mutation). Every finding is dispositioned in `phase-04-review-log.md` ("Review v6") and
+> the controller's decision R37 is applied as written. v7 defers SARIF parsing out of Phase 4 (§5.3 DF-10): a SARIF log
+> is never parsed and yields exactly one `sarif-unparsed` finding, HIGH, blocking and closable only by an authorized
+> human (§12, §13, §14); the domain and the database refuse every non-human disposition of a SARIF finding but a
+> harness reopen (§13); the slot block's only change is the wording of the stateless fixture, so Lane A's
+> `NotConfiguredAssuranceSlot` runs the kit with a stateful fixture (§18, §18.2); and the publication gate's
+> history-secret scan fails closed while `--scan-paths` takes a leading `--` as the end of its options (§7.5). The code
+> fixes land as separate commits (§0 "What v7 changes").
+>
+> v6 status, kept for the record: **LOCKED v6 (pending controller confirmation)**, superseded by v7 before it was
+> confirmed. v5, its slot block and the code fixes at `fb2e432` received
 > an independent re-check (`phase-04-review-codex-v5.md`, Codex `gpt-6.1-sol`, REQUEST_CHANGES 0.99, `HAND-OFF:
 > NOT_READY`: the v4 severity, identity, budget and pattern fixes resolved; new 1 plan MEDIUM and 1 plan LOW, 1 slot HIGH
 > and 1 slot MEDIUM, 3 code HIGH, 1 code MEDIUM and 1 code LOW, one surviving mutation and one mutant wrongly declared
@@ -67,7 +81,8 @@
 > Companion documents: `phase-04-architecture.md`, `phase-04-data-model.md`, `phase-04-exit-criteria.md`,
 > `phase-04-risk-register.md`, `phase-04-research-register.md`, `phase-04-threat-model-delta.md`,
 > `phase-04-review-log.md`, `phase-04-plan-review-codex-v1.md`, `phase-04-plan-review-codex-v2.md`,
-> `phase-04-review-codex-v3.md`, `phase-04-review-codex-v4.md`, `phase-04-review-codex-v5.md`.
+> `phase-04-review-codex-v3.md`, `phase-04-review-codex-v4.md`, `phase-04-review-codex-v5.md`,
+> `phase-04-review-codex-v6.md`.
 
 ```text
 BASE_SHA:        00a68895d205122767167942326e2e0466571059   (head of phase/02-single-agent-vertical-slice; Phase 2 NOT yet accepted)
@@ -76,6 +91,7 @@ REVIEWED_V2:     32013356e0845354f40ac6f63925f928637d6fb3   (lock-check, REQUEST
 REVIEWED_V3:     9e3a1c32e869193e981a867e8bb9fbd1abaec9c8   (plan, slot block and pre-S0 code, REQUEST_CHANGES 0.99)
 REVIEWED_V4:     7cc20f474ef0d53532ff386777eae7d5d07dae24   (plan v4, slot block and code fixes, REQUEST_CHANGES 0.99)
 REVIEWED_V5:     fb2e4323a61e128553043b08157f02c70a1684c9   (plan v5, slot block and code fixes, REQUEST_CHANGES 0.99)
+REVIEWED_V6:     d0907b9afecd4c8e3527874e8b9ddd435978a8dc   (plan v6, slot block and code fixes, REQUEST_CHANGES 0.98, HAND-OFF READY)
 TARGET_BRANCH:   phase/04-independent-assurance
 SCOPE SOURCE:    docs/implementation/90-day-plan.md:33-40 (Days 46–60)
 EXIT CRITERION:  "reviewer performance measured on historical defects" (90-day-plan.md:40)
@@ -176,6 +192,15 @@ What v6 changes (re-check `phase-04-review-codex-v5.md`, controller decision R32
 | `includedBytes` | measured with `overBudget: false` for every packet | the stored packet's final size, measured after the flag is set, for accepted and rejected packets alike; the accepted-packet invariant is unchanged (§8) |
 | Publication path scanner | a grep error, an invalid pattern or no input file read as clean; the pattern list exempt from its own scan | each is exit 2; `--` before file names; the list is scanned like any other file; tracked files enumerated with `git ls-files -z` (§7.5) |
 | Corpus wording | `provenance: excerpt-only` next to the R22 vocabulary | the verification mode is described; no extra provenance value (§7.5) |
+
+What v7 changes (re-check `phase-04-review-codex-v6.md`, controller decision R37):
+
+| Area | v6 | v7 |
+|---|---|---|
+| SARIF ingestion | a parser resolved reference forms and flagged the rest; a `message.id` result turned the whole log into a self-closing deterministic diagnostic, and an omitted `level` ignored the rule's configured level | not parsed in Phase 4 (DF-10): each SARIF log yields exactly one `sarif-unparsed` finding, source `sarif`, HIGH, grounded to the log, blocking whatever the severity policy says, closable only by an authorized human; a later round without the log changes nothing; the parser, its reference resolution and the `unresolved-reference` flag are removed (§12, §13, §14) |
+| SARIF dispositions | no harness rule verified a SARIF finding, but the harness could refute one marked ungrounded | the domain and the database refuse every non-human disposition of a SARIF finding — verify, refute, waive, accept, claim — whatever `grounded` says; only a harness reopen (an expired waiver) remains (§13, data model §3.1) |
+| Stateless fixture | the disabled, not-configured and scripted slots could declare `stateless: true` | only a slot that persists nothing (the disabled and scripted slots); Lane A's `NotConfiguredAssuranceSlot` persists outcome events and presents a stateful fixture; wording only, no TypeScript change (§18, §18.2) |
+| Publication gate | the history-secret scan read a `git grep` failure as clean; `--scan-paths --` read `--` as a file name | the history scan reads `git grep` status 0, 1 or anything else and fails closed; `--scan-paths` takes a leading `--` as the end of its options (§7.5) |
 
 ---
 
@@ -350,8 +375,8 @@ A second model/provider reviewer of a different family than the coder, behind a 
 different-family comparator reviewer for measurement; new logical review contracts; packet assembly with strict
 independence and a bounded execution manifest; a pre-gateway egress decision with a zero-request guarantee;
 prompt-injection-resistant prompt construction; deterministic push guard, false-green, Trojan Source and
-architecture checks plus a SARIF subset; deterministic adjudication with closure authority; repair orders and
-re-review **implemented and proven in drill compositions** (not active in production in Phase 4); the
+architecture checks plus one human-only finding per SARIF log (parsing deferred, DF-10); deterministic adjudication
+with closure authority; repair orders and re-review **implemented and proven in drill compositions** (not active in production in Phase 4); the
 `review-loop/v1` slot contract and its conformance kit; persisted review records, findings and dispositions;
 attempt-terminal and review events through the shared `RunEventSink`; metric evaluation and Grafana dashboards
 for false completion, review yield, cost and recovery; a content-addressed self-history corpus; a pre-registered,
@@ -377,6 +402,7 @@ about reviewer quality; the Phase 1 historical-task dataset (PP2, `phase-01-exit
 | DF-7 | Deterministic red→green closure proof for model findings | a sandboxed rerun of named regression checks on the pre-repair tree |
 | DF-8 | Independent blind human relabel of the self-history corpus | a named human labeller; optional — not a Phase 4 MUST by user decision U-2 |
 | DF-9 | Scanner-recheck closure of SARIF findings (R32: three review rounds found new ways a log could falsely prove a fix, and no real scanner is wired in Phase 4) | real CodeQL and semgrep SARIF log fixtures; SARIF 2.1.0 `reportingDescriptorReference` resolution including `tool.extensions`; artifact index and `uriBaseId` binding to the repaired tree; effective configuration and notifications; the probes of `phase-04-review-codex-v4.md` and `phase-04-review-codex-v5.md` as tests |
+| DF-10 | Parsing SARIF logs into per-result findings (R37: a fourth round found new ingestion faults — a valid `message.id` turned a log into a self-closing deterministic diagnostic, an omitted `level` ignored the rule's configured level — and no SARIF producer runs in Phase 4: SARIF comes from L4/L5 and the pilot runs R0/R1, L0–L2) | DF-9's entry criteria; SARIF 2.1.0 §3.27.10 effective level (`result.level`, then the rule's configuration, then the default); §3.11 message references (`message.id` resolved through `messageStrings`); per-result failure isolation, so one unreadable result never replaces or drops the others; the rule-ID and reference rules accepted by R36 (hierarchical IDs, non-text IDs, non-object `rule`, driver rules without an ID, nested and location-less artifacts); every SARIF probe of `phase-04-review-codex-v4.md`, `-v5.md` and `-v6.md` as tests; until then each SARIF log is one `sarif-unparsed` finding (§14 item 6) |
 
 ---
 
@@ -537,6 +563,11 @@ Floors make the measurement falsifiable; failing one does not fail the phase, be
   scan exit 2, never clean. File names follow `--`. The pattern list is scanned like any other tracked file (it does
   not match itself; a private path in one of its comments fails the gate), and the full gate enumerates tracked files
   with `git ls-files -z`, so a name Git would quote is still scanned.
+- **The history-secret scan fails closed too (R37).** It lists every commit with `git rev-list --all` and reads
+  `git grep`'s status as 0 (a hit, then filtered for the scanner's own files), 1 (clean) or anything else (the scan
+  failed); a listing or a filter that fails, or a `git grep` that fails, fails the gate. `--scan-paths` takes one
+  leading `--` as the end of its options, so `--scan-paths -- --` scans a file named `--`; `--scan-history` runs the
+  history scan alone with the `--scan-paths` exit codes.
 
 ### 7.6 Comparator choice (D-4)
 
@@ -865,10 +896,11 @@ event bytes of an interrupted-then-redelivered round with an uninterrupted one (
 
 ## 12. Adjudication rules (deterministic, versioned)
 
-Evaluated in order; the first matching rule decides. `B` is the blocking set: deterministic and SARIF findings at a
-blocking severity, grounded model findings whose severity is in `blockingSeverities[risk]`, and prior findings at a
+Evaluated in order; the first matching rule decides. `B` is the blocking set: deterministic findings at a blocking
+severity, every SARIF finding of this round (each is the `sarif-unparsed` finding of one log, §14 item 6; it blocks
+whatever `blockingSeverities[risk]` says, R37), grounded model findings whose severity is in `blockingSeverities[risk]`, and prior findings at a
 blocking severity whose lifecycle state is still blocking after closure authority (§13) — model, deterministic and
-SARIF priors alike — except where this round's finding carries the decision for the same identity (below).
+SARIF priors alike, a SARIF prior at any severity — except where this round's finding carries the decision for the same identity (below).
 Production compositions can only produce the **Shadow** column.
 
 | # | Condition | Gating (drill only in Phase 4) | Shadow (production) |
@@ -919,9 +951,10 @@ equal, and `null` and `""` stay distinct. This covers the finding fingerprint, t
 cross-round identity, the check-finding merge and dedupe keys, the adjudication id, the review id, the ordering keys
 of the record and the reviewer-list comparison.
 
-**Unresolved SARIF references (R32).** A SARIF finding flagged `unresolved-reference` (§14 item 6) is never matched
-to a prior: it neither inherits a prior's shield nor takes a prior's place in `B`, and the prior is evaluated on its
-own. Its fingerprint carries the flag and the raw reference, so it never shares an identity with a resolved finding.
+**SARIF identity (R37).** The identity of a `sarif-unparsed` finding is its check id and the sha256 of the log's
+bytes (§14 item 6): a later log of the same check is a new finding, so a human disposition of one log never shields
+another. Its re-raise — the same log again — is reconciled with its prior like any other finding.
+
 The persisted `adjudications` row enforces "shadow ⇒ PROCEED or BLOCK" with a check
 constraint (data model §3). A shadow `BLOCK` (A1) carries **no shadow verdict**, neither in `BlockOutcome` nor in
 the row (`adjudications_shadow_ck` sets `would_be_outcome` only for a shadow `PROCEED`): the push guard is not a
@@ -960,12 +993,12 @@ gating decision, so there is no would-be outcome to record (P4-PLAN2-MED-005; co
     does a line outside every hunk. A citation that is grounded but fails the predicate is a claim at most (`FIXED`,
     by the raiser) and never a verification. The golden test cites the unchanged context line directly above an
     added line and requires the finding to stay blocking.
-  - **SARIF findings (R23, R32).** A SARIF finding stays blocking until an authorized human disposition closes it.
-    Model output never closes it, and neither does scanner output: a later SARIF log that no longer reports the
-    result, however clean its run looks, changes nothing. Scanner-recheck closure is deferred out of Phase 4 (DF-9):
-    three review rounds found new ways a log could falsely prove a fix (declared against effective rules, then
-    reference forms and foreign base URIs), and no real scanner is wired in Phase 4. The domain has no harness rule
-    that verifies a SARIF finding, and the database refuses one (data model §3.1).
+  - **SARIF findings (R23, R32, R37).** A SARIF finding stays blocking until an authorized human disposition closes
+    it. Model output never closes it, and neither does scanner output: a later round without the log, or with another
+    log, changes nothing. Scanner-recheck closure is deferred out of Phase 4 (DF-9) and so is SARIF parsing (DF-10).
+    The domain refuses every disposition of a SARIF finding by a non-human actor — verify, refute, waive, accept and
+    claim — whatever `grounded` says; only a harness rule's reopen (an expired waiver) remains, which makes the finding
+    blocking again. The database refuses the same rows (`finding_dispositions_sarif_ck`, data model §3.1).
   - A `RESOLVED` claim whose cited file was not touched by the repair delta stays `OPEN`
     (`closure-without-change`).
   - A finding of this round that matches a `VERIFIED` or `CLOSED` prior is a regression linked to that prior (§12).
@@ -996,16 +1029,18 @@ gating decision, so there is no would-be outcome to record (P4-PLAN2-MED-005; co
 4. **Trojan Source:** bidirectional and zero-width Unicode in added lines → SECURITY finding.
 5. **Dependency and invariant checks:** manifest/lockfile changes flagged; `ArchitectureInvariant` 1.1.0
    `forbidden-import` rules over added import specifiers.
-6. **Project tools via SARIF 2.1.0 subset** from L4/L5 artifacts; a log whose structure cannot be read (version,
-   runs, results, messages, levels, regions) fails closed as one `sarif-malformed` finding. **Ingestion never loses a
-   result (R32).** A result's rule is resolved from `ruleId`, `ruleIndex`, `rule.id` and `rule.index` against
-   `tool.driver.rules`; its file from `physicalLocation.artifactLocation.uri` and `artifactLocation.index` against
-   `run.artifacts`. Forms that name the same rule and file give the same finding and fingerprint. A reference that
-   cannot be resolved — every reference with a `toolComponent`, a rule named only by `guid`, an index outside its
-   array, forms that disagree, a URI that is not a repository path, and any `uriBaseId`, because no base is bound to
-   the repaired repository root in Phase 4 (DF-9) — keeps the result as a finding flagged `unresolved-reference`: the
-   unresolved part is null, the evidence names the reference, the flag and the raw reference enter the fingerprint,
-   and the finding is never linked to a prior (§12). Scanner runs are not recorded: nothing in Phase 4 reads them.
+6. **Project tools via SARIF 2.1.0** from L4/L5 artifacts: **not parsed in Phase 4 (R37, DF-10).** No SARIF
+   producer runs in Phase 4 (the pilot runs R0/R1, L0–L2), and four review rounds found ingestion faults. Each SARIF
+   log the round's checks receive yields exactly one finding: source `sarif`, raiser `sarif:unparsed`, rule
+   `sarif-unparsed`, severity HIGH, category `EVIDENCE_INTEGRITY`, no file or line, grounded to the log artifact (the
+   evidence names the check id, the sha256 and the size of the bytes the check report lists under `sarifInputs`). It
+   blocks whatever the severity policy says (§12), only an authorized human closes it (§13), and a later round without
+   the log changes nothing. Its fingerprint is the canonical tuple `[category, subject, null, "sarif-unparsed"]`, where
+   the subject is the canonical JSON text of `["sarif-log", checkId, sha256]`, so two logs are two findings and a new
+   log of the same check is a new finding. The bytes are
+   never decoded: a log that is not even JSON yields the same one finding. The check report's parser requires
+   exactly these findings for its listed logs. The rules of SARIF reference resolution (rule-ID forms, hierarchical
+   IDs, artifact indexes, `uriBaseId`) are DF-10's entry criteria (§5.3).
 7. Raw check output is stored before any reduction (ADR 0009).
 
 ---
@@ -1936,9 +1971,11 @@ export interface StatefulConformanceFixture extends ConformanceFixtureBase {
 }
 
 /**
- * The fixture of an implementation that persists nothing. Only the disabled, not-configured
- * and scripted slots declare it (R32); the fencing, pre-lease, atomicity, persistence and
- * "no state change" parts of the cases then report not-applicable.
+ * The fixture of an implementation that persists nothing: the disabled and scripted slots
+ * (R32, R37). A slot that persists anything presents a StatefulConformanceFixture, Lane A's
+ * NotConfiguredAssuranceSlot included because it persists outcome events. With this fixture the
+ * fencing, pre-lease, atomicity, persistence and "no state change" parts of the cases report
+ * not-applicable.
  */
 export interface StatelessConformanceFixture extends ConformanceFixtureBase {
   readonly stateless: true;
@@ -2032,7 +2069,8 @@ export declare function createScriptedReviewLoopSlot(script: ScriptedReviewLoopS
 
 - Lane A's `NotConfiguredAssuranceSlot` (Lane A's plan) is the **default binding** when no assurance is configured.
   It fails closed for any risk that requires review and emits the attempt-outcome events. Lane A composes it until
-  Lane B's implementation is integrated, and it passes the conformance kit.
+  Lane B's implementation is integrated, and it passes the conformance kit with a `StatefulConformanceFixture`:
+  it persists outcome events, so the atomicity case applies to it (R37).
 - Lane B's `createDisabledAssuranceSlot(REVIEW_LOOP_DISABLED)` is the **explicit, literal opt-out**, mirroring
   `HOST_EXECUTION_WAIVER`: `PROCEED` without events. It is never a default.
 
@@ -2069,8 +2107,9 @@ party that carries each and the case that proves it:
 
 `runReviewLoopContract` cases, run by both lanes (Lane A against the scripted, disabled and not-configured slots;
 Lane B against `createAssuranceSlot` on PGlite and on real PostgreSQL). Every case starts from a fresh subject. Only
-the disabled, not-configured and scripted slots may present a `StatelessConformanceFixture`; any other subject is
-stateful, supplies every hook, and a stateful case it cannot pass fails (R32):
+a slot that persists nothing — the disabled and scripted slots — may present a `StatelessConformanceFixture`; any
+other subject, Lane A's `NotConfiguredAssuranceSlot` included because it persists outcome events, is stateful,
+supplies every hook, and a stateful case it cannot pass fails (R32, R37):
 
 | Case | Assertion |
 |---|---|
@@ -2385,7 +2424,7 @@ rule of §21.2.
 | S3 | `review-policy.yaml` + loader | YAML↔TS parity; unknown family fails closed; implementer-family reviewer rejected; comparator must differ from primary family; **loader rejects `gating`**; D-2 rule table (R1 + promoted → no human review required; R1 unpromoted → required; R2 promoted → still deferred); approval/verification matrices byte-unchanged | pure core pre-S0; integration after S0 (§21.1) | `feat(policy): declare reviewer independence, egress classification and shadow-only modes as data` |
 | S4 | finding lifecycle + closure authority + review-round machine; SR-X2 | table-driven transitions; raiser cannot verify; model cannot waive/refute grounded HIGH/CRITICAL; waiver needs human + rationale + expiry; `closure-without-change` | pure core (domain file) pre-S0; SR-X2 and integration after S0 (§21.1) | `feat(domain): finding lifecycle with closure authority and review-round states` |
 | S5 | packet builder (incl. execution manifest), prompt renderer, independence checks | canaries in coder self-report never reach packet, prompt or request bytes; identical bytes across builds; nonce derivation; over-budget flagged, never cut; manifest carries command, exit code, environment digest, raw refs, scanned bounded excerpts | pure core pre-S0 (frozen local DTOs); integration after S0/S1/S2 (§21.1) | `feat(assurance): build an independent review packet with an execution manifest` |
-| S6 | push guard, egress decision, false-green checks, Trojan Source, dependency/invariant checks, SARIF | seeded violation per check; secret-pattern parity; each egress stop kind; seeded false-green cases (zero tests, added skip, exit-code mismatch, missing check) all caught | pure core pre-S0; integration after S0/S1 (§21.1) | `feat(assurance): deterministic push guard, egress decision and false-green checks` |
+| S6 | push guard, egress decision, false-green checks, Trojan Source, dependency/invariant checks, SARIF | seeded violation per check; secret-pattern parity; each egress stop kind; seeded false-green cases (zero tests, added skip, exit-code mismatch, missing check) all caught; each SARIF log one blocking `sarif-unparsed` finding (R37) | pure core pre-S0; integration after S0/S1 (§21.1) | `feat(assurance): deterministic push guard, egress decision and false-green checks` |
 | S7 | grounding, adjudication rule table, closure authority, repair order | every rule row × {gating, shadow}; shadow never yields REPAIR/ESCALATE; out-of-packet citations refuted; repair order bounded and anchored | pure core pre-S0; integration after S0/S1 (§21.1) | `feat(assurance): grounding, adjudication and closure authority` |
 | S8 | SR-M1/M3/M4, repositories, fenced decision writes, snapshot store | PGlite + real PG: migrations apply once and stay in range; tenant IDOR rejected; append-only and final-record triggers; shadow check constraint; disposition actor constraints; `metric_snapshots` versions append-only; fence: new owner completes after handoff, old owner fenced, concurrent claim one winner | after P2 + S0 | `feat(persistence): persist review rounds, findings, dispositions and adjudications under fencing` |
 | S9 | `ReviewSourceReader` | real temp repos: exact range diff; binary/too-large/submodule/deleted/non-UTF-8 reported, never dropped; traversal rejected | after S0 | `feat(workspace): trusted range diffs and post-images for review` |
@@ -2519,7 +2558,7 @@ migration (data model §3.6).
    `…MEASUREMENT_PENDING…`. Neither `gpt-6.1-sol` nor the comparator has been probed by the lane (not verified); the gateway's request alteration is verified by the controller (U-3).
 4. **Phase 2 agent-runtime repair**: S22. Without it the verdict carries `ASSURANCE_ONLY_LOOP`.
 5. **Pilot repository**: DF-6 only.
-6. **Controller confirmation of v6**: the S19 freeze, every S20 part and the hand-off of the slot block to Lane A wait for it (§7.8, R18, R23, R28, R32).
+6. **Controller confirmation of v7**: the S19 freeze and every S20 part wait for it; the slot block is `HAND-OFF: READY` and its release to Lane A (G-LB) follows the controller's diff check against `023f16dc…` (§7.8, R18, R23, R28, R32, R37).
 
 None blocks plan lock.
 
@@ -2528,13 +2567,14 @@ None blocks plan lock.
 ## Output
 
 ```text
-PLAN_STATUS: LOCKED v6 (pending controller confirmation)
+PLAN_STATUS: LOCKED v7 (pending controller confirmation)
 BASE_SHA: 00a68895d205122767167942326e2e0466571059 (Phase 2 not accepted)
 REVIEWED_V1: a2a7b8ad09a5389339fc3ef7131ae7b2b294d97f — Codex REQUEST_CHANGES 0.99 (1 CRITICAL, 8 HIGH, 5 MEDIUM, 1 LOW), all dispositioned
 REVIEWED_V2: 32013356e0845354f40ac6f63925f928637d6fb3 — Codex gpt-6.1-sol lock-check REQUEST_CHANGES 0.97 (14/15 v1 folded, v1 MED-001 partial; new 2 HIGH, 8 MEDIUM), all dispositioned
 REVIEWED_V3: 9e3a1c32e869193e981a867e8bb9fbd1abaec9c8 — Codex gpt-6.1-sol review of plan, slot block and pre-S0 code REQUEST_CHANGES 0.99 (all v2 findings folded; new 6 MEDIUM plan/slot, 6 HIGH + 3 MEDIUM + 1 LOW code, 1 surviving mutation), all dispositioned
 REVIEWED_V4: 7cc20f474ef0d53532ff386777eae7d5d07dae24 — Codex gpt-6.1-sol re-check of plan v4, slot block and code fixes REQUEST_CHANGES 0.99, HAND-OFF NOT_READY (all v3 plan/slot findings folded; 7 code items resolved, 4 partial; new 1 HIGH + 2 MEDIUM plan, 2 MEDIUM slot, 3 HIGH + 2 MEDIUM code, 1 surviving mutation), all dispositioned
 REVIEWED_V5: fb2e4323a61e128553043b08157f02c70a1684c9 — Codex gpt-6.1-sol re-check of plan v5, slot block and code fixes REQUEST_CHANGES 0.99, HAND-OFF NOT_READY (v4 severity, identity, budget and pattern fixes resolved; new 1 MEDIUM + 1 LOW plan, 1 HIGH + 1 MEDIUM slot, 3 HIGH + 1 MEDIUM + 1 LOW code, 1 surviving mutation, 1 mutant wrongly declared equivalent), all dispositioned
+REVIEWED_V6: d0907b9afecd4c8e3527874e8b9ddd435978a8dc — Codex gpt-6.1-sol re-check of plan v6, slot block and code fixes REQUEST_CHANGES 0.98, HAND-OFF READY (v5 plan and slot findings folded; v5 code findings resolved except SARIF ingestion; new 1 LOW plan, 1 LOW slot, 2 HIGH + 2 MEDIUM code, 1 surviving mutation), all dispositioned
 BASELINE: lane-observed at a2a7b8a — verify:all exit 0; tests 548 pass 548; 50 files; 28 required suites; compat 13 schemas
 PLAN_FILES:
   - docs/implementation/phases/phase-04-plan.md
@@ -2550,9 +2590,10 @@ PLAN_FILES:
   - docs/implementation/phases/phase-04-review-codex-v3.md
   - docs/implementation/phases/phase-04-review-codex-v4.md
   - docs/implementation/phases/phase-04-review-codex-v5.md
+  - docs/implementation/phases/phase-04-review-codex-v6.md
 NEW_THIRD_PARTY_DEPENDENCIES: none
 GATING: shadow only in Phase 4 (user decision); gating/promotion/thresholds/R2 admission deferred
-SLOT_BLOCK: v6 (R18, R19, R23, R28, R29, R32), type-checked against the real built @asep/contracts, @asep/ports and AdmissionResult with 18 negative controls; envelope helper executed from the block text on the RLC-01 fixtures, money included; hand-off to Lane A only after the controller's focused check
+SLOT_BLOCK: v7 (R18, R19, R23, R28, R29, R32, R37) — HAND-OFF READY at d0907b9 (sha256 023f16dc…3a04d); v7 changes only the wording of the StatelessConformanceFixture doc comment (sha256 recorded in the review log); type-checked against the real built @asep/contracts, @asep/ports and AdmissionResult with 18 negative controls; envelope helper executed from the block text on the RLC-01 fixtures, money included; release to Lane A (G-LB) after the controller's diff check
 SHARED_SURFACE_REQUESTS: §19 (S0 4, ports 3, contracts 6 (+ SR-C3 withdrawn, SR-C5 moved to S0), migrations 3 (+ 0201_run_events withdrawn), fencing CR-F1, gates 4 (both runners), dictionary 2 + loader, other 8, controller 3)
-READY_FOR_IMPLEMENTATION: pure-core parts of S3–S7 and S19 (provenance and excerpts) per §21.1; S19 freeze and S20 after v6 confirmation; integration parts after Phase 2 acceptance, Lane A S0 and per-step controller release
+READY_FOR_IMPLEMENTATION: pure-core parts of S3–S7 and S19 (provenance and excerpts) per §21.1; S19 freeze and S20 after v7 confirmation; integration parts after Phase 2 acceptance, Lane A S0 and per-step controller release
 ```

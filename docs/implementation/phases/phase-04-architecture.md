@@ -1,6 +1,6 @@
-# Phase 4 — Architecture (LOCKED v6, pending controller confirmation)
+# Phase 4 — Architecture (LOCKED v7, pending controller confirmation)
 
-> Companion to `phase-04-plan.md`. Base `00a6889`; v1 reviewed at `a2a7b8a`; v2 lock-checked at `3201335`; v3 reviewed at `9e3a1c3` (v4: budget and unsafe paths §8, egress paths §9, finding identity, changed-line predicate and scanner recheck §11); v4 re-checked at `7cc20f4` (v5: final-byte budget §8, identity encoding, no-downgrade reconciliation and effective scanner recheck §11); v5 re-checked at `fb2e432` (v6, R32: `includedBytes` as the stored size §8, scanner-recheck closure deferred and SARIF references resolved or flagged §11). Thesis unchanged from the ADRs: an
+> Companion to `phase-04-plan.md`. Base `00a6889`; v1 reviewed at `a2a7b8a`; v2 lock-checked at `3201335`; v3 reviewed at `9e3a1c3` (v4: budget and unsafe paths §8, egress paths §9, finding identity, changed-line predicate and scanner recheck §11); v4 re-checked at `7cc20f4` (v5: final-byte budget §8, identity encoding, no-downgrade reconciliation and effective scanner recheck §11); v5 re-checked at `fb2e432` (v6, R32: `includedBytes` as the stored size §8, scanner-recheck closure deferred and SARIF references resolved or flagged §11); v6 re-checked at `d0907b9` (v7, R37: SARIF logs not parsed, one human-only `sarif-unparsed` finding per log and no machine disposition of a SARIF finding §11). Thesis unchanged from the ADRs: an
 > agent cannot approve its own work (README thesis 3), every framework sits behind a port (ADR 0005),
 > deterministic evidence is stronger than model review (ADR 0010), raw evidence is captured before any reduction
 > (ADR 0009), humans own high-risk decisions (ADR 0014). v2 changes are driven by the Codex plan review and the
@@ -420,7 +420,7 @@ Waiver expiry is evaluated at the round's opening time, never at the adjudicatin
 ```text
 claims  = reviewer claims on F this round
 if F.source = deterministic:   VERIFIED iff the same rule does not fire on the new tree
-else if F.source = sarif:      unchanged: only a human disposition closes F (R32; scanner output never does)
+else if F.source = sarif:      unchanged: only a human disposition closes F (R32, R37; no machine actor may)
 else if a human RESOLUTION_VERIFIED disposition exists:                    VERIFIED
 else if ∃ claim c: c.status = RESOLVED ∧ c.raiser ≠ R(F) ∧ eligible(c.raiser vs implementer)
         ∧ grounded(c.resolution) ∧ changedLine(c, F):                      VERIFIED
@@ -440,23 +440,24 @@ changedLine(c, F) = E exists ∧ ( c.resolutionLine ∈ E.added.lines           
 
 Context lines of a hunk, even next to an edit, are in neither set and never close a finding.
 
-**SARIF findings in Phase 4** (plan §13, §14, R32). Scanner-recheck closure is deferred (plan DF-9): a SARIF finding
-closes only by an authorized human disposition, and a later log that no longer reports it changes nothing. Model
-output never closes a deterministic or SARIF finding. Ingestion keeps every result:
+**SARIF findings in Phase 4** (plan §12, §13, §14, R32, R37). SARIF logs are not parsed (plan DF-10) and
+scanner-recheck closure is deferred (plan DF-9). Each SARIF log the checks receive becomes one finding, whatever its
+bytes hold:
 
 ```text
-rule(result)  = the one rule id that every present form names, resolved against tool.driver.rules:
-                result.ruleId, rules[result.ruleIndex].id, result.rule.id, rules[result.rule.index].id
-file(result)  = the repository path of locations[0].physicalLocation.artifactLocation:
-                its uri, or run.artifacts[index].location.uri, agreeing when both are present
-unresolved    = a rule reference with a toolComponent or only a guid, an index outside its array, forms that
-                disagree, any uriBaseId (none is bound to the repaired root in Phase 4), a URI that is not a
-                repository path
-finding       = always kept; when unresolved: the unresolved part is null, the evidence names the reference,
-                the flag and the raw reference enter the fingerprint, and the finding is never linked to a prior
+finding(log)  = { source: sarif, raisedBy: "sarif:unparsed", ruleId: "sarif-unparsed", severity: HIGH,
+                  category: EVIDENCE_INTEGRITY, file/lines: none, grounded: true,
+                  evidence: the check id, sha256 and size of the log as the check report lists it }
+fingerprint   = sha256(canonical JSON [EVIDENCE_INTEGRITY, subject, null, "sarif-unparsed"]),
+                subject = canonical JSON text of ["sarif-log", checkId, sha256]
+blocking      = always (R37), whatever blockingSeverities[risk] says
+closure       = only an authorized human; the domain and the database refuse every non-human disposition of a
+                SARIF finding except a harness reopen (an expired waiver)
 ```
 
-No scanner run is recorded in the check report: nothing in Phase 4 reads one.
+A later round without the log changes nothing, and a new log of the same check is a new finding, so a human
+disposition of one log never covers another. The check report's parser requires exactly these findings for the logs
+it lists, and no scanner run is recorded: nothing in Phase 4 reads one.
 
 ## 12. Measurement architecture (reviewer benchmark)
 
