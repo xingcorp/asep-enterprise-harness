@@ -100,6 +100,10 @@ export const REQUIRED_SUITES = Object.freeze({
   // error or a surviving dist/ / *.tsbuildinfo fails the step instead of
   // printing PASS over a warm tree.
   'asep-suite:cold-cache-reset': 'scripts/cold-cache-reset.test.ts',
+  // The PII gate covers git author/committer metadata, not only tracked files:
+  // a commit under a personal address fails it (published history excepted for
+  // the one pinned legacy address).
+  'asep-suite:pii-scan': 'scripts/pii-scan.test.ts',
   'asep-suite:eval-network-guard': 'evals/runner/env.test.ts',
   'asep-suite:trusted-bootstrap': 'evals/runner/launcher.test.ts',
   'asep-suite:compat-gate': 'packages/contracts/src/compat-gate.test.ts',
