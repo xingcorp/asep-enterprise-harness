@@ -8,6 +8,7 @@
 // criterion K4) so a dropped/renamed/crashed tenancy suite turns the gate RED.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { PgliteClient } from './pglite-client.js';
 import { migrate, MigrationChecksumError } from './migrator.js';
 import { MIGRATIONS } from './migrations.js';
@@ -314,7 +315,7 @@ async function reserveEvidenceId(
   client: SqlClient, scope: TenantScope, bindingId: string, attemptId: string, id: string,
 ): Promise<void> {
   const draftId = `D${id.slice(1)}`;
-  const sha = '7'.repeat(63) + String(id.charCodeAt(25) % 10);
+  const sha = createHash('sha256').update(`draft of ${id}`).digest('hex');
   await client.query(
     `insert into artifacts
        (id, organization_id, project_id, attempt_id, kind, sha256, size_bytes, storage_key, content_type)
@@ -882,15 +883,21 @@ async function seedBinding(
 // kind. Asserted with raw SQL, so no repository check stands in for the schema.
 // ---------------------------------------------------------------------------
 
+// A fresh 26-character id that no row holds yet.
+function freshId(prefix: string): string {
+  return `${prefix}${Math.random().toString(36).slice(2).toUpperCase().replace(/[ILOU]/g, 'X')}`.padEnd(26, '0').slice(0, 26);
+}
+
 async function seedTyped(
   client: Awaited<ReturnType<typeof freshDb>>, scope: TenantScope, kind: string, sha: string,
+  attemptId: string | null = null,
 ): Promise<string> {
-  const id = `A${Math.random().toString(36).slice(2).toUpperCase().replace(/[ILOU]/g, 'X')}`.padEnd(26, '0').slice(0, 26);
+  const id = freshId('A');
   await client.query(
     `insert into artifacts
        (id, organization_id, project_id, attempt_id, kind, sha256, size_bytes, storage_key, content_type)
-     values ($1, $2, $3, null, $4, $5, 10, $6, 'application/json')`,
-    [id, scope.organizationId, scope.projectId, kind, sha, `k/${id}`],
+     values ($1, $2, $3, $4, $5, $6, 10, $7, 'application/json')`,
+    [id, scope.organizationId, scope.projectId, attemptId, kind, sha, `k/${id}`],
   );
   return id;
 }
@@ -918,19 +925,6 @@ test("the DB refuses a pull request whose attempt belongs to another binding", a
   }
 });
 
-interface RefColumn {
-  readonly table: 'runs' | 'tasks' | 'attempts' | 'pull_requests';
-  readonly column: string;      // <column>_artifact_id / <column>_sha256
-  readonly kind: string;
-}
-const REF_COLUMNS: readonly RefColumn[] = [
-  { table: 'runs', column: 'product_spec', kind: 'product-spec' },
-  { table: 'tasks', column: 'work_order', kind: 'work-order' },
-  { table: 'attempts', column: 'context_pack', kind: 'context-pack' },
-  { table: 'attempts', column: 'evidence', kind: 'evidence-bundle' },
-  { table: 'pull_requests', column: 'evidence', kind: 'evidence-bundle' },
-];
-
 // One row of each referencing table, all in `scope` and one binding.
 async function seedChain(client: Awaited<ReturnType<typeof freshDb>>, scope: TenantScope, bindingId: RepositoryBindingId) {
   const run = await new RunRepository(client).create(scope, { repositoryBindingId: bindingId, status: 'EXECUTING', risk: 'R0' });
@@ -940,39 +934,123 @@ async function seedChain(client: Awaited<ReturnType<typeof freshDb>>, scope: Ten
     repositoryBindingId: bindingId, attemptId: attempt.id, forge: 'github', number: 1,
     headBranch: `asep/${attempt.id}`, baseBranch: 'main', url: 'https://example.invalid/1', state: 'OPEN',
   });
-  return { runs: run.id, tasks: task.id, attempts: attempt.id, pull_requests: pr.id } as Record<RefColumn['table'], string>;
+  return { runs: run.id, tasks: task.id, attempts: attempt.id, pull_requests: pr.id } as Record<'runs' | 'tasks' | 'attempts' | 'pull_requests', string>;
 }
 
-for (const ref of REF_COLUMNS) {
-  test(`${ref.table}.${ref.column} is a scoped artifact reference with checksum and kind`, async () => {
-    const client = await freshDb();
-    try {
-      const { scope, binding } = await seedScope(client);
-      const other = await seedScope(client);
-      const ids = await seedChain(client, scope, binding.id);
-      const set = (artifactId: string | null, sha: string | null) => client.query(
-        `update ${ref.table} set ${ref.column}_artifact_id = $1, ${ref.column}_sha256 = $2 where id = $3`,
-        [artifactId, sha, ids[ref.table]],
-      );
-      const sha = 'a'.repeat(64);
-      const mine = await seedTyped(client, scope, ref.kind, sha);
-      // Evidence is also a reservation of the row's own attempt (migration 0018).
-      if (ref.column === 'evidence') await reserveEvidenceId(client, scope, binding.id, ids.attempts, mine);
-      const foreign = await seedTyped(client, other.scope, ref.kind, sha);
-      const wrongKind = await seedTyped(client, scope, ref.kind === 'work-order' ? 'context-pack' : 'work-order', sha);
+// The artifact references of the schema are found, not listed: by the naming
+// convention (`<name>_artifact_id` + `<name>_sha256` + a generated
+// `<name>_kind`), by the registry the migrations keep
+// (`artifact_reference_columns`), and by the foreign keys into artifacts. All
+// three must name the same references, so a migration that adds a reference
+// without registering it, or registers one it does not enforce, fails here.
+interface ArtifactReference {
+  readonly table: string;
+  readonly name: string;
+  readonly kind: string;
+}
 
-      await assert.rejects(() => set(foreign, sha), /foreign key|violates/i, 'an artifact of another tenant');
-      await assert.rejects(() => set(mine, 'b'.repeat(64)), /foreign key|violates/i, 'the right artifact, the wrong checksum');
-      await assert.rejects(() => set(wrongKind, sha), /foreign key|violates/i, 'an artifact of another kind');
-      await assert.rejects(() => set(mine, null), /violates|check/i, 'an id without its checksum');
-      await assert.rejects(() => set(null, sha), /violates|check/i, 'a checksum without its id');
-      await set(mine, sha);
-      await set(null, null);
-    } finally {
-      await client.close();
+async function registeredReferences(client: SqlClient): Promise<ArtifactReference[]> {
+  const r = await client.query(
+    `select table_name, reference_name, kind from artifact_reference_columns order by table_name, reference_name`);
+  return r.rows.map((x) => ({ table: String(x['table_name']), name: String(x['reference_name']), kind: String(x['kind']) }));
+}
+
+test('the reference registry, the naming convention and the foreign keys into artifacts agree', async () => {
+  const client = await freshDb();
+  try {
+    const registry = (await registeredReferences(client)).map((r) => `${r.table}.${r.name}`);
+    const named = (await client.query(
+      `select table_name, column_name from information_schema.columns
+        where table_schema = 'public' and column_name like '%\\_artifact\\_id' escape '\\'
+        order by table_name, column_name`,
+    )).rows.map((x) => `${String(x['table_name'])}.${String(x['column_name']).slice(0, -'_artifact_id'.length)}`);
+    const fks = (await client.query(
+      `select c.conrelid::regclass::text as t,
+              (select string_agg(a.attname, ',' order by k.ord) from unnest(c.conkey) with ordinality k(n, ord)
+                 join pg_attribute a on a.attrelid = c.conrelid and a.attnum = k.n) as cols,
+              (select string_agg(a.attname, ',' order by k.ord) from unnest(c.confkey) with ordinality k(n, ord)
+                 join pg_attribute a on a.attrelid = c.confrelid and a.attnum = k.n) as refcols
+         from pg_constraint c
+        where c.contype = 'f' and c.confrelid = 'artifacts'::regclass`,
+    )).rows;
+    const enforced: string[] = [];
+    for (const fk of fks) {
+      const cols = String(fk['cols']).split(',');
+      const refcols = String(fk['refcols']).split(',');
+      const by = (target: string): string | undefined => cols[refcols.indexOf(target)];
+      const id = by('id') ?? '';
+      const name = id.endsWith('_artifact_id') ? id.slice(0, -'_artifact_id'.length) : id;
+      const where = `${String(fk['t'])}.${name}`;
+      // Tenant, checksum and kind are all part of the key the row must match.
+      assert.equal(by('organization_id'), 'organization_id', `${where}: the key carries the tenant`);
+      assert.equal(by('project_id'), 'project_id', `${where}: the key carries the project`);
+      assert.equal(by('sha256'), `${name}_sha256`, `${where}: the key carries the checksum`);
+      assert.equal(by('kind'), `${name}_kind`, `${where}: the key carries the kind`);
+      enforced.push(where);
     }
-  });
+    assert.ok(registry.length > 0, 'the migrations keep a registry');
+    assert.deepEqual(named, [...registry].sort(), 'every <name>_artifact_id column is registered, and only those');
+    assert.deepEqual(enforced.sort(), [...registry].sort(), 'every registered reference, and only those, is a scoped FK into artifacts');
+  } finally {
+    await client.close();
+  }
+});
+
+// One row of every table that holds a registered reference, all in `scope`.
+async function seedReferencingRows(
+  client: Awaited<ReturnType<typeof freshDb>>, scope: TenantScope, bindingId: RepositoryBindingId,
+): Promise<{ rows: Readonly<Record<string, string>>; attemptId: string }> {
+  const chain = await seedChain(client, scope, bindingId);
+  const reservation = freshId('R');
+  await reserveEvidenceId(client, scope, bindingId, chain.attempts, reservation);
+  const execution = freshId('X');
+  await client.query(
+    `insert into command_executions
+       (id, organization_id, project_id, attempt_id, command_id, executable, args, environment_profile)
+     values ($1, $2, $3, $4, 'L1-static', 'node', '[]', 'verification-no-network')`,
+    [execution, scope.organizationId, scope.projectId, chain.attempts],
+  );
+  return { rows: { ...chain, evidence_reservations: reservation, command_executions: execution }, attemptId: chain.attempts };
 }
+
+const refused = (err: unknown): boolean => /violates/i.test((err as Error).message);
+
+test('every registered artifact reference refuses a missing, foreign, mis-hashed or mis-kinded artifact', async (t) => {
+  const client = await freshDb();
+  try {
+    const { scope, binding } = await seedScope(client);
+    const other = await seedScope(client);
+    const { rows, attemptId } = await seedReferencingRows(client, scope, binding.id);
+    for (const ref of await registeredReferences(client)) {
+      await t.test(`${ref.table}.${ref.name} (${ref.kind})`, async () => {
+        const rowId = rows[ref.table];
+        assert.ok(rowId, `no ${ref.table} row to try ${ref.name} on: seed one in seedReferencingRows`);
+        const set = (artifactId: string | null, sha: string | null) => client.query(
+          `update ${ref.table} set ${ref.name}_artifact_id = $1, ${ref.name}_sha256 = $2 where id = $3`,
+          [artifactId, sha, rowId],
+        );
+        // Artifacts are content-addressed per tenant and kind, so each reference
+        // gets its own content.
+        const sha = createHash('sha256').update(`${ref.table}.${ref.name}`).digest('hex');
+        const mine = await seedTyped(client, scope, ref.kind, sha, attemptId);
+        // Evidence is also a reservation of the row's own attempt (migration 0018).
+        if (ref.kind === 'evidence-bundle') await reserveEvidenceId(client, scope, binding.id, attemptId, mine);
+        const foreign = await seedTyped(client, other.scope, ref.kind, sha);
+        const wrongKind = await seedTyped(client, scope, ref.kind === 'work-order' ? 'context-pack' : 'work-order', sha, attemptId);
+
+        await assert.rejects(() => set(freshId('M'), sha), refused, 'an artifact that does not exist');
+        await assert.rejects(() => set(foreign, sha), refused, 'an artifact of another tenant');
+        await assert.rejects(() => set(mine, 'b'.repeat(64)), refused, 'the right artifact, the wrong checksum');
+        await assert.rejects(() => set(wrongKind, sha), refused, 'an artifact of another kind');
+        await assert.rejects(() => set(mine, null), refused, 'an id without its checksum');
+        await assert.rejects(() => set(null, sha), refused, 'a checksum without its id');
+        await set(mine, sha);
+      });
+    }
+  } finally {
+    await client.close();
+  }
+});
 
 test('no reference column is free JSONB any more', async () => {
   const client = await freshDb();
@@ -1081,5 +1159,33 @@ test('upgrading over a completed commit that predates reservations fails instead
     await assert.rejects(() => migrate(db), /predate evidence reservations/);
   } finally {
     await db.close();
+  }
+});
+
+// Command output named before it carried a checksum has nothing to bind: the
+// upgrade refuses it instead of inventing one, and a row that names no output
+// upgrades as it is.
+test('upgrading over command output without a checksum fails instead of inventing one', async () => {
+  const before = MIGRATIONS.findIndex((m) => m.id === '0019_command_output_references');
+  assert.ok(before > 0, 'the command output migration is registered');
+  for (const named of [false, true]) {
+    const db = await PgliteClient.create();
+    try {
+      await migrate(db, MIGRATIONS.slice(0, before));
+      const { scope, binding } = await seedScope(db);
+      const ids = await seedChain(db, scope, binding.id);
+      const out = named ? await seedTyped(db, scope, 'command-stdout', 'a'.repeat(64)) : null;
+      await db.query(
+        `insert into command_executions
+           (id, organization_id, project_id, attempt_id, command_id, executable, args, environment_profile,
+            stdout_artifact_id)
+         values ($1, $2, $3, $4, 'L1-static', 'node', '[]', 'verification-no-network', $5)`,
+        [freshId('X'), scope.organizationId, scope.projectId, ids.attempts, out],
+      );
+      if (named) await assert.rejects(() => migrate(db), /command_executions: 1 row\(s\) name command output without a checksum/);
+      else await migrate(db);
+    } finally {
+      await db.close();
+    }
   }
 });

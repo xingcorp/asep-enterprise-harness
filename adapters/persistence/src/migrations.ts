@@ -1036,6 +1036,74 @@ alter table pull_requests
   references evidence_reservations (id, organization_id, project_id, repository_binding_id, attempt_id);
 `;
 
+// ---------------------------------------------------------------------------
+// 0019 — command output references are scoped, and references are registered.
+//
+// 0017 made every reference a row relies on a scoped key with checksum and
+// kind, but command_executions.stdout_artifact_id and stderr_artifact_id were
+// left bare char(26) columns: any id, of any tenant, existing or not, was
+// accepted. They now follow the same rule as the others: `<name>_sha256` (both
+// or neither) and a generated `<name>_kind` ('command-stdout' /
+// 'command-stderr', the kinds the command runner stores), FK-bound to
+// artifacts (id, organization_id, project_id, sha256, kind).
+//
+// The references themselves are now registered in artifact_reference_columns,
+// which every migration that adds or removes one must keep current. The
+// persistence suite finds the references by the column naming convention, by
+// this registry and by the foreign keys into artifacts, and requires all three
+// to agree — so a reference cannot be added without being declared and
+// enforced.
+//
+// A row that already names command output carries no checksum to bind, and
+// the migration fails rather than invent one. Append-only: earlier migrations
+// are untouched.
+// ---------------------------------------------------------------------------
+const M0019 = `
+create table artifact_reference_columns (
+  table_name     text not null,
+  reference_name text not null,
+  kind           text not null,
+  primary key (table_name, reference_name)
+);
+insert into artifact_reference_columns (table_name, reference_name, kind) values
+  ('runs', 'product_spec', 'product-spec'),
+  ('tasks', 'work_order', 'work-order'),
+  ('attempts', 'context_pack', 'context-pack'),
+  ('attempts', 'evidence', 'evidence-bundle'),
+  ('pull_requests', 'evidence', 'evidence-bundle'),
+  ('evidence_reservations', 'draft', 'evidence-draft'),
+  ('command_executions', 'stdout', 'command-stdout'),
+  ('command_executions', 'stderr', 'command-stderr');
+
+do $chk$
+declare bad bigint;
+begin
+  select count(*) into bad from command_executions
+    where stdout_artifact_id is not null or stderr_artifact_id is not null;
+  if bad > 0 then
+    raise exception 'command_executions: % row(s) name command output without a checksum; refusing to invent one', bad;
+  end if;
+end
+$chk$;
+
+alter table command_executions add column stdout_sha256 text;
+alter table command_executions add column stdout_kind text
+  generated always as (case when stdout_artifact_id is null then null else 'command-stdout' end) stored;
+alter table command_executions add constraint command_executions_stdout_ref_paired
+  check ((stdout_artifact_id is null) = (stdout_sha256 is null));
+alter table command_executions add constraint command_executions_stdout_ref_fk
+  foreign key (stdout_artifact_id, organization_id, project_id, stdout_sha256, stdout_kind)
+  references artifacts (id, organization_id, project_id, sha256, kind);
+alter table command_executions add column stderr_sha256 text;
+alter table command_executions add column stderr_kind text
+  generated always as (case when stderr_artifact_id is null then null else 'command-stderr' end) stored;
+alter table command_executions add constraint command_executions_stderr_ref_paired
+  check ((stderr_artifact_id is null) = (stderr_sha256 is null));
+alter table command_executions add constraint command_executions_stderr_ref_fk
+  foreign key (stderr_artifact_id, organization_id, project_id, stderr_sha256, stderr_kind)
+  references artifacts (id, organization_id, project_id, sha256, kind);
+`;
+
 // Ordered, immutable migration set. Order is by id; the runner asserts it.
 export const MIGRATIONS: readonly Migration[] = Object.freeze([
   { id: '0001_init_tenancy', sql: M0001 },
@@ -1056,4 +1124,5 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   { id: '0016_lease_liveness_clock', sql: M0016 },
   { id: '0017_scoped_artifact_references', sql: M0017 },
   { id: '0018_evidence_reservations', sql: M0018 },
+  { id: '0019_command_output_references', sql: M0019 },
 ]);
