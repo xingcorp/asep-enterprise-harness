@@ -15,12 +15,18 @@
 //      without the `.js` extension, and one that does not resolve, is rejected.
 //      Import-equals declarations, dynamic import() and import types of other
 //      modules are rejected;
-//   2. no source file names a denied global (clock, Intl, Temporal, randomness, timers, process, crypto, require,
-//      eval, Function, Reflect, Proxy, global escape hatches) or a reflective member (constructor, prototype,
-//      __proto__, and the Object members that reach a prototype without naming it), whether as an identifier, with
-//      unicode escapes, or as a literal key; a string holding a reflective name is a literal key wherever it appears.
-//      A computed member access must have a key whose type is a finite union of literals, and those
-//      literals are checked too. Math is allowed only as Math.<member> for a fixed set of pure members.
+//   2. every global the core reaches is on an allowlist of deterministic globals: an identifier in a value position
+//      that the checker resolves outside its own file (a lib or ambient declaration) or to nothing must be one of
+//      ALLOWED_GLOBALS, including through a shorthand property or a local re-export. No ambient declaration
+//      (`declare`) and no `import.meta` either: both read the host;
+//   3. no source file names a denied global (clock, Intl, Temporal, randomness, timers, process, crypto, require,
+//      eval, Function, Reflect, Proxy, global escape hatches), a reflective member (constructor, prototype,
+//      __proto__, and the Object members that reach a prototype without naming it) or a denied member (the
+//      locale-dependent ones, and the error members that expose host paths), whether as an identifier, with
+//      unicode escapes, or as a literal key; a string holding a reflective or denied member name is a literal key
+//      wherever it appears. A computed member access must have a key whose type is a finite union of literals, and
+//      those literals are checked too. Math is allowed only as Math.<member> for a fixed set of pure members, and
+//      Symbol only as a call or a member other than its registry reads.
 //
 // The suite asks the TypeScript checker, as the Phase 2 fitness guard does: it
 // loads the package's own project with TypeScript 7's native API and overlays
@@ -31,7 +37,10 @@
 // The check is a defence layer, not a proof: a value built at run time from
 // arbitrary computation can still evade a static check. It closes the shapes
 // that are cheap to write by accident or on purpose; the real workflow bundle
-// and the replay corpus check what the workflow loads and does.
+// and the replay corpus check what the workflow loads and does. It does not
+// close a host-dependent member of an allowed global or value that no deny list
+// names, a call whose behaviour differs between engine versions, or a host
+// object handed to the core as a value (the core receives only plain data).
 //
 // Only production source is scanned. Test files and test support
 // (src/test-support/**) are exempt: they run under node:test, never inside a
@@ -43,26 +52,44 @@ import { existsSync, readdirSync, statSync } from 'node:fs';
 import { basename, dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { API } from 'typescript/unstable/sync';
-import type { Checker, Type } from 'typescript/unstable/sync';
+import type { Checker, Symbol as CheckerSymbol, Type } from 'typescript/unstable/sync';
 import {
   SyntaxKind,
+  isBindingElement,
+  isBreakOrContinueStatement,
   isCallExpression,
   isComputedPropertyName,
   isElementAccessExpression,
+  isEnumMember,
   isExportDeclaration,
+  isExportSpecifier,
   isExternalModuleReference,
+  isGetAccessorDeclaration,
   isIdentifier,
   isImportDeclaration,
   isImportEqualsDeclaration,
   isImportTypeNode,
+  isInterfaceDeclaration,
+  isLabeledStatement,
   isLiteralTypeNode,
+  isMetaProperty,
+  isMethodDeclaration,
+  isMethodSignatureDeclaration,
   isNamedExports,
   isNamedImports,
   isNoSubstitutionTemplateLiteral,
   isPropertyAccessExpression,
+  isPropertyAssignment,
+  isPropertyDeclaration,
+  isPropertySignatureDeclaration,
+  isQualifiedName,
+  isSetAccessorDeclaration,
+  isShorthandPropertyAssignment,
   isStringLiteral,
+  isTypeAliasDeclaration,
+  isTypeNode,
 } from 'typescript/unstable/ast';
-import type { ExportDeclaration, ImportDeclaration, Node, SourceFile } from 'typescript/unstable/ast';
+import type { ExportDeclaration, Identifier, ImportDeclaration, Node, SourceFile } from 'typescript/unstable/ast';
 
 console.log('SUITE-ID: asep-suite:orchestration-purity');
 
@@ -109,8 +136,47 @@ const REFLECTIVE_MEMBERS = new Set([
   'getOwnPropertyDescriptors',
 ]);
 
+// Members whose result depends on the host: the locale (the same call formats or orders differently under another
+// locale) and the stack trace, which holds host paths.
+const DENIED_MEMBERS = new Set([
+  'toLocaleString',
+  'toLocaleDateString',
+  'toLocaleTimeString',
+  'toLocaleUpperCase',
+  'toLocaleLowerCase',
+  'localeCompare',
+  'stack',
+  'captureStackTrace',
+  'prepareStackTrace',
+  'stackTraceLimit',
+]);
+
+// The only globals the core may reach: deterministic ones. Math and Symbol carry their own member rules.
+const ALLOWED_GLOBALS = new Set([
+  'Object',
+  'Array',
+  'Number',
+  'String',
+  'Boolean',
+  'BigInt',
+  'Map',
+  'Set',
+  'JSON',
+  'Error',
+  'RangeError',
+  'TypeError',
+  'Symbol',
+  'Math',
+  'undefined',
+  'NaN',
+  'Infinity',
+]);
+
 // Pure, deterministic Math members; everything else on Math (random above all) is banned.
 const MATH_MEMBERS = new Set(['abs', 'ceil', 'floor', 'imul', 'max', 'min', 'round', 'sign', 'trunc']);
+
+// Symbol's registry is global state shared across the process.
+const SYMBOL_REGISTRY = new Set(['for', 'keyFor']);
 
 export interface PurityViolation {
   readonly file: string;
@@ -121,7 +187,10 @@ export interface PurityViolation {
     | 'import-equals'
     | 'dynamic-import'
     | 'banned-global'
+    | 'ambient-global'
+    | 'ambient-declaration'
     | 'reflective-member'
+    | 'denied-member'
     | 'computed-access';
   readonly detail: string;
 }
@@ -162,6 +231,18 @@ function literalText(node: Node | undefined): string | null {
   return isStringLiteral(node) || isNoSubstitutionTemplateLiteral(node) ? node.text : null;
 }
 
+/** True for the name of a member or a label: a key, not a reference to anything in scope. */
+function isMemberOrLabelName(node: Identifier): boolean {
+  const parent = node.parent;
+  if (isPropertyAccessExpression(parent) && parent.name === node) return true;
+  if (isQualifiedName(parent) && parent.right === node) return true;
+  if (isBindingElement(parent) && parent.propertyName === node) return true;
+  if (isLabeledStatement(parent) || isBreakOrContinueStatement(parent)) return true;
+  return (isPropertyAssignment(parent) || isPropertyDeclaration(parent) || isPropertySignatureDeclaration(parent)
+    || isMethodDeclaration(parent) || isMethodSignatureDeclaration(parent) || isGetAccessorDeclaration(parent)
+    || isSetAccessorDeclaration(parent) || isEnumMember(parent)) && parent.name === node;
+}
+
 /** The literal values a key can take, or null when its type is not a finite union of string or number literals. */
 function literalKeys(type: Type | undefined): string[] | null {
   if (type === undefined) return null;
@@ -186,7 +267,7 @@ class FileCheck {
   ) {}
 
   run(): PurityViolation[] {
-    this.visit(this.sourceFile);
+    this.visit(this.sourceFile, false);
     return this.out;
   }
 
@@ -198,10 +279,17 @@ class FileCheck {
     return this.sourceFile.text.slice(node.getStart(this.sourceFile), node.getEnd());
   }
 
-  /** A literal key: denied globals, Math and reflective members may not be reached through it. */
+  /** A literal key: denied globals, Math, reflective and denied members may not be reached through it. */
   private literalKey(key: string): void {
     if (REFLECTIVE_MEMBERS.has(key)) this.add('reflective-member', key);
+    else if (DENIED_MEMBERS.has(key)) this.add('denied-member', key);
     else if (BANNED_GLOBALS.has(key) || key === 'Math') this.add('banned-global', key);
+  }
+
+  /** A value the name refers to must be declared in this file (a local or an import binding) or an allowed global. */
+  private reference(name: string, symbol: CheckerSymbol | undefined): void {
+    const local = symbol?.declarations?.some((d) => d.path === this.sourceFile.path) ?? false;
+    if (!local && !ALLOWED_GLOBALS.has(name)) this.add('ambient-global', name);
   }
 
   /** The key of a computed member access or a computed property name: a finite union of literals, each allowed. */
@@ -231,41 +319,88 @@ class FileCheck {
     return target !== undefined && target.kind === SyntaxKind.SourceFile && this.closure.has(target.path.toLowerCase());
   }
 
-  private visit = (node: Node): void => {
+  /** `inType`: the node sits in a type, an interface or a type alias, which the build erases. */
+  private visit(node: Node, inType: boolean): void {
+    const typeOnly = inType || isTypeNode(node) || isInterfaceDeclaration(node) || isTypeAliasDeclaration(node);
+    if ((node as Node & { readonly modifiers?: readonly Node[] }).modifiers?.some((m) => m.kind === SyntaxKind.DeclareKeyword)) {
+      // An ambient declaration reads a host global under a local name.
+      this.add('ambient-declaration', 'declare');
+    }
     if (isImportDeclaration(node)) {
       this.moduleReference(node.moduleSpecifier, importIsTypeOnly(node));
+      this.visitChildren(node, true);
+      return;
     } else if (isExportDeclaration(node)) {
-      if (node.moduleSpecifier !== undefined) this.moduleReference(node.moduleSpecifier, exportIsTypeOnly(node));
+      if (node.moduleSpecifier !== undefined) {
+        this.moduleReference(node.moduleSpecifier, exportIsTypeOnly(node));
+        this.visitChildren(node, true);
+        return;
+      }
+    } else if (isExportSpecifier(node)) {
+      // A local re-export: the value behind it is a reference like any other.
+      if (!typeOnly && !node.isTypeOnly && !(isExportDeclaration(node.parent.parent) && node.parent.parent.isTypeOnly)) {
+        const local = node.propertyName ?? node.name;
+        if (isIdentifier(local)) this.reference(local.text, this.checker.getExportSpecifierLocalTargetSymbol(node));
+      }
     } else if (isImportEqualsDeclaration(node)) {
       if (isExternalModuleReference(node.moduleReference)) {
         this.add('import-equals', literalText(node.moduleReference.expression) ?? 'require');
       }
     } else if (isImportTypeNode(node)) {
       this.moduleReference(isLiteralTypeNode(node.argument) ? node.argument.literal : undefined, true);
+    } else if (isMetaProperty(node)) {
+      if (node.keywordToken === SyntaxKind.ImportKeyword) this.add('ambient-global', 'import.meta');
+      return;
     } else if (isCallExpression(node) && node.expression.kind === SyntaxKind.ImportKeyword) {
       this.add('dynamic-import', 'import(');
     } else if (isPropertyAccessExpression(node) && isIdentifier(node.expression) && node.expression.text === 'Math') {
       // Math is allowed only here, as the object of a pure member; the member name is still checked.
       const member = isIdentifier(node.name) ? node.name.text : '';
       if (!MATH_MEMBERS.has(member)) this.add('banned-global', `Math.${member}`);
-      this.visit(node.name);
+      if (!typeOnly) this.reference('Math', this.checker.getSymbolAtLocation(node.expression));
+      this.visit(node.name, typeOnly);
+      return;
+    } else if (isPropertyAccessExpression(node) && isIdentifier(node.expression) && node.expression.text === 'Symbol') {
+      // Symbol is allowed as the object of a member other than its registry reads.
+      const member = isIdentifier(node.name) ? node.name.text : '';
+      if (SYMBOL_REGISTRY.has(member)) this.add('denied-member', `Symbol.${member}`);
+      if (!typeOnly) this.reference('Symbol', this.checker.getSymbolAtLocation(node.expression));
+      this.visit(node.name, typeOnly);
+      return;
+    } else if (isCallExpression(node) && isIdentifier(node.expression) && node.expression.text === 'Symbol') {
+      // ... and as a call that makes a fresh symbol.
+      if (!typeOnly) this.reference('Symbol', this.checker.getSymbolAtLocation(node.expression));
+      for (const argument of node.arguments) this.visit(argument, typeOnly);
       return;
     } else if (isElementAccessExpression(node)) {
       this.computedKey(node, node.argumentExpression);
     } else if (isComputedPropertyName(node)) {
       this.computedKey(node, node.expression);
+    } else if (isShorthandPropertyAssignment(node)) {
+      // `{ name }` reads the value `name` refers to, not a property.
+      if (!typeOnly && isIdentifier(node.name)) this.reference(node.name.text, this.checker.getShorthandAssignmentValueSymbol(node));
     } else if (isIdentifier(node)) {
       // `text` is the decoded name, so unicode escapes do not hide it. A member name such as `x.process` is still a
       // hit: the name is denied wherever it appears as an identifier.
       if (REFLECTIVE_MEMBERS.has(node.text)) this.add('reflective-member', node.text);
-      else if (BANNED_GLOBALS.has(node.text) || node.text === 'Math') this.add('banned-global', node.text);
+      else if (DENIED_MEMBERS.has(node.text)) this.add('denied-member', node.text);
+      else if (BANNED_GLOBALS.has(node.text) || node.text === 'Math' || node.text === 'Symbol') this.add('banned-global', node.text);
+      const parent = node.parent;
+      const handled = isShorthandPropertyAssignment(parent) || isExportSpecifier(parent);
+      if (!typeOnly && !handled && !isMemberOrLabelName(node)) this.reference(node.text, this.checker.getSymbolAtLocation(node));
     } else {
-      // A reflective name in a string is a key wherever it appears: a property name, a destructuring key, an argument.
+      // A reflective or denied member name in a string is a key wherever it appears: a property name, a destructuring
+      // key, an argument.
       const text = literalText(node);
       if (text !== null && REFLECTIVE_MEMBERS.has(text)) this.add('reflective-member', text);
+      else if (text !== null && DENIED_MEMBERS.has(text)) this.add('denied-member', text);
     }
-    node.forEachChild(this.visit);
-  };
+    this.visitChildren(node, typeOnly);
+  }
+
+  private visitChildren(node: Node, inType: boolean): void {
+    node.forEachChild((child) => this.visit(child, inType));
+  }
 }
 
 /** A virtual overlay over the real file system: the seeded files appear in their directory, nothing touches the disk. */
@@ -404,6 +539,21 @@ const SEEDED: readonly { name: string; source: string; rule: PurityViolation['ru
   { name: 'global escape hatch', source: 'const g = globalThis;', rule: 'banned-global', detail: 'globalThis' },
   { name: 'clock inside a template substitution', source: 'const s = `at ${Date.now()}`;', rule: 'banned-global', detail: 'Date' },
   { name: 'test runner in production source', source: "import test from 'node:test';", rule: 'runtime-import', detail: 'node:test' },
+  { name: 'locale-dependent number formatting', source: 'export const reviewLocale = (1234.5).toLocaleString();', rule: 'denied-member', detail: 'toLocaleString' },
+  { name: 'host read through navigator', source: 'const cores = navigator.hardwareConcurrency;', rule: 'ambient-global', detail: 'navigator' },
+  { name: 'locale-dependent comparison', source: 'const order = "ä".localeCompare("z");', rule: 'denied-member', detail: 'localeCompare' },
+  { name: 'locale-dependent case mapping', source: 'const upper = "i".toLocaleUpperCase();', rule: 'denied-member', detail: 'toLocaleUpperCase' },
+  { name: 'locale member through a literal key', source: 'const s = (1.5)["toLocaleString"]();', rule: 'denied-member', detail: 'toLocaleString' },
+  { name: 'locale member name held in a string', source: 'const key = "localeCompare";', rule: 'denied-member', detail: 'localeCompare' },
+  { name: 'global outside the allowlist', source: 'const copy = structuredClone({ a: 1 });', rule: 'ambient-global', detail: 'structuredClone' },
+  { name: 'host global through a shorthand property', source: 'const host = { navigator };', rule: 'ambient-global', detail: 'navigator' },
+  { name: 'host global through a local re-export', source: 'export { navigator };', rule: 'ambient-global', detail: 'navigator' },
+  { name: 'host global read under a local ambient declaration', source: 'declare const navigator: { hardwareConcurrency: number };\nconst n = navigator.hardwareConcurrency;', rule: 'ambient-declaration', detail: 'declare' },
+  { name: 'global augmentation', source: 'declare global {\n  var hostClock: () => number;\n}\nconst t = hostClock();', rule: 'ambient-declaration', detail: 'declare' },
+  { name: 'module metadata of the host', source: 'const where = import.meta.url;', rule: 'ambient-global', detail: 'import.meta' },
+  { name: 'stack trace with host paths', source: 'const where = new Error("x").stack;', rule: 'denied-member', detail: 'stack' },
+  { name: 'global symbol registry', source: 'const key = Symbol.for("x");', rule: 'denied-member', detail: 'Symbol.for' },
+  { name: 'global symbol registry through an alias', source: 'const S = Symbol;\nconst key = S.keyFor(S("x"));', rule: 'banned-global', detail: 'Symbol' },
 ];
 
 const seedFile = (i: number) => `purity-seed-${String(i).padStart(2, '0')}.ts`;
@@ -447,23 +597,29 @@ test('clean constructs are not flagged (no false positives)', () => {
     "export { decideRun } from './run-core.js';",
     "export * from './types.js';",
     "type Types = typeof import('./types.js');",
-    '// Date.now(), Math.random() and Reflect in a comment are prose, not code',
-    "const label = 'process Date setTimeout Math.random constructor';",
+    '// Date.now(), Math.random(), toLocaleString() and Reflect in a comment are prose, not code',
+    "const label = 'process Date setTimeout Math.random constructor toLocaleString navigator';",
     'const t = `plain template text with Date`;',
-    'declare const processedCount: number;',
-    'const updatedPhase = processedCount + 1;',
+    'function counted(processedCount: number): number {',
+    '  return processedCount + 1;',
+    '}',
     'const m = Math.max(1, 2) + Math.min(1, 2) + Math.ceil(0.5) + Math.floor(0.5) + Math.round(0.5);',
     'const n = Math.abs(-1) + Math.sign(-1) + Math.trunc(-1.5) + Math.imul(2, 3);',
-    'declare const record: { readonly status: string };',
-    'const field = record["status"];',
     "type Kind = 'a' | 'b';",
-    'declare const kind: Kind;',
-    'const table: Readonly<Record<Kind, number>> = { a: 1, b: 2 };',
-    'const byKind = table[kind];',
-    'declare const list: readonly number[];',
-    'const first = list[0];',
+    'function fields(record: { readonly status: string }, kind: Kind, list: readonly number[]) {',
+    '  const table: Readonly<Record<Kind, number>> = { a: 1, b: 2 };',
+    '  return [record["status"], table[kind], list[0]] as const;',
+    '}',
     "const keyed = { ['fixed']: 1 };",
-    'export { decideTask, label, t, updatedPhase, m, n, field, byKind, first, keyed };',
+    'const globals = [',
+    '  Object.keys({ a: 1 }), Array.from([1]), Number.isFinite(1), String(1), Boolean(0), BigInt(1),',
+    '  new Map<string, number>(), new Set<number>(), JSON.stringify({}), new Error("x").message,',
+    '  new RangeError("r"), new TypeError("t"), Symbol("s"), Symbol.iterator, undefined, NaN, Infinity,',
+    '];',
+    'const shorthand = { label, t };',
+    'const { status } = { status: "ok" };',
+    'export { label as text };',
+    'export { decideTask, label, t, counted, m, n, fields, keyed, globals, shorthand, status };',
     'export type { TaskId, RunId, Id, Contracts, WorkflowEngine, TaskState, Types };',
   ].join('\n');
   const scan = scanCore({ 'purity-clean.ts': clean });
