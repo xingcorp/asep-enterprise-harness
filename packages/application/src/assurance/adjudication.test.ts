@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { AdjudicationInputError, adjudicate, type AdjudicationInput, type ReviewInput } from './adjudication.js';
 import { sha256Hex } from './canonical-json.js';
 import { parseUnifiedDiff } from './diff.js';
-import { findingFingerprint } from './findings.js';
+import type { ScannerRun } from './checks.js';
+import { findingFingerprint, type CheckFinding } from './findings.js';
 import type { ReviewFindingRecord } from './local-types.js';
 import type { PriorFindingClaimOutput } from './prompt.js';
 import {
@@ -548,6 +549,92 @@ test('closure authority decides which prior findings still block', () => {
     priorFindings: [{ record: priorFinding({ lifecycleState: 'WAIVED' }), waiverExpiresAt: '2026-10-01T00:00:00.000Z' }],
   }).record;
   assert.equal(expired.outcome, 'REPAIR');
+});
+
+test('a SARIF finding blocks until a scanner recheck proves it gone or a human closes it', () => {
+  const sarifRecord: ReviewFindingRecord = {
+    id: 'prior-sarif',
+    source: 'sarif',
+    raisedBy: 'sarif:semgrep',
+    fingerprint: findingFingerprint({ category: 'SECURITY', file: 'src/feature.ts', lineStart: 2, ruleId: 'js.eval-use' }),
+    severity: 'HIGH',
+    category: 'SECURITY',
+    evidence: '[js.eval-use] eval() on user input',
+    requiredFix: 'Resolve the Semgrep result js.eval-use reported by check semgrep',
+    grounded: true,
+    lifecycleState: 'OPEN',
+    ruleId: 'js.eval-use',
+    file: 'src/feature.ts',
+    lineStart: 2,
+    lineEnd: 2,
+  };
+  const clean: ScannerRun = { checkId: 'semgrep', tool: 'semgrep', toolVersion: '1.90.0', rules: ['js.eval-use'], executionSuccessful: true };
+  const base = reReview({ comparator: [{ ...RESOLVED, priorFindingId: 'prior-sarif' }] });
+  const round = (
+    scannerRuns: readonly ScannerRun[],
+    over: { readonly state?: ReviewFindingRecord['lifecycleState']; readonly scannerVersion?: string | null; readonly findings?: readonly CheckFinding[] } = {},
+  ) =>
+    adjudicate({
+      ...base,
+      checks: { ...base.checks, findings: over.findings ?? base.checks.findings, scannerRuns },
+      priorFindings: [
+        {
+          record: { ...sarifRecord, lifecycleState: over.state ?? 'OPEN' },
+          waiverExpiresAt: null,
+          ...('scannerVersion' in over ? { scannerVersion: over.scannerVersion ?? null } : { scannerVersion: '1.90.0' }),
+        },
+      ],
+    }).record;
+  const decided = (record: ReturnType<typeof round>) => [record.closureDecisions[0]!.effectiveState, record.closureDecisions[0]!.rule, record.outcome];
+
+  // The review's probe: an OPEN HIGH SARIF prior and no recheck. An independent reviewer's
+  // grounded RESOLVED claim on it changes nothing.
+  const unproven = round([]);
+  assert.deepEqual(decided(unproven), ['OPEN', 'unchanged', 'REPAIR']);
+  assert.deepEqual(unproven.blocking.map((b) => [b.findingRef, b.source, b.reason]), [['prior:prior-sarif', 'sarif', 'prior-finding']]);
+  assert.deepEqual([round([], {}).ruleFired, adjudicate({ ...base, mode: 'shadow', checks: { ...base.checks, scannerRuns: [] }, priorFindings: [{ record: sarifRecord, waiverExpiresAt: null, scannerVersion: '1.90.0' }] }).record.shadow?.wouldBe], ['A11', 'REPAIR']);
+
+  // Every part of the proof is required.
+  const failures: readonly (readonly [string, ReturnType<typeof round>])[] = [
+    ['another version', round([{ ...clean, toolVersion: '1.91.0' }])],
+    ['a run with no version', round([{ ...clean, toolVersion: null }], { scannerVersion: null })],
+    ['no version recorded with the finding', round([clean], { scannerVersion: null })],
+    ['the rule not declared', round([{ ...clean, rules: ['js.other'] }])],
+    ['a run that did not complete', round([{ ...clean, executionSuccessful: false }])],
+    ['another scanner', round([{ ...clean, tool: 'codeql' }])],
+    ['another run of the scanner failed', round([clean, { ...clean, checkId: 'semgrep-2', rules: [], executionSuccessful: false }])],
+  ];
+  for (const [label, record] of failures) {
+    assert.deepEqual(decided(record), ['OPEN', 'unchanged', 'REPAIR'], label);
+    assert.deepEqual(record.blocking.map((b) => b.findingRef), ['prior:prior-sarif'], label);
+  }
+  // The result is still reported: this round's finding blocks, and the prior is not counted twice.
+  const current: CheckFinding = {
+    source: 'sarif',
+    raisedBy: 'sarif:semgrep',
+    ruleId: 'js.eval-use',
+    severity: 'HIGH',
+    category: 'SECURITY',
+    file: 'src/feature.ts',
+    lineStart: 2,
+    lineEnd: 2,
+    evidence: '[js.eval-use] eval() on user input',
+    requiredFix: 'Resolve the Semgrep result js.eval-use reported by check semgrep',
+    fingerprint: sarifRecord.fingerprint,
+  };
+  const stillThere = round([clean], { findings: [current] });
+  assert.deepEqual(decided(stillThere), ['OPEN', 'unchanged', 'REPAIR']);
+  assert.deepEqual(stillThere.blocking.map((b) => b.findingRef), [`sarif:semgrep#${sarifRecord.fingerprint}`]);
+
+  // The proof: the same scanner at the recorded version declared the rule, every invocation
+  // completed, and the result is gone.
+  const proven = round([clean, { ...clean, checkId: 'semgrep-2', rules: [] }]);
+  assert.deepEqual(decided(proven), ['VERIFIED', 'scanner-recheck', 'PROCEED']);
+  assert.deepEqual(proven.blocking, []);
+  // A finding a human already settled stays settled.
+  for (const state of ['VERIFIED', 'CLOSED', 'REFUTED'] as const) {
+    assert.deepEqual(decided(round([], { state })), [state, 'unchanged', 'PROCEED'], state);
+  }
 });
 
 test("waiver expiry is judged at the round's opening time", () => {

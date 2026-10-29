@@ -1,7 +1,7 @@
 // Deterministic checks over a built review packet: the push guard, false-green
 // evidence, Trojan Source characters, dependency flags, forbidden imports declared by
-// architecture invariants, and SARIF results. Together with the egress decision they
-// form the round's check result.
+// architecture invariants, and SARIF results with the scanner runs that produced them.
+// Together with the egress decision they form the round's check result.
 //
 // Pure: callers resolve artifacts and pass bytes in. A diff that cannot be read never
 // passes the push guard. Finding text never repeats a secret value.
@@ -9,7 +9,7 @@
 import type { ArtifactRef } from '@asep/contracts';
 import { isNormalizedRepoPath, isSensitivePath, matchesPathGlob, type ReviewPolicy } from '@asep/policy';
 import type { FindingSeverity } from '@asep/domain';
-import { sha256Hex } from './canonical-json.js';
+import { canonicalJson, sha256Hex } from './canonical-json.js';
 import { parseUnifiedDiff, type DiffFileChange } from './diff.js';
 import { decideEgress, type EgressResult } from './egress.js';
 import {
@@ -50,10 +50,26 @@ export interface DeterministicCheckSources {
 
 export type PushGuardResult = { readonly decision: 'PASS' } | { readonly decision: 'BLOCK'; readonly reason: BlockReason };
 
+/** One run of a SARIF log: the scanner identity a scanner recheck is proven against. */
+export interface ScannerRun {
+  /** The check whose SARIF log described the run. */
+  readonly checkId: string;
+  /** `tool.driver.name`, normalized the way a SARIF finding's `raisedBy` names it. */
+  readonly tool: string;
+  /** `tool.driver.version`, else `tool.driver.semanticVersion`, else null. */
+  readonly toolVersion: string | null;
+  /** The ids of `tool.driver.rules`, in log order. */
+  readonly rules: readonly string[];
+  /** True only when the run lists invocations and every one reports `executionSuccessful: true`. */
+  readonly executionSuccessful: boolean;
+}
+
 export interface DeterministicCheckResult {
   readonly pushGuard: PushGuardResult;
   readonly egress: EgressResult;
   readonly findings: readonly CheckFinding[];
+  /** Every run of every readable SARIF log, in canonical order. */
+  readonly scannerRuns: readonly ScannerRun[];
 }
 
 // --- path classes ------------------------------------------------------------------------
@@ -446,8 +462,45 @@ function clip(text: string): string {
   return text.length <= EVIDENCE_LIMIT ? text : `${text.slice(0, EVIDENCE_LIMIT)} [truncated]`;
 }
 
+function optionalText(value: unknown, what: string): string | null {
+  if (value === undefined) return null;
+  if (typeof value !== 'string') throw new SarifError(`${what} must be a string`);
+  return value;
+}
+
+function scannerRun(checkId: string, tool: string, run: Record<string, unknown>, driver: Record<string, unknown>, r: number): ScannerRun {
+  const version = optionalText(driver['version'], `runs[${r}].tool.driver.version`);
+  const semanticVersion = optionalText(driver['semanticVersion'], `runs[${r}].tool.driver.semanticVersion`);
+  const rules = driver['rules'] === undefined ? [] : arr(driver['rules'], `runs[${r}].tool.driver.rules`);
+  const invocations = run['invocations'] === undefined ? [] : arr(run['invocations'], `runs[${r}].invocations`);
+  const succeeded = invocations.map((value, i) => {
+    const flag = obj(value, `runs[${r}].invocations[${i}]`)['executionSuccessful'];
+    if (typeof flag !== 'boolean') throw new SarifError(`runs[${r}].invocations[${i}].executionSuccessful must be a boolean`);
+    return flag;
+  });
+  return {
+    checkId,
+    tool,
+    toolVersion: version ?? semanticVersion,
+    rules: rules.map((value, i) => {
+      const id = obj(value, `runs[${r}].tool.driver.rules[${i}]`)['id'];
+      if (typeof id !== 'string' || id === '') throw new SarifError(`runs[${r}].tool.driver.rules[${i}].id is required`);
+      return id;
+    }),
+    executionSuccessful: succeeded.length > 0 && succeeded.every((flag) => flag),
+  };
+}
+
 /** Findings from one SARIF log. A log that is not a readable 2.1.0 subset yields one sarif-malformed finding. */
 export function sarifFindings(input: SarifInput): CheckFinding[] {
+  return readSarif(input).findings;
+}
+
+/**
+ * Findings and scanner runs from one SARIF log. A log that is not a readable 2.1.0 subset
+ * yields one sarif-malformed finding and no run, so it can never prove a recheck.
+ */
+export function readSarif(input: SarifInput): { readonly findings: CheckFinding[]; readonly runs: ScannerRun[] } {
   try {
     let doc: unknown;
     try {
@@ -458,11 +511,14 @@ export function sarifFindings(input: SarifInput): CheckFinding[] {
     const root = obj(doc, 'log');
     if (root['version'] !== '2.1.0') throw new SarifError('version must be 2.1.0');
     const findings: CheckFinding[] = [];
+    const runs: ScannerRun[] = [];
     arr(root['runs'], 'runs').forEach((runValue, r) => {
       const run = obj(runValue, `runs[${r}]`);
-      const name = obj(obj(run['tool'], 'tool')['driver'], 'tool.driver')['name'];
+      const driver = obj(obj(run['tool'], 'tool')['driver'], 'tool.driver');
+      const name = driver['name'];
       if (typeof name !== 'string' || name.trim() === '') throw new SarifError(`runs[${r}].tool.driver.name is required`);
       const tool = name.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, '-');
+      runs.push(scannerRun(input.checkId, tool, run, driver, r));
       arr(run['results'], `runs[${r}].results`).forEach((resultValue, i) => {
         const where = `runs[${r}].results[${i}]`;
         const result = obj(resultValue, where);
@@ -510,17 +566,20 @@ export function sarifFindings(input: SarifInput): CheckFinding[] {
         });
       });
     });
-    return findings;
+    return { findings, runs };
   } catch (err) {
     if (!(err instanceof SarifError)) throw err;
-    return [
-      ruleFinding(
-        'sarif-malformed',
-        { file: null, lineStart: null, subject: `check:${input.checkId}` },
-        `the SARIF output of check "${input.checkId}" cannot be read: ${err.message}`,
-        'Produce a valid SARIF 2.1.0 log for the check',
-      ),
-    ];
+    return {
+      findings: [
+        ruleFinding(
+          'sarif-malformed',
+          { file: null, lineStart: null, subject: `check:${input.checkId}` },
+          `the SARIF output of check "${input.checkId}" cannot be read: ${err.message}`,
+          'Produce a valid SARIF 2.1.0 log for the check',
+        ),
+      ],
+      runs: [],
+    };
   }
 }
 
@@ -532,18 +591,24 @@ export function runDeterministicCheckRules(sources: DeterministicCheckSources): 
   const diff = readDiff(packet, sources.contents);
   const repairDelta = packet.change.repairDelta === null ? null : parseArtifact(packet.change.repairDelta, sources.contents);
   const guard = pushGuardFindings(packet, diff, repairDelta, sources.policy);
+  const sarif = sources.sarif.map((s) => readSarif(s));
   const findings = dedupeFindings([
     ...guard,
     ...falseGreenFindings(packet, sources.recordedVerdicts, diff),
     ...trojanSourceFindings(diff),
     ...dependencyFindings(packet),
     ...forbiddenImportFindings(diff, sources.invariants),
-    ...sources.sarif.flatMap((s) => sarifFindings(s)),
+    ...sarif.flatMap((s) => s.findings),
   ]);
   return {
     pushGuard: pushGuardDecision(guard),
     egress: decideEgress(sources.policy, sources.built, sources.contents),
     findings,
+    scannerRuns: sarif
+      .flatMap((s) => s.runs)
+      .map((run) => ({ run, key: canonicalJson(run) }))
+      .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
+      .map(({ run }) => run),
   };
 }
 

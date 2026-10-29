@@ -381,6 +381,7 @@ export function adjudicationBase(options: { readonly round?: number; readonly wo
       pushGuard: checks.pushGuard,
       egress: { decision: checks.egress.decision, packetSha256: checks.egress.packetSha256 },
       findings: checks.findings,
+      scannerRuns: checks.scannerRuns,
       reportSha256: buildCheckReport(checks, { packetSha256: built.sha256, sarif: [] }).sha256,
     },
     unsatisfiable: null,

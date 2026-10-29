@@ -1,11 +1,11 @@
 // Adjudication: the pure decision for one assurance round.
 //
 // Rules are evaluated in order and the first match decides; the rule that fired is
-// recorded in `ruleFired`. The blocking set is the deterministic findings
+// recorded in `ruleFired`. The blocking set is the deterministic and SARIF findings
 // at a blocking severity, plus grounded model findings at a blocking severity, plus
-// prior findings that are still blocking after closure authority is applied.
-// Deterministic evidence outranks model review: a model verdict never clears a
-// deterministic finding, and an ungrounded model finding never blocks. Shadow mode
+// prior findings of every source that are still blocking after closure authority is
+// applied. Deterministic evidence outranks model review: a model verdict never clears a
+// deterministic or SARIF finding, and an ungrounded model finding never blocks. Shadow mode
 // records what gating would have decided and returns only PROCEED or BLOCK.
 //
 // Pure: no IO, no clock, no model call. Waiver expiry is judged at the round's opening
@@ -25,7 +25,7 @@ import {
   type FindingSeverity,
 } from '@asep/domain';
 import { sha256Hex } from './canonical-json.js';
-import type { PushGuardResult } from './checks.js';
+import type { PushGuardResult, ScannerRun } from './checks.js';
 import type { DiffFileChange } from './diff.js';
 import { findingFingerprint, preferFinding, type CheckFinding } from './findings.js';
 import { groundFinding, groundResolution, type GroundingContext, type GroundingFailure, type GroundingResult } from './grounding.js';
@@ -63,6 +63,11 @@ export interface PriorFindingInput {
   readonly record: ReviewFindingRecord;
   /** Set while the finding is waived. */
   readonly waiverExpiresAt: string | null;
+  /**
+   * SARIF priors only: the scanner version recorded when the finding was raised. Absent or
+   * null, no scanner recheck can be proven and only a named human closes the finding.
+   */
+  readonly scannerVersion?: string | null;
 }
 
 export interface AdjudicationInput {
@@ -88,6 +93,8 @@ export interface AdjudicationInput {
     readonly pushGuard: PushGuardResult;
     readonly egress: { readonly decision: EgressDecision; readonly packetSha256: string };
     readonly findings: readonly CheckFinding[];
+    /** The scanner runs of this round's check report. */
+    readonly scannerRuns: readonly ScannerRun[];
     readonly reportSha256: string;
   };
   /** Set by planning when the policy cannot be met. */
@@ -112,6 +119,7 @@ export interface BlockingEntry {
 
 export type ClosureRule =
   | 'deterministic-recheck'
+  | 'scanner-recheck'
   | 'human'
   | 'independent-reviewer'
   | 'raiser-claim'
@@ -225,6 +233,25 @@ function optional<K extends string, V>(key: K, value: V | null | undefined): Par
   return value === null || value === undefined ? {} : ({ [key]: value } as Record<K, V>);
 }
 
+/**
+ * Whether this round's checks prove a SARIF prior gone: a run of the same scanner at the
+ * version recorded with the prior declared the prior's rule and completed, no run of that
+ * scanner failed, and no result has the prior's fingerprint.
+ */
+function scannerRecheckProven(input: AdjudicationInput, prior: PriorFindingInput): boolean {
+  const F = prior.record;
+  const tool = F.raisedBy.slice('sarif:'.length);
+  const version = prior.scannerVersion ?? null;
+  const rule = F.ruleId ?? null;
+  if (version === null || rule === null) return false;
+  const runs = input.checks.scannerRuns.filter((r) => r.tool === tool);
+  return (
+    runs.every((r) => r.executionSuccessful) &&
+    runs.some((r) => r.toolVersion === version && r.rules.includes(rule)) &&
+    !input.checks.findings.some((f) => f.raisedBy === F.raisedBy && f.fingerprint === F.fingerprint)
+  );
+}
+
 /** Closure authority for one prior finding. */
 function closePrior(
   input: AdjudicationInput,
@@ -262,7 +289,18 @@ function closePrior(
     }
     return decision(current, 'unchanged');
   }
-  if (F.source !== 'model' || !isLifecycleBlocking(agg, asOf)) return decision(current, 'unchanged');
+  if (F.source === 'sarif') {
+    if (isLifecycleBlocking(agg, asOf) && scannerRecheckProven(input, prior)) {
+      const verified = dispose(agg, {
+        ...at,
+        disposition: 'RESOLUTION_VERIFIED',
+        actor: { kind: 'harness-rule', rule: 'scanner-recheck' },
+      });
+      if (verified !== null) return decision(verified.state, 'scanner-recheck');
+    }
+    return decision(current, 'unchanged');
+  }
+  if (!isLifecycleBlocking(agg, asOf)) return decision(current, 'unchanged');
 
   const eligible = new Set(input.reviewers.filter((r) => r.independentOfImplementer).map((r) => r.reviewerConfigId));
   const resolved = claims
@@ -409,14 +447,17 @@ export function adjudicate(input: AdjudicationInput): Adjudication {
     }
   }
 
-  // Prior findings under closure authority. Deterministic and SARIF priors are represented
-  // by this round's checks, so only model priors can still block on their own.
+  // Prior findings under closure authority, of every source. A deterministic or SARIF prior
+  // that this round's checks report again is carried by the current finding, so it is not
+  // counted twice.
   const closureDecisions: ClosureDecision[] = [];
+  const reported = new Set(input.checks.findings.map((f) => `${f.raisedBy}\n${f.fingerprint}`));
   for (const prior of sortBy(input.priorFindings, (p) => p.record.id)) {
     const { decision, state } = closePrior(input, ctx, prior);
     closureDecisions.push(decision);
+    const carried = prior.record.source !== 'model' && reported.has(`${prior.record.raisedBy}\n${prior.record.fingerprint}`);
     const blocking =
-      prior.record.source === 'model' &&
+      !carried &&
       prior.record.grounded &&
       blockingSeverity.has(prior.record.severity) &&
       (['OPEN', 'ACKNOWLEDGED', 'FIXED'] as const).some((s) => s === state);

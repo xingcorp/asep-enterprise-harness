@@ -22,6 +22,7 @@ import {
   type FindingDispositionKind,
   type FindingDispositionRejection,
   type FindingLifecycleState,
+  type HarnessRule,
   type ReviewRoundState,
 } from './assurance.js';
 
@@ -236,6 +237,39 @@ test('only an independent reviewer, a human or a deterministic re-check verifies
   assert.equal(dispositionActorId(HUMAN), 'reviewer-person-1');
   assert.equal(dispositionActorId(raiser), 'primary-gpt');
   assert.equal(dispositionActorId(recheck), 'harness-rule:deterministic-recheck');
+});
+
+test('only a proven scanner recheck verifies a SARIF finding', () => {
+  // Independent statement: the sources each harness rule may verify.
+  const verifies: Readonly<Record<HarnessRule, readonly FindingAggregate['source'][]>> = {
+    'citation-unresolvable': [],
+    'closure-without-change': [],
+    'deterministic-recheck': ['deterministic'],
+    'scanner-recheck': ['sarif'],
+    'waiver-expired': [],
+  };
+  const findings = { model: modelFinding(), deterministic: deterministicFinding(), sarif: sarifFinding() };
+  for (const [rule, sources] of Object.entries(verifies) as [HarnessRule, readonly string[]][]) {
+    for (const [source, finding] of Object.entries(findings)) {
+      const run = () => applyFindingDisposition(finding, input('RESOLUTION_VERIFIED', { kind: 'harness-rule', rule }));
+      if (sources.includes(source)) assert.equal(run().state, 'VERIFIED', `${rule} on ${source}`);
+      else rejectsWith(run, 'actor-not-permitted');
+    }
+  }
+  const scanner: DispositionActor = { kind: 'harness-rule', rule: 'scanner-recheck' };
+  assert.equal(dispositionActorId(scanner), 'harness-rule:scanner-recheck');
+  // The rule only verifies: it never refutes, waives or reopens. A result that comes back is
+  // a new finding linked to the verified one.
+  const verified = applyFindingDisposition(sarifFinding(), input('RESOLUTION_VERIFIED', scanner));
+  rejectsWith(() => applyFindingDisposition(verified, input('REOPENED', scanner)), 'actor-not-permitted');
+  rejectsWith(() => applyFindingDisposition(sarifFinding(), input('REJECTED_WITH_EVIDENCE', scanner)), 'actor-not-permitted');
+  rejectsWith(() => applyFindingDisposition(sarifFinding(), input('RESOLUTION_CLAIMED', scanner)), 'actor-not-permitted');
+  // A model reviewer never verifies a SARIF finding, and a human always may.
+  rejectsWith(
+    () => applyFindingDisposition(sarifFinding(), input('RESOLUTION_VERIFIED', independentReviewer, { resolution: groundedInDelta })),
+    'actor-not-permitted',
+  );
+  assert.equal(applyFindingDisposition(sarifFinding(), input('RESOLUTION_VERIFIED', HUMAN)).state, 'VERIFIED');
 });
 
 test('only humans waive, and waivers expire', () => {

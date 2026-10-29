@@ -407,6 +407,60 @@ test('sarif results become findings and malformed sarif fails closed', () => {
   assert.equal(all.findings.filter((f) => f.source === 'sarif').length, 3);
 });
 
+test('sarif logs record the scanner runs a recheck needs', () => {
+  const log = (...runs: unknown[]) => utf8(JSON.stringify({ version: '2.1.0', runs }));
+  const runsOf = (checkId: string, content: Uint8Array) => checksFor(fixtureWorld(), { sarif: [{ checkId, content }] }).scannerRuns;
+  const driver = (extra: Record<string, unknown>) => ({ tool: { driver: { name: 'Semgrep OSS', ...extra } }, results: [] });
+
+  assert.deepEqual(
+    runsOf(
+      'semgrep',
+      log({
+        ...driver({ version: '1.90.0', rules: [{ id: 'js.eval-use' }, { id: 'js.xss' }] }),
+        invocations: [{ executionSuccessful: true }, { executionSuccessful: true }],
+      }),
+    ),
+    [{ checkId: 'semgrep', tool: 'semgrep-oss', toolVersion: '1.90.0', rules: ['js.eval-use', 'js.xss'], executionSuccessful: true }],
+  );
+  // The semantic version stands in for a missing version; no version is recorded as null.
+  assert.deepEqual(
+    runsOf('semgrep', log({ ...driver({ semanticVersion: '2.0.1' }), invocations: [{ executionSuccessful: true }] })).map((r) => r.toolVersion),
+    ['2.0.1'],
+  );
+  assert.deepEqual(runsOf('semgrep', log({ ...driver({}), invocations: [{ executionSuccessful: true }] })).map((r) => r.toolVersion), [null]);
+  // Completion is proven only by invocations that all report success.
+  assert.deepEqual(
+    [
+      runsOf('semgrep', log(driver({ version: '1' }))),
+      runsOf('semgrep', log({ ...driver({ version: '1' }), invocations: [] })),
+      runsOf('semgrep', log({ ...driver({ version: '1' }), invocations: [{ executionSuccessful: true }, { executionSuccessful: false }] })),
+    ].map((runs) => runs.map((r) => r.executionSuccessful)),
+    [[false], [false], [false]],
+  );
+  // Each run of a log is recorded, in a fixed order whatever order the logs arrive in.
+  const two = [
+    { checkId: 'lint', content: log({ tool: { driver: { name: 'eslint', version: '9.0.0' } }, results: [], invocations: [{ executionSuccessful: true }] }) },
+    { checkId: 'semgrep', content: log(driver({ version: '1' }), driver({ version: '2' })) },
+  ];
+  const forward = checksFor(fixtureWorld(), { sarif: two }).scannerRuns;
+  assert.deepEqual(forward.map((r) => [r.checkId, r.tool, r.toolVersion]), [['lint', 'eslint', '9.0.0'], ['semgrep', 'semgrep-oss', '1'], ['semgrep', 'semgrep-oss', '2']]);
+  assert.deepEqual(checksFor(fixtureWorld(), { sarif: [...two].reverse() }).scannerRuns, forward);
+
+  // A log whose scanner identity cannot be read records no run and fails closed.
+  for (const [label, content] of [
+    ['version not text', log({ ...driver({ version: 1 }), invocations: [{ executionSuccessful: true }] })],
+    ['rule without an id', log({ ...driver({ rules: [{ name: 'x' }] }), invocations: [{ executionSuccessful: true }] })],
+    ['rules not a list', log({ ...driver({ rules: {} }), invocations: [{ executionSuccessful: true }] })],
+    ['invocation flag not a boolean', log({ ...driver({}), invocations: [{ executionSuccessful: 'true' }] })],
+    ['invocations not a list', log({ ...driver({}), invocations: {} })],
+    ['not json', utf8('{')],
+  ] as const) {
+    const result = checksFor(fixtureWorld(), { sarif: [{ checkId: 'semgrep', content }] });
+    assert.deepEqual(result.scannerRuns, [], label);
+    assert.deepEqual(result.findings.filter((f) => f.source === 'sarif' || f.ruleId === 'sarif-malformed').map((f) => f.ruleId), ['sarif-malformed'], label);
+  }
+});
+
 test('git diffs are read line by line', () => {
   const diff = [
     'diff --git a/src/a.ts b/src/a.ts',
@@ -527,7 +581,9 @@ test('the check report is canonical and fails closed when it is read back', () =
   assert.deepEqual(buildCheckReport(result, { packetSha256, sarif }).bytes, report.bytes);
   assert.equal(report.sha256, sha256Hex(report.bytes));
   assert.deepEqual(parseCheckReport(report.bytes, report.sha256), report.report);
-  assert.deepEqual(Object.keys(report.report).sort(), ['egress', 'findings', 'packetSha256', 'pushGuard', 'reportVersion', 'sarifInputs']);
+  assert.deepEqual(Object.keys(report.report).sort(), ['egress', 'findings', 'packetSha256', 'pushGuard', 'reportVersion', 'sarifInputs', 'scannerRuns']);
+  assert.deepEqual(report.report.scannerRuns, [{ checkId: 'lint', tool: 'lint', toolVersion: null, rules: [], executionSuccessful: false }]);
+  assert.deepEqual(report.report.scannerRuns, result.scannerRuns);
   assert.deepEqual(report.report.findings, result.findings);
   assert.deepEqual(report.report.sarifInputs, [{ checkId: 'lint', sha256: sha256Hex(sarif[0]!.content), bytes: sarif[0]!.content.byteLength }]);
 
@@ -557,6 +613,7 @@ test('the check report is canonical and fails closed when it is read back', () =
   const cleanEgress = clean['egress'] as Record<string, unknown>;
   const stoppedEgress = stopped['egress'] as Record<string, unknown>;
   const firstFinding = result.findings[0]!;
+  const cleanRun = (clean['scannerRuns'] as Record<string, unknown>[])[0]!;
   const reread = (value: unknown) => {
     const bytes = canonicalBytes(value);
     return () => parseCheckReport(bytes, sha256Hex(bytes));
@@ -583,6 +640,11 @@ test('the check report is canonical and fails closed when it is read back', () =
     ['raiser of another source', reread({ ...clean, findings: [{ ...firstFinding, raisedBy: 'sarif:x' }] })],
     ['short fingerprint', reread({ ...clean, findings: [{ ...firstFinding, fingerprint: 'abc' }] })],
     ['negative sarif size', reread({ ...clean, sarifInputs: [{ checkId: 'lint', sha256: 'a'.repeat(64), bytes: -1 }] })],
+    ['scanner run with an unknown key', reread({ ...clean, scannerRuns: [{ ...cleanRun, extra: true }] })],
+    ['scanner run without its log', reread({ ...clean, scannerRuns: [{ ...cleanRun, checkId: 'other' }] })],
+    ['scanner run flag not a boolean', reread({ ...clean, scannerRuns: [{ ...cleanRun, executionSuccessful: 'true' }] })],
+    ['scanner rules not text', reread({ ...clean, scannerRuns: [{ ...cleanRun, rules: [1] }] })],
+    ['scanner version not text', reread({ ...clean, scannerRuns: [{ ...cleanRun, toolVersion: 1 }] })],
   ];
   for (const [label, read] of tampered) assert.throws(read, CheckReportError, label);
 });
