@@ -1,4 +1,4 @@
-# Phase 3 — Durable Orchestration — Architecture (LOCKED v7, pending controller confirmation)
+# Phase 3 — Durable Orchestration — Architecture (LOCKED v8, pending controller confirmation)
 
 > Companion to `phase-03-plan.md`. Base `00a6889` (head of `phase/02-single-agent-vertical-slice`, not yet
 > accepted); v1 of this document is at `80bb76a`, v2 at `98e92cf`, v3 at `7cbf5d3` (R20 at `e4fd343`). v2 folded in
@@ -8,7 +8,9 @@
 > "Review v3"); v5 folds in the Codex re-audit of v4 and of the S2 fixes (`phase-03-review-codex-v4.md`) and
 > reconciliation R24 (section "Review v4"); v6 folds in the Codex re-audit of v5 and of the S2 fixes
 > (`phase-03-review-codex-v5.md`) and reconciliation R25–R28 (section "Review v5"); v7 folds in the Codex re-audit of
-> v6 and of the S2 fixes (`phase-03-review-codex-v6.md`) and reconciliation R29 and R31 (section "Review v6"). Port
+> v6 and of the S2 fixes (`phase-03-review-codex-v6.md`) and reconciliation R29 and R31 (section "Review v6"); v8
+> folds in the Codex re-audit of v7 and of the S2 fixes (`phase-03-review-codex-v7.md`), Phase 2's publication
+> contract of cycle 9 (R30) and reconciliation R32 and R33 (section "Review v7"). Port
 > signatures in §17 are design intent. The binding text
 > is plan §30 (shared-surface change requests) and, for the review-loop slot, the block
 > `Review-loop slot contract (verbatim for S0)` that Lane B locks and the controller hands over (plan §30, CR-10).
@@ -239,19 +241,24 @@ PUBLISHING  (publishBranch [critical unit 2] → upsertPullRequest [critical uni
    │                                                              exactly one PR → as a successful upsert with
    │                                                              that PR; anything else, or the read fails →
    │                                                              FAILED (publication-incomplete)
-   │ The identity predicate (R27, R31) is the same on both paths and runs over the full observation the read
+   │ The identity predicate (R27, R31, R33) is the same on both paths and runs over the full observation the read
    │ reports: the attempt branch, with its repository and tip; and every PR whose head branch is the attempt's
-   │ branch, with its number, head repository, head branch, head SHA, base repository, base branch, state and merged
-   │ flag. The publication is the attempt's only when the branch is in the binding repository (task input
-   │ `repository`) at the attempt's verified commit, and the PR candidates are either none or exactly one that is
-   │ open, unmerged, has the binding repository as head and base repository, the attempt's branch and commit as head,
-   │ and the task's base branch as base. Zero candidates after a confirmed push is "no PR". More than one candidate,
-   │ a closed or merged one, a fork head, a PR at another head or base, a branch moved, missing or in another
-   │ repository after a confirmed push, and an unreadable remote are not reconciled. The read only reports; the core
-   │ decides and does not rely on the read's filter. On the push path an absent branch with no candidate is the read
-   │ showing the push absent, effect none (R24, R29). publication-incomplete is audited publication.incomplete with
-   │ the remote branch, whether the push was confirmed, what was found and the observation itself, and is never
-   │ CANCELLED; publication-failed means nothing was pushed, so a pending cancel ends the task CANCELLED instead.
+   │ branch, with its number, head repository, head branch, head SHA, base repository, base branch, state, merged
+   │ flag and whether the read repaired its content. A repository is identified by the forge's numeric repository ID;
+   │ its owner and name are informational and audited. The publication is the attempt's only when the branch is in
+   │ the binding repository (the ID of task input `repository`) at the attempt's verified commit, and the PR
+   │ candidates are either none or exactly one that is open, unmerged, has the binding repository as head and base
+   │ repository, the attempt's branch (compared exactly, case included) and commit as head, and the task's base
+   │ branch as base. A rename or transfer of the binding repository keeps its ID and stays reconcilable, audited as
+   │ publication.repository-renamed; another repository that reuses the old owner and name has another ID and is
+   │ refused. Zero candidates after a confirmed push is "no PR". More than one candidate, a closed or merged one, a
+   │ fork head, a PR at another head or base, a branch moved, missing or in another repository after a confirmed
+   │ push, and an unreadable remote are not reconciled. The read only reports and repairs PR content (§7.3); the
+   │ core decides and does not rely on the read's filter, and audits every content repair the read reports as
+   │ publication.content-repaired. On the push path an absent branch with no candidate is the read showing the push
+   │ absent, effect none (R24, R29). publication-incomplete is audited publication.incomplete with the remote
+   │ branch, whether the push was confirmed, what was found and the observation itself, and is never CANCELLED;
+   │ publication-failed means nothing was pushed, so a pending cancel ends the task CANCELLED instead.
    ▼
 REVIEW_HANDOFF (projectTaskState WAITING_FOR_HUMAN_REVIEW) ─▶ CLEANUP ─▶ done
 
@@ -296,9 +303,10 @@ the order and the fence per attempt.
 its terminal with `fence: null`, and that terminal must be in the pre-lease allowlist `cancelled`,
 `infrastructure-failed`. The core's pre-lease paths: a cancel accepted while `ensureAttempt` ran (`cancelled`); a
 pause that withheld `acquireLease`, ended by its timeout or a cancel (`cancelled`); `ensureAttempt` failed and
-`findAttempt` found the row (core-local `failed`, which S0 maps to `infrastructure-failed`; `cancelled` with a cancel
+`findAttempt` found the row (core-local `failed`, which S0 renames to `infrastructure-failed`; `cancelled` with a cancel
 pending); and an `acquireLease` that failed or was aborted where `findLease` finds no lease (`failed`, or `cancelled`
-after an abort or with a cancel pending). No lease was ever requested on the first three, so no grant can exist.
+after an abort or with a cancel pending). No lease was ever requested on the first three, so no grant can exist. S0
+renames only `failed`; `cancelled` keeps its name (R33).
 
 **Settling a failed or aborted lease acquisition (R29).** The grant may have committed although the activity failed
 or the cancel aborted it, and then the workflow never received the fence. So the core issues `findLease`, a
@@ -309,19 +317,24 @@ non-cancellable read of the attempt's durable lease history, before any terminal
 - **absent:** the terminal is written through `recordPreLeaseOutcome` with `fence: null`. That write is a request,
   not an effect, because the slot may refuse it: R28 rule (3) accepts `fence: null` only while durable history shows
   no lease. A refusal means a late grant committed between the lookup and the write, so `findLease` runs once more
-  and the terminal is recorded with the fence it finds, then the lease is released. This is bounded: once a terminal
+  and the terminal is recorded with the fence it finds, then the lease is released. The slot reports that refusal
+  as the distinct `ReviewLoopContractError` code `lease-granted`, and the activity maps exactly that code to the
+  typed result `recorded: false`; it is never supersession (`AssuranceFencedError`) and never a generic activity
+  failure (R32). This is bounded: once a terminal
   is recorded, R28 rule (5) refuses every later grant, and a lease in history never disappears, so at most two
   lookups happen. A second lookup that finds no lease contradicts that history and is treated as a failed lookup.
 
-**Attempt state unknown (R29).** When a lookup (`findAttempt` or `findLease`) fails after its retry policy, the store
+**Attempt state unknown (R29, R32).** When a lookup (`findAttempt` or `findLease`) fails after its retry policy, the store
 cannot be read, so the core cannot tell whether the attempt exists or whether it holds a lease. The task ends
 `FAILED / attempt-state-unknown`, also with a cancel pending, and emits no usage, outcome or release for that
 attempt. The audit row `attempt.state-unknown` carries the attempt number, the lookup that failed and the attempt's
 idempotency key, `<taskId>:attempt:<n>` (the natural key `(task_id, attempt_number)`, data model §5), for an operator
 to reconcile. The task result lists the attempt under `unrecordedAttempts` with the same key, and telemetry
 completeness reports it as a gap (exit L6). This is the single exception to "every terminal is recorded", and it
-exists only when the store cannot be read. A `recordPreLeaseOutcome` write that fails after its retries ends the same
-way: whether the terminal committed is then unknown too. The lease, if one was granted, is not released by the
+exists only when the store cannot be read or written after the retry policy (R32): a lookup that fails, a second
+`findLease` that finds no lease, or a `recordPreLeaseOutcome` write that fails after its retries, because whether that
+terminal committed is then unknown too. Every one of these paths reports the gap the same way. The lease, if one was
+granted, is not released by the
 workflow; it expires, and the janitor sweeps it because the workflow is closed (§4.3).
 
 **Verification stops end the task.** A failed or errored mandatory verification is a deterministic result, and
@@ -398,7 +411,7 @@ sets an explicit `retry`, `startToCloseTimeout` and, where marked, `heartbeatTim
 | `findAttempt` | attempts repo, read-only lookup after a failed `ensureAttempt` (R21, §4.1); a failure after its retries ends the task `attempt-state-unknown` (R29) | 30 s | — | 10 | `(task_id, attempt_number)` | no |
 | `acquireLease` | Phase 2 lease primitive (accepted shape, R1); returns the caller's fence, which the core carries to the attempt's terminal write and release; a failure after its retries, or an abort by a cancel, leads to `findLease` (R29) | 30 s | — | 10 | per the primitive; invariants §7 | yes |
 | `findLease` | read-only lookup of the attempt's durable lease history after a failed or aborted `acquireLease`: the fence of the lease it holds or held, or none (R29, §4.1); at most two per attempt; a failure after its retries ends the task `attempt-state-unknown` | 30 s | — | 10 | the attempt's lease rows | **no**: it settles whether the attempt holds a lease before any terminal |
-| `recordPreLeaseOutcome` | Lane B `recordAttemptOutcome` with `fence: null`, for an attempt whose `findLease` found no lease (R28, R29); the result says whether the slot recorded it or refused it because durable history now shows a lease | 30 s | — | 10 | as `recordAttemptOutcome` | no |
+| `recordPreLeaseOutcome` | Lane B `recordAttemptOutcome` with `fence: null`, for an attempt whose `findLease` found no lease (R28, R29); the result says whether the slot recorded it or refused it because durable history now shows a lease: the slot's `ReviewLoopContractError` code `lease-granted` maps to `recorded: false`, never to supersession or an activity failure (R32); any other error is an activity failure, and one that remains after the retries ends the task `attempt-state-unknown` | 30 s | — | 10 | as `recordAttemptOutcome` | no |
 | `prepareWorkspace` | `WorkspaceManager.create` (create-or-adopt, CR-07) | 5 min | 30 s | 3 | `workspaces.attempt_id` unique | yes |
 | `storeAttemptInputs` | `ArtifactStore.put`; repair: `buildRepairContextPack(original, repairOrder)` (Lane B, pure) | 2 min | — | 5 | content address | yes |
 | `runAgent` | `agentStep` (`execute-task.ts:94`) with per-request caps (CR-25) | agent wall-clock + 5 min | 60 s | **1** | container `asep-agent-<attemptId>` (single run) | yes (aborts the provider; container reaped) |
@@ -408,14 +421,14 @@ sets an explicit `retry`, `startToCloseTimeout` and, where marked, `heartbeatTim
 | `persistEvidence` | `evidenceStep` (`pipeline-steps.ts:475`) | 5 min | 30 s | 10 | preallocated evidence id (adopt) | **no**: critical unit 1 |
 | `assuranceRound` | Lane B `runAssuranceRound(deps, input, ctx)` via the context adapter (§12) | 30 min | 60 s | 3 | Lane B hash-derived ids + `review_records` claim on the Phase 2 primitive (R1) | yes |
 | `recordAttemptOutcome` | Lane B `recordAttemptOutcome({events}, input, ctx)` (Lane A default until integration, §12); presents the caller's fence from `acquireLease` or `findLease`, `null` only for an attempt that never held a lease (R28, R29); always before `releaseLease` (§4.1) | 30 s | — | 10 | deterministic event ids; `RunEventSink` conflict-by-bytes; identical redelivery is a no-op, a conflicting one fails non-retryably (R23) | no |
-| `publishBranch` | `pushStep` (`pipeline-steps.ts:609`) + Phase 2 fence; result and failure report the publication effect (R24) | 5 min | 30 s | 20, backoff to 5 min | side-effect `attemptId:push`; remote ref | **no**: critical unit 2; once started, unit 3 also runs |
-| `upsertPullRequest` | `upsertPrStep` (`pipeline-steps.ts:692`) + Phase 2 fence; the PR's base is the task input's `baseBranch`, carried in the request; adapter create-conflict reconcile (CR-27); result and failure report the publication effect (R24) | 5 min | 30 s | 20, backoff to 5 min | side-effect `attemptId:pr-upsert`; PR head | **no**: critical unit 3 |
-| `reconcilePublication` | read-only remote read after an `unknown` publication effect: it reports what it observed, the attempt branch with its repository and tip, and every PR whose head branch is the attempt's branch with its number, head repository, head branch, head SHA, base repository, base branch, state and merged flag; the core applies the identity predicate (§4.1; the Phase 2 fenced forge of cycle 8, after the rebase; R24, R27, R31) | 60 s | — | 20, backoff to 5 min | read-only | **no**: part of critical units 2 and 3 |
+| `publishBranch` | Phase 2 `pushStep` over `ForgeProvider.pushBranch` with `expectedRemoteSha: null` (compare-and-set push of the attempt's commit, R30, §7.3), record fencing on the Phase 2 side-effect log; result and failure report the publication effect (R24) | 5 min | 30 s | 20, backoff to 5 min | side-effect `attemptId:push`; remote ref | **no**: critical unit 2; once started, unit 3 also runs |
+| `upsertPullRequest` | Phase 2 `upsertPrStep` over `ForgeProvider.upsertPullRequest`, title and body `pullRequestContent(facts)` (R30, CR-28, §7.3), record fencing on the Phase 2 side-effect log; the repository and the PR's base are the task input's `repository` and `baseBranch`, carried in the request (R33); adapter create-conflict reconcile (CR-27); result and failure report the publication effect (R24) | 5 min | 30 s | 20, backoff to 5 min | side-effect `attemptId:pr-upsert`; PR head | **no**: critical unit 3 |
+| `reconcilePublication` | remote read after an `unknown` publication effect over the Phase 2 forge ports of cycle 9 (`resolveRef`, the PR listing of CR-28, after the rebase): it reports what it observed, the attempt branch with its repository and tip, and every PR whose head branch is the attempt's branch with its number, head repository, head branch, head SHA, base repository, base branch, state, merged flag and `contentRepaired`; repositories carry the forge's numeric ID with owner and name. Its one write is the content repair of §7.3 (title and body rewritten from `pullRequestContent(facts)`, audited by Phase 2 as `forge.reconcile`); the core applies the identity predicate and audits each repair (§4.1; R24, R27, R30, R31, R33) | 60 s | — | 20, backoff to 5 min | a read; the repair writes the facts' content, so a repeat is a no-op | **no**: part of critical units 2 and 3 |
 | `projectTaskState` / `projectAttemptState` | projection writer (§13) | 30 s | — | 50, backoff to 1 min | monotonic `projection_seq` | no |
 | `recordUsage` | budget ledger: attempt usage, recorded overrun, granted extension | 30 s | — | 10 | `(attempt_id, entry_kind)` / `<approvalRequestId>:extension` key | no |
 | `openApprovalRequest` / `verifyApprovalDecision` / `expireApprovalRequest` / `cancelApprovalRequest` | approvals repo; `cancelApprovalRequest` closes an opened gate when the task ends without a decision, so a late decision gets 409 | 30 s | — | 10 | `approval_requests.id` deterministic from workflow (§11) | no (short gate writes; the wait between them is cancellable) |
 | `recordControl` | audit + `human.intervention` run event for an accepted control, including a run `seal` (§9) | 30 s | — | 10 | `requestId` | no |
-| `recordAudit` | audit row for a workflow-detected event: slot contract violation, assurance unavailable, unverified decision, soft threshold, overrun incident, pause timeout, cancel after publication, incomplete publication, attempt state unknown | 30 s | — | 10 | `<workflowId>:<seq>` | no |
+| `recordAudit` | audit row for a workflow-detected event: slot contract violation, assurance unavailable, unverified decision, soft threshold, overrun incident, pause timeout, cancel after publication, incomplete publication, PR content repaired, repository renamed, attempt state unknown | 30 s | — | 10 | `<workflowId>:<seq>` | no |
 | `renewLease` | Phase 2 lease primitive renewal (invariant L2, §7) | 30 s | — | 5 | lease identity | yes |
 | `reapContainers` | `ExecutionReaper.reap` (CR-08) | 2 min | — | 10 | label `asep.attempt` | no |
 | `quarantineWorkspace` / `cleanupWorkspace` / `releaseLease` | Phase 2 ports via registry; `releaseLease` presents the caller's fence | 2 min | — | 10 | idempotent by id | no |
@@ -440,8 +453,12 @@ error raised after the forge call (today `pushStep` calls `forge.pushBranch()` a
 throw `SideEffectFencingError`: `packages/application/src/pipeline-steps.ts:645-651`,
 `adapters/persistence/src/side-effect-log.ts:169-180`), a timeout, or any error after the call started is
 `unknown`, retryable or not. A failure carries the effect in its details; the interpreter passes it to the core and
-reads a missing value as `unknown`. The core never reads retryability (§4.1). The Phase 2 fenced push and PR upsert
-(cycle 8) supply the adapter side after the rebase; S2 defines the result shape.
+reads a missing value as `unknown`. The core never reads retryability (§4.1). The Phase 2 compare-and-set push and
+fact-derived PR upsert (cycle 9, R30) supply the adapter side after the rebase; S2 defines the result shape.
+**The lease-granted refusal is a result, not an error (R32).** The slot raises `ReviewLoopContractError` with code
+`lease-granted` when a `fence: null` terminal write meets a lease in durable history. The `recordPreLeaseOutcome`
+activity maps exactly that code to `recorded: false`; the bridge never maps it to `AssuranceFencedError`
+(supersession) or to a failure. A table test in the bridge suite pins it (exit D17).
 
 **Why the agent is never engine-retried.** The agent mutates a worktree and spends money. A blind re-run on a
 half-mutated worktree is neither idempotent nor honest about cost. Phase 1's domain model already says
@@ -567,17 +584,56 @@ COMPLETED ──begin(same fingerprint)──▶ adopted      different fingerpr
 `git update-ref HEAD <new> <expected>` semantics. `expectedHeadSha` is the pinned task base, or `repairBaseSha`
 for a repair attempt. A zombie's late commit fails instead of stacking a second object on top.
 
-### 7.3 Remote idempotency (forge)
+### 7.3 Publication at the forge (R30, R33)
 
-A push targets an exact, attempt-namespaced ref with an exact commit SHA (`forge-provider.ts:160-170`), and a
-PR upsert is keyed by head branch. The real GitHub adapter today does find-then-create, which is not atomic
-(`adapters/github-app/src/forge-provider.ts:300-336`). Two callers can both miss, and a create whose response
-is lost leaves no local record. CR-27 makes the adapter treat a create rejected because a PR already exists
-for the head (GitHub answers `422`) as "re-list by head and return the existing PR". A contract test against
-an honest HTTP double proves concurrent upserts and create-success-response-lost (exit E12). No claim is made
-about live GitHub uniqueness beyond that evidence. The activity also checks `ctx.signal.aborted` and the fence
-(F1) **immediately before** each external call, which narrows the zombie window. The convergence assertions
-(§8) count forge **calls**, not just end state, so any regression shows up.
+A stale owner, an activity execution paused inside a forge call while its lease lapsed and a successor took its
+side-effect record over, may still reach the forge. No lease check or marker before a call can recall a call already
+in flight, and GitHub offers no compare-and-set for a pull-request update (R30). So the forge is **not fenced**. What
+holds instead is Phase 2's publication contract of cycle 9 (`packages/ports/src/index.ts` and
+`packages/application/src/pipeline-steps.ts` at `a447983`, still under controller verification), and the Phase 3
+publication activities call those ports after the rebase:
+
+- **The push is compare-and-set.** `publishBranch` runs `pushStep`, which calls `ForgeProvider.pushBranch(scope,
+  { repositoryBindingId, branch, commitSha, expectedRemoteSha })` with `expectedRemoteSha: null` (the attempt branch
+  must be absent) and the attempt's verified commit; the adapter pushes with
+  `--force-with-lease=refs/heads/<branch>:<expected>`. A stale owner's late push of the same commit is a no-op, and a
+  push of any other commit is refused by the remote. A redelivery that finds its record `PENDING` reads the branch
+  first (`resolveRef`) and adopts a branch already at the commit; a branch at another commit is refused
+  (`RemoteBranchDivergedError`), never overwritten.
+- **PR content is a pure function of immutable attempt facts.** `upsertPullRequest` runs `upsertPrStep`, whose title
+  and body are `pullRequestContent(facts)` of the task id, attempt id, verified commit, evidence id and base, plus
+  the assurance facts Phase 3 publishes (the `ESCALATE` flag and the content-addressed PR-body section; CR-28).
+  Nothing owner-specific, mutable or time-dependent enters them, so a stale owner's late create or update writes
+  byte-identical content. There is no epoch marker and no read-marker-then-update check.
+- **The remote is reconciled before any terminal state.** A redelivered publication activity reconciles the remote
+  by natural key before any new call (F3). An `unknown` publication effect is reconciled by `reconcilePublication`
+  before any terminal state (§4.1). That activity reads the branch and every PR candidate, and rewrites the title
+  and body of an open PR whose head is the attempt branch in the binding repository (by repository ID) when they
+  differ from `pullRequestContent(facts)`, as Phase 2's `reconcilePullRequestStep` does; Phase 2 audits that write as
+  `forge.reconcile`. It reports `contentRepaired: true` on that PR, and the core audits
+  `publication.content-repaired` for each repair it is told of. The activity never creates, closes, retargets or
+  merges a PR and never moves the branch: whether the remote is the attempt's publication stays the core's decision
+  under the identity predicate (§4.1, R31), so a branch at another commit, or a PR that fails the predicate, ends the
+  task `FAILED / publication-incomplete` with the observation audited.
+- **The repository is identified by the forge's numeric ID (R33).** The task input carries the binding's numeric
+  repository ID (Phase 2's binding resolver already holds it) with owner and name, and the observation carries the
+  ID of the branch's repository and of each PR's head and base repository. The predicate compares IDs. A rename or a
+  transfer keeps the ID and stays reconcilable; another repository that later reuses the old owner and name has
+  another ID and is refused (`branch-other-repository`, `pull-request-fork-head`, `pull-request-other-base`).
+
+The guarantee is content idempotence, push compare-and-set and reconciliation, never "fenced at the forge". The
+activity still checks `ctx.signal.aborted` and the record fence (F1) just before each external call (E11); that
+narrows the window a stale owner has, and does not close it.
+
+PR-upsert convergence is separate. The real GitHub adapter does find-then-create, which is not atomic
+(`adapters/github-app/src/forge-provider.ts` at `a447983`, `upsertPullRequest`). Two callers can both miss, and a create
+whose response is lost leaves no local record. CR-27 makes the adapter treat a create rejected because a PR already
+exists for the head (GitHub answers `422`) as "re-list by head and return the existing PR". A contract test against an
+honest HTTP double proves concurrent upserts and create-success-response-lost (exit E12). No claim is made about live
+GitHub uniqueness beyond that evidence. R30's interleavings are S6 acceptance tests through the Phase 3 activities
+(exit E16): the in-transport PR race (owner 1 reads, owner 2 updates, owner 1 updates) leaves the PR byte-identical to
+owner 2's; a stale owner's push of a different commit is refused by the lease; a late push of the same commit is a
+no-op. The convergence assertions (§8) count forge **calls**, not just end state, so any regression shows up.
 
 ### 7.4 Leases (invariants L1–L3, provided by the Phase 2 primitive or requested from it)
 
@@ -924,16 +980,17 @@ What the fixed block is known to bring (R18), and what Lane A does with it:
   | on `BLOCK` | `blocked` |
   | budget exhaustion: the adapter stopped the agent at a cap, or usage overran a cap (§10) | `budget-exhausted` |
   | abandonment (agent failure, overstep, worker death), an incomplete publication, and any other non-review stop | `failed` |
-  | an attempt found registered after a failed `ensureAttempt` (never leased) | `failed` (S0: `infrastructure-failed`) |
-  | an attempt whose `acquireLease` failed and `findLease` found no lease (never leased) | `failed` (S0: `infrastructure-failed`); `cancelled` after an abort or with a cancel pending |
+  | an attempt found registered after a failed `ensureAttempt` (never leased) | `failed` (S0 renames it `infrastructure-failed`); `cancelled` with a cancel pending |
+  | an attempt whose `acquireLease` failed and `findLease` found no lease (never leased) | `failed` (S0 renames it `infrastructure-failed`); `cancelled` after an abort or with a cancel pending (S0 keeps `cancelled`) |
   | cancel and pause timeout | `cancelled` |
 
   Every terminal of an attempt that held a lease is recorded with the caller's fence before the lease is released
   (§4.1). An attempt that never held a lease records `fence: null`, and only with a terminal of the pre-lease
-  allowlist `cancelled` or `infrastructure-failed` (R28); S0 maps the core's local names onto the block's, and the
-  pre-lease rows above onto `infrastructure-failed`. The one attempt that gets no terminal is one whose state the
-  store could not tell (`attempt-state-unknown`, §4.1, R29): it is reported as a telemetry gap with its idempotency
-  key, never hidden.
+  allowlist `cancelled` or `infrastructure-failed` (R28); S0 maps the core's local names onto the block's. On the
+  pre-lease rows only the core's `failed` is renamed, to `infrastructure-failed`; `cancelled` stays `cancelled`
+  (R33). The one attempt that gets no terminal is one whose state the store could not read or write
+  (`attempt-state-unknown`, §4.1, R29, R32): it is reported as a telemetry gap with its idempotency key, never
+  hidden.
 
   It is the only emitter of `attempt.declared_complete` and `attempt.completed`. So the false-completion metric
   covers every attempt, and no event is counted twice when Lane B's implementation replaces the default.
@@ -988,7 +1045,8 @@ no push record exists; it never proceeds on a missing worktree. A test runs two 
   `workflow.seal`, `approval.request`, `approval.decide`, `approval.deliver`, `approval.expire`, `budget.threshold`,
   `budget.extend`, `budget.overrun`, `side-effect.takeover`, `workspace.quarantine`, `review-slot.contract-violation`,
   `assurance-unavailable`, `approval.unverified`, `workflow.pause-timeout`, `workflow.cancel.after-publication`,
-  `publication.incomplete`, `attempt.state-unknown`.
+  `publication.incomplete`, `publication.content-repaired`, `publication.repository-renamed`, `attempt.state-unknown`.
+  Phase 2 audits the forge write of a content repair as `forge.reconcile` inside the activity.
   Workflow-detected events are written by the `recordAudit` activity (§5).
 - **RunEvents** (persisted through `RunEventSink` into `run_events`, validated against `run-event` 1.2.0, S0).
   - Lane A emits: `run.started`, `task.started`, `attempt.started`, `verification.completed`, `task.completed`,

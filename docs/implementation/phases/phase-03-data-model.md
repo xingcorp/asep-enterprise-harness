@@ -1,11 +1,13 @@
-# Phase 3 — Data Model (LOCKED v7, pending controller confirmation)
+# Phase 3 — Data Model (LOCKED v8, pending controller confirmation)
 
 > Companion to `phase-03-plan.md`. PostgreSQL 17 (same digest-pinned image as Phase 2). Base `00a6889`; v1 of
 > this document is at `80bb76a`, v2 at `98e92cf`, v3 at `7cbf5d3`. v2 folded in the Codex plan review; v3 folds in
 > the Codex lock-check of v2 and the controller's reconciliation R15–R19; v4 folds in the Codex review of v3 and
 > reconciliation R21 (`phase-03-review-log.md`, section "Review v3"); v5 folds in the Codex re-audit of v4 and
 > reconciliation R24 (section "Review v4"); v6 folds in the Codex re-audit of v5 and reconciliation R25–R28
-> (section "Review v5"); v7 folds in the Codex re-audit of v6 and reconciliation R29 and R31 (section "Review v6").
+> (section "Review v5"); v7 folds in the Codex re-audit of v6 and reconciliation R29 and R31 (section "Review v6");
+> v8 folds in the Codex re-audit of v7, Phase 2's publication contract of cycle 9 (R30) and reconciliation R32 and
+> R33 (section "Review v7").
 > The reconciliation wins
 > where it and this document disagree.
 > Lane A migration range: **`0100`–`0199`** (lane contract). Migrations are append-only, checksummed and applied
@@ -370,16 +372,21 @@ schemaVersion: "1.0.0"
 organizationId, projectId, repositoryBindingId, runId, taskId     (ULID pattern)
 risk: R0..R4
 baseSha: 40-hex
-repository: { owner, name }            (the repository binding's forge repository, normalized to lower case:
-                                       owner ^[a-z0-9](-?[a-z0-9]){0,38}$, name ^[a-z0-9._-]{1,100}$ and not "." or
-                                       ".."; every publication of the task goes there, and a publication
-                                       reconciliation checks the branch's and each PR's repositories against it, R31)
+repository: { id, owner, name }        (the repository binding's forge repository, R31, R33: id is the forge's
+                                       numeric repository ID (`githubRepositoryId`), a positive safe integer, and it
+                                       is the repository's identity; owner and name are as the binding records them,
+                                       informational and audited, within the forge's name rules in any case: owner
+                                       ^[A-Za-z0-9](-?[A-Za-z0-9]){0,38}$, name ^[A-Za-z0-9._-]{1,100}$ and not "."
+                                       or ".."; every publication of the task goes there, and a publication
+                                       reconciliation compares the branch's and each PR's repository IDs with it)
 baseBranch: Git branch name            (the branch the task's PR targets, from the repository binding; the PR
                                        upsert uses it and the publication reconciliation checks the PR's base
-                                       against it, R27. Validated with Git's ref-name rules (R31): non-empty, at
-                                       most 255 characters, no "..", no leading "-", no control or space character,
-                                       none of ~ ^ : ? * [ \, no "@{", no "//", and not ending in "/", "." or
-                                       ".lock")
+                                       against it, R27. Validated with Git's ref-name rules for a branch (R31, R33):
+                                       non-empty, at most 255 characters, no leading "-", no control or space
+                                       character, none of ~ ^ : ? * [ \, no "..", no "@{", and not "HEAD"; every
+                                       "/"-separated component non-empty (so no leading or trailing "/" and no
+                                       "//"), not starting with "." and not ending in ".lock"; and the name not
+                                       ending in ".")
 workOrderRef: ArtifactRef            (WorkOrder already stored and validated)
 contextPackRef: ArtifactRef
 attemptBudget: Budget                (must equal WorkOrder.budget; checked by the first activity)
@@ -403,9 +410,12 @@ Every money amount (`attemptBudget.maxCostUsd`, `taskBudget.maxCostUsd`, `taskBu
 `verificationReserve.costUsd`, `runRemaining.costUsd`, `policy.maxBudgetExtensionUsd`) must be exactly representable
 in micro-USD and at most `100 000 000` USD. JSON Schema `multipleOf` is not used for this, because binary floating
 point makes it unreliable; the S7 input mapping applies the core's exactness rule and rejects the input otherwise
-(R21, architecture §10, exit H12). The same input rules (`taskInputErrors`) reject a `repository` that is not in its
-normalized form and a `baseBranch` that breaks the ref-name rules above, including `undefined`, `null`, `""` and
-`main..evil` (R31, exit D16); the schema's `pattern` mirrors them.
+(R21, architecture §10, exit H12). The same input rules (`taskInputErrors`) reject a `repository` without a positive
+integer ID or with an owner or name outside the forge's rules, and a `baseBranch` that breaks the ref-name rules
+above, including `undefined`, `null`, `""`, `main..evil`, `/main`, `.hidden`, `release/.hidden` and `a.lock/b` (R31,
+R33, exit D16); the schema's `pattern` mirrors them. The branch rules are held against Git itself: a committed table
+of names with their `git check-ref-format --branch` result is the test oracle, and a test-only check re-runs git on
+the table. The 255-character bound is the input boundary's own limit, stricter than Git.
 
 `maxRepairCycles` from v1 is removed: the round limit belongs to Phase 4's review policy (`maxRounds`). Lane A
 enforces only `taskBudget.maxAttempts` as a hard ceiling across retries and repairs.
@@ -465,21 +475,34 @@ details. `unknown` leads to `reconcilePublication` before any terminal state. Th
 and the core decides (R27, R31):
 
 ```text
-reconcilePublication request: { attemptNumber, repository: { owner, name }, remoteBranch, expectedHeadSha,
+upsertPullRequest request:    { attemptNumber, repository: { id, owner, name }, baseBranch, flagged, prBodySectionRef }
+reconcilePublication request: { attemptNumber, repository: { id, owner, name }, remoteBranch, expectedHeadSha,
                                 expectedBaseBranch }
-reconcilePublication result:  { branch: { repository: { owner, name }, headSha: 40-hex } | null,
+reconcilePublication result:  { branch: { repository: { id, owner, name }, headSha: 40-hex } | null,
                                                                    (null: the branch does not exist)
-                                pullRequests: [ { number, headRepository: { owner, name }, headBranch, headSha,
-                                                  baseRepository: { owner, name }, baseBranch,
-                                                  state: open | closed, merged: boolean } ] }
+                                pullRequests: [ { number, headRepository: { id, owner, name }, headBranch, headSha,
+                                                  baseRepository: { id, owner, name }, baseBranch,
+                                                  state: open | closed, merged: boolean,
+                                                  contentRepaired: boolean } ] }
                                 (every PR the forge lists with the attempt branch as head branch, in any state and
-                                 from any head repository; the core does not rely on the read's filter)
+                                 from any head repository; the core does not rely on the read's filter. A
+                                 repository is the forge's numeric ID with the owner and name the forge reports
+                                 now. contentRepaired: the read found the PR's title or body different from
+                                 pullRequestContent(facts) and rewrote them, R30)
 ```
 
+Both publication requests carry the task input's `repository`, and the core takes it and the base from the input
+for every request (R33); the property oracle checks each request against the input.
+
 The identity predicate, the same after a push and after a PR upsert: `branch` is in the task input's `repository`
-(compared case-insensitively, as the forge does) with `headSha` = the attempt's verified commit, and `pullRequests`
-is empty or holds exactly one PR that is `open`, not merged, has the input's repository as head and base repository,
-the attempt's branch as head branch, that commit as head SHA and the input's `baseBranch` as base branch. After the
+(compared by numeric ID; owner and name are informational) with `headSha` = the attempt's verified commit, and
+`pullRequests` is empty or holds exactly one PR that is `open`, not merged, has the input's repository as head and
+base repository (by ID), the attempt's branch as head branch (compared exactly, case included), that commit as head
+SHA and the input's `baseBranch` as base branch. A rename or a transfer keeps the ID, so it stays reconcilable, and a
+reconciled observation whose repository owner or name differs from the input's is audited
+`publication.repository-renamed` (repository ID, the bound and the observed owner/name). Another repository that
+reuses the old owner and name has another ID and is refused. Every PR the read reports with `contentRepaired: true` is
+audited `publication.content-repaired` (attempt, PR number), whatever the decision. After the
 push the predicate continues to the PR upsert, a branch absent with no PR is `none` (`FAILED / publication-failed`),
 and anything else is unreconciled. After the PR upsert the predicate with exactly one PR continues as a successful
 upsert with that PR; zero PRs is "no PR" and unreconciled, like anything else that fails the predicate. An
@@ -505,8 +528,10 @@ recordAttemptOutcome effect:   { …, fence | null }      releaseLease effect: {
 task result (TaskSummary):     { …, unrecordedAttempts: [ { attemptNumber, idempotencyKey } ] }
 ```
 
-`unrecordedAttempts` lists every attempt whose terminal was not recorded because its state could not be read
-(`attempt-state-unknown`); it is empty otherwise. The idempotency key is the rendering of the attempt row's natural
+`unrecordedAttempts` lists every attempt whose terminal was not recorded because the store could not be read or
+written after the retry policy (`attempt-state-unknown`: a lookup failed, a second `findLease` found no lease, or the
+pre-lease terminal write failed; R29, R32); it is empty otherwise. `recordPreLeaseOutcome`'s `recorded: false` is the
+slot's `lease-granted` refusal and nothing else (R32). The idempotency key is the rendering of the attempt row's natural
 key (§5).
 
 ## 5. Idempotency key catalog (every durable write Phase 3 adds or relies on)

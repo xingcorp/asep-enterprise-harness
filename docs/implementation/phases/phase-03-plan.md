@@ -1,6 +1,6 @@
-# Phase 3 — Durable Orchestration — Plan (LOCKED v7, pending controller confirmation)
+# Phase 3 — Durable Orchestration — Plan (LOCKED v8, pending controller confirmation)
 
-> Status: **LOCKED v7 (pending controller confirmation)**. Lane A wrote v1 (`80bb76a`) in workflow step 1. The
+> Status: **LOCKED v8 (pending controller confirmation)**. Lane A wrote v1 (`80bb76a`) in workflow step 1. The
 > controller ran the independent Codex plan review (`phase-03-plan-review-codex-v1.md`, REQUEST_CHANGES 0.98).
 > In step 3 Lane A adjudicated every finding in `phase-03-review-log.md` and folded each accepted one into the
 > design, the exit criteria and the slice that proves it (v2, `98e92cf`). The controller then ran an independent
@@ -16,13 +16,17 @@
 > section "Review v5") and folds them in. The controller then ran an independent Codex re-audit of v6 and of the S2
 > fixes at `392f259` (`phase-03-review-codex-v6.md`, REQUEST_CHANGES 0.97). v7 adjudicates its seven new findings and
 > the v5 finding it marked PARTIAL (review log, section "Review v6") and folds them in, with R29 (the answers to
-> Lane A's open pre-lease questions) and R31. The controller's shared-surface reconciliation v1 (R1–R21, R24, the
-> Lane A parts of R25–R28, R29 and R31) is applied, and it wins wherever it disagrees with this plan.
+> Lane A's open pre-lease questions) and R31. The controller then ran an independent Codex re-audit of v7 and of the
+> S2 fixes at `ac0a1bc` (`phase-03-review-codex-v7.md`, REQUEST_CHANGES 0.96). v8 adjudicates its eight new findings
+> and the v6 finding it marked PARTIAL (review log, section "Review v7") and folds them in, with Phase 2's
+> publication contract of cycle 9 (R30, Phase 2 head `a447983`, still under controller verification), R32 and R33.
+> The controller's shared-surface reconciliation v1 (R1–R21, R24, the Lane A parts of R25–R28, R29 and R30–R33) is
+> applied, and it wins wherever it disagrees with this plan.
 > One item stays open by design: the review-loop slot TypeScript (CR-10) is pasted verbatim from Lane B's locked
 > block `Review-loop slot contract (verbatim for S0)` when the controller hands over the fixed version (R18).
 > Only S2 is implemented before the Phase 2 rebase (R15): `a133e32`, then follow-up commits that bring it in
-> line with v3 (`5e9fb84`), with R20 (`5b0afde`), with v4 and R21, with v5 and R24, with v6 and R27, and with v7,
-> R29 and R31 (the commits after each docs commit).
+> line with v3 (`5e9fb84`), with R20 (`5b0afde`), with v4 and R21, with v5 and R24, with v6 and R27, with v7,
+> R29 and R31, and with v8 and R33 (the commits after each docs commit).
 > Scope source: `docs/implementation/90-day-plan.md:24-31` (Days 31–45).
 
 ```text
@@ -41,7 +45,7 @@ Companion documents: `phase-03-architecture.md`, `phase-03-data-model.md`, `phas
 `phase-03-risk-register.md`, `phase-03-research-register.md`, `phase-03-threat-model-delta.md`,
 `phase-03-review-log.md`, `phase-03-plan-review-codex-v1.md`, `phase-03-plan-review-codex-v2.md`,
 `phase-03-review-codex-v3.md`, `phase-03-review-codex-v4.md`, `phase-03-review-codex-v5.md`,
-`phase-03-review-codex-v6.md`.
+`phase-03-review-codex-v6.md`, `phase-03-review-codex-v7.md`.
 
 ---
 
@@ -61,7 +65,9 @@ Companion documents: `phase-03-architecture.md`, `phase-03-data-model.md`, `phas
 | 3g | Controller | Codex read-only re-audit of v5 and the S2 fixes at `ac04c8c` → `phase-03-review-codex-v5.md` |
 | 3h | Lane A | re-audit v5 adjudicated and folded; R27 and the R28 slot rules applied; plan LOCKED v6; S2 fixed, test first |
 | 3i | Controller | Codex read-only re-audit of v6 and the S2 fixes at `392f259` → `phase-03-review-codex-v6.md` |
-| 3j | Lane A (this step) | re-audit v6 adjudicated and folded; R29 and R31 applied; plan LOCKED v7; S2 fixed, test first |
+| 3j | Lane A | re-audit v6 adjudicated and folded; R29 and R31 applied; plan LOCKED v7; S2 fixed, test first |
+| 3k | Controller | Codex read-only re-audit of v7 and the S2 fixes at `ac0a1bc` → `phase-03-review-codex-v7.md` |
+| 3l | Lane A (this step) | re-audit v7 adjudicated and folded; R30's publication contract, R32 and R33 applied; plan LOCKED v8; S2 fixed, test first |
 | 4 | Lane A, after "implement" | one slice per commit (§26), on this branch only, in the §25 order; S2 first (`a133e32`), as R15 allows |
 | 5 | Controller | independent gate run + Codex final audit; Lane A repairs |
 | 6 | Controller | merge on ACCEPT, in the order Phase 2 → Phase 3 → Phase 4 (R-ordering 4) |
@@ -327,9 +333,9 @@ loop attempt n = 1..maxAttempts:
                                    core carries to the attempt's terminal write and release; before it, R28's
                                    pre-lease rule applies; failure after its retries, or a cancel's abort →
                                    findLease (non-cancellable, R29): found → terminal with that fence → release;
-                                   absent → recordPreLeaseOutcome(fence null); refused by a late grant → findLease
-                                   once more → terminal with its fence → release; then abandon (below), or
-                                   CANCELLED after an abort)
+                                   absent → recordPreLeaseOutcome(fence null); refused by a late grant (the slot's
+                                   lease-granted code → recorded: false, R32) → findLease once more → terminal with
+                                   its fence → release; then abandon (below), or CANCELLED after an abort)
   prepareWorkspace                (registry CREATING → worktree at base → ACTIVE)
   storeAttemptInputs              (WorkOrder / ContextPack refs; lineage: buildRepairContextPack; ExecutionEnvelope)
   runAgent                        (engine retry = 1; per-request caps; heartbeats; lease renewed; container asep-agent-<attemptId>)
@@ -353,21 +359,28 @@ loop attempt n = 1..maxAttempts:
     activity fails → audit assurance-unavailable; shadow mode → PROCEED; gating mode → ESCALATE; never FAILED
   publication approval            (only if the run requires it; a cancellable wait; a pause applies at once and the
                                    expiry timer keeps running)
-  publishBranch                   (critical unit 2; fence; side-effect protocol; every result and failure carries
-                                   the publication effect applied | none | unknown, never inferred from retryability
-                                   (R24); none → FAILED publication-failed; unknown → reconcilePublication)
-  reconcilePublication            (read-only remote read after an unknown effect; reports the full observation:
-                                   the branch with its repository and tip, and every PR with that head branch with
-                                   its number, head and base repository, head branch, head SHA, base branch, state
-                                   and merged flag; the core applies one identity predicate (R27, R31): the branch
-                                   is in the input's repository at the attempt's commit, and the candidates are
-                                   none or exactly one open, unmerged PR with the input's repository as head and
+  publishBranch                   (critical unit 2; Phase 2 pushStep: compare-and-set push of the attempt's commit,
+                                   expectedRemoteSha null (R30); record fencing on the side-effect log; every result
+                                   and failure carries the publication effect applied | none | unknown, never
+                                   inferred from retryability (R24); none → FAILED publication-failed; unknown →
+                                   reconcilePublication)
+  reconcilePublication            (remote read after an unknown effect; reports the full observation: the branch
+                                   with its repository and tip, and every PR with that head branch with its number,
+                                   head and base repository, head branch, head SHA, base branch, state, merged flag
+                                   and contentRepaired; a repository is its numeric forge ID with owner and name;
+                                   its one write rewrites a diverged title and body of an open PR on the attempt
+                                   branch from pullRequestContent(facts) (R30, R33), and the core audits each
+                                   repair; the core applies one identity predicate (R27, R31, R33): the branch is
+                                   in the input's repository (by ID) at the attempt's commit, and the candidates
+                                   are none or exactly one open, unmerged PR with the input's repository as head and
                                    base repository, that branch and commit as head and the input's baseBranch as
                                    base. After the push: identity → PR upsert; branch absent and no PR → FAILED
                                    publication-failed; otherwise, or the read fails → FAILED publication-incomplete,
                                    audited with what was found)
-  upsertPullRequest               (critical unit 3, always run once the push applied; base = the input's
-                                   baseBranch; fence; create-conflict reconcile; effect none → FAILED
+  upsertPullRequest               (critical unit 3, always run once the push applied; repository and base = the
+                                   input's repository and baseBranch (R33); title and body pullRequestContent(facts),
+                                   no owner-specific field (R30); record fencing; create-conflict reconcile; effect
+                                   none → FAILED
                                    publication-incomplete; unknown or applied → reconcilePublication: identity with
                                    exactly one PR → continue with that PR, else FAILED publication-incomplete;
                                    publication-incomplete is audited with the remote branch, never CANCELLED)
@@ -382,15 +395,15 @@ on cancel: inside a critical unit → processed once it has reconciled (after pu
 every terminal of a leased attempt: recordUsage → recordAttemptOutcome(fence) → releaseLease(fence), in that
   order, each effect finished before the next starts (R27, R23); an attempt that never held a lease records its
   terminal with fence null and only as cancelled or infrastructure-failed (R28; architecture §4.1)
-on a lookup failure (findAttempt or findLease after its retries, a second findLease that finds nothing, or a failed
-  recordPreLeaseOutcome): FAILED attempt-state-unknown, also over a pending cancel; no usage, outcome or release
-  for that attempt; audit attempt.state-unknown with its idempotency key; the task result lists it in
-  unrecordedAttempts (R29; exits D13, L6)
+on a store that cannot be read or written (findAttempt or findLease after its retries, a second findLease that finds
+  nothing, or a failed recordPreLeaseOutcome; R32): FAILED attempt-state-unknown, also over a pending cancel; no
+  usage, outcome or release for that attempt; audit attempt.state-unknown with its idempotency key; the task result
+  lists it in unrecordedAttempts (R29; exits D13, L6)
 ```
 
 ## 12. Ports and adapters
 
-All new and changed port signatures are in §30 (CR-04, CR-07 … CR-10, CR-24 … CR-27), which is the binding
+All new and changed port signatures are in §30 (CR-04, CR-07 … CR-10, CR-24 … CR-28), which is the binding
 text for the controller. Fencing and side-effect result types are the accepted Phase 2 primitive's (CR-05),
 not Lane A's.
 
@@ -423,8 +436,11 @@ default unlimited retry (research register §4).
 ## 16. Fencing
 
 Architecture §7. Record fencing is the Phase 2 lease-bound primitive under invariants F1–F5 and the `FAILED`
-lifecycle. On top of it come local Git CAS and remote natural-key idempotency (including forge create-conflict
-reconciliation), plus cancellation and fence checks just before each external call.
+lifecycle. On top of it come local Git CAS and, at the forge, Phase 2's publication contract of cycle 9 (R30): a
+compare-and-set push, PR content that is a pure function of immutable attempt facts, and reconciliation of the remote
+before any terminal state (architecture §7.3), plus forge create-conflict reconciliation (CR-27). The forge itself is
+not fenced: a stale owner may still reach it, and the guarantee is what it can write. Cancellation and fence checks
+just before each external call narrow that window; they do not close it.
 
 ## 17. Pause / resume / cancel
 
@@ -434,9 +450,9 @@ plus evidence binding, push, PR upsert), and a cancel inside a unit is processed
 Assurance rounds, repair planning and approval waits are cancellable at any time (R17; exits G7, G11, G12). The
 workflow audits accepted controls after acceptance. A cancel never finalizes while a publication unit is
 unreconciled: an `unknown` publication effect is reconciled against the remote first, under one identity
-predicate on both paths over the full observation (the branch is in the binding repository at the attempt's
-commit, and the PR candidates are none or exactly one open, unmerged PR with the binding repository as head and
-base repository, that branch and commit as head and the task's base branch as base). Only a publication that cannot
+predicate on both paths over the full observation (the branch is in the binding repository, compared by its numeric
+forge ID, at the attempt's commit, and the PR candidates are none or exactly one open, unmerged PR with the binding
+repository as head and base repository, that branch and commit as head and the task's base branch as base). Only a publication that cannot
 be reconciled under that predicate ends the task `FAILED / publication-incomplete`: a PR upsert that fails with
 effect `none`, a remote that is not exactly the attempt's, or a failed read. A PR upsert that fails with an `unknown`
 or `applied` effect and reconciles under the predicate is a completed upsert, and a pending cancel then ends the task
@@ -654,14 +670,14 @@ v1 → v2 slice mapping: v1 S1 → S0 (shared items) + S1; S2 → S2; S3 → S3;
 
 | Slice | Deliverable | Commit | Gate | Acceptance checks (exit criteria) |
 |---|---|---|---|---|
-| S0 | **Shared foundation**: every `[S0]` item of the reconciliation, exactly as specified there. (a) the fixed review-loop slot block (CR-10, verbatim Lane B block, R18) in `packages/application/src/review-loop/` (R16): the slot, Lane B's `DisabledAssuranceSlot`, the workspace resolver port and the framework-free conformance kit `review-loop-contract.ts`; (b) a minimal `NotConfiguredAssuranceSlot` in `packages/application/src/orchestration-activities/`; (c) `RunEventSink` + `RunEventConflictError` port, migration `0107_run_events` (unified DDL), PG adapter `adapters/persistence/src/run-events/**`; (d) `run-event` 1.2.0 superset (schema, fixtures, catalog, generated types); (e) the decision core adopts the block's names: its local slot types and terminal names are renamed to the block's (they stay core-local, because production source may type-import only `@asep/contracts`/`@asep/ports`), pinned by a type-level assignability check and the O5 table test (test-only `@asep/application` devDependency, like `@asep/domain`); the pre-lease terminals (an attempt found registered after a failed `ensureAttempt`, and one whose failed or aborted `acquireLease` left no lease) map to `infrastructure-failed`, and `recordAttemptOutcome` carries the caller's fence from `acquireLease` or `findLease`, `null` only for a never-leased attempt (R28, R29); `recordPreLeaseOutcome` maps the slot's refusal of `fence: null` (durable history shows a lease) to `recorded: false` (R29); every money field at the seam is integer micro-USD (R28) | `feat(shared): land the review-slot contract, run-event sink and run-event 1.2.0` | G-P2, G-LB; first commit after the rebase | O1–O5, J2 (default slot), A5 (`0107` and the upgrade path), L3 |
+| S0 | **Shared foundation**: every `[S0]` item of the reconciliation, exactly as specified there. (a) the fixed review-loop slot block (CR-10, verbatim Lane B block, R18) in `packages/application/src/review-loop/` (R16): the slot, Lane B's `DisabledAssuranceSlot`, the workspace resolver port and the framework-free conformance kit `review-loop-contract.ts`; (b) a minimal `NotConfiguredAssuranceSlot` in `packages/application/src/orchestration-activities/`; (c) `RunEventSink` + `RunEventConflictError` port, migration `0107_run_events` (unified DDL), PG adapter `adapters/persistence/src/run-events/**`; (d) `run-event` 1.2.0 superset (schema, fixtures, catalog, generated types); (e) the decision core adopts the block's names: its local slot types and terminal names are renamed to the block's (they stay core-local, because production source may type-import only `@asep/contracts`/`@asep/ports`), pinned by a type-level assignability check and the O5 table test (test-only `@asep/application` devDependency, like `@asep/domain`); on the pre-lease terminals (an attempt found registered after a failed `ensureAttempt`, and one whose failed or aborted `acquireLease` left no lease) only the core's `failed` is renamed to `infrastructure-failed`, and `cancelled` stays `cancelled` (R33); `recordAttemptOutcome` carries the caller's fence from `acquireLease` or `findLease`, `null` only for a never-leased attempt (R28, R29); `recordPreLeaseOutcome` maps the slot's `ReviewLoopContractError` code `lease-granted` (a `fence: null` write refused because durable history shows a lease) to `recorded: false`, never to supersession or an activity failure (R29, R32); every money field at the seam is integer micro-USD (R28); Lane A runs the kit's RLC-16 atomicity case against `NotConfiguredAssuranceSlot`, which persists events and so may not declare it `N/A`, and the kit's registration-before-effect ordering case against its workflow (R32) | `feat(shared): land the review-slot contract, run-event sink and run-event 1.2.0` | G-P2, G-LB; first commit after the rebase | O1–O6, J2 (default slot), A5 (`0107` and the upgrade path), L3 |
 | S1 | Lane A contracts and ports: 3 new schemas + fixtures + snapshots + generated types (incl. `fixedTasks`, the `seal` control, `approval-decision.extensionUsd` and `policy.agentKillGraceSeconds`, R21); `TaskStatus` extension + domain transition table (incl. the R21 edges `WAITING_FOR_APPROVAL ⇄ PAUSED` and `PAUSED → BUDGET_EXHAUSTED`); ports CR-04, CR-07, CR-08, CR-09, CR-24, CR-26 types and error classes; principal types (CR-17); metrics dictionary entry; ADR 0017 | `feat(contracts): add durable-orchestration message contracts and ports` | after S0 | A1, A3, D1 (types compile), L5, domain table tests incl. the unchanged no-ACCEPTED invariant |
-| S2 | `@asep/orchestration`: reducer, activity option table, budget arithmetic (agent cap and verification reserve), the agent-outcome and reservation-failure tables, approval and control handling with the critical units, assurance-outcome routing incl. assurance-activity failure, repair lineage on retry, sequential in-memory interpreter; package-local purity self-check over production source. Core traces in the acceptance tables: (1) cap exhaustion and overrun vs H5/H9; (2) `REPAIR` with a failed reservation: `maxBudgetExtensionUsd` set (approve, reject) or unset, and a run-remainder shortfall; (3) `REPAIR` → agent death → replacement keeping the lineage → round-2 assurance; (4) cancel during assurance and during the publication-approval wait; (5) a non-replaceable agent failure beats a cap stop or an overrun (R20); and for v4 (R21): (6) a hostile policy listing each never-replaceable class; (7) wall-clock at the cap, at cap + grace and above; (8) micro-USD boundaries; (9) a failing PR upsert after a successful or ambiguous push, with a cancel pending; (10) a run sealed below `maxTasks`, created sealed, and sealed across continue-as-new; (11) pause during both approval waits; (12) the three `findAttempt` outcomes; (13) the two approval races, with both mutations shown red; the purity check is AST-based; and for v5 (R24): (14) the publication effect for push and PR upsert (`applied`, `none`, `unknown` with each reconciliation result, and a failing reconciliation), with and without a cancel pending (retryability does not reach the core); (15) every money cap equal to `MAX_USD` with usage one micro-USD above it, usage above the bound and invalid usage; (16) content-valid `verified: false` decisions for each approval kind in the generator; the purity check uses the TypeScript checker with the module-resolution closure; and for v6 (R27): (17) the reconciliation identity predicate on both paths, with the reconciliation result carrying the observed SHAs, for a wrong head, a moved or missing branch, a PR at another head or base, and an unreadable remote, each with and without a cancel pending, the reviewer's probe and the generator's seed 1351; (18) terminal outcome before lease release on every leased path, per path and as a per-attempt ordering property, with the reviewer's release-before-outcome mutation shown red; (19) the ambient-global allowlist and the locale-dependent members in the purity check, with the reviewer's locale and `navigator` probes as seeds; and for v7 (R29, R31): (20) the full publication observation on both paths (a fork head, a closed or merged PR, several candidates, a PR at another head or base, a branch in another repository), each with and without a cancel pending, the reviewer's `IDENTITY_MATRIX` cases as tests; (21) `baseBranch` and `repository` validation with the reviewer's four invalid bases, fixtures and generator on non-`main` bases, and the oracle checking every request's base against the input, with the reviewer's base-forced-to-`main` mutation shown red; (22) lease settlement after a failed or aborted `acquireLease` (`findLease` found, absent, a late grant refusing the pre-lease write, a second lookup) and `attempt-state-unknown` on a lookup failure over a pending cancel, the four `R29_*` probes as tests, with fences and lookups checked by the property oracle; (23) a type assertion inside a computed key and the double cast in the purity check, with the reviewer's asserted-key constructor as a seed and as a mutation of the production core | `feat(orchestration): add the deterministic workflow decision core` (`a133e32`) + `fix(orchestration): …` follow-ups for v3, R20, v4, v5, v6 and v7 | may start before G-P2 | B2 (package-local), D5 (core), D7 (core), D13 (core), D14 (core), D15 (core), D16 (core), D17 (core), G7/G11/G12/G13/G14 (core), H1, H3/H4 (core), H5 (core), H8 (core), H10 (core), H11 (core), H12 (core), I6, I9, J3 (core table), J4 (core), J5 (property), J7, J10 (core), L6 (core) |
+| S2 | `@asep/orchestration`: reducer, activity option table, budget arithmetic (agent cap and verification reserve), the agent-outcome and reservation-failure tables, approval and control handling with the critical units, assurance-outcome routing incl. assurance-activity failure, repair lineage on retry, sequential in-memory interpreter; package-local purity self-check over production source. Core traces in the acceptance tables: (1) cap exhaustion and overrun vs H5/H9; (2) `REPAIR` with a failed reservation: `maxBudgetExtensionUsd` set (approve, reject) or unset, and a run-remainder shortfall; (3) `REPAIR` → agent death → replacement keeping the lineage → round-2 assurance; (4) cancel during assurance and during the publication-approval wait; (5) a non-replaceable agent failure beats a cap stop or an overrun (R20); and for v4 (R21): (6) a hostile policy listing each never-replaceable class; (7) wall-clock at the cap, at cap + grace and above; (8) micro-USD boundaries; (9) a failing PR upsert after a successful or ambiguous push, with a cancel pending; (10) a run sealed below `maxTasks`, created sealed, and sealed across continue-as-new; (11) pause during both approval waits; (12) the three `findAttempt` outcomes; (13) the two approval races, with both mutations shown red; the purity check is AST-based; and for v5 (R24): (14) the publication effect for push and PR upsert (`applied`, `none`, `unknown` with each reconciliation result, and a failing reconciliation), with and without a cancel pending (retryability does not reach the core); (15) every money cap equal to `MAX_USD` with usage one micro-USD above it, usage above the bound and invalid usage; (16) content-valid `verified: false` decisions for each approval kind in the generator; the purity check uses the TypeScript checker with the module-resolution closure; and for v6 (R27): (17) the reconciliation identity predicate on both paths, with the reconciliation result carrying the observed SHAs, for a wrong head, a moved or missing branch, a PR at another head or base, and an unreadable remote, each with and without a cancel pending, the reviewer's probe and the generator's seed 1351; (18) terminal outcome before lease release on every leased path, per path and as a per-attempt ordering property, with the reviewer's release-before-outcome mutation shown red; (19) the ambient-global allowlist and the locale-dependent members in the purity check, with the reviewer's locale and `navigator` probes as seeds; and for v7 (R29, R31): (20) the full publication observation on both paths (a fork head, a closed or merged PR, several candidates, a PR at another head or base, a branch in another repository), each with and without a cancel pending, the reviewer's `IDENTITY_MATRIX` cases as tests; (21) `baseBranch` and `repository` validation with the reviewer's four invalid bases, fixtures and generator on non-`main` bases, and the oracle checking every request's base against the input, with the reviewer's base-forced-to-`main` mutation shown red; (22) lease settlement after a failed or aborted `acquireLease` (`findLease` found, absent, a late grant refusing the pre-lease write, a second lookup) and `attempt-state-unknown` on a lookup failure over a pending cancel, the four `R29_*` probes as tests, with fences and lookups checked by the property oracle; (23) a type assertion inside a computed key and the double cast in the purity check, with the reviewer's asserted-key constructor as a seed and as a mutation of the production core; and for v8 (R33): (24) Git ref validation per path component (no leading `/`, no component starting with `.` or ending in `.lock`, not `HEAD`) with the reviewer's four names, held by a committed table of names with their `git check-ref-format --branch` result and a test-only check that re-runs git on the table; (25) the repository identified by its numeric forge ID in the input and the observation: a rename or transfer with the same ID reconciles and is audited, another repository at the old owner and name (another ID) is refused, on both paths with and without a cancel; (26) a content repair the reconciliation reports is audited; (27) the repository on the PR upsert request and the oracle checking every publication request's repository and base against the input; (28) fixtures and the generator varying the repository's ID, owner, name and case and emitting head branches that differ only in case, with the reviewer's two surviving mutations (a case-folded head branch; a hard-coded repository) shown red | `feat(orchestration): add the deterministic workflow decision core` (`a133e32`) + `fix(orchestration): …` follow-ups for v3, R20, v4, v5, v6, v7 and v8 | may start before G-P2 | B2 (package-local), D5 (core), D7 (core), D13 (core), D14 (core), D15 (core), D16 (core), D17 (core), D18 (core), G7/G11/G12/G13/G14 (core), H1, H3/H4 (core), H5 (core), H8 (core), H10 (core), H11 (core), H12 (core), I6, I9, J3 (core table), J4 (core), J5 (property), J7, J10 (core), L6 (core) |
 | S3 | Migrations `0100`–`0102`, `0104`–`0106`; `adapters/persistence/src/orchestration/**` (ordinal, registry, approvals + outbox, ledger, projection); the workspace resolver over the lease table; invariant race itests against the Phase 2 fencing primitive | `feat(persistence): make orchestration state idempotent on the fenced lease primitive` | G-P2 | A5 (full set and the upgrade path), D11, E1–E5, E9, E13 (persistence part), E15 |
 | S4 | On the rebased adapters: Git worktree rehydration from the registry; `create` create-or-adopt (base or `repairBaseSha`); commit HEAD CAS; host-id guard; deterministic container names/labels; `ExecutionReaper`; per-call runner abort (CR-26); per-request agent caps (CR-25), with the adapter's stop-to-kill interval exported as a constant for `policy.agentKillGraceSeconds` (R21), re-derived after the rebase from the accepted stop path (container stop timeout plus the bound on forced removal) and bound in the tests to that constant, not a copied literal (R24); orphan-container itest | `feat(workspace): make workspaces, sandboxes and agent caps restart-safe` | G-P2 | E6, E7, E8 (resolves research Q6), E14, H9 |
-| S5 | Forge PR-upsert convergence on the real GitHub adapter (CR-27) + honest HTTP double + contract test; `DurableLocalForge` semantics parity table | `fix(forge): reconcile a pull-request create that conflicts with an existing head` | G-P2 | E12 |
-| S6 | `packages/application/src/orchestration-activities/**`: every activity over `ActivityExecutionContext`; check ids resolved through `VerificationCommandCatalog` (CR-24); fencing on the Phase 2 primitive with the `FAILED` lifecycle; deterministic evidence time; assurance wrapper + context adapter + binding of the S0 `NotConfiguredAssuranceSlot` + `recordAttemptOutcome` activity + admit hook; approval, budget, projection, control and run-event activities; `ensureAttempt` returning the attempt branch and the `findAttempt` lookup (R21); `acquireLease` returning the caller's fence, the read-only `findLease` lookup of the attempt's lease history and the `recordPreLeaseOutcome` write with its refusal result (R29); the publication effect on every push and PR-upsert result and failure, `none` only when the failure provably precedes the forge call, and the read-only `reconcilePublication` activity over the Phase 2 fenced forge (R24), which reports the full observation (the branch with its repository and tip, every PR with that head branch with its repositories, head, base, state and merged flag) and decides nothing (R27, R31); the PR upsert targets the input's `baseBranch`; the `recordAttemptOutcome` activity presents the caller's fence and runs before `releaseLease` (R23, R27, R28); the orchestration policy loader `packages/policy/src/orchestration-policy.ts` (CR-21), which rejects a policy listing a never-replaceable class and sets `agentKillGraceSeconds` from the adapter constant (R21); double-invoke and crash-variant tests | `feat(application): expose step use cases as retry-safe activities` | G-P2 | B7, D6, D13 (lookup activity), D14 (loader), D17 (lookup and refusal activities), E10, E11, E13 (activity part), J2, J8, J9 |
-| S7 | `adapters/temporal`: workflows (task, run, janitor), activity bridge, error mapping, `WorkflowEngine` client with the connection guard, worker factory, bundler test, the test-support callback injector (CR-16); the input and control mapping (workflow input → core input, rejecting inexact or unbounded money and a policy with a never-replaceable class; `approval-decision.extensionUsd` → the core message; `seal`), and the interpreter's publication effect on activity failures, `unknown` when absent (R24); the interpreter awaits each effect before the next, so `recordAttemptOutcome` completes before `releaseLease` starts (R27); `baseBranch` and `repository` mapped from the repository binding and checked with the core's input rules (R27, R31); the workflow result's `unrecordedAttempts` passed to the run's telemetry (R29); `workers/temporal-worker` root binding the default slot; Temporal confinement fitness and the shared core-purity rule in `scripts/forbidden-imports.test.ts` | `feat(temporal): run task and run workflows on Temporal` | after S2, S6 | A2, A6, B1, B2 (shared rule), B3, B4, B6, B10, C5, C8, D3, D4, D9 (bridge part), D16 (mapping), H12 (mapping), I8, L6 (e2e) |
+| S5 | Forge PR-upsert convergence on the real GitHub adapter (CR-27) + honest HTTP double + contract test; the forge reads of CR-28 (every PR on a head branch, repositories by numeric ID); `DurableLocalForge` semantics parity table, including the compare-and-set push and the PR listing | `fix(forge): reconcile a pull-request create that conflicts with an existing head` | G-P2 | E12 |
+| S6 | `packages/application/src/orchestration-activities/**`: every activity over `ActivityExecutionContext`; check ids resolved through `VerificationCommandCatalog` (CR-24); fencing on the Phase 2 primitive with the `FAILED` lifecycle; deterministic evidence time; assurance wrapper + context adapter + binding of the S0 `NotConfiguredAssuranceSlot` + `recordAttemptOutcome` activity + admit hook; approval, budget, projection, control and run-event activities; `ensureAttempt` returning the attempt branch and the `findAttempt` lookup (R21); `acquireLease` returning the caller's fence, the read-only `findLease` lookup of the attempt's lease history and the `recordPreLeaseOutcome` write with its refusal result (R29); the publication effect on every push and PR-upsert result and failure, `none` only when the failure provably precedes the forge call; the publication activities over Phase 2's cycle-9 ports (R30, CR-28): `publishBranch` through `pushStep` (compare-and-set push, `expectedRemoteSha: null`), `upsertPullRequest` through `upsertPrStep` with `pullRequestContent(facts)` and the input's repository and `baseBranch`, and the `reconcilePublication` activity (R24), which reports the full observation (the branch with its repository and tip, every PR with that head branch with its repositories by numeric ID, head, base, state, merged flag and `contentRepaired`), repairs a diverged title and body from the facts and decides nothing else (R27, R31, R33); R30's interleavings as tests through these activities: the in-transport PR race, a stale different-commit push refused, a late same-commit push a no-op (exit E16); the `lease-granted` mapping table test (R32); the `recordAttemptOutcome` activity presents the caller's fence and runs before `releaseLease` (R23, R27, R28); the orchestration policy loader `packages/policy/src/orchestration-policy.ts` (CR-21), which rejects a policy listing a never-replaceable class and sets `agentKillGraceSeconds` from the adapter constant (R21); double-invoke and crash-variant tests | `feat(application): expose step use cases as retry-safe activities` | G-P2 | B7, D6, D13 (lookup activity), D14 (loader), D17 (lookup and refusal activities), E10, E11, E13 (activity part), E16, J2, J8, J9 |
+| S7 | `adapters/temporal`: workflows (task, run, janitor), activity bridge, error mapping, `WorkflowEngine` client with the connection guard, worker factory, bundler test, the test-support callback injector (CR-16); the input and control mapping (workflow input → core input, rejecting inexact or unbounded money and a policy with a never-replaceable class; `approval-decision.extensionUsd` → the core message; `seal`), and the interpreter's publication effect on activity failures, `unknown` when absent (R24); the interpreter awaits each effect before the next, so `recordAttemptOutcome` completes before `releaseLease` starts (R27); `baseBranch` and `repository` (numeric forge ID, owner and name) mapped from the repository binding and checked with the core's input rules (R27, R31, R33); the workflow result's `unrecordedAttempts` passed to the run's telemetry (R29); `workers/temporal-worker` root binding the default slot; Temporal confinement fitness and the shared core-purity rule in `scripts/forbidden-imports.test.ts` | `feat(temporal): run task and run workflows on Temporal` | after S2, S6 | A2, A6, B1, B2 (shared rule), B3, B4, B6, B10, C5, C8, D3, D4, D9 (bridge part), D16 (mapping), H12 (mapping), I8, L6 (e2e) |
 | S8 | Gate: digest-pinned Temporal in `run-integration.mjs` (loopback publish, version line, pull/inspect output, namespace retention read-back), omit hook, negative test, new required itest IDs; `compose.yaml` Temporal fix; `DurableLocalForge`; first real end-to-end itest; the manifest-gated replay suite, now required, with its seeded non-deterministic fixture, the first captured histories and `required-scenarios.json` | `feat(integration): provision a digest-pinned Temporal server in the mandatory gate` | after S7 | A4, B5 (staged: S8 scenarios), C1–C4, C6, C7, C10, D2, D7 (e2e), D15 (e2e), L1 |
 | S9 | API routes + application use cases for executions/controls/approvals/view (incl. the run `seal` route and the decision body's `extensionUsd`, R21); principal resolver and capabilities; decision outbox + delivery relay + API chaos entry; production-root `WorkflowEngine` wiring; pilot-main and CLI dispatch via the engine; no-second-driver fitness | `feat(control-plane): drive executions, controls and approvals through the workflow engine` | after S8 | B8, B9, D1, D8, F19, G9, I2, K1–K7 |
 | S10 | Chaos matrix CX-01…CX-36, except CX-25 (S11) and CX-34 (S9), with `assertConvergence` and its negative self-test; captured replay scenarios appended with their histories | `test(chaos): prove crash, duplicate-delivery and outage recovery on real backends` | after S9 (G-P2) | B5 (staged: S10 scenarios), D9 (timing), D10, D12, F1–F18, I4, L2 (recovery rows), L4 |
@@ -1166,7 +1182,7 @@ emitted. Lane B's metric additions are unioned at merge. Owner: Lane A (S1).
 | `adapters/git-worktree/src/worktree-manager.ts` | registry-backed rehydration, create-or-adopt, HEAD CAS, host guard (CR-07) |
 | `adapters/agent-claude/src/claude-provider.ts` (rebased) | container name + labels (CR-08); per-request caps (CR-25) |
 | `adapters/command-runner/src/{sandbox.ts,command-runner.ts}` (rebased) | container name + labels; per-call signal (CR-26); new `reaper.ts` (CR-08) |
-| `adapters/github-app/src/forge-provider.ts` | PR create-conflict reconciliation (CR-27) |
+| `adapters/github-app/src/forge-provider.ts` | PR create-conflict reconciliation (CR-27); the PR listing and repository IDs of CR-28 |
 | `adapters/local-doubles/src/index.ts` | one export line for the new `durable-forge.ts` |
 
 ### CR-21 — Existing package modules Lane A must modify
@@ -1265,7 +1281,44 @@ local HTTP double. The test covers:
 - a `422` on create.
 
 The double implements one-open-PR-per-head. No live-GitHub uniqueness is claimed beyond this evidence. Proof:
-E12. Owner: Lane A (S5).
+E12. Owner: Lane A (S5). The line numbers above are at `00a6889`; at `a447983` the upsert is still find-then-create
+(`upsertPullRequest` in the same file), and after the rebase Lane A re-derives them.
+
+### CR-28 — Publication on Phase 2's cycle-9 forge contract (`packages/ports/src/index.ts`; R30, R33)
+
+Phase 2 cycle 9 (`aa946cf`, head `a447983`, under controller verification) replaces epoch fencing at the forge with
+R30's contract, and Phase 3 publishes through it unchanged:
+
+```typescript
+// Phase 2 at a447983, used as is:
+ForgeProvider.pushBranch(scope, { repositoryBindingId, branch, commitSha, expectedRemoteSha: string | null }): Promise<void>
+ForgeProvider.upsertPullRequest(scope, { repositoryBindingId, headBranch, base, title, body }): Promise<PullRequestRef>
+ForgeProvider.resolveRef(scope, { repositoryBindingId, branch }): Promise<string | null>
+pullRequestContent(facts: PullRequestFacts): { title: string; body: string }   // pure, from immutable facts
+pushStep / upsertPrStep / reconcileBranchStep / reconcilePullRequestStep        // application steps; audit 'forge.reconcile'
+```
+
+Phase 3 needs three additive changes, requested here:
+
+1. **The assurance facts in the PR content.** Phase 3's PR carries the `ESCALATE` flag ("assurance not satisfied")
+   and the content-addressed assurance section (architecture §12). Both are immutable facts of the attempt, so
+   `PullRequestFacts` gains `flagged: boolean` and `assuranceSection: string | null` (the text of the section
+   artifact, which its content address fixes), and `pullRequestContent` renders them after the Phase 2 lines. The
+   content stays a pure function of facts; nothing owner-specific or mutable enters it.
+2. **The full observation.** `ForgeProvider` gains one read, `listPullRequests(scope, { repositoryBindingId, headBranch
+   })`: every PR in the binding repository whose head ref name is `headBranch`, in any state and from any head
+   repository, paginated to the end, each with its number, head and base repository (`{ id, owner, name }`, the
+   forge's numeric ID and the owner and name it reports now), head ref, head SHA, base ref, state, merged flag, title
+   and body. `resolveRef` (or a sibling read) reports the repository the adapter read, with its numeric ID. The
+   adapter addresses the repository by the binding's numeric ID where the forge allows it, so a pathname reused by
+   another repository is never read as the binding's.
+3. **Repository identity in the input.** The S7 mapping fills the task input's `repository` with the binding's
+   numeric `githubRepositoryId` (the binding resolver already requires it, `adapters/github-app/src/binding-resolver.ts`)
+   and its owner and name.
+
+The `reconcilePublication` activity uses these reads and repairs content as `reconcilePullRequestStep` does, without
+creating, retargeting or closing a PR (architecture §7.3). Proof: E16 and G13 (activity part). Owner: Lane A (S5
+adapter reads, S6 activities); the port lines are a shared surface and land only with the controller's approval.
 
 ---
 
@@ -1308,7 +1361,7 @@ injects it. Lane B's claim `adapters/agent-claude/src/reviewer-credential-isolat
 byte-for-byte in S0. Lane A's `NotConfiguredAssuranceSlot` lives in its own
 `packages/application/src/orchestration-activities/**`.
 
-Everything else Lane A touches is an existing module and is listed in §30 (CR-01 … CR-27) rather than claimed.
+Everything else Lane A touches is an existing module and is listed in §30 (CR-01 … CR-28) rather than claimed.
 
 ---
 
@@ -1335,7 +1388,7 @@ No genuine blocker for locking the plan. Implementation is gated as in §25.
 ## Output
 
 ```text
-PLAN_STATUS: LOCKED v7 (pending controller confirmation)
+PLAN_STATUS: LOCKED v8 (pending controller confirmation)
 PLAN_V1_SHA: 80bb76a (Codex reviewed: REQUEST_CHANGES 0.98; 1 CRITICAL, 8 HIGH, 9 MEDIUM, 1 LOW)
 PLAN_V2_SHA: 98e92cf (Codex lock-check: REQUEST_CHANGES 0.97; 15 of 19 v1 findings FOLDED, 4 PARTIAL;
   new: 3 HIGH, 7 MEDIUM; all 10 new ACCEPTED, all 4 PARTIAL re-adjudicated and folded or open by design)
@@ -1351,9 +1404,12 @@ PLAN_V5_SHA: 5a3a801 (Codex re-audit of v5 + S2 fixes at ac04c8c: REQUEST_CHANGE
 PLAN_V6_SHA: 1c3153b (Codex re-audit of v6 + S2 fixes at 392f259: REQUEST_CHANGES 0.97; v5 plan findings FOLDED;
   P3-S2V5-HIGH-002 and MED-001 RESOLVED, P3-S2V5-HIGH-001 PARTIAL; new: 1 HIGH + 2 MEDIUM plan, 3 HIGH + 1 MEDIUM
   S2; all 7 ACCEPTED (R29, R31); the PARTIAL closed through P3-S2V6-HIGH-001)
+PLAN_V7_SHA: 0aedc3f (Codex re-audit of v7 + S2 fixes at ac0a1bc: REQUEST_CHANGES 0.96; v6 plan findings FOLDED;
+  every v6 S2 HIGH and earlier PARTIAL RESOLVED, P3-S2V6-MED-001 PARTIAL; new: 1 HIGH + 3 MEDIUM + 1 LOW plan,
+  3 MEDIUM S2; all 8 ACCEPTED (R33); the PARTIAL closed through P3-S2V7-MED-001)
 BASE_SHA: 00a6889 (Phase 2 head, unaccepted; Phase 2 cycle 7 lands first)
 BASELINE: pnpm install --frozen-lockfile exit 0; pnpm verify:all exit 0 (548/548 canonical tests), observed in step 1
-RECONCILIATION: v1 (R1–R21, R24, R25, R27, the R28 slot rules, R29 and R31) applied; S0 shared foundation added; S3–S13 gated on Phase 2 acceptance + rebase
+RECONCILIATION: v1 (R1–R21, R24, R25, R27, the R28 slot rules, R29, R30's publication contract, R31, the Lane A parts of R32, and R33) applied; S0 shared foundation added; S3–S13 gated on Phase 2 acceptance + rebase
 OPEN_BY_DESIGN: CR-10 verbatim slot text, pasted on controller hand-off after Lane B's fixed block locks (R18)
 PLAN_FILES:
   - docs/implementation/phases/phase-03-plan.md
@@ -1370,6 +1426,7 @@ PLAN_FILES:
   - docs/implementation/phases/phase-03-review-codex-v4.md
   - docs/implementation/phases/phase-03-review-codex-v5.md
   - docs/implementation/phases/phase-03-review-codex-v6.md
+  - docs/implementation/phases/phase-03-review-codex-v7.md
 NEW_DEPENDENCIES_PROPOSED (exact pins): @temporalio/{workflow,activity,worker,client,common} 1.24.0,
   @temporalio/testing 1.24.0 (dev)
 NEW_BACKEND_IMAGES: temporalio/temporal:1.9.1@sha256:ad4c82c97bd12b417d1ea942610dbcd511afb250c4d5ed26c694009533df447e (gate);

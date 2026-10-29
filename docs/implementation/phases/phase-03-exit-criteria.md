@@ -1,4 +1,4 @@
-# Phase 3 — Exit Criteria (LOCKED v7, pending controller confirmation; machine-checkable)
+# Phase 3 — Exit Criteria (LOCKED v8, pending controller confirmation; machine-checkable)
 
 > Phase 3 is COMPLETE only when every MUST below passes from a clean checkout of the phase branch, as run by
 > the **controller** (lane contract step 5). Base `00a6889`; v1 at `80bb76a`, v2 at `98e92cf`, v3 at `7cbf5d3`. v2
@@ -7,7 +7,8 @@
 > and audit of S2 and reconciliation R21 (section "Review v3"); v5 folds in the Codex re-audit of v4 and the S2
 > fixes and reconciliation R24 (section "Review v4"); v6 folds in the Codex re-audit of v5 and the S2 fixes and
 > reconciliation R25–R28 (section "Review v5"); v7 folds in the Codex re-audit of v6 and the S2 fixes and
-> reconciliation R29 and R31 (section "Review v6").
+> reconciliation R29 and R31 (section "Review v6"); v8 folds in the Codex re-audit of v7 and the S2 fixes, Phase 2's
+> publication contract of cycle 9 (R30) and reconciliation R32 and R33 (section "Review v7").
 > Each MUST names the executable test that proves it: `file` + SUITE-ID. Files marked *(new)* do not exist yet.
 > They are created by the slice named in `phase-03-plan.md` §26. Unit suites run in `pnpm test`, and
 > `*.itest.ts` suites run in `pnpm test:integration` against **real** Temporal, PostgreSQL, MinIO, Docker and
@@ -74,6 +75,12 @@
       `repairBaseSha`, repair order, `nextRound` and adjudication lineage reaching the next attempt and its
       assurance request, and the locked terminal names reaching `recordAttemptOutcome`
       (`packages/orchestration/src/decide.test.ts`, `asep-suite:orchestration-core`).
+- [ ] O6. **The slot kit's stateful-slot cases (R32).** Lane A runs the kit's RLC-16 atomicity case against
+      `NotConfiguredAssuranceSlot`. That slot persists run events, so it may not declare the case `N/A` (only a slot
+      that declares itself stateless may), and the case must pass. Lane A also runs the kit's registration-before-effect
+      ordering case against its workflow: no attempt-bound effect (usage, outcome, lease, workspace, agent) comes before
+      the attempt's registration has reconciled (D13) (`asep-suite:assurance-slot-contract`; the workflow case in
+      `asep-suite:orchestration-core` and `asep-suite:temporal-e2e`).
 
 ## B. Layering, determinism, single orchestrator
 
@@ -247,20 +254,26 @@
       or while the run is paused with an empty queue. A run created sealed with `fixedTasks` runs exactly those tasks
       and closes. The sealed flag survives continue-as-new (core table in `asep-suite:orchestration-core`; real proof in
       `asep-suite:temporal-e2e`).
-- [ ] D16. **Repository and base branch are validated (R31).** The task input rules reject a `repository` whose owner
-      or name is not in its normalized form, and a `baseBranch` that breaks Git's ref-name rules (data model §4.2):
-      the reviewer's `undefined`, `null`, `""` and `main..evil`, and a leading `-`, a space or control character,
-      each of `~^:?*[\`, `@{`, `//`, and a trailing `/`, `.` or `.lock`; a valid non-`main` base such as
-      `release/2026.10` passes. The decision-core fixtures and the property generator use bases other than `main`,
-      every PR upsert and reconciliation request carries the input's base and repository (checked by the oracle
-      against the input, not against another request), and the reviewer's mutation that forces the upsert base to
-      `main` turns tests red (`asep-suite:orchestration-core`, `asep-suite:orchestration-properties`; the S7 input
-      mapping applies the same rules).
+- [ ] D16. **Repository and base branch are validated (R31, R33).** The task input rules reject a `repository`
+      without a positive integer ID or with an owner or name outside the forge's name rules, and a `baseBranch` that
+      breaks Git's ref-name rules for a branch (data model §4.2): the v6 reviewer's `undefined`, `null`, `""` and
+      `main..evil`; the v7 reviewer's `/main`, `.hidden`, `release/.hidden` and `a.lock/b`; and a leading `-`, a space
+      or control character, each of `~^:?*[\`, `@{`, `HEAD`, an empty component (`//`, a leading or trailing `/`), a
+      component starting with `.` or ending in `.lock`, and a trailing `.`; a valid non-`main` base such as
+      `release/2026.10` passes. The oracle is independent of the implementation: a committed table of names with
+      their `git check-ref-format --branch` result, which the validator must match name for name, and a test-only
+      check that re-runs git on the table when git is available. The decision-core fixtures and the property generator
+      use bases other than `main`, every PR upsert and reconciliation request carries the input's base and repository
+      (checked by the oracle against the input, not against another request), and the reviewer's mutation that forces
+      the upsert base to `main` turns tests red (`asep-suite:orchestration-core`, `asep-suite:orchestration-properties`;
+      the S7 input mapping applies the same rules).
 - [ ] D17. **A failed or aborted lease acquisition is settled (R29).** When `acquireLease` fails after its retries,
       or a cancel aborts it, the core issues the non-cancellable `findLease` before any terminal: found → the
       terminal is recorded with that lease's fence and the lease is released with it; absent → the terminal is
-      written by `recordPreLeaseOutcome` with `fence: null`, only as `failed` (S0: `infrastructure-failed`) or
-      `cancelled`, and no release follows; that write refused (a late grant) → a second `findLease`, then the
+      written by `recordPreLeaseOutcome` with `fence: null`, only as `failed` (S0 renames it `infrastructure-failed`)
+      or `cancelled` (S0 keeps it), and no release follows; that write refused (a late grant: the slot's
+      `ReviewLoopContractError` code `lease-granted`, which the activity maps to `recorded: false` and never to
+      supersession or an activity failure, R32) → a second `findLease`, then the
       terminal with the fence it finds and the release; a second lookup that finds nothing, a failed lookup or a
       failed pre-lease write → `FAILED / attempt-state-unknown` (D13), also with a cancel pending. Afterwards the
       attempt is abandoned as before (replaced only for a replaceable class), or the task ends `CANCELLED` after an
@@ -269,7 +282,19 @@
       fence of the lease the attempt was granted (from `acquireLease` or `findLease`), `null` only when no lease was
       found, every granted lease is released once with its fence, at most two `findLease` per attempt and a second
       only after a refusal (`asep-suite:orchestration-core`, `asep-suite:orchestration-properties`; the lookup and the
-      refusal against the slot's conformance kit in `asep-suite:orchestration-activities` after S0).
+      refusal against the slot's conformance kit in `asep-suite:orchestration-activities` after S0, with a table test
+      that `lease-granted` becomes `recorded: false` and `AssuranceFencedError` or any other error does not).
+- [ ] D18. **The publication repository is identified by the forge's numeric ID (R33).** The task input's
+      `repository` carries the binding's numeric repository ID with owner and name; the reconciliation observation
+      carries the ID of the branch's repository and of each PR's head and base repository; the identity predicate
+      compares IDs only. On both reconciliation paths, with and without a cancel pending: the same ID under another
+      owner, another name or another case (a rename or a transfer) reconciles, and the reconciled publication is
+      audited `publication.repository-renamed` with the bound and the observed owner and name; another ID under the
+      input's owner and name (a pathname reused by another repository) is refused as `branch-other-repository`,
+      `pull-request-fork-head` or `pull-request-other-base` and ends `FAILED / publication-incomplete`. The fixtures and
+      the generator vary the repository's ID, owner, name and case, so a core that compared owner and name, or took
+      the repository from anywhere but the input, fails a test (`asep-suite:orchestration-core`,
+      `asep-suite:orchestration-properties`; the adapter reading IDs in `asep-suite:orchestration-activities`).
 
 ## E. Idempotency and fencing
 
@@ -312,13 +337,29 @@ primitive** after the rebase. Lane A adds no parallel fencing mechanism.
       pinned by `evidence-store.test.ts:189-212`) stays green as a regression check
       (`asep-suite:orchestration-activities`; real proof F4/CX-09).
 - [ ] E11. Each side-effect activity checks `ctx.signal` and the F1 fence immediately before its external call.
-      Spy ordering is asserted (`asep-suite:orchestration-activities`).
+      Spy ordering is asserted (`asep-suite:orchestration-activities`). This narrows a stale owner's window and does
+      not close it: the forge is not fenced (E16, R30).
 - [ ] E12. The **real** GitHub forge adapter converges on one PR per head branch against an honest HTTP double.
       The double implements GitHub's one-open-PR-per-head rule and returns `422` on a duplicate create. Two
       concurrent upserts for one head yield one PR and both return it. A create whose response is lost, followed
       by a retry, yields one PR. A `422` on create is reconciled by re-listing by head
       (`adapters/github-app/src/pr-upsert-concurrency.test.ts` *(new)*, `asep-suite:forge-pr-upsert-concurrency`).
       No live-GitHub claim is made beyond this evidence.
+- [ ] E16. **Publication under a stale owner (R30, R33).** Through the Phase 3 publication activities on Phase 2's
+      cycle-9 ports, with the stale owner's calls interleaved inside the transport:
+      - owner 1 reads the PR, owner 2 updates it, owner 1 updates it: the final PR is byte-identical to owner 2's,
+        because both write `pullRequestContent(facts)`;
+      - a stale owner's push of a different commit is refused by the compare-and-set lease and leaves the branch at the
+        attempt's commit;
+      - a stale owner's late push of the same commit is a no-op;
+      - a PR whose title or body diverges from the facts is rewritten by `reconcilePublication`, which reports
+        `contentRepaired: true` on it, and the workflow audits `publication.content-repaired`; the activity never
+        creates, retargets, closes or merges a PR and never moves the branch.
+
+      No document claims the forge is fenced: the guarantee is content idempotence, push compare-and-set and
+      reconciliation before any terminal state (`packages/application/src/orchestration-activities/publication.test.ts`
+      *(new, S6)*, `asep-suite:orchestration-activities`; the crash-takeover interleaving on real backends in
+      `asep-suite:temporal-chaos-kill`).
 - [ ] E13. The `FAILED` lifecycle of architecture §7.1 is table-tested against the primitive:
       - every reopen reconciles by natural key first;
       - effect present → `COMPLETED` (adopted);
@@ -443,14 +484,17 @@ All in `workers/temporal-worker/src/e2e/controls.itest.ts` *(new)*, `asep-suite:
         moved, missing or in another repository, a candidate that fails the predicate, more than one candidate, or a
         failing read → `FAILED / publication-incomplete`, whatever cancel is pending (the reviewer's
         `PR_WRONG_HEAD_PROBE`, generator seed 1351 and every `IDENTITY_MATRIX` case are tests: a fork head, a closed
-        PR, a merged PR and two candidates, on both reconciliation paths, with and without a cancel pending).
+        PR, a merged PR and two candidates, on both reconciliation paths, with and without a cancel pending; so is a
+        PR whose head branch differs from the attempt branch only in case, which is not the attempt's).
 
       The identity predicate (R27, R31, architecture §4.1) is the same on both paths and reads the full
       observation: the branch is in the input's `repository` at the attempt's verified commit, and the PR
       candidates (every PR with the attempt branch as head branch, in any state, from any head repository) are none
       or exactly one that is open, unmerged, with the input's repository as head and base repository, that branch
-      and commit as head, and the input's `baseBranch` as base. The reconciliation result carries the observation
-      and the core decides; the `publication.incomplete` audit names what was found.
+      and commit as head, and the input's `baseBranch` as base. Repositories compare by numeric ID (D18) and the head
+      branch compares exactly, case included. The reconciliation result carries the observation and the core
+      decides; the `publication.incomplete` audit names what was found, and every content repair the read reports is
+      audited `publication.content-repaired` (E16).
       The property oracle accepts a task that ends without a PR after a push request only when the push failed
       with effect `none`, or the reconciliation found the branch absent with no PR; otherwise the task ends
       `FAILED / publication-incomplete` with the branch audited, and no terminal state follows an `unknown` effect
@@ -458,7 +502,10 @@ All in `workers/temporal-worker/src/e2e/controls.itest.ts` *(new)*, `asep-suite:
       an upsert after an applied push, or from a reconciliation result that satisfies the predicate, and every
       reconciliation result is followed by the decision the predicate gives. The oracle states the predicate over
       the same full observation, independently of the core, and the generator draws every kind of candidate above
-      on both paths.
+      on both paths, varies the repository's ID, owner, name and case, and emits head branches that differ only in
+      case. The oracle checks every PR upsert and reconciliation request's repository and base against the input.
+      Both of the v7 reviewer's surviving mutations turn tests red: a head branch compared case-insensitively, and a
+      reconciliation request with a hard-coded repository.
 
       Core table in `asep-suite:orchestration-core`; real proof here with a forge double that fails the PR create.
 - [ ] G14. **Pause while waiting for approval (R21).** For both approval kinds: a pause in the wait applies at once
@@ -605,8 +652,8 @@ Real-Temporal proofs in `workers/temporal-worker/src/e2e/assurance-slot.itest.ts
       assurance round continues them (trace `REPAIR` → agent death → replacement → assurance, core table + e2e).
 - [ ] J5. `recordAttemptOutcome` is called exactly once per registered attempt at every terminal in architecture
       §12 (as an effect, or through `recordPreLeaseOutcome` when it is recorded), never for an attempt whose
-      registration did not reconcile (D13), and not for an attempt whose state could not be read
-      (`attempt-state-unknown`, the single exception, reported by L6). This holds across engine retries: one
+      registration did not reconcile (D13), and not for an attempt whose store could not be read or written
+      (`attempt-state-unknown`, the single exception, reported by L6; R32). This holds across engine retries: one
       `attempt.completed` per such attempt (property test in `asep-suite:orchestration-properties` + e2e).
       **Terminal before lease (R27, R28).** On every path where the attempt holds a lease (repair, abandon,
       exhaustion, verification stop, `BLOCK`, review handoff, cancel, pause timeout and any other close),
@@ -614,7 +661,8 @@ Real-Temporal proofs in `workers/temporal-worker/src/e2e/assurance-slot.itest.ts
       core test per path, and the reviewer's mutation (a release inserted before the `REPAIR` outcome) red. The
       outcome write presents the caller's fence, from `acquireLease` or from `findLease` after a failed or aborted
       acquisition (D17); an attempt that never held a lease records `fence: null` and only `cancelled` or
-      `infrastructure-failed` (architecture §4.1; the slot side is Lane B's conformance kit).
+      `infrastructure-failed`; S0 renames only the core's `failed` to `infrastructure-failed` and keeps `cancelled`
+      (architecture §4.1, R33; the slot side is Lane B's conformance kit).
 - [ ] J6. A scripted slot defined in a module that imports neither `@asep/orchestration`, `@asep/temporal` nor
       `@temporalio/*` drives the real workflow. This proves Lane B can plug in without Lane A imports.
 - [ ] J7. In every generated path, the assurance outcome for an attempt precedes any publish command for it, and
@@ -657,12 +705,15 @@ Real-Temporal proofs in `workers/temporal-worker/src/e2e/assurance-slot.itest.ts
       (asserted in each chaos suite).
 - [ ] L5. The metrics-dictionary referential-integrity validator passes with the new metric and event types
       (`packages/observability/src/metrics.test.ts`).
-- [ ] L6. **Telemetry completeness reports an unrecorded terminal as a gap (R29, R31).** An attempt whose terminal was
-      not recorded because a lookup failed (`attempt-state-unknown`) is reported as a gap with its idempotency key
+- [ ] L6. **Telemetry completeness reports an unrecorded terminal as a gap (R29, R31, R32).** An attempt whose
+      terminal was not recorded because the store could not be read or written after the retry policy
+      (`attempt-state-unknown`: a lookup failed, a second `findLease` found no lease, or the pre-lease terminal write
+      failed) is reported as a gap with its idempotency key
       `<taskId>:attempt:<n>`: the task result lists it in `unrecordedAttempts`, the audit row `attempt.state-unknown`
       carries the key, and the run's telemetry completeness view counts it as a missing `attempt.completed`, never
-      as an attempt with zero usage and never hidden (core table and property in `asep-suite:orchestration-core` and
-      `asep-suite:orchestration-properties`; the e2e with an injected lookup failure in `asep-suite:temporal-e2e`).
+      as an attempt with zero usage and never hidden; each of the three paths has its own core test (core table and
+      property in `asep-suite:orchestration-core` and `asep-suite:orchestration-properties`; the e2e with an injected
+      lookup failure and an injected pre-lease write failure in `asep-suite:temporal-e2e`).
 
 ## M. Operational readiness
 

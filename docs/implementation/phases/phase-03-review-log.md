@@ -4,8 +4,9 @@
 > v2 plan (section "Lock-check v2", which also records the v3 freeze gate), and of the Codex review of plan v3 and
 > audit of the S2 code (section "Review v3", which records the v4 freeze gate), of the Codex re-audit of plan v4
 > and the S2 fixes (section "Review v4", which records the v5 freeze gate), of the Codex re-audit of plan v5 and
-> the S2 fixes (section "Review v5", which records the v6 freeze gate), and of the Codex re-audit of plan v6 and the
-> S2 fixes (section "Review v6" at the end, which records the v7 freeze gate).
+> the S2 fixes (section "Review v5", which records the v6 freeze gate), of the Codex re-audit of plan v6 and the S2
+> fixes (section "Review v6", which records the v7 freeze gate), and of the Codex re-audit of plan v7 and the S2 fixes
+> (section "Review v7" at the end, which records the v8 freeze gate).
 > Planner: Lane A (Claude). Reviewer: Codex `gpt-5.6-sol` via the kiro-proxy gateway, read-only, run by the
 > controller on 2026-10-29. Raw review: `phase-03-plan-review-codex-v1.md`.
 > Reviewed base: `80bb76a` · Verdict: **REQUEST_CHANGES** · Confidence: 0.98.
@@ -1759,4 +1760,239 @@ per-path test and the task property fail.
 - [x] Reconciliation R29 and R31 applied; the pre-lease paths settled above.
 - [ ] CR-10 verbatim text pasted (open by design; G-LB, R18).
 
-**PLAN_STATUS:** LOCKED v7 (pending controller confirmation)
+**PLAN_STATUS (v7):** LOCKED v7, superseded by v8 below. The re-audit of v7 found Phase 2's publication guarantees
+(R30) not yet in the plan, the R32 decisions not synchronized, and three S2 MEDs (section "Review v7").
+
+## Review v7
+
+> Lane A adjudication of the independent Codex re-audit of plan v7 and of the S2 fixes.
+> Reviewer: Codex `gpt-6.1-sol` via the kiro-proxy gateway, read-only, run by the controller on 2026-10-30 as a single
+> uninterrupted run of the Codex CLI 0.165.0; the gateway's own instructions apply (R16). Raw output:
+> `phase-03-review-codex-v7.md`.
+> Reviewed snapshot: `ac0a1bc` · Verdict: **REQUEST_CHANGES** · Confidence: 0.96.
+> Controller gate at `ac0a1bc`, clean detached worktree: `pnpm verify:all` exit 0, 935 pass, 0 fail, 0 skipped;
+> 53 test files, 31 required suites.
+> Binding input: R30 (the controller's Phase 2 publication decisions; Phase 2 implemented them in cycle 9, head
+> `a447983`, still under controller verification and independent review, read here only through `git show`), R32
+> and R33 (decisions on this re-audit). Lane A applies R33 exactly as written. Code line numbers below are at `ac0a1bc`
+> (the code is unchanged between `ac0a1bc` and this docs commit).
+
+### Summary
+
+The re-audit confirms the three P3-PLAN6 findings FOLDED; P3-S2V6-HIGH-001, HIGH-002 and HIGH-003, and with them every
+earlier PARTIAL (P3-S2V5-HIGH-001, P3-S2R-HIGH-002, P3-S2-HIGH-003), RESOLVED, each with tests that go red when the fix
+is removed; and R31's purity hardening RESOLVED (E12 now fails 2 tests). No HIGH remains in code. P3-S2V6-MED-001 stays
+PARTIAL: the four v6 inputs are refused, but some names Git refuses still pass. It raises eight new findings and
+reports two identity mutations that survived. Its reconciliation table marks R30, R31 and R32 PARTIAL; R32 was
+written after the snapshot, so those gaps are new synchronization work, not regressions.
+
+| Group | Count | ACCEPTED | PARTIAL | REJECTED |
+|---|---|---|---|---|
+| Plan HIGH (P3-PLAN7-HIGH-001) | 1 | 1 | 0 | 0 |
+| Plan MEDIUM (P3-PLAN7-MED-001, 002, 003) | 3 | 3 | 0 | 0 |
+| Plan LOW (P3-PLAN7-LOW-001) | 1 | 1 | 0 | 0 |
+| S2 MEDIUM (P3-S2V7-MED-001, 002, 003) | 3 | 3 | 0 | 0 |
+| **Total** | **8** | **8** | **0** | **0** |
+
+| Earlier finding | Remaining gap | Closed through |
+|---|---|---|
+| P3-S2V6-MED-001 | the validator accepts `/main`, `.hidden`, `release/.hidden` and `a.lock/b`, which Git refuses | P3-S2V7-MED-001 |
+
+The two surviving mutations are taken up as tests (P3-S2V7-MED-002): a head branch compared case-insensitively, and a
+reconciliation request with a hard-coded repository. The S2 code findings are fixed by the follow-up commits after this
+docs commit, one finding or tight group per commit, test first; the step report names each commit, the tests that
+prove it and the mutation check that shows them red without the fix.
+
+New: exit O6, D18, E16; risk PR3-49, PR3-50; threat T3-25; research Q12, Q13; plan CR-28. Amended: architecture §4.1
+(identity by repository ID, content repair, the lease-granted refusal, the read-or-write exception, the `failed`-only
+rename), §5 (publication and pre-lease rows, the lease-granted mapping), §7.3 (rewritten: publication at the forge),
+§12, §15; data model §4.2, §4.4, §4.5; exit D16, D17, E11, G13, J5, L6; plan §11, §16, §17, §26 (S0, S2, S5, S6, S7),
+CR-27, the step table and the output block; risk PR3-03, PR3-43, PR3-47, PR3-48; threat T3-06, T3-23, T3-24 and the
+residual statement.
+
+### P3-PLAN7-HIGH-001 — The plan did not carry Phase 2's publication guarantees — ACCEPTED (R30, R33)
+
+**Finding.** Architecture §7.3 (`phase-03-architecture.md:570-580` at `ac0a1bc`) rested remote safety on natural keys
+and on a fence check just before each forge call, and threat T3-06 (`phase-03-threat-model-delta.md:57`) cited the
+same. Neither has a compare-and-set push, PR content fixed by immutable facts, or reconciliation of PR content before a
+terminal state, and the observation carries no title or body (`types.ts:441-450`), so it cannot stand in for R30's
+content reconciliation. R30 restates the guarantee for Phase 2: GitHub has no compare-and-set for a PR update, so the
+forge is not fenced; what holds is a compare-and-set push, content from facts and reconciliation before any terminal.
+Phase 2 implemented it in cycle 9 (`aa946cf`): `ForgeProvider.pushBranch` takes `expectedRemoteSha`,
+`pullRequestContent(facts)` derives title and body, and `reconcileBranchStep` and `reconcilePullRequestStep` repair a
+takeover's remote with the audit action `forge.reconcile` (`packages/ports/src/index.ts`,
+`packages/application/src/pipeline-steps.ts` at `a447983`).
+
+**Disposition.** ACCEPTED. R33 decides how Phase 3 takes it in.
+
+**Locked change.**
+
+- Architecture §7.3 is rewritten as "Publication at the forge": the forge is not fenced; `publishBranch` runs
+  `pushStep` (compare-and-set, `expectedRemoteSha: null`); `upsertPullRequest` runs `upsertPrStep` with
+  `pullRequestContent(facts)`; a redelivered activity reconciles by natural key before any call, and an `unknown`
+  effect is reconciled by `reconcilePublication` before any terminal state.
+- Content repair happens inside `reconcilePublication`: it rewrites a diverged title and body of an open PR on the
+  attempt branch in the binding repository from the facts, reports `contentRepaired` on that PR, and the core audits
+  `publication.content-repaired`. The core's identity rule stays R31's; the activity never creates, retargets, closes
+  or merges a PR and never moves the branch.
+- R30's interleavings are S6 acceptance (new exit E16): the in-transport PR race, a stale push of a different commit
+  refused, a late push of the same commit a no-op.
+- Every reference to forge calls fenced by an epoch is gone; the fence check before a call is described as narrowing a
+  stale owner's window, not closing it (plan §16, exit E11, risk PR3-03, threat T3-06 and the residual statement).
+- CR-28 lists the Phase 2 ports Phase 3 uses as they are at `a447983`, and requests three additive changes. One of
+  them is Lane A's own consequence of R30, for the controller to confirm: Phase 3's PR carries the `ESCALATE` flag and
+  the content-addressed assurance section, both immutable facts of the attempt, so `PullRequestFacts` gains them and
+  `pullRequestContent` renders them; otherwise Phase 3 would either drop them or write content that is not a function
+  of the facts. The other two are the PR listing the full observation needs and the repository ID in the input
+  (P3-S2V7-MED-003).
+
+Architecture §4.1, §5, §7.3, §15; plan §11, §16, §26 (S5, S6), CR-27, CR-28; risk PR3-03, PR3-50; threat T3-06.
+
+**Validation.** E16 (S6, through the activities); the core audit of a reported repair is an S2 trace (26) in G13.
+
+### P3-PLAN7-MED-001 — The single exception still said "cannot be read" — ACCEPTED (R32)
+
+**Finding.** Architecture §4.1 said the exception "exists only when the store cannot be read"
+(`phase-03-architecture.md:316-325` at `ac0a1bc`), L6 said "because a lookup failed"
+(`phase-03-exit-criteria.md:660-665`), and data model §4.5 said "could not be read" (`phase-03-data-model.md:508`),
+while D17 already ends a failed pre-lease write `attempt-state-unknown` (`phase-03-exit-criteria.md:259-272`) and the
+code does too. R32 settles it: the exception covers a store that cannot be read or written after the retry policy.
+
+**Disposition.** ACCEPTED. The code needs no change: R32 confirms the failed `recordPreLeaseOutcome` path.
+
+**Locked change.** Architecture §4.1 and §12, data model §4.5, plan §11, exit J5 and L6, risk PR3-43 and threat T3-24 say
+"cannot be read or written" and list the three paths (a failed lookup, a second `findLease` that finds no lease, a
+failed pre-lease terminal write), each reported as the same gap with the idempotency key.
+
+**Validation.** L6: each of the three paths has its own core test (`registration: when the lookup fails too …`,
+`lease: a second lookup that finds no lease contradicts the history …`, `lease: a pre-lease write that fails leaves the
+terminal unknown …`), and the e2e injects a lookup failure and a pre-lease write failure.
+
+### P3-PLAN7-MED-002 — The lease-granted mapping and the kit's stateful cases were not in the plan — ACCEPTED (R32)
+
+**Finding.** The S0 row said only that `recordPreLeaseOutcome` maps "the slot's refusal of `fence: null`" to
+`recorded: false` (`phase-03-plan.md:657` at `ac0a1bc`). R32 names the refusal (`ReviewLoopContractError` code
+`lease-granted`), forbids reading it as supersession or as a generic activity failure, makes RLC-16 mandatory for any
+slot that persists anything, and adds a registration-before-effect ordering case for Lane A's workflow. None of these
+was in the plan.
+
+**Disposition.** ACCEPTED.
+
+**Locked change.** The S0 row, architecture §4.1 (settling paragraph) and §5 (the `recordPreLeaseOutcome` row and an
+error-mapping paragraph) map exactly `lease-granted` to `recorded: false`; any other error is an activity failure, and
+one that remains after the retries ends `attempt-state-unknown`. New exit O6: Lane A runs RLC-16 against
+`NotConfiguredAssuranceSlot`, which persists run events and so may not declare it `N/A`, and the registration-before-
+effect case against its workflow. D17 adds the mapping table test.
+
+**Validation.** D17 (activity and bridge table test after S0), O6.
+
+### P3-PLAN7-MED-003 — The upsert request had no repository, and the oracle checked only the base — ACCEPTED (R33)
+
+**Finding.** D16 said every PR upsert and reconciliation request carries the input's base and repository, checked by
+the oracle. The upsert request carries no repository (`types.ts:256-264`), and the oracle checks only the base of each
+request (`invariants.test.ts:443-447`).
+
+**Disposition.** ACCEPTED. R33 chooses the contract: both requests carry the repository.
+
+**Locked change.** The upsert request gains `repository`, taken from the input; the oracle checks the repository and the
+base of both requests against the input. Data model §4.4, architecture §5.
+
+**Validation.** D16, G13; S2 trace (27).
+
+### P3-PLAN7-LOW-001 — S0 renamed every pre-lease terminal — ACCEPTED (R33)
+
+**Finding.** The S0 row said the pre-lease terminals "map to `infrastructure-failed`" (`phase-03-plan.md:657` at
+`ac0a1bc`), and architecture §12 mapped "the pre-lease rows above onto `infrastructure-failed`"
+(`phase-03-architecture.md:933-934`), while those rows end `cancelled` after an abort or with a cancel pending.
+
+**Disposition.** ACCEPTED.
+
+**Locked change.** Only the core's `failed` is renamed to `infrastructure-failed` at S0; `cancelled` stays. The S0 row,
+architecture §4.1 and §12, exit D17 and J5.
+
+**Validation.** Documentation; O5 (the S0 table test) checks the names that reach `recordAttemptOutcome`.
+
+### P3-S2V7-MED-001 — The validator accepts branch names Git refuses — ACCEPTED (R33)
+
+**Finding.** `branchNameProblem` checks the whole name only (`validation.ts:25-34`), so `/main`, `.hidden`,
+`release/.hidden` and `a.lock/b` pass with `errors: []`, and `git check-ref-format --branch` refuses all four. Probing
+git 2.55.0 for the new table, Lane A also found `HEAD` accepted by the validator and refused by Git (research Q12).
+
+**Disposition.** ACCEPTED.
+
+**Locked change.** Per-component rules: every `/`-separated component non-empty (no leading or trailing `/`, no `//`),
+no component starting with `.` or ending in `.lock`, and the name not `HEAD`. The oracle is independent: a committed
+table of names with their `git check-ref-format --branch` result, which the validator must match, and a test-only check
+that re-runs git on the table in an empty directory outside any repository (inside one, `--branch` expands `@{-N}`).
+Data model §4.2; exit D16; risk PR3-48; threat T3-23; research Q12.
+
+**Validation.** D16; S2 trace (24).
+
+### P3-S2V7-MED-002 — Two identity mutations survived — ACCEPTED (R33)
+
+**Finding.** The fixtures and the generator always use one repository (`test-support/fixtures.ts:28`,
+`invariants.test.ts:108`), no candidate has a head branch that differs from the attempt's only in case, and the oracle
+does not check a request's repository (`invariants.test.ts:443-447`). So comparing the head branch case-insensitively
+(`task-core.ts:923`) and hard-coding the reconciliation request's repository (`task-core.ts:890`) both left all 387
+tests of the three core files green, although each changes behavior (`M_HEAD_CASE_COUNTEREXAMPLE`,
+`NONDEFAULT_REPOSITORY`).
+
+**Disposition.** ACCEPTED.
+
+**Locked change.** The fixtures and the generator vary the repository's ID, owner, name and case, and emit head
+branches that differ only in case on both reconciliation paths; the oracle asserts each request's repository against
+the input; both mutations must turn tests red. Exit G13, D18.
+
+**Validation.** G13, D18; S2 trace (28), with both mutations reported in the step report.
+
+### P3-S2V7-MED-003 — Owner and name do not identify a repository across a rename — ACCEPTED (R33)
+
+**Finding.** The core identifies a repository by owner and name (`types.ts:177-181`, `task-core.ts:899-902`). After a
+rename or a transfer, another repository can take the old pathname; the reviewer's `RENAME_SLUG_REUSE` (expected ID
+101, observed 202, same pathname) was handed off. The forge's numeric repository ID survives a rename and is already
+required by Phase 2's binding resolver (`adapters/github-app/src/binding-resolver.ts` at `a447983`, which fails closed
+when `githubRepositoryId` is missing).
+
+**Disposition.** ACCEPTED. R33 chooses the ID in the core over a check in the activity alone.
+
+**Locked change.** The task input's `repository` is `{ id, owner, name }`; the observation carries IDs; the predicate
+compares IDs only. A rename or transfer (same ID) stays reconcilable and is audited `publication.repository-renamed`;
+another repository at the old pathname (another ID) is refused. Owner and name become informational, so the input no
+longer needs them in lower case: R31's case-insensitive comparison of owner and name is replaced by the ID comparison,
+and the input rules check owner and name against the forge's name rules in any case, with a positive integer ID.
+The adapter reads IDs and addresses the repository by ID where the forge allows (CR-28, research Q13). Data model §4.2,
+§4.4; architecture §4.1, §7.3; exit D18; risk PR3-49; threat T3-25.
+
+**Validation.** D18; S2 trace (25): a rename and a transfer with the same ID reconcile and are audited, another ID at the
+input's pathname is refused, on both paths, with and without a cancel.
+
+### Observations settled by the re-audit
+
+- **The release guard.** The reviewer confirms Lane A's reading: removing it alone changes no reachable behavior, and
+  the misordering it guards against is caught without it (the per-path `REPAIR` test and the ordering property, seed
+  38). No change.
+- **The lease-settlement guard test** clears the fence by hand, so it proves the guard exists, not that the state is
+  reachable; that is its purpose. If a guard fires, the reducer throws and the workflow task fails visibly (Review v6
+  observations); runtime recovery from that is not an S2 claim.
+- **Telemetry integration** of `unrecordedAttempts` stays an S7 obligation (L6 e2e); the core reports the gap.
+- **Branch names with `#`, `%2F`, `+`, `$`, `&`.** The core keeps and compares the string exactly. URL encoding and
+  pagination of the forge reads are S5/S6 work (CR-28, research Q13).
+- **A draft PR** that is open, unmerged and matches the identity is accepted; R31 does not require ready-for-review. No
+  change.
+- **The re-audit did not run `verify:all`** and did not use the lane's count; the controller's gate at `ac0a1bc` is the
+  evidence for that snapshot.
+
+### Freeze gate (v8)
+
+- [x] Every finding of the re-audit dispositioned: 8/8 new ACCEPTED; the PARTIAL P3-S2V6-MED-001 closed through
+      P3-S2V7-MED-001; the FOLDED and RESOLVED statuses and P3-PLAN-HIGH-004 (PARTIAL by design) confirmed; both
+      surviving mutations taken up as tests.
+- [x] 0 unresolved CRITICAL/HIGH in the plan, **except** the verbatim-text part of P3-PLAN-HIGH-004, which is open by
+      design until G-LB and blocks S0. No HIGH is open in code.
+- [x] Canonical docs updated: plan, architecture, data model, exit criteria, risk register, research register,
+      threat model delta.
+- [x] R30's publication contract (as Phase 2 implemented it at `a447983`), the Lane A parts of R32, and R33 applied;
+      CR-28's additive port changes requested from the controller.
+- [ ] CR-10 verbatim text pasted (open by design; G-LB, R18).
+
+**PLAN_STATUS:** LOCKED v8 (pending controller confirmation)
