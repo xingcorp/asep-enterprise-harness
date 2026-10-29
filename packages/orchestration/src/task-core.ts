@@ -279,7 +279,9 @@ function issue(step: Step, request: TaskRequest): void {
     defer(step, request);
     return;
   }
-  const target = statusForRequest(request.kind, s.workStatus) ?? (s.projected === 'PAUSED' ? s.workStatus : null);
+  // Leaving a pause returns to the working status; a request issued while still paused (a decision
+  // verification) leaves the projection PAUSED.
+  const target = statusForRequest(request.kind, s.workStatus) ?? (s.projected === 'PAUSED' && !s.paused ? s.workStatus : null);
   if (target !== null) project(step, target);
   markIssued(s, request);
   s.phase = PHASE_OF[request.kind];
@@ -344,16 +346,41 @@ function markIssued(s: Draft, request: TaskRequest): void {
   }
 }
 
-/** Withhold the request at a phase boundary: project the phase's status, then PAUSED, and start the pause timer. */
+/**
+ * Withhold the request at a phase boundary: project the phase's status, then
+ * PAUSED, and start the pause timer. A pause that already applied while the task
+ * waited for an approval keeps its projection and timer.
+ */
 function defer(step: Step, request: TaskRequest): void {
   const s = step.s;
-  project(step, statusForRequest(request.kind, s.workStatus) ?? s.workStatus);
-  project(step, 'PAUSED');
+  const applied = s.pauseTimerId !== null;
+  if (!applied) {
+    project(step, statusForRequest(request.kind, s.workStatus) ?? s.workStatus);
+    project(step, 'PAUSED');
+  }
   s.deferred = request;
   s.phase = 'PAUSED';
+  if (!applied) startPauseTimer(step);
+}
+
+function startPauseTimer(step: Step): void {
+  const s = step.s;
   s.pauseCount += 1;
   s.pauseTimerId = `pause:${s.pauseCount}`;
   startTimer(step, s.pauseTimerId, s.input.governance.maxPauseHours * 3600);
+}
+
+/**
+ * Apply a requested pause at once when nothing is in flight, which happens only
+ * while the task waits for an approval: project PAUSED and start the pause timer.
+ * The approval's expiry timer keeps running.
+ */
+function applyPauseIfIdle(step: Step): void {
+  const s = step.s;
+  if (!s.paused || s.pending !== null || s.deferred !== null || s.pauseTimerId !== null || s.outcome !== null) return;
+  project(step, 'PAUSED');
+  s.phase = 'PAUSED';
+  startPauseTimer(step);
 }
 
 // ---------------------------------------------------------------------------
@@ -944,6 +971,7 @@ function approvalOpened(step: Step): void {
   startTimer(step, approvalTimerId(ap.approvalRequestId), s.input.governance.approvalTtlSeconds);
   project(step, 'WAITING_FOR_APPROVAL');
   emit(step, 'approval.requested', ap.attemptNumber, { approvalKind: ap.kind });
+  applyPauseIfIdle(step);
 }
 
 function approvalVerified(step: Step, result: Extract<TaskResult, { kind: 'verifyApprovalDecision' }>): void {
@@ -963,6 +991,7 @@ function approvalVerified(step: Step, result: Extract<TaskResult, { kind: 'verif
     // PostgreSQL does not confirm the decision: the gate stays closed and keeps waiting.
     audit(step, 'approval.unverified', { approvalRequestId: ap.approvalRequestId, decisionId });
     if (s.cancelPending) close(step, 'CANCELLED', 'cancelled');
+    else applyPauseIfIdle(step);
     return;
   }
   cancelTimer(step, approvalTimerId(ap.approvalRequestId));
@@ -1045,6 +1074,7 @@ function onMessage(state: TaskState, message: TaskMessage): TaskDecision {
       if (s.paused) return { ...ignored(state), receipt: { accepted: false, duplicate: false, reason: 'already-paused' } };
       acceptControl(step, message, 'pause');
       s.paused = true;
+      applyPauseIfIdle(step);
       return finish(step);
     }
     case 'resumeRequested': {
@@ -1057,6 +1087,10 @@ function onMessage(state: TaskState, message: TaskMessage): TaskDecision {
         const request = s.deferred;
         s.deferred = null;
         issue(step, request);
+      } else if (s.projected === 'PAUSED' && s.approval?.opened) {
+        // Back to the approval wait the pause interrupted; a decision may be under verification.
+        s.phase = 'AWAITING_APPROVAL';
+        project(step, 'WAITING_FOR_APPROVAL');
       }
       return finish(step);
     }

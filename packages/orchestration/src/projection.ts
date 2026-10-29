@@ -2,8 +2,10 @@
 // status changes are legal. The table is the domain transition table plus the
 // data-model additions for PAUSED, WAITING_FOR_APPROVAL and BUDGET_EXHAUSTED,
 // plus VERIFYING -> BUDGET_EXHAUSTED (a replacement attempt refused for budget
-// after the task already reached verification). Every projection the core emits
-// must be a legal edge; the property tests check it on every generated trace.
+// after the task already reached verification) and the approval-wait pause
+// edges: WAITING_FOR_APPROVAL <-> PAUSED, and PAUSED -> BUDGET_EXHAUSTED for an
+// extension that expires or is rejected while paused. Every projection the core
+// emits must be a legal edge; the property tests check it on every generated trace.
 
 import type { ProjectedTaskStatus, TaskRequestKind } from './types.js';
 
@@ -18,8 +20,8 @@ const LEGAL: Readonly<Record<ProjectedTaskStatus, readonly ProjectedTaskStatus[]
   BLOCKED: ['READY', 'EXECUTING', 'CANCELLED'],
   FAILED: [],
   CANCELLED: [],
-  PAUSED: ['READY', 'EXECUTING', 'VERIFYING', 'BLOCKED', 'CANCELLED'],
-  WAITING_FOR_APPROVAL: ['READY', 'EXECUTING', 'VERIFYING', 'BLOCKED', 'BUDGET_EXHAUSTED', 'CANCELLED'],
+  PAUSED: ['READY', 'EXECUTING', 'VERIFYING', 'WAITING_FOR_APPROVAL', 'BLOCKED', 'BUDGET_EXHAUSTED', 'CANCELLED'],
+  WAITING_FOR_APPROVAL: ['READY', 'EXECUTING', 'VERIFYING', 'PAUSED', 'BLOCKED', 'BUDGET_EXHAUSTED', 'CANCELLED'],
   BUDGET_EXHAUSTED: [],
 };
 

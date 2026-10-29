@@ -886,6 +886,113 @@ test('cancel before any attempt leaves no attempt effects', () => {
   assert.equal(trace.summary.outcome, 'CANCELLED');
 });
 
+// Pause while waiting for an approval: nothing is in flight, so the pause applies at once.
+
+const timer = (prefix: string) => (timers: readonly string[]): TaskEvent => {
+  const id = timers.find((t) => t.startsWith(prefix));
+  if (id === undefined) throw new Error(`no ${prefix} timer among ${timers.join(',')}`);
+  return { type: 'timerFired', timerId: id };
+};
+
+const WAITS = [
+  {
+    kind: 'budget-extension',
+    input: tightBudget,
+    approve: () => ({ type: 'approvalDecisionReceived' as const, decisionId: 'd1', approvalRequestId: 'asep-task-task-1:1', decision: 'approve' as const, extensionUsd: 2, principalId: 'human-1' }),
+    verified: () => ({ kind: 'verifyApprovalDecision' as const, verified: true, decision: 'approve' as const, extensionUsd: 2 }),
+    rejectOutcome: ['BUDGET_EXHAUSTED', 'extension-expired'],
+  },
+  {
+    kind: 'publish-change',
+    input: baseInput({ governance: governance({ publicationApprovalRequired: true }) }),
+    approve: () => ({ type: 'approvalDecisionReceived' as const, decisionId: 'd1', approvalRequestId: 'asep-task-task-1:1', decision: 'approve' as const, extensionUsd: null, principalId: 'human-1' }),
+    verified: () => ({ kind: 'verifyApprovalDecision' as const, verified: true, decision: 'approve' as const, extensionUsd: null }),
+    rejectOutcome: ['BLOCKED', 'publication-expired'],
+  },
+] as const;
+
+function projections(trace: TaskTrace) {
+  return effectsOf(trace.commands, 'projectTaskState').map((p) => p.status);
+}
+
+for (const wait of WAITS) {
+  test(`pause while waiting for a ${wait.kind} approval applies at once; resume returns to the wait`, () => {
+    const trace = runTaskSequentially(wait.input, scripted({ verifyApprovalDecision: wait.verified }, {
+      whenIdle: idleScript(() => pause(), () => resume(), wait.approve),
+    }));
+    const statuses = projections(trace);
+    const waitAt = statuses.indexOf('WAITING_FOR_APPROVAL');
+    assert.deepEqual(statuses.slice(waitAt, waitAt + 3), ['WAITING_FOR_APPROVAL', 'PAUSED', 'WAITING_FOR_APPROVAL']);
+    const timers = effectsOf(trace.commands, 'startTimer').map((t) => [t.timerId, t.seconds]);
+    assert.deepEqual(timers, [['approval:asep-task-task-1:1', 3600], ['pause:1', 72 * 3600]], 'the pause timer starts, the expiry timer keeps running');
+    assert.ok(effectsOf(trace.commands, 'cancelTimer').some((t) => t.timerId === 'pause:1'), 'resume cancels the pause timer');
+    assert.deepEqual(effectsOf(trace.commands, 'recordControl').map((c) => c.control), ['pause', 'resume']);
+    assert.equal(trace.summary.outcome, 'WAITING_FOR_HUMAN_REVIEW');
+    assertLegalProjections(trace);
+  });
+
+  test(`pause while waiting for a ${wait.kind} approval does not suspend expiry: expiry takes the reject path`, () => {
+    const trace = runTaskSequentially(wait.input, scripted({}, {
+      whenIdle: idleScript(() => pause(), timer('approval:')),
+    }));
+    assert.ok(projections(trace).includes('PAUSED'), 'the pause applied');
+    assert.deepEqual(effectsOf(trace.commands, 'expireApprovalRequest').map((e) => e.approvalRequestId), ['asep-task-task-1:1']);
+    assert.ok(effectsOf(trace.commands, 'cancelTimer').some((t) => t.timerId === 'pause:1'), 'the pause timer is cancelled at close');
+    assert.deepEqual([trace.summary.outcome, trace.summary.reason], wait.rejectOutcome);
+    assertLegalProjections(trace);
+  });
+
+  test(`a pause timeout while waiting for a ${wait.kind} approval blocks the task and closes the request`, () => {
+    const trace = runTaskSequentially(wait.input, scripted({}, {
+      whenIdle: idleScript(() => pause(), timer('pause:')),
+    }));
+    assert.deepEqual([trace.summary.outcome, trace.summary.reason], ['BLOCKED', 'pause-timeout']);
+    assert.deepEqual(effectsOf(trace.commands, 'cancelApprovalRequest').map((e) => e.approvalRequestId), ['asep-task-task-1:1']);
+    assert.ok(effectsOf(trace.commands, 'cancelTimer').some((t) => t.timerId === 'approval:asep-task-task-1:1'), 'expiry timer cancelled');
+    assertLegalProjections(trace);
+  });
+}
+
+test('a pause that arrives while the approval request is opened applies once the task waits', () => {
+  const trace = runTaskSequentially(WAITS[1].input, scripted({ verifyApprovalDecision: WAITS[1].verified }, {
+    messagesDuring: (request) => (request.kind === 'openApprovalRequest' ? [pause()] : []),
+    whenIdle: idleScript(() => resume(), WAITS[1].approve),
+  }));
+  const statuses = projections(trace);
+  const waitAt = statuses.indexOf('WAITING_FOR_APPROVAL');
+  assert.deepEqual(statuses.slice(waitAt, waitAt + 3), ['WAITING_FOR_APPROVAL', 'PAUSED', 'WAITING_FOR_APPROVAL']);
+  assert.equal(trace.summary.outcome, 'WAITING_FOR_HUMAN_REVIEW');
+  assertLegalProjections(trace);
+});
+
+test('a decision that releases the gate while paused is verified, and the push waits for resume', () => {
+  const trace = runTaskSequentially(WAITS[1].input, scripted({ verifyApprovalDecision: WAITS[1].verified }, {
+    whenIdle: idleScript(() => pause(), WAITS[1].approve, () => resume()),
+  }));
+  const pausedAt = indexOfCommand(trace.commands, (c) => c.type === 'effect' && c.effect.kind === 'projectTaskState' && c.effect.status === 'PAUSED');
+  const verifyAt = indexOfCommand(trace.commands, (c) => c.type === 'request' && c.request.kind === 'verifyApprovalDecision');
+  const resumeAt = indexOfCommand(trace.commands, (c) => c.type === 'effect' && c.effect.kind === 'recordControl' && c.effect.control === 'resume');
+  const pushAt = indexOfCommand(trace.commands, (c) => c.type === 'request' && c.request.kind === 'publishBranch');
+  assert.ok(pausedAt >= 0 && pausedAt < verifyAt, 'paused before the decision arrived');
+  assert.ok(resumeAt > verifyAt && pushAt > resumeAt, 'the push waits for resume');
+  assert.equal(effectsOf(trace.commands, 'startTimer').filter((t) => t.timerId.startsWith('pause:')).length, 1, 'one pause, one timer');
+  assert.equal(trace.summary.outcome, 'WAITING_FOR_HUMAN_REVIEW');
+  assertLegalProjections(trace);
+});
+
+test('a resume that arrives while a decision is verified returns the task to the wait when the decision is unconfirmed', () => {
+  const unverified = () => ({ kind: 'verifyApprovalDecision' as const, verified: false, decision: null, extensionUsd: null });
+  const trace = runTaskSequentially(WAITS[1].input, scripted({ verifyApprovalDecision: unverified }, {
+    messagesDuring: (request) => (request.kind === 'verifyApprovalDecision' ? [resume()] : []),
+    whenIdle: idleScript(() => pause(), WAITS[1].approve, timer('approval:')),
+  }));
+  const statuses = projections(trace);
+  const waitAt = statuses.indexOf('WAITING_FOR_APPROVAL');
+  assert.deepEqual(statuses.slice(waitAt), ['WAITING_FOR_APPROVAL', 'PAUSED', 'WAITING_FOR_APPROVAL', 'BLOCKED']);
+  assert.deepEqual([trace.summary.outcome, trace.summary.reason], ['BLOCKED', 'publication-expired']);
+  assertLegalProjections(trace);
+});
+
 test('cancel while waiting for an approval cancels the approval request', () => {
   const trace = runTaskSequentially(tightBudget, scripted({}, { whenIdle: idleScript(() => cancel()) }));
   assert.deepEqual(effectsOf(trace.commands, 'cancelApprovalRequest').map((e) => e.approvalRequestId), ['asep-task-task-1:1']);
@@ -1608,7 +1715,7 @@ test('projection: between the existing statuses the core allows exactly the doma
   }
 });
 
-test('projection: the edges touching the new statuses are the data-model additions plus VERIFYING -> BUDGET_EXHAUSTED', () => {
+test('projection: the edges touching the new statuses are the data-model additions, VERIFYING -> BUDGET_EXHAUSTED and the approval-wait pause edges', () => {
   const added = new Set(['PAUSED', 'WAITING_FOR_APPROVAL', 'BUDGET_EXHAUSTED']);
   const all = [...taskReachableStates(), ...added] as Parameters<typeof isLegalProjection>[0][];
   const edges: string[] = [];
@@ -1620,6 +1727,9 @@ test('projection: the edges touching the new statuses are the data-model additio
   assert.deepEqual(edges.sort(), [
     'EXECUTING->BUDGET_EXHAUSTED', 'EXECUTING->PAUSED', 'EXECUTING->WAITING_FOR_APPROVAL',
     'PAUSED->BLOCKED', 'PAUSED->CANCELLED', 'PAUSED->EXECUTING', 'PAUSED->READY', 'PAUSED->VERIFYING',
+    // A pause while waiting for an approval applies at once, resume returns to the wait, and a budget-extension
+    // request can expire or be rejected while paused.
+    'PAUSED->WAITING_FOR_APPROVAL', 'PAUSED->BUDGET_EXHAUSTED', 'WAITING_FOR_APPROVAL->PAUSED',
     'READY->BUDGET_EXHAUSTED', 'READY->PAUSED', 'READY->WAITING_FOR_APPROVAL',
     // A replacement attempt refused for budget after the task reached verification (for example a retry
     // of an exhausted repair attempt); the domain table gains it with the status extension.

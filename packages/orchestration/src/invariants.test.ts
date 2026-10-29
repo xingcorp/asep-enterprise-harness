@@ -23,6 +23,8 @@ import type {
   ProjectedTaskStatus,
   TaskCommand,
   TaskCoreInput,
+  TaskDecision,
+  TaskEvent,
   TaskMessage,
   TaskRequest,
   TaskState,
@@ -544,6 +546,57 @@ function checkTrace(input: TaskCoreInput, trace: TaskTrace, label: string): void
   }
 }
 
+interface ReplayedStep {
+  readonly before: TaskState;
+  readonly event: TaskEvent;
+  readonly decision: TaskDecision;
+}
+
+/** The trace replayed one event at a time: the state each event met and the reducer's decision on it. */
+function replaySteps(input: TaskCoreInput, trace: TaskTrace): ReplayedStep[] {
+  let state = startTask(input).state;
+  return trace.events.map((event) => {
+    const decision = decideTask(state, event);
+    const replayed = { before: state, event, decision };
+    state = decision.state;
+    return replayed;
+  });
+}
+
+/** True when the task waits for an opened approval with nothing in flight. */
+function waitsForApproval(state: TaskState): boolean {
+  return state.outcome === null && state.pending === null && state.approval?.opened === true;
+}
+
+// Pause checks, step by step: a pause takes effect at once when nothing is in flight, and never suspends an
+// approval's expiry.
+function checkPauses(input: TaskCoreInput, trace: TaskTrace, label: string): void {
+  for (const { before, event, decision } of replaySteps(input, trace)) {
+    const after = decision.state;
+    // Whenever the task is paused and awaits no request, it shows PAUSED and its pause timer runs.
+    if (after.paused && after.pending === null && after.outcome === null) {
+      assert.equal(after.projected, 'PAUSED', `${label}: an idle paused task projects ${after.projected}`);
+      assert.ok(after.pauseTimerId !== null && after.activeTimers.includes(after.pauseTimerId), `${label}: an idle paused task has no pause timer`);
+    }
+    // An unpaused task waiting for an approval shows the wait.
+    if (!after.paused && waitsForApproval(after)) {
+      assert.equal(after.projected, 'WAITING_FOR_APPROVAL', `${label}: an approval wait projects ${after.projected}`);
+    }
+    if (before.approval !== null && waitsForApproval(before)) {
+      const approvalTimer = `approval:${before.approval.approvalRequestId}`;
+      const cancelled = decision.commands.some((c) => c.type === 'effect' && c.effect.kind === 'cancelTimer' && c.effect.timerId === approvalTimer);
+      // Pausing or resuming leaves the approval's expiry timer running.
+      if (event.type === 'pauseRequested' || event.type === 'resumeRequested') {
+        assert.ok(!cancelled, `${label}: a ${event.type} stopped the expiry of ${before.approval.approvalRequestId}`);
+      }
+      // The expiry timer fires while paused exactly as it does otherwise: the request expires.
+      if (event.type === 'timerFired' && event.timerId === approvalTimer) {
+        assert.ok(effectsOf(decision.commands, 'expireApprovalRequest').length === 1, `${label}: expiry ignored while paused=${before.paused}`);
+      }
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Properties
 // ---------------------------------------------------------------------------
@@ -559,6 +612,7 @@ test('generated task traces satisfy the orchestration safety invariants', () => 
   for (let seed = 1; seed <= SEEDS; seed += 1) {
     const { input, trace } = generate(seed);
     checkTrace(input, trace, `seed ${seed}`);
+    checkPauses(input, trace, `seed ${seed}`);
     outcomes.set(trace.summary.outcome, (outcomes.get(trace.summary.outcome) ?? 0) + 1);
   }
   // The generator must actually reach every terminal outcome, or the invariants prove little.
@@ -589,6 +643,10 @@ test('the generator covers repair, replacement, approvals, pause and cancel path
     if (effectsOf(trace.commands, 'recordOverrun').some((o) => o.overrunWallClockMs > 0)) seen.add('wall-clock-overrun');
     if (effectsOf(trace.commands, 'recordOverrun').some((o) => o.overrunUsd === 0.000001)) seen.add('micro-overrun');
     if (trace.summary.reason === 'publication-incomplete') seen.add('publication-incomplete');
+    for (const { before, event, decision } of replaySteps(input, trace)) {
+      if (event.type === 'pauseRequested' && waitsForApproval(before) && !before.paused && decision.receipt?.accepted) seen.add('paused-while-waiting');
+      if (event.type === 'timerFired' && before.paused && event.timerId.startsWith('approval:')) seen.add('expired-while-paused');
+    }
     for (const e of trace.events) {
       if (e.type === 'result' && e.result.kind === 'findAttempt') seen.add(e.result.attemptId === null ? 'registration-absent' : 'registration-found');
       if (e.type === 'activityFailed' && e.activity === 'findAttempt') seen.add('registration-unknown');
@@ -606,8 +664,9 @@ test('the generator covers repair, replacement, approvals, pause and cancel path
         && e.result.status !== 'AGENT_DONE' && hostile.includes(e.result.failureClass)))) seen.add('hostile-policy-failure');
   }
   assert.deepEqual([...seen].sort(), [
-    'abort', 'approval-expired', 'assurance-unavailable', 'budget-approval', 'exhausted', 'extension-granted',
-    'hostile-policy-failure', 'lineage-retry', 'micro-overrun', 'overrun', 'pause-timeout', 'paused', 'publication-incomplete',
+    'abort', 'approval-expired', 'assurance-unavailable', 'budget-approval', 'exhausted', 'expired-while-paused', 'extension-granted',
+    'hostile-policy-failure', 'lineage-retry', 'micro-overrun', 'overrun', 'pause-timeout', 'paused', 'paused-while-waiting',
+    'publication-incomplete',
     'publish-approval', 'recovered', 'registration-absent', 'registration-found', 'registration-unknown',
     'repair', 'retry', 'verification-stop', 'verified-within-grace', 'violation', 'wall-clock-overrun',
   ]);
