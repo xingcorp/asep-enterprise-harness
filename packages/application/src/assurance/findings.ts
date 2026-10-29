@@ -3,7 +3,7 @@
 
 import type { FindingSeverity } from '@asep/domain';
 import { isNormalizedRepoPath } from '@asep/policy';
-import { sha256Hex } from './canonical-json.js';
+import { canonicalJson, sha256Hex } from './canonical-json.js';
 import type { FindingCategory } from './local-types.js';
 
 export type CheckRuleId =
@@ -169,7 +169,29 @@ export function mergeRuleHits(
   });
 }
 
-/** Keep the first finding per (raiser, fingerprint) and order the result deterministically. */
+const SEVERITY_RANK: Readonly<Record<FindingSeverity, number>> = { INFO: 0, LOW: 1, MEDIUM: 2, HIGH: 3, CRITICAL: 4 };
+
+/** Higher severity first. */
+export function bySeverityDescending(a: FindingSeverity, b: FindingSeverity): number {
+  return SEVERITY_RANK[b] - SEVERITY_RANK[a];
+}
+
+/**
+ * A total order on plain finding records: severity first, highest first, then the
+ * record's canonical JSON. The finding a merge keeps never depends on input order.
+ */
+export function preferFinding<T extends { readonly severity: FindingSeverity }>(a: T, b: T): number {
+  const bySeverity = bySeverityDescending(a.severity, b.severity);
+  if (bySeverity !== 0) return bySeverity;
+  const x = canonicalJson(a);
+  const y = canonicalJson(b);
+  return x < y ? -1 : x > y ? 1 : 0;
+}
+
+/**
+ * One finding per (raiser, fingerprint), merged conservatively: the highest severity is
+ * kept, whatever the input order. The result is ordered deterministically.
+ */
 export function dedupeFindings(findings: readonly CheckFinding[]): CheckFinding[] {
   const key = (f: CheckFinding) => `${f.raisedBy}\n${f.fingerprint}`;
   const order = (a: CheckFinding, b: CheckFinding): number => {
@@ -181,12 +203,10 @@ export function dedupeFindings(findings: readonly CheckFinding[]): CheckFinding[
     if ((a.lineStart ?? 0) !== (b.lineStart ?? 0)) return (a.lineStart ?? 0) - (b.lineStart ?? 0);
     return a.fingerprint < b.fingerprint ? -1 : a.fingerprint > b.fingerprint ? 1 : 0;
   };
-  const seen = new Set<string>();
-  const out: CheckFinding[] = [];
-  for (const finding of [...findings].sort(order)) {
-    if (seen.has(key(finding))) continue;
-    seen.add(key(finding));
-    out.push(finding);
+  const kept = new Map<string, CheckFinding>();
+  for (const finding of findings) {
+    const current = kept.get(key(finding));
+    if (current === undefined || preferFinding(finding, current) < 0) kept.set(key(finding), finding);
   }
-  return out;
+  return [...kept.values()].sort(order);
 }

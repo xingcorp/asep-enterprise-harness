@@ -27,8 +27,8 @@ import {
 import { sha256Hex } from './canonical-json.js';
 import type { PushGuardResult } from './checks.js';
 import type { DiffFileChange } from './diff.js';
-import { findingFingerprint, type CheckFinding } from './findings.js';
-import { groundFinding, groundResolution, type GroundingContext, type GroundingFailure } from './grounding.js';
+import { findingFingerprint, preferFinding, type CheckFinding } from './findings.js';
+import { groundFinding, groundResolution, type GroundingContext, type GroundingFailure, type GroundingResult } from './grounding.js';
 import type {
   BlockReason,
   EgressDecision,
@@ -40,7 +40,7 @@ import type {
   ReviewerRole,
   ShadowVerdict,
 } from './local-types.js';
-import type { ReviewOutput } from './prompt.js';
+import type { ModelFindingOutput, ReviewOutput } from './prompt.js';
 
 export interface PlannedReviewerInput {
   readonly reviewerConfigId: string;
@@ -151,7 +151,11 @@ export interface AdjudicationRecord {
 
 /** A finding as adjudicated this round, in review-finding/v1 shape. */
 export interface EvaluatedFinding extends ReviewFindingRecord {
-  /** `prior:<id>` for prior findings, `<raisedBy>#<fingerprint>` for findings of this round. */
+  /**
+   * `prior:<id>` for prior findings, `<raisedBy>#<fingerprint>` for check findings and
+   * `<raisedBy>#<fingerprint>#<identity>` for model findings, where the identity digest also
+   * covers the requirement id and the finding key.
+   */
   readonly ref: string;
   readonly blocking: boolean;
 }
@@ -294,6 +298,18 @@ function closePrior(
   return decision(current, 'unchanged');
 }
 
+interface Candidate {
+  readonly finding: ModelFindingOutput;
+  readonly fingerprint: string;
+  readonly result: GroundingResult;
+}
+
+/** Grounded before ungrounded, then the finding order of `preferFinding`. */
+function preferCandidate(a: Candidate, b: Candidate): number {
+  if (a.result.grounded !== b.result.grounded) return a.result.grounded ? -1 : 1;
+  return preferFinding(a.finding, b.finding);
+}
+
 function sortBy<T>(items: readonly T[], key: (item: T) => string): T[] {
   return [...items].sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0));
 }
@@ -329,13 +345,15 @@ export function adjudicate(input: AdjudicationInput): Adjudication {
     blocking: blockingSeverity.has(f.severity),
   }));
 
-  // Model findings: grounded by the harness, de-duplicated by fingerprint per raiser.
+  // Model findings: each is grounded by the harness on its own first. Findings of one
+  // identity (fingerprint, requirement id, key) then merge conservatively: a grounded member
+  // wins over an ungrounded one, then the highest severity, then a fixed order, so neither
+  // the order of the list nor an ungrounded duplicate can change what blocks.
   const grounding: AdjudicationRecord['grounding'][number][] = [];
   const verdictMismatches: AdjudicationRecord['verdictMismatches'][number][] = [];
   for (const review of input.reviews) {
     if (review.output === null) continue;
-    const seen = new Set<string>();
-    let groundedBlockingCount = 0;
+    const identities = new Map<string, Candidate[]>();
     for (const finding of review.output.findings) {
       const fingerprint = findingFingerprint({
         category: finding.category,
@@ -343,10 +361,13 @@ export function adjudicate(input: AdjudicationInput): Adjudication {
         lineStart: finding.lineStart,
         ruleId: null,
       });
-      if (seen.has(fingerprint)) continue;
-      seen.add(fingerprint);
-      const ref = `${review.reviewerConfigId}#${fingerprint}`;
-      const result = groundFinding(ctx, finding);
+      const identity = sha256Hex([fingerprint, finding.requirementId ?? '', finding.key].join('\n'));
+      identities.set(identity, [...(identities.get(identity) ?? []), { finding, fingerprint, result: groundFinding(ctx, finding) }]);
+    }
+    let groundedBlockingCount = 0;
+    for (const [identity, members] of sortBy([...identities], ([id]) => id)) {
+      const { finding, fingerprint, result } = [...members].sort(preferCandidate)[0]!;
+      const ref = `${review.reviewerConfigId}#${fingerprint}#${identity.slice(0, 16)}`;
       grounding.push({ findingRef: ref, grounded: result.grounded, reason: result.reason });
       let lifecycle: FindingLifecycleState = 'OPEN';
       if (!result.grounded) {

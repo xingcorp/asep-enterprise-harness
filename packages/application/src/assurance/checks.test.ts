@@ -491,6 +491,23 @@ test('check findings are fingerprinted, de-duplicated and ordered', () => {
   );
   assert.deepEqual(again, result);
   for (const finding of result.findings) assert.match(finding.raisedBy, /^(deterministic|sarif):/);
+
+  // Two SARIF results of one rule in one line bucket are one finding at the higher
+  // severity, whichever order the log lists them in.
+  const sarifResult = (level: string, line: number) => ({
+    ruleId: 'r1',
+    level,
+    message: { text: `result at line ${line}` },
+    locations: [{ physicalLocation: { artifactLocation: { uri: 'src/feature.ts' }, region: { startLine: line } } }],
+  });
+  const logOf = (results: unknown[]) => [
+    { checkId: 'lint', content: utf8(JSON.stringify({ version: '2.1.0', runs: [{ tool: { driver: { name: 'lint' } }, results }] })) },
+  ];
+  const noteFirst = checksFor(fixtureWorld(), { sarif: logOf([sarifResult('note', 2), sarifResult('error', 3)]) }).findings;
+  const errorFirst = checksFor(fixtureWorld(), { sarif: logOf([sarifResult('error', 3), sarifResult('note', 2)]) }).findings;
+  const sarifOnly = (list: readonly CheckFinding[]) => list.filter((f) => f.source === 'sarif');
+  assert.deepEqual(sarifOnly(noteFirst).map((f) => f.severity), ['HIGH']);
+  assert.deepEqual(noteFirst, errorFirst);
 });
 
 test('the check report is canonical and fails closed when it is read back', () => {

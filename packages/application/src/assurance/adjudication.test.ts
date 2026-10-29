@@ -198,7 +198,8 @@ test('deterministic evidence outranks model review', () => {
   };
   assert.equal(adjudicate(withInfo).record.outcome, 'PROCEED');
 
-  // Findings are unioned across reviewers and de-duplicated by fingerprint per raiser.
+  // Findings are unioned across reviewers; one reviewer's findings with different keys
+  // stay distinct even at one fingerprint.
   const twoReviewers: AdjudicationInput = {
     ...adjudicationBase(),
     reviewers: [
@@ -211,8 +212,59 @@ test('deterministic evidence outranks model review', () => {
     ],
   };
   const union = adjudicate(twoReviewers).record;
-  assert.deepEqual(union.blocking.map((b) => b.raisedBy).sort(), [COMPARATOR, PRIMARY]);
+  assert.deepEqual(union.blocking.map((b) => b.raisedBy).sort(), [COMPARATOR, PRIMARY, PRIMARY]);
   assert.equal(union.outcome, 'REPAIR');
+});
+
+/** Every ordering of a list. */
+function permutations<T>(items: readonly T[]): T[][] {
+  if (items.length <= 1) return [[...items]];
+  return items.flatMap((item, i) => permutations([...items.slice(0, i), ...items.slice(i + 1)]).map((rest) => [item, ...rest]));
+}
+
+test('findings are grounded before they merge and the outcome ignores their order', () => {
+  // Four findings at one location (one fingerprint): two share key k1, two share key k2.
+  // k1: LOW and CRITICAL, both grounded. k2: an ungrounded CRITICAL (its lines run past
+  // the file) and a grounded HIGH. Expected, stated independently: two identities, both
+  // grounded, blocking at CRITICAL and HIGH, so gating requests a repair.
+  const findings = [
+    modelFinding({ key: 'k1', severity: 'LOW', lineStart: 2, lineEnd: 2 }),
+    modelFinding({ key: 'k1', severity: 'CRITICAL', lineStart: 3, lineEnd: 3 }),
+    modelFinding({ key: 'k2', severity: 'CRITICAL', lineStart: 2, lineEnd: 40 }),
+    modelFinding({ key: 'k2', severity: 'HIGH', lineStart: 2, lineEnd: 2 }),
+  ];
+  const orders = permutations(findings);
+  assert.equal(orders.length, 24);
+  const decide = (list: readonly (typeof findings)[number][]) =>
+    adjudicate({ ...adjudicationBase(), reviews: [completedReview(PRIMARY, reviewOutput({ verdict: 'REQUEST_CHANGES', findings: list }))] });
+  const first = decide(orders[0]!);
+  assert.equal(first.record.outcome, 'REPAIR');
+  assert.deepEqual(first.record.blocking.map((b) => b.severity).sort(), ['CRITICAL', 'HIGH']);
+  assert.deepEqual(first.record.grounding.map((g) => g.grounded), [true, true]);
+  for (const order of orders) assert.deepEqual(decide(order), first, JSON.stringify(order.map((f) => `${f.key}:${f.severity}`)));
+  // The same holds in shadow mode, where the would-be outcome is what changes.
+  const shadow = (list: readonly (typeof findings)[number][]) =>
+    adjudicate({
+      ...adjudicationBase(),
+      mode: 'shadow',
+      reviews: [completedReview(PRIMARY, reviewOutput({ verdict: 'REQUEST_CHANGES', findings: list }))],
+    }).record.shadow;
+  for (const order of orders) assert.deepEqual(shadow(order), { wouldBe: 'REPAIR', reason: 'blocking-findings', blockingFindings: 2 });
+
+  // Never merged across requirement ids or keys: a LOW cannot absorb a HIGH that cites
+  // another requirement, and two keys stay two findings.
+  const acrossRequirements = decide([
+    modelFinding({ key: 'k1', severity: 'LOW', requirementId: 'REQ-2' }),
+    modelFinding({ key: 'k1', severity: 'HIGH', requirementId: 'REQ-1' }),
+  ]).record;
+  assert.equal(acrossRequirements.outcome, 'REPAIR');
+  assert.equal(acrossRequirements.grounding.length, 2);
+  assert.deepEqual(acrossRequirements.blocking.map((b) => b.severity), ['HIGH']);
+  const acrossKeys = decide([modelFinding({ key: 'k1', severity: 'LOW' }), modelFinding({ key: 'k2', severity: 'LOW' })]).record;
+  assert.equal(acrossKeys.grounding.length, 2);
+  assert.equal(acrossKeys.outcome, 'PROCEED');
+  // An ungrounded finding alone still never blocks.
+  assert.equal(decide([modelFinding({ key: 'k1', severity: 'CRITICAL', lineStart: 2, lineEnd: 40 })]).record.outcome, 'PROCEED');
 });
 
 test('model verdict cannot override findings or deterministic failures', () => {
