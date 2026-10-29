@@ -326,7 +326,7 @@ export type TaskResult =
       readonly reportedCostUsd: number;
       readonly reportedToolCalls: number;
       readonly wallClockMs: number;
-      /** Required when status is FAILED or BLOCKED. */
+      /** Required when status is FAILED or BLOCKED; a cap stop may carry one too. */
       readonly failureClass: FailureClass | null;
     }
   | { readonly kind: 'inspectWorkspace'; readonly overstep: boolean }

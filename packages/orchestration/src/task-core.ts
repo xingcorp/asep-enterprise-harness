@@ -513,10 +513,18 @@ function onResult(step: Step, result: TaskResult): void {
     }
     case 'runAgent': {
       // The agent outcome table: a cap stop or an overrun is inspected only, to
-      // record the workspace state; an agent failure abandons the attempt.
+      // record the workspace state; an agent failure abandons the attempt. A
+      // non-replaceable failure beats both, because the exhaustion path can lead
+      // to an extension and a new attempt; its overrun is still recorded.
       const a = current(s);
       noteAgentUsage(step, a, result);
       a.declaredComplete = result.status === 'AGENT_DONE';
+      const failed = result.status === 'FAILED' || result.status === 'BLOCKED'
+        || (result.status === 'BUDGET_EXHAUSTED' && result.failureClass !== null);
+      if (failed && !isReplaceable(s, result.failureClass)) {
+        abandon(step, result.failureClass, false, result.failureClass ?? `agent-${result.status.toLowerCase()}`);
+        return;
+      }
       if (result.status === 'BUDGET_EXHAUSTED' || a.overrun !== null) {
         a.exhausted = true;
       } else if (result.status !== 'AGENT_DONE') {
@@ -692,6 +700,11 @@ function budgetCheck(step: Step): void {
   close(step, 'BUDGET_EXHAUSTED', reservation.reason);
 }
 
+/** Only a failure class the policy lists as replaceable may be followed by a new attempt. */
+function isReplaceable(s: Draft, failureClass: FailureClass | null): boolean {
+  return failureClass !== null && s.input.policy.replaceableFailureClasses.includes(failureClass);
+}
+
 /** Abandon the current attempt; replace it, with the same lineage, only if the class allows and nothing was pushed. */
 function abandon(step: Step, failureClass: FailureClass | null, timedOut: boolean, reason: string): void {
   const s = step.s;
@@ -700,8 +713,7 @@ function abandon(step: Step, failureClass: FailureClass | null, timedOut: boolea
   releaseAttempt(step, a, 'quarantine', reason);
   endAttempt(step, a, 'failed');
   s.currentAttempt = null;
-  const replaceable = failureClass !== null && s.input.policy.replaceableFailureClasses.includes(failureClass);
-  if (!replaceable) {
+  if (!isReplaceable(s, failureClass)) {
     close(step, 'FAILED', reason);
     return;
   }

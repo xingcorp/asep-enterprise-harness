@@ -827,7 +827,7 @@ test('agent outcome: a cap stop with no room for a fresh reservation ends the ta
 for (const [name, answer, overrun] of [
   ['reported cost above the cap', { status: 'AGENT_DONE', reportedCostUsd: 7, reportedToolCalls: 10 }, { overrunUsd: 2, overrunToolCalls: 0 }],
   ['reported tool calls above the cap', { status: 'AGENT_DONE', reportedCostUsd: 1, reportedToolCalls: 53 }, { overrunUsd: 0, overrunToolCalls: 3 }],
-  ['an agent failure that also overran its cost', { status: 'FAILED', reportedCostUsd: 7, reportedToolCalls: 10 }, { overrunUsd: 2, overrunToolCalls: 0 }],
+  ['a replaceable agent failure that also overran its cost', { status: 'FAILED', reportedCostUsd: 7, reportedToolCalls: 10 }, { overrunUsd: 2, overrunToolCalls: 0 }],
 ] as const) {
   test(`agent outcome: ${name} is an overrun: recorded and audited, never verified or published, and the task ends BUDGET_EXHAUSTED`, () => {
     const trace = runTaskSequentially(baseInput(), scripted({
@@ -844,6 +844,33 @@ for (const [name, answer, overrun] of [
     assert.equal(ensured(trace).length, 1);
     assert.equal(trace.summary.outcome, 'BUDGET_EXHAUSTED');
     assert.equal(trace.summary.reason, 'overrun');
+    assertLegalProjections(trace);
+  });
+}
+
+for (const [name, answer, reason, overrun] of [
+  ['a policy violation with a cost overrun', { status: 'FAILED', failureClass: 'policy-violation', reportedCostUsd: 7, reportedToolCalls: 10 }, 'policy-violation', [{ overrunUsd: 2, overrunToolCalls: 0 }]],
+  ['a false completion with a tool-call overrun', { status: 'BLOCKED', failureClass: 'false-completion', reportedCostUsd: 1, reportedToolCalls: 53 }, 'false-completion', [{ overrunUsd: 0, overrunToolCalls: 3 }]],
+  ['an unclassified failure with a cost overrun', { status: 'FAILED', failureClass: null, reportedCostUsd: 7, reportedToolCalls: 10 }, 'agent-failed', [{ overrunUsd: 2, overrunToolCalls: 0 }]],
+  ['a cap stop that reports a duplicate side effect', { status: 'BUDGET_EXHAUSTED', failureClass: 'duplicate-side-effect', reportedCostUsd: 5, reportedToolCalls: 10 }, 'duplicate-side-effect', []],
+] as const) {
+  test(`agent outcome: a non-replaceable failure beats the exhaustion path (${name}): the task FAILS with that class`, () => {
+    // Approvals are available and attempts remain, so only the failure class stops a new attempt or an extension.
+    const trace = runTaskSequentially(baseInput(), scripted({
+      runAgent: () => ({ kind: 'runAgent', wallClockMs: 1000, ...answer }),
+    }));
+    const kinds = requestKinds(trace.commands);
+    for (const k of ['inspectWorkspace', 'openApprovalRequest', ...NEVER_AFTER_EXHAUSTION] as const) {
+      assert.ok(!kinds.includes(k), `${k} after a non-replaceable failure`);
+    }
+    assert.equal(ensured(trace).length, 1);
+    assert.deepEqual(outcomes(trace), [[1, 'failed']]);
+    assert.deepEqual(effectsOf(trace.commands, 'recordOverrun').map(({ overrunUsd, overrunToolCalls }) => ({ overrunUsd, overrunToolCalls })), overrun);
+    assert.equal(effectsOf(trace.commands, 'audit').filter((a) => a.action === 'budget.overrun').length, overrun.length,
+      'an overrun is still audited as an incident');
+    assert.ok(effectsOf(trace.commands, 'quarantineWorkspace').some((e) => e.attemptNumber === 1 && e.reason === reason), 'attempt 1 quarantined');
+    assert.equal(trace.summary.outcome, 'FAILED');
+    assert.equal(trace.summary.reason, reason);
     assertLegalProjections(trace);
   });
 }

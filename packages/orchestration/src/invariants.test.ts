@@ -327,6 +327,22 @@ function checkTrace(input: TaskCoreInput, trace: TaskTrace, label: string): void
   };
   for (const [n, got] of roundOf) assert.deepEqual(got, lineageRound(n), `${label}: assurance round of attempt ${n}`);
 
+  // A non-replaceable agent failure ends the task FAILED (or CANCELLED), overrun or not: no further attempt
+  // follows it.
+  const requestBySeq = new Map<number, TaskRequest>();
+  for (const c of commands) if (c.type === 'request') requestBySeq.set(c.seq, c.request);
+  for (const e of trace.events) {
+    if (e.type !== 'result' || e.result.kind !== 'runAgent') continue;
+    const r = e.result;
+    const failed = r.status === 'FAILED' || r.status === 'BLOCKED' || (r.status === 'BUDGET_EXHAUSTED' && r.failureClass !== null);
+    if (!failed || (r.failureClass !== null && input.policy.replaceableFailureClasses.includes(r.failureClass))) continue;
+    const request = requestBySeq.get(e.seq);
+    assert.ok(request?.kind === 'runAgent', `${label}: agent result answers runAgent`);
+    const n = request.attemptNumber;
+    assert.ok(ensured.every((x) => x.attemptNumber <= n), `${label}: attempt after non-replaceable failure of ${n}`);
+    assert.ok(['FAILED', 'CANCELLED'].includes(trace.summary.outcome), `${label}: non-replaceable failure of ${n} ends ${trace.summary.outcome}`);
+  }
+
   // An unavailable assurance round never fails the task: it continues as PROCEED (shadow) or ESCALATE
   // (gating), and the PR carries no assurance section.
   assert.notEqual(trace.summary.reason, 'assurance-unavailable', `${label}: FAILED for assurance unavailability`);
