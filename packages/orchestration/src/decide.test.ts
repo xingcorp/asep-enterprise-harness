@@ -1778,6 +1778,56 @@ test('cancel during the PR upsert lets it complete; the PR stays open and the ca
 });
 
 // ---------------------------------------------------------------------------
+// Terminal outcome before lease release
+// ---------------------------------------------------------------------------
+
+// An attempt that holds a lease records its terminal outcome while it still holds it: the fenced outcome write needs
+// the lease, so every leased path emits recordAttemptOutcome before releaseLease, and effects run in order.
+function assertOutcomeBeforeRelease(trace: TaskTrace, expected: readonly (readonly [number, string])[]): void {
+  assert.deepEqual(outcomes(trace), expected);
+  const at = (kind: 'recordAttemptOutcome' | 'releaseLease', n: number) =>
+    indexOfCommand(trace.commands, (c) => c.type === 'effect' && c.effect.kind === kind && c.effect.attemptNumber === n);
+  for (const [n] of expected) {
+    assert.ok(at('releaseLease', n) >= 0, `attempt ${n} held a lease and releases it`);
+    assert.ok(at('recordAttemptOutcome', n) < at('releaseLease', n), `attempt ${n}: outcome recorded before the lease is released`);
+  }
+  assertLegalProjections(trace);
+}
+
+const agentFails = (failureClass: FailureClass) => () => ({ kind: 'runAgent' as const, status: 'FAILED' as const, reportedCostUsd: 1, reportedToolCalls: 3, wallClockMs: 1000, failureClass });
+const firstOnly = <T,>(answer: () => T) => (_r: TaskRequest, n: number) => (n === 1 ? answer() : undefined);
+
+for (const [path, environment, expected] of [
+  ['repair', scripted({ assuranceRound: firstOnly(() => ({ kind: 'assuranceRound' as const, outcome: repair(1, 1) })) }),
+    [[1, 'repair-requested'], [2, 'proceeded']]],
+  ['abandon after worker death, replaced', scripted({ runAgent: firstOnly(() => ({ kind: 'activityFailed' as const, failureClass: 'environment' as const, timedOut: true })) }),
+    [[1, 'failed'], [2, 'proceeded']]],
+  ['abandon after a non-replaceable agent failure', scripted({ runAgent: agentFails('policy-violation') }), [[1, 'failed']]],
+  ['abandon after a failed workspace activity', scripted({ prepareWorkspace: firstOnly(() => ({ kind: 'activityFailed' as const, failureClass: 'environment' as const, timedOut: false })) }),
+    [[1, 'failed'], [2, 'proceeded']]],
+  ['abandon after an overstep found by inspection', scripted({ inspectWorkspace: () => ({ kind: 'inspectWorkspace' as const, overstep: true }) }), [[1, 'failed']]],
+  ['exhaustion at a cap', scripted({ runAgent: firstOnly(() => ({ kind: 'runAgent' as const, status: 'BUDGET_EXHAUSTED' as const, reportedCostUsd: 5, reportedToolCalls: 50, wallClockMs: 1000, failureClass: null })) }),
+    [[1, 'budget-exhausted'], [2, 'proceeded']]],
+  ['verification stop', scripted({ runVerification: () => ({ kind: 'runVerification' as const, verdict: 'FAIL' as const }) }), [[1, 'verification-failed']]],
+  ['assurance BLOCK', scripted({ assuranceRound: () => ({ kind: 'assuranceRound' as const, outcome: { kind: 'BLOCK', adjudicationId: 'adj-b', reason: 'secret-in-diff' } }) }),
+    [[1, 'blocked']]],
+  ['review handoff', scripted(), [[1, 'proceeded']]],
+  ['close on an assurance contract violation', scripted({ assuranceRound: () => ({ kind: 'assuranceRound' as const, outcome: { kind: 'APPROVED', adjudicationId: 'x' } }) }),
+    [[1, 'failed']]],
+  ['close on an incomplete publication', scripted({ upsertPullRequest: publicationFails('none') }), [[1, 'failed']]],
+  ['cancel during the agent', scripted({}, { eventsDuring: (request) => (request.kind === 'runAgent' ? [cancel()] : []) }), [[1, 'cancelled']]],
+  ['cancel during the assurance round', scripted({}, { eventsDuring: (request) => (request.kind === 'assuranceRound' ? [cancel()] : []) }), [[1, 'cancelled']]],
+  ['pause timeout', scripted({}, {
+    eventsDuring: (request) => (request.kind === 'inspectWorkspace' ? [pause()] : []),
+    whenIdle: idleScript((timers) => ({ type: 'timerFired', timerId: timers[0]! })),
+  }), [[1, 'cancelled']]],
+] as const) {
+  test(`terminal before lease: ${path} records the outcome before it releases the lease`, () => {
+    assertOutcomeBeforeRelease(runTaskSequentially(baseInput(), environment), expected);
+  });
+}
+
+// ---------------------------------------------------------------------------
 // The run workflow
 // ---------------------------------------------------------------------------
 

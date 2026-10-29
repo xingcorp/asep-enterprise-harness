@@ -498,19 +498,33 @@ function disposeWorkspace(step: Step, a: MutableAttempt, disposal: 'cleanup' | '
     : { kind: 'quarantineWorkspace', attemptNumber: a.attemptNumber, reason });
 }
 
+/** The terminal outcome is written under the lease, so the lease is released only once the outcome is recorded. */
 function releaseLease(step: Step, a: MutableAttempt): void {
   if (!a.leaseRequested || a.leaseReleased) return;
+  if (!a.outcomeRecorded) throw new Error(`lease of attempt ${a.attemptNumber} released before its outcome`);
   a.leaseReleased = true;
   effect(step, { kind: 'releaseLease', attemptNumber: a.attemptNumber });
 }
 
-/** Release an attempt's resources. A failed or interrupted attempt is reaped and quarantined. */
-function releaseAttempt(step: Step, a: MutableAttempt, disposal: 'cleanup' | 'quarantine', reason: string): void {
+/**
+ * End an attempt and release its resources: a failed or interrupted attempt is
+ * reaped and quarantined, then its usage and outcome are recorded, and only then
+ * is its lease released. Effects run in order, so the outcome is written while
+ * the attempt still holds the lease.
+ */
+function finishAttempt(
+  step: Step,
+  a: MutableAttempt,
+  terminal: AttemptTerminal,
+  disposal: 'cleanup' | 'quarantine',
+  reason: string,
+): void {
   if (disposal === 'quarantine' && a.agentStarted && !a.reaped) {
     a.reaped = true;
     effect(step, { kind: 'reapContainers', attemptNumber: a.attemptNumber });
   }
   disposeWorkspace(step, a, disposal, reason);
+  endAttempt(step, a, terminal);
   releaseLease(step, a);
 }
 
@@ -868,8 +882,7 @@ function abandon(step: Step, failureClass: FailureClass | null, timedOut: boolea
   const s = step.s;
   const a = current(s);
   s.phase = 'ATTEMPT_ABANDONED';
-  releaseAttempt(step, a, 'quarantine', reason);
-  endAttempt(step, a, 'failed');
+  finishAttempt(step, a, 'failed', 'quarantine', reason);
   s.currentAttempt = null;
   if (!isReplaceable(s, failureClass)) {
     close(step, 'FAILED', reason);
@@ -892,8 +905,7 @@ function exhaust(step: Step): void {
   const s = step.s;
   const a = current(s);
   s.phase = 'ATTEMPT_EXHAUSTED';
-  releaseAttempt(step, a, 'quarantine', 'budget-exhausted');
-  endAttempt(step, a, 'budget-exhausted');
+  finishAttempt(step, a, 'budget-exhausted', 'quarantine', 'budget-exhausted');
   s.currentAttempt = null;
   s.nextAttempt = { kind: 'retry', lineage: a.lineage, replacesTimedOut: false };
   budgetCheck(step);
@@ -1192,8 +1204,8 @@ function acceptControl(
 /**
  * Close the task. An accepted cancel wins over any other outcome, except an
  * incomplete publication (`overridesCancel`), which must stay visible. Every
- * registered attempt ends with its resources released, one usage entry and one
- * outcome record; an attempt not known to exist gets none.
+ * registered attempt ends with one usage entry and one outcome record, recorded
+ * before its lease is released; an attempt not known to exist gets none.
  */
 function close(
   step: Step,
@@ -1211,8 +1223,7 @@ function close(
   const handedOff = outcome === 'WAITING_FOR_HUMAN_REVIEW';
   const attemptTerminal: AttemptTerminal = terminal ?? (outcome === 'CANCELLED' ? 'cancelled' : 'failed');
   for (const a of s.attempts.filter((x) => x.registered)) {
-    releaseAttempt(step, a, handedOff ? 'cleanup' : 'quarantine', reason);
-    endAttempt(step, a, attemptTerminal);
+    finishAttempt(step, a, attemptTerminal, handedOff ? 'cleanup' : 'quarantine', reason);
   }
   if (outcome === 'CANCELLED' && s.prNumber !== null) {
     // The PR stays open for a human; the harness never deletes remote refs.

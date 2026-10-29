@@ -574,6 +574,25 @@ function checkTrace(input: TaskCoreInput, trace: TaskTrace, label: string): void
   assert.deepEqual(projections.map((p) => p.projectionSeq), projections.map((_p, i) => i + 1), `${label}: projection seq`);
   assert.equal(from, trace.summary.outcome, `${label}: final projection is the outcome`);
 
+  // Terminal outcome before lease release, per attempt: an attempt that held a lease records its outcome while it
+  // still holds it, on every path. An attempt that never asked for a lease ends cancelled, or failed only when the
+  // lookup after a failed registration found it (the pre-lease terminals).
+  commands.forEach((c, i) => {
+    if (c.type !== 'effect' || c.effect.kind !== 'releaseLease') return;
+    const n = c.effect.attemptNumber;
+    const outcomeAt = commands.findIndex((x) => x.type === 'effect' && x.effect.kind === 'recordAttemptOutcome' && x.effect.attemptNumber === n);
+    assert.ok(outcomeAt >= 0 && outcomeAt < i, `${label}: the lease of attempt ${n} is released before its outcome is recorded`);
+  });
+  const foundAfterFailure = new Set(trace.events.flatMap((e) => {
+    const request = e.type === 'result' ? seqRequests.get(e.seq) : undefined;
+    return e.type === 'result' && e.result.kind === 'findAttempt' && e.result.attemptId !== null && request?.kind === 'findAttempt' ? [request.attemptNumber] : [];
+  }));
+  for (const o of outcomes) {
+    if (reqs.some((r) => r.kind === 'acquireLease' && r.attemptNumber === o.attemptNumber)) continue;
+    assert.ok(o.terminal === 'cancelled' || (o.terminal === 'failed' && foundAfterFailure.has(o.attemptNumber)),
+      `${label}: attempt ${o.attemptNumber} never held a lease and ends ${o.terminal}`);
+  }
+
   // Resources: every lease released once, every workspace cleaned or quarantined once.
   for (const r of reqs) {
     if (r.kind === 'acquireLease') {
