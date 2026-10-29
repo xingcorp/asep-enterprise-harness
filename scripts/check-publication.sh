@@ -17,6 +17,9 @@
 #   scripts/check-publication.sh --scan-paths FILE...
 #                                            # abs-path scan of FILEs only: exit 0 clean,
 #                                            # 1 with hits, 2 when it cannot scan
+#   scripts/check-publication.sh --scan-tracked
+#                                            # abs-path scan of the tracked files only,
+#                                            # with the same exit codes
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -27,7 +30,8 @@ cd "$REPO_ROOT"
 # paths leaking into tracked files would expose the build environment. The
 # patterns live in one list, also read by the review-corpus collector: one ERE
 # per line; empty lines and '#' lines are ignored; a pattern line may not start
-# or end with whitespace. A list that cannot be read this way stops the gate.
+# or end with whitespace. A list that cannot be read this way, or a pattern grep
+# cannot run, stops the gate.
 LEAK_PATTERNS_FILE="$REPO_ROOT/scripts/lib/publication-leak-patterns.txt"
 LEAK_PATTERNS=()
 load_leak_patterns() {
@@ -49,32 +53,92 @@ load_leak_patterns() {
     echo "check-publication: the leak pattern list has no pattern" >&2
     exit 2
   fi
+  # Run every pattern once on empty input: no match is status 1; anything else
+  # means grep cannot run it, and no scan with it can be trusted.
+  local pat rc
+  for pat in "${LEAK_PATTERNS[@]}"; do
+    rc=0
+    grep -E -e "$pat" -- /dev/null >/dev/null 2>&1 || rc=$?
+    if [ "$rc" -ne 1 ]; then
+      echo "check-publication: grep cannot run the leak pattern '$pat' (status $rc)" >&2
+      exit 2
+    fi
+  done
 }
 load_leak_patterns
 
-# The scanner, its pattern list and the report doc legitimately name these patterns; exempt them.
-EXEMPT_REGEX='^(scripts/check-publication\.sh|scripts/lib/publication-leak-patterns\.txt|docs/implementation/phases/phase-01-publication-checklist\.md|docs/implementation/phases/phase-01-report\.md|docs/implementation/phases/phase-01-blockers\.md|artifacts/phase-01/.*)$'
+# The scanner and the phase 1 report docs legitimately name these patterns; exempt them.
+EXEMPT_REGEX='^(scripts/check-publication\.sh|docs/implementation/phases/phase-01-publication-checklist\.md|docs/implementation/phases/phase-01-report\.md|docs/implementation/phases/phase-01-blockers\.md|artifacts/phase-01/.*)$'
 
 scan_leaks() {
-  # Args: files. Prints hits. Returns 0 if any hit, 1 if clean.
-  local found=1 file
+  # Args: files. Prints `  <file>:<line>:<text>` per hit. Returns 0 if any hit,
+  # 1 if every file was scanned clean, and 2 when the scan cannot be trusted: no
+  # file, a file that is not a readable regular file, or grep failing on a file.
+  local found=1 file pat rc hits line
+  if [ "$#" -eq 0 ]; then
+    echo "check-publication: no file to scan" >&2
+    return 2
+  fi
+  hits="$(mktemp "${TMPDIR:-/tmp}/asep-leak-hit.XXXXXX")" || return 2
   for file in "$@"; do
-    [ -f "$file" ] || continue
+    if [ ! -f "$file" ] || [ ! -r "$file" ]; then
+      echo "check-publication: cannot read $file" >&2
+      rm -f "$hits"
+      return 2
+    fi
     for pat in "${LEAK_PATTERNS[@]}"; do
-      # -e for the same reason as scripts/secret-scan.sh: a pattern starting
-      # with '-' would otherwise be parsed as options and the scan would exit 2,
-      # which this `if` reads as "clean". No LEAK_PATTERNS entry begins with a
-      # dash today; this keeps adding one from silently disabling the scanner.
-      if grep -nE -e "$pat" "$file" >/tmp/asep-leak-hit.$$ 2>/dev/null; then
-        while IFS= read -r line; do
-          echo "  ${file}:${line}"
-        done < /tmp/asep-leak-hit.$$
-        found=0
-      fi
+      # -e and -- so neither a pattern nor a file name starting with '-' is
+      # parsed as an option.
+      rc=0
+      grep -nE -e "$pat" -- "$file" >"$hits" 2>/dev/null || rc=$?
+      case "$rc" in
+        0)
+          while IFS= read -r line; do
+            echo "  ${file}:${line}"
+          done <"$hits"
+          found=0
+          ;;
+        1) ;;
+        *)
+          echo "check-publication: grep failed (status $rc) on $file" >&2
+          rm -f "$hits"
+          return 2
+          ;;
+      esac
     done
   done
-  rm -f /tmp/asep-leak-hit.$$
-  return $found
+  rm -f "$hits"
+  return "$found"
+}
+
+scan_tracked() {
+  # Scan every tracked file outside EXEMPT_REGEX, with scan_leaks' return codes.
+  # Names are read NUL-separated, so a name Git would quote is scanned as it is.
+  local listing f rc=0
+  local files=()
+  listing="$(mktemp "${TMPDIR:-/tmp}/asep-tracked.XXXXXX")" || return 2
+  if ! git ls-files -z >"$listing"; then
+    echo "check-publication: cannot list the tracked files" >&2
+    rm -f "$listing"
+    return 2
+  fi
+  while IFS= read -r -d '' f; do
+    [[ "$f" =~ $EXEMPT_REGEX ]] && continue
+    files+=("$f")
+  done <"$listing"
+  rm -f "$listing"
+  scan_leaks ${files[@]+"${files[@]}"} || rc=$?
+  return "$rc"
+}
+
+# The exit code of a scan-only mode for a scan's return code: 0 clean, 1 with
+# hits, 2 when it cannot scan.
+scan_exit_code() {
+  case "$1" in
+    0) echo 1 ;;
+    1) echo 0 ;;
+    *) echo 2 ;;
+  esac
 }
 
 self_test() {
@@ -145,19 +209,15 @@ main() {
     self_test
     return
   fi
+  local rc=0
   if [ "${1:-}" = "--scan-paths" ]; then
     shift
-    local f
-    for f in "$@"; do
-      if [ ! -f "$f" ]; then
-        echo "check-publication: not a file: $f" >&2
-        return 2
-      fi
-    done
-    if scan_leaks "$@"; then
-      return 1
-    fi
-    return 0
+    scan_leaks "$@" || rc=$?
+    return "$(scan_exit_code "$rc")"
+  fi
+  if [ "${1:-}" = "--scan-tracked" ]; then
+    scan_tracked || rc=$?
+    return "$(scan_exit_code "$rc")"
   fi
 
   local fail=0
@@ -166,19 +226,19 @@ main() {
   check_license || fail=1
 
   echo "check-publication: absolute-path / internal-path leak scan"
-  local files=()
-  while IFS= read -r f; do
-    [[ "$f" =~ $EXEMPT_REGEX ]] && continue
-    files+=("$f")
-  done < <(git ls-files)
-  if scan_leaks "${files[@]}" > /tmp/asep-leak-report.$$ 2>/dev/null; then
-    echo "check-publication: FAIL — internal path leaks found:" >&2
-    cat /tmp/asep-leak-report.$$ >&2
-    rm -f /tmp/asep-leak-report.$$
-    fail=1
-  else
-    echo "  abs-path scan: clean"
-  fi
+  scan_tracked > /tmp/asep-leak-report.$$ || rc=$?
+  case "$rc" in
+    0)
+      echo "check-publication: FAIL — internal path leaks found:" >&2
+      cat /tmp/asep-leak-report.$$ >&2
+      fail=1
+      ;;
+    1) echo "  abs-path scan: clean" ;;
+    *)
+      echo "check-publication: FAIL — the abs-path scan could not complete" >&2
+      fail=1
+      ;;
+  esac
   rm -f /tmp/asep-leak-report.$$
 
   echo "check-publication: git-history secret scan"

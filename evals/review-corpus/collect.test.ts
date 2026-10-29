@@ -353,6 +353,87 @@ test('the collector and the publication gate read one list of leak patterns', ()
   }
 });
 
+test('the publication path scanner fails closed', () => {
+  // The gate and its pattern list are copied into a scratch root, so the list can be changed
+  // and a tree tracked without touching the repository. Private paths are assembled at runtime.
+  const scratch = mkdtempSync(join(tmpdir(), 'asep-leak-closed-'));
+  const privatePath = `${'/Us' + 'ers/'}someone/workspace`;
+  try {
+    for (const file of ['scripts/check-publication.sh', LEAK_PATTERNS_FILE]) {
+      mkdirSync(dirname(join(scratch, file)), { recursive: true });
+      cpSync(join(ROOT, file), join(scratch, file));
+    }
+    const list = readFileSync(join(ROOT, LEAK_PATTERNS_FILE), 'utf8');
+    const run = (mode: '--scan-paths' | '--scan-tracked' | '--self-test', args: readonly string[] = [], env: NodeJS.ProcessEnv = process.env) =>
+      spawnSync('bash', [join(scratch, 'scripts/check-publication.sh'), mode, ...args], { cwd: scratch, env, input: '' });
+    const status = (...args: Parameters<typeof run>) => run(...args).status;
+    writeFileSync(join(scratch, 'clean.txt'), 'publishable\n');
+    writeFileSync(join(scratch, 'leak.txt'), `home = ${privatePath}\n`);
+
+    // The review's probe table, scanning named files: 0 clean, 1 with a hit, 2 when the scan
+    // cannot be trusted.
+    assert.equal(status('--scan-paths', ['clean.txt']), 0, 'clean file');
+    assert.equal(status('--scan-paths', ['clean.txt', 'leak.txt']), 1, 'a file with a hit');
+    assert.equal(status('--scan-paths', ['missing.txt']), 2, 'a path that does not exist');
+    assert.equal(status('--scan-paths', []), 2, 'no file');
+    mkdirSync(join(scratch, 'dir'));
+    assert.equal(status('--scan-paths', ['dir']), 2, 'a directory');
+    if (process.getuid?.() !== 0) {
+      // Root reads a file whatever its mode, so only another user can prove this case.
+      writeFileSync(join(scratch, 'unreadable.txt'), 'publishable\n', { mode: 0o000 });
+      assert.equal(status('--scan-paths', ['unreadable.txt']), 2, 'an unreadable file');
+    }
+    // A file named like an option is still a file: it is scanned, not read as a grep flag.
+    writeFileSync(join(scratch, '-v'), `home = ${privatePath}\n`);
+    assert.equal(status('--scan-paths', ['-v']), 1, 'a file named -v');
+
+    // A grep that fails on a file is not a clean scan: a stub that refuses every real file.
+    const bin = join(scratch, 'bin');
+    mkdirSync(bin);
+    writeFileSync(join(bin, 'grep'), '#!/bin/sh\nfor a; do last=$a; done\n[ "$last" = /dev/null ] && exit 1\nexit 127\n', { mode: 0o755 });
+    assert.equal(status('--scan-paths', ['clean.txt'], { ...process.env, PATH: `${bin}:${process.env['PATH'] ?? ''}` }), 2, 'grep exits 127');
+
+    // A pattern grep cannot run fails the gate before any file is scanned, alone or beside valid
+    // ones, and before the scanner's self-test can report.
+    for (const [label, text] of [
+      ['only an invalid pattern', '[\n'],
+      ['the list plus an invalid pattern', `${list}[\n`],
+    ] as const) {
+      writeFileSync(join(scratch, LEAK_PATTERNS_FILE), text);
+      assert.equal(status('--scan-paths', ['clean.txt']), 2, label);
+      assert.equal(status('--self-test'), 2, `${label}: self-test`);
+    }
+    writeFileSync(join(scratch, LEAK_PATTERNS_FILE), list);
+
+    // The tracked-file scan reads NUL-separated names and exempts no part of the pattern list.
+    const git = (...args: string[]) => assert.equal(spawnSync('git', args, { cwd: scratch }).status, 0, `git ${args.join(' ')}`);
+    rmSync(join(scratch, 'leak.txt'));
+    rmSync(join(scratch, '-v'));
+    rmSync(join(scratch, 'unreadable.txt'), { force: true });
+    rmSync(bin, { recursive: true });
+    git('init', '-q');
+    git('add', '-A');
+    assert.equal(status('--scan-tracked'), 0, 'a clean tree, the pattern list included');
+    // A private path in a comment of the list is a leak like any other.
+    writeFileSync(join(scratch, LEAK_PATTERNS_FILE), `${list}# for example ${privatePath}\n`);
+    const commented = run('--scan-tracked');
+    assert.equal(commented.status, 1, 'a private path in a comment of the list');
+    assert.match(commented.stdout.toString('utf8'), new RegExp(`^  ${LEAK_PATTERNS_FILE.replaceAll('.', '\\.')}:`, 'm'));
+    writeFileSync(join(scratch, LEAK_PATTERNS_FILE), list);
+    // A name Git quotes in its line output is still scanned.
+    writeFileSync(join(scratch, 'café.txt'), `home = ${privatePath}\n`);
+    git('add', '-A');
+    const quoted = run('--scan-tracked');
+    assert.equal(quoted.status, 1, 'a tracked name with a non-ASCII character');
+    assert.match(quoted.stdout.toString('utf8'), /^ {2}café\.txt:1:/m);
+    // A tracked file that cannot be read stops the scan.
+    rmSync(join(scratch, 'café.txt'));
+    assert.equal(status('--scan-tracked'), 2, 'a tracked file missing from the tree');
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
 test('a publication gate that does not complete aborts collection', () => {
   const encode = (text: string) => new TextEncoder().encode(text);
   const [a, b] = ['a'.repeat(64), 'b'.repeat(64)];
