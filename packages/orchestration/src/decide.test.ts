@@ -238,6 +238,45 @@ test('budget precision: the input rules reject money that is not exact, not posi
   ]);
 });
 
+// The base branch is a Git branch name (R31's ref-name rules); the reviewer's four bases come first.
+const REFUSED_BASE_BRANCHES: readonly (readonly [string, unknown])[] = [
+  ['undefined', undefined],
+  ['null', null],
+  ['the empty string', ''],
+  ['main..evil', 'main..evil'],
+  ['a name with a leading dash', '-main'],
+  ['a name with a space', 'release 1'],
+  ['a name with a control character', 'release\u0001'],
+  ['a name with DEL', 'release\u007f'],
+  ['a name with a tilde', 'main~1'],
+  ['a name with a caret', 'main^1'],
+  ['a name with a colon', 'main:evil'],
+  ['a name with a question mark', 'main?'],
+  ['a name with an asterisk', 'main*'],
+  ['a name with an open bracket', 'main[1]'],
+  ['a name with a backslash', 'main\\evil'],
+  ['a reflog selector', 'main@{1}'],
+  ['a double slash', 'release//1'],
+  ['a trailing slash', 'release/'],
+  ['a trailing dot', 'release.'],
+  ['a .lock suffix', 'release.lock'],
+  ['a name over 255 characters', 'r'.repeat(256)],
+];
+
+for (const [name, baseBranch] of REFUSED_BASE_BRANCHES) {
+  test(`input rules: a base branch that is ${name} is refused`, () => {
+    const errors = taskInputErrors(baseInput({ baseBranch: baseBranch as string }));
+    assert.equal(errors.length, 1, JSON.stringify(errors));
+    assert.match(errors[0]!, /^baseBranch: must be a Git branch name/);
+  });
+}
+
+test('input rules: valid branch names other than main pass as the base branch', () => {
+  for (const baseBranch of ['main', 'release/2026.10', 'develop', 'feature/x-1', 'refs/heads/main', 'v1.2-rc', 'a@b', 'r'.repeat(255)]) {
+    assert.deepEqual(taskInputErrors(baseInput({ baseBranch })), [], baseBranch);
+  }
+});
+
 test('budget precision: a reported 5.0000004 on a cap of 5 is an overrun of one micro-dollar; 1.1 on 1.1 is none', () => {
   const over = runTaskSequentially(baseInput(), scripted({
     runAgent: () => ({ kind: 'runAgent', status: 'AGENT_DONE', reportedCostUsd: 5.0000004, reportedToolCalls: 10, wallClockMs: 1000, failureClass: null }),
@@ -1755,6 +1794,18 @@ for (const cancelled of [false, true]) {
     assertPublished(trace, 7, cancelled);
   });
 }
+
+test('publication: a task based on another branch publishes and reconciles against that branch, never a default', () => {
+  // The reviewer's NONDEFAULT_BASE and HARDCODE_MAIN_COUNTEREXAMPLE: every request that names the PR's base takes it
+  // from the task input.
+  for (const baseBranch of ['release', 'develop', 'main']) {
+    const happy = runTaskSequentially(baseInput({ baseBranch }), scripted());
+    assert.deepEqual(requests(happy.commands).flatMap((r) => (r.kind === 'upsertPullRequest' ? [r.baseBranch] : [])), [baseBranch]);
+    const reconciling = runTaskSequentially(baseInput({ baseBranch }), scripted({ upsertPullRequest: publicationFails('unknown') }));
+    assert.deepEqual(reconcileRequests(reconciling).map((r) => r.kind === 'reconcilePublication' && r.expectedBaseBranch), [baseBranch]);
+    assertPublished(reconciling, 7, false);
+  }
+});
 
 test('publication: the reconciliation continues the publication unit; a pause does not withhold it', () => {
   const trace = runTaskSequentially(baseInput(), scripted({ publishBranch: publicationFails('unknown') }, {

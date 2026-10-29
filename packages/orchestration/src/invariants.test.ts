@@ -18,7 +18,7 @@ import type { RunCommand, RunCoreInput, RunEvent } from './run-core.js';
 import { runTaskSequentially } from './sequential-interpreter.js';
 import type { Answer, TaskEnvironment, TaskTrace } from './sequential-interpreter.js';
 import { decideTask, startTask } from './task-core.js';
-import { TASK_BASE, TASK_BASE_BRANCH, attemptOf, branchFor, effectsOf, happyAnswer, proceed, ref, requests, shaFor } from './test-support/fixtures.js';
+import { TASK_BASE, attemptOf, branchFor, effectsOf, happyAnswer, proceed, ref, requests, shaFor } from './test-support/fixtures.js';
 import { MAX_USD } from './budget.js';
 import { DEFAULT_ORCHESTRATION_POLICY, NEVER_REPLACEABLE_FAILURE_CLASSES } from './defaults.js';
 import type {
@@ -87,8 +87,13 @@ function cents(rng: Rng, lo: number, hi: number): number {
   return rng.int(lo * 100, hi * 100) / 100;
 }
 
-// The bound choices draw from their own stream (`side`), so adding them left every other draw of a seed unchanged.
-function randomInput(rng: Rng, side: Rng): TaskCoreInput {
+// Base branches the generator publishes against; most are not `main`, so a base taken from anywhere but the input
+// shows up.
+const BASE_BRANCHES = ['main', 'release/2026.10', 'develop', 'hotfix/x-1.2'] as const;
+
+// The bound choices draw from their own stream (`side`), and the base branch from another (`bases`), so adding them
+// left every other draw of a seed unchanged.
+function randomInput(rng: Rng, side: Rng, bases: Rng): TaskCoreInput {
   // Sometimes every money cap sits at or next to the input bound, with no verification reserve, so the reservation
   // still fits and usage around the bound reaches the overrun check.
   const nearBound = side.chance(0.12);
@@ -99,7 +104,7 @@ function randomInput(rng: Rng, side: Rng): TaskCoreInput {
     runId: 'run-p' as RunId,
     risk: 'R0',
     baseSha: TASK_BASE,
-    baseBranch: TASK_BASE_BRANCH,
+    baseBranch: bases.pick(BASE_BRANCHES),
     attemptBudget: { maxTurns: 10, maxToolCalls: 50, maxCostUsd: attemptCost, maxWallClockMinutes: rng.int(10, 60) },
     taskBudget: {
       maxAttempts: rng.int(1, 4),
@@ -373,6 +378,12 @@ function checkTrace(input: TaskCoreInput, trace: TaskTrace, label: string): void
 
   // One-PR-per-task.
   assert.ok(reqs.filter((r) => r.kind === 'publishBranch').length <= 1, `${label}: at most one push`);
+
+  // Every request that names the PR's base takes it from the task input, never from a default or another request.
+  for (const r of reqs) {
+    if (r.kind === 'upsertPullRequest') assert.equal(r.baseBranch, input.baseBranch, `${label}: the PR upsert targets the input's base`);
+    if (r.kind === 'reconcilePublication') assert.equal(r.expectedBaseBranch, input.baseBranch, `${label}: the reconciliation expects the input's base`);
+  }
   assert.ok(reqs.filter((r) => r.kind === 'upsertPullRequest').length <= 1, `${label}: at most one PR upsert`);
 
   const seqRequests = new Map<number, TaskRequest>();
@@ -859,7 +870,7 @@ function contentValid(kind: ApprovalKind, decision: ApprovalDecisionValue | null
 function generate(seed: number): { input: TaskCoreInput; trace: TaskTrace } {
   const rng = rngFor(seed);
   const side = rngFor(seed + 1_000_003);
-  const input = randomInput(rng, side);
+  const input = randomInput(rng, side, rngFor(seed + 4_000_037));
   return { input, trace: runTaskSequentially(input, randomEnvironment(rng, side, input)) };
 }
 
@@ -872,7 +883,7 @@ const PUBLICATION_REQUESTS: readonly TaskRequestKind[] = ['publishBranch', 'upse
 function generatePublication(seed: number): { input: TaskCoreInput; trace: TaskTrace } {
   const rng = rngFor(seed + 2_000_003);
   const side = rngFor(seed + 3_000_017);
-  const input = randomInput(rng, side);
+  const input = randomInput(rng, side, rngFor(seed + 5_000_011));
   const random = randomEnvironment(rng, side, input);
   return {
     input,
@@ -986,6 +997,7 @@ test('the generator covers repair, replacement, approvals, pause and cancel path
 test('generated publication traces satisfy the invariants and meet every kind of remote a reconciliation can read', () => {
   const seen = new Set<string>();
   let published = 0;
+  let publishedOffMain = 0;
   for (let seed = 1; seed <= 1000; seed += 1) {
     const { input, trace } = generatePublication(seed);
     checkTrace(input, trace, `publication seed ${seed}`);
@@ -993,6 +1005,7 @@ test('generated publication traces satisfy the invariants and meet every kind of
     const push = requests(trace.commands).find((r) => r.kind === 'publishBranch');
     if (push?.kind !== 'publishBranch') continue;
     published += 1;
+    if (input.baseBranch !== 'main') publishedOffMain += 1;
     const identity = publicationIdentity(input, trace, push.attemptNumber);
     const upsertSeq = trace.commands.flatMap((c) => (c.type === 'request' && c.request.kind === 'upsertPullRequest' ? [c.seq] : []))[0] ?? Infinity;
     for (const e of trace.events) {
@@ -1005,6 +1018,7 @@ test('generated publication traces satisfy the invariants and meet every kind of
     }
   }
   assert.ok(published >= 250, `only ${published} of 1000 traces published`);
+  assert.ok(publishedOffMain >= 150, `only ${publishedOffMain} traces published against a base other than main`);
   // Every predicate clause is met on its own, on both paths: a PR that differs only in its base, its head branch or
   // its head SHA, with the branch at the attempt's commit.
   for (const path of ['push', 'pr']) {

@@ -19,6 +19,20 @@ function softCapErrors(errors: string[], path: string, softUsd: number, capPath:
   if (!isExactUsd(softUsd) || softUsd > capUsd) errors.push(`${path}: must be an amount exact in micro-USD, at most ${capPath}`);
 }
 
+const BRANCH_NAME_MAX_LENGTH = 255;
+
+/** Why a value is not a Git branch name under the ref-name rules the input boundary applies, or null. */
+function branchNameProblem(name: unknown): string | null {
+  if (typeof name !== 'string' || name.length === 0) return 'a non-empty string';
+  if (name.length > BRANCH_NAME_MAX_LENGTH) return `at most ${BRANCH_NAME_MAX_LENGTH} characters`;
+  if (name.startsWith('-')) return 'no leading "-"';
+  if (/[\u0000- \u007f]/.test(name)) return 'no control or space character';
+  if (/[~^:?*[\\]/.test(name)) return 'none of ~ ^ : ? * [ \\';
+  for (const part of ['..', '@{', '//']) if (name.includes(part)) return `no "${part}"`;
+  for (const end of ['/', '.', '.lock']) if (name.endsWith(end)) return `not ending in "${end}"`;
+  return null;
+}
+
 /** Why the policy is invalid, or an empty list. */
 export function orchestrationPolicyErrors(policy: OrchestrationPolicy): string[] {
   const errors: string[] = [];
@@ -39,9 +53,14 @@ export function orchestrationPolicyErrors(policy: OrchestrationPolicy): string[]
   return errors;
 }
 
-/** Why the task input is invalid, or an empty list: every money amount must be exact and in range. */
+/**
+ * Why the task input is invalid, or an empty list: every money amount must be exact and in range, and the base branch
+ * the PR targets must be a Git branch name.
+ */
 export function taskInputErrors(input: TaskCoreInput): string[] {
   const errors: string[] = [];
+  const branchProblem = branchNameProblem(input.baseBranch);
+  if (branchProblem !== null) errors.push(`baseBranch: must be a Git branch name (${branchProblem})`);
   amountErrors(errors, 'attemptBudget.maxCostUsd', input.attemptBudget.maxCostUsd, true);
   amountErrors(errors, 'taskBudget.maxCostUsd', input.taskBudget.maxCostUsd, true);
   softCapErrors(errors, 'taskBudget.softCostUsd', input.taskBudget.softCostUsd, 'taskBudget.maxCostUsd', input.taskBudget.maxCostUsd);

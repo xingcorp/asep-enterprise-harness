@@ -21,7 +21,8 @@ import type {
 import type { Answer, TaskEnvironment } from '../sequential-interpreter.js';
 
 export const TASK_BASE = 'b'.repeat(40);
-export const TASK_BASE_BRANCH = 'main';
+/** Not `main`, so a base the core takes from anywhere but the input shows up in every scenario. */
+export const TASK_BASE_BRANCH = 'release/2026.10';
 
 export function shaFor(attemptNumber: number): string {
   return attemptNumber.toString(16).padStart(40, 'c');
