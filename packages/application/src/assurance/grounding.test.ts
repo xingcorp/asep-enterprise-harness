@@ -109,30 +109,73 @@ test('resolution claims are grounded against the repair delta', () => {
     ...over,
   });
 
-  assert.deepEqual(groundResolution(ctx, claim({})), {
+  const prior = { file: 'src/feature.ts', lineStart: 2, lineEnd: 2 };
+  assert.deepEqual(groundResolution(ctx, claim({}), prior), {
     grounded: true,
     reason: null,
     fileInRepairDelta: true,
-    lineInRepairDelta: true,
+    changedLine: true,
   });
   // A file the repair did not change: grounded citation, but outside the delta.
-  assert.deepEqual(groundResolution(ctx, claim({ resolutionFile: 'src/util.ts', resolutionLine: 1 })), {
+  assert.deepEqual(groundResolution(ctx, claim({ resolutionFile: 'src/util.ts', resolutionLine: 1 }), prior), {
     grounded: true,
     reason: null,
     fileInRepairDelta: false,
-    lineInRepairDelta: false,
+    changedLine: false,
   });
   // Inside a changed file but away from the changed lines.
-  assert.deepEqual(groundResolution(ctx, claim({ resolutionLine: 1 })), {
+  assert.deepEqual(groundResolution(ctx, claim({ resolutionLine: 1 }), prior), {
     grounded: true,
     reason: null,
     fileInRepairDelta: true,
-    lineInRepairDelta: false,
+    changedLine: false,
   });
-  assert.equal(groundResolution(ctx, claim({ resolutionFile: 'src/nowhere.ts' })).grounded, false);
-  assert.equal(groundResolution(ctx, claim({ resolutionFile: null, resolutionLine: null })).grounded, false);
-  assert.equal(groundResolution(ctx, claim({ evidence: 'done' })).grounded, false);
-  assert.equal(groundResolution(ctx, claim({ status: 'PARTIAL' })).grounded, false);
+  assert.equal(groundResolution(ctx, claim({ resolutionFile: 'src/nowhere.ts' }), prior).grounded, false);
+  assert.equal(groundResolution(ctx, claim({ resolutionFile: null, resolutionLine: null }), prior).grounded, false);
+  assert.equal(groundResolution(ctx, claim({ evidence: 'done' }), prior).grounded, false);
+  assert.equal(groundResolution(ctx, claim({ status: 'PARTIAL' }), prior).grounded, false);
   // Without a repair delta (a fresh review) nothing is inside it.
-  assert.equal(groundResolution({ ...ctx, repairDelta: null }, claim({})).fileInRepairDelta, false);
+  assert.equal(groundResolution({ ...ctx, repairDelta: null }, claim({}), prior).fileInRepairDelta, false);
+});
+
+test('only a changed line closes a finding, never its context', () => {
+  // Post-image of src/feature.ts: 1 signature, 2 return, 3 comment, 4 brace.
+  const lines = ['export function greet(name: string): string {', '  return `hello ${name}`;', '  // escaped by the caller', '}'];
+  const world = worldFromDiff([{ path: 'src/feature.ts', status: 'A', added: lines }], { round: 2, allowedPaths: ['src/**'] });
+  const built = buildReviewPacket(world.sources, world.limits);
+  const ctxFor = (delta: string): GroundingContext => ({
+    packet: built.packet,
+    diff: parseUnifiedDiff(new TextDecoder().decode(world.contents.get('art-diff')!)),
+    repairDelta: parseUnifiedDiff(delta),
+    minChars: { evidence: 40, requiredFix: 20 },
+  });
+  const header = 'diff --git a/src/feature.ts b/src/feature.ts\n--- a/src/feature.ts\n+++ b/src/feature.ts\n';
+  const claim = (resolutionLine: number): PriorFindingClaimOutput => ({
+    priorFindingId: 'prior-1',
+    status: 'RESOLVED',
+    evidence: 'the comment states that the caller escapes the name before the call',
+    resolutionFile: 'src/feature.ts',
+    resolutionLine,
+  });
+  const prior = { file: 'src/feature.ts', lineStart: 2, lineEnd: 2 };
+
+  // The repair added only line 3; lines 1, 2 and 4 are context in the same hunk.
+  const added = ctxFor(`${header}@@ -1,3 +1,4 @@\n ${lines[0]}\n ${lines[1]}\n+${lines[2]}\n ${lines[3]}\n`);
+  const changed = [1, 2, 3, 4].map((line) => groundResolution(added, claim(line), prior));
+  assert.deepEqual(changed.map((r) => r.grounded), [true, true, true, true]);
+  assert.deepEqual(changed.map((r) => r.fileInRepairDelta), [true, true, true, true]);
+  assert.deepEqual(changed.map((r) => r.changedLine), [false, false, true, false]);
+
+  // Deletion only: the repair removed old line 2, the finding's own cited line.
+  const removedTheLine = ctxFor(`${header}@@ -1,3 +1,2 @@\n ${lines[0]}\n-  return name;\n ${lines[1]}\n`);
+  assert.equal(groundResolution(removedTheLine, claim(1), prior).changedLine, true);
+  // ...but not when the finding cites a line the deletion left in place.
+  assert.equal(groundResolution(removedTheLine, claim(1), { ...prior, lineStart: 2, lineEnd: 3 }).changedLine, false);
+  assert.equal(groundResolution(removedTheLine, claim(1), { ...prior, lineStart: 3, lineEnd: 3 }).changedLine, false);
+  // ...nor for a finding in another file, nor one without lines.
+  assert.equal(groundResolution(removedTheLine, claim(1), { ...prior, file: 'src/util.ts' }).changedLine, false);
+  assert.equal(groundResolution(removedTheLine, claim(1), { file: 'src/feature.ts' }).changedLine, false);
+  // A change that also adds lines is not deletion-only: only its added lines close.
+  const replaced = ctxFor(`${header}@@ -1,3 +1,3 @@\n ${lines[0]}\n-  return name;\n+${lines[1]}\n ${lines[2]}\n`);
+  assert.deepEqual([1, 2, 3].map((line) => groundResolution(replaced, claim(line), prior).changedLine), [false, true, false]);
 });

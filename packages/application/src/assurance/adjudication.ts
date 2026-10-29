@@ -267,10 +267,10 @@ function closePrior(
   const eligible = new Set(input.reviewers.filter((r) => r.independentOfImplementer).map((r) => r.reviewerConfigId));
   const resolved = claims
     .filter((c) => c.claim.status === 'RESOLVED')
-    .map((c) => ({ ...c, grounding: groundResolution(ctx, c.claim) }));
+    .map((c) => ({ ...c, grounding: groundResolution(ctx, c.claim, F) }));
 
   for (const c of resolved) {
-    if (c.by === F.raisedBy || !eligible.has(c.by) || !c.grounding.grounded || !c.grounding.lineInRepairDelta) continue;
+    if (c.by === F.raisedBy || !eligible.has(c.by) || !c.grounding.grounded || !c.grounding.changedLine) continue;
     const verified = dispose(agg, {
       ...at,
       disposition: 'RESOLUTION_VERIFIED',

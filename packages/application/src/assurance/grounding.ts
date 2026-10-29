@@ -38,8 +38,19 @@ export interface GroundingResult {
 export interface ResolutionGrounding extends GroundingResult {
   /** The cited file is changed by the repair delta. */
   readonly fileInRepairDelta: boolean;
-  /** The cited line lies in a changed region of the repair delta. */
-  readonly lineInRepairDelta: boolean;
+  /**
+   * The citation satisfies the changed-line predicate: the cited line is an added line of
+   * the repair delta's entry for the cited file, or that entry only deletes lines and every
+   * line the prior finding cites is among them. A context line never qualifies.
+   */
+  readonly changedLine: boolean;
+}
+
+/** The location a prior finding cites. */
+export interface PriorCitation {
+  readonly file?: string | null | undefined;
+  readonly lineStart?: number | null | undefined;
+  readonly lineEnd?: number | null | undefined;
 }
 
 const GROUNDED: GroundingResult = { grounded: true, reason: null };
@@ -92,18 +103,25 @@ export function groundFinding(ctx: GroundingContext, finding: ModelFindingOutput
   return groundRange(ctx, finding.file, finding.lineStart, finding.lineEnd);
 }
 
-/** Ground a RESOLVED claim and locate its citation relative to the repair delta. */
-export function groundResolution(ctx: GroundingContext, claim: PriorFindingClaimOutput): ResolutionGrounding {
-  const outside = { fileInRepairDelta: false, lineInRepairDelta: false };
+/** The changed-line predicate for one delta entry; see `ResolutionGrounding.changedLine`. */
+function isChangedLine(entry: DiffFileChange, file: string, line: number | null, prior: PriorCitation): boolean {
+  if (entry.added.length > 0) return line !== null && entry.added.some((l) => l.line === line);
+  const start = prior.lineStart ?? null;
+  const end = prior.lineEnd ?? start;
+  if (prior.file !== file || start === null || end === null || end < start) return false;
+  const removed = new Set(entry.removed.map((l) => l.line));
+  for (let n = start; n <= end; n += 1) if (!removed.has(n)) return false;
+  return true;
+}
+
+/** Ground a RESOLVED claim against `prior` and locate its citation in the repair delta. */
+export function groundResolution(ctx: GroundingContext, claim: PriorFindingClaimOutput, prior: PriorCitation): ResolutionGrounding {
+  const outside = { fileInRepairDelta: false, changedLine: false };
   if (claim.status !== 'RESOLVED') return { ...refute('not-a-resolution'), ...outside };
   if (claim.evidence.trim().length < ctx.minChars.evidence) return { ...refute('evidence-too-short'), ...outside };
   if (claim.resolutionFile === null) return { ...refute('citation-missing'), ...outside };
   const range = groundRange(ctx, claim.resolutionFile, claim.resolutionLine, claim.resolutionLine);
   const entry = diffEntry(ctx.repairDelta, claim.resolutionFile);
-  const line = claim.resolutionLine;
-  const lineInRepairDelta =
-    entry !== undefined &&
-    line !== null &&
-    entry.hunks.some((h) => line >= h.newStart && line <= h.newStart + Math.max(h.newLines, 1) - 1);
-  return { ...range, fileInRepairDelta: entry !== undefined, lineInRepairDelta: range.grounded && lineInRepairDelta };
+  const changedLine = entry !== undefined && isChangedLine(entry, claim.resolutionFile, claim.resolutionLine, prior);
+  return { ...range, fileInRepairDelta: entry !== undefined, changedLine: range.grounded && changedLine };
 }

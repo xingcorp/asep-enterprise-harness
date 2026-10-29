@@ -444,6 +444,31 @@ test('closure without change keeps the finding open', () => {
   assert.deepEqual([reopened.effectiveState, reopened.rule], ['OPEN', 'closure-without-change']);
 });
 
+test('a resolution citing unchanged context leaves the finding blocking', () => {
+  // The repair adds only line 3 of src/feature.ts; line 2, the finding's line, is context
+  // directly above it.
+  const delta = parseUnifiedDiff(
+    [
+      'diff --git a/src/feature.ts b/src/feature.ts',
+      '--- a/src/feature.ts',
+      '+++ b/src/feature.ts',
+      '@@ -1,2 +1,3 @@',
+      ' export function greet(name: string): string {',
+      '   return `hello ${name}`;',
+      '+}',
+      '',
+    ].join('\n'),
+  );
+  const context = adjudicate(reReview({ comparator: [{ ...RESOLVED, resolutionLine: 2 }] }, { repairDelta: delta })).record;
+  assert.notEqual(context.closureDecisions[0]!.effectiveState, 'VERIFIED');
+  assert.equal(context.outcome, 'REPAIR');
+  assert.deepEqual(context.blocking.map((b) => b.findingRef), ['prior:prior-1']);
+  // Citing the added line itself verifies.
+  const edited = adjudicate(reReview({ comparator: [{ ...RESOLVED, resolutionLine: 3 }] }, { repairDelta: delta })).record;
+  assert.deepEqual([edited.closureDecisions[0]!.effectiveState, edited.closureDecisions[0]!.rule], ['VERIFIED', 'independent-reviewer']);
+  assert.equal(edited.outcome, 'PROCEED');
+});
+
 test('closure authority decides which prior findings still block', () => {
   // A different, independent reviewer with a grounded resolution in the repair delta verifies.
   const verified = adjudicate(reReview({ comparator: [RESOLVED] })).record;
