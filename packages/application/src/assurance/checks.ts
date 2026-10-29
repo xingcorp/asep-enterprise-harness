@@ -263,13 +263,24 @@ function falseGreenFindings(
 
   for (const { checkId, verdict } of recorded) {
     const check = checks.get(checkId);
-    if (verdict === 'PASS' && check !== undefined && check.exitCode !== 0) {
+    if (verdict !== 'PASS' || check === undefined) continue;
+    if (check.exitCode !== 0) {
       findings.push(
         ruleFinding(
           'exit-code-verdict-mismatch',
           { file: null, lineStart: null, subject: `check:${checkId}` },
           `check "${checkId}" (${check.command}) is recorded PASS but its raw exit code is ${check.exitCode}`,
           'Fix the evidence reduction so the recorded verdict follows the raw exit code',
+        ),
+      );
+    }
+    if (check.testSummary !== null && check.testSummary.fail > 0) {
+      findings.push(
+        ruleFinding(
+          'failed-tests-recorded-pass',
+          { file: null, lineStart: null, subject: `check:${checkId}` },
+          `check "${checkId}" (${check.command}) is recorded PASS but its ${check.testSummary.runner} summary reports ${check.testSummary.fail} failed`,
+          'Fix the evidence reduction so a run with failing tests is never recorded as passing',
         ),
       );
     }
@@ -288,13 +299,19 @@ function falseGreenFindings(
     }
   }
 
+  // Executed tests are the summary's tests less those skipped or left todo. A run that
+  // executed none proves nothing, whatever its exit code. An unparsed format raises nothing.
   for (const check of packet.execution.checks) {
-    if (TEST_CATEGORIES.has(check.category) && check.exitCode === 0 && check.testSummary !== null && check.testSummary.tests === 0) {
+    const summary = check.testSummary;
+    if (!TEST_CATEGORIES.has(check.category) || summary === null) continue;
+    const executed = summary.tests - summary.skipped - summary.todo;
+    if (executed <= 0) {
       findings.push(
         ruleFinding(
           'zero-tests-executed',
           { file: null, lineStart: null, subject: `check:${check.id}` },
-          `check "${check.id}" (${check.command}) exited 0 but its ${check.testSummary.runner} summary reports 0 tests`,
+          `check "${check.id}" (${check.command}) exited ${check.exitCode} but its ${summary.runner} summary reports ${summary.tests} tests, ` +
+            `${summary.skipped} skipped and ${summary.todo} todo: none executed`,
           'Make the check execute the tests it is meant to run',
         ),
       );

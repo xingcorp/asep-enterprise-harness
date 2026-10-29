@@ -13,6 +13,7 @@ export type CheckRuleId =
   | 'trojan-source'
   | 'exit-code-verdict-mismatch'
   | 'required-check-missing'
+  | 'failed-tests-recorded-pass'
   | 'zero-tests-executed'
   | 'skipped-tests-introduced'
   | 'test-file-deleted'
@@ -45,7 +46,16 @@ export const CHECK_RULES: Readonly<
     category: 'EVIDENCE_INTEGRITY',
     summary: 'an acceptance check of the work order is missing from the evidence',
   },
-  'zero-tests-executed': { severity: 'HIGH', category: 'EVIDENCE_INTEGRITY', summary: 'a test check exited 0 having run zero tests' },
+  'failed-tests-recorded-pass': {
+    severity: 'HIGH',
+    category: 'EVIDENCE_INTEGRITY',
+    summary: 'a check is recorded as passing while its test summary reports failures',
+  },
+  'zero-tests-executed': {
+    severity: 'HIGH',
+    category: 'EVIDENCE_INTEGRITY',
+    summary: 'a test check executed no test: its tests less skipped and todo is zero or less',
+  },
   'skipped-tests-introduced': { severity: 'HIGH', category: 'EVIDENCE_INTEGRITY', summary: 'the change adds a test skip marker' },
   'test-file-deleted': { severity: 'MEDIUM', category: 'EVIDENCE_INTEGRITY', summary: 'the change deletes a test file' },
   // Informational flags for the human reviewer.

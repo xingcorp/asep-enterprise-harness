@@ -281,6 +281,7 @@ test('invisible and bidirectional characters are flagged', () => {
 test('seeded false-green evidence is caught', () => {
   const falseGreenRules = [
     'exit-code-verdict-mismatch',
+    'failed-tests-recorded-pass',
     'required-check-missing',
     'zero-tests-executed',
     'skipped-tests-introduced',
@@ -295,9 +296,10 @@ test('seeded false-green evidence is caught', () => {
   assert.equal(zeroHit?.category, 'EVIDENCE_INTEGRITY');
   assert.equal(zeroHit?.severity, 'HIGH');
   assert.match(zeroHit!.evidence, /unit/);
-  // A failing run with zero tests is already red; it is not a false green.
+  // Zero tests executed is a finding whatever the exit code: a failing run that executed
+  // nothing proves nothing either.
   const zeroRed = checksFor(fixtureWorld({ unitStdout: 'ℹ tests 0\n', unitExitCode: 1 }));
-  assert.deepEqual(rule(zeroRed.findings, 'zero-tests-executed'), []);
+  assert.equal(rule(zeroRed.findings, 'zero-tests-executed').length, 1);
 
   // An added skip marker in a test file.
   const skipped = checksFor(worldFromDiff([{ path: 'src/greet.test.ts', status: 'M', context: ['import test from "node:test";'], added: ["test.skip('greets', () => {});"] }], SRC));
@@ -320,6 +322,42 @@ test('seeded false-green evidence is caught', () => {
   assert.match(missingHits[0]!.evidence, /integration/);
 
   for (const id of falseGreenRules) assert.ok(CHECK_RULES[id as keyof typeof CHECK_RULES], id);
+});
+
+test('false green counts executed tests and recorded failures', () => {
+  const pass = (checkId: string): RecordedCheckVerdict => ({ checkId, verdict: 'PASS' });
+  const fail = (checkId: string): RecordedCheckVerdict => ({ checkId, verdict: 'FAIL' });
+  const fired = (unitStdout: string, unitExitCode: number, unit: RecordedCheckVerdict) => {
+    const result = checksFor(fixtureWorld({ unitStdout, unitExitCode }), { recordedVerdicts: [unit, pass('typecheck')] });
+    return ['zero-tests-executed', 'failed-tests-recorded-pass', 'exit-code-verdict-mismatch'].filter(
+      (id) => rule(result.findings, id).length > 0,
+    );
+  };
+  const cases: readonly (readonly [string, string, number, RecordedCheckVerdict, readonly string[]])[] = [
+    // The review's probes.
+    ['every test skipped', 'ℹ tests 3\nℹ pass 0\nℹ fail 0\nℹ skipped 3\n', 0, pass('unit'), ['zero-tests-executed']],
+    ['a failure recorded as a pass', 'ℹ tests 1\nℹ pass 0\nℹ fail 1\n', 0, pass('unit'), ['failed-tests-recorded-pass']],
+    // Executed is tests minus skipped minus todo.
+    ['skipped and todo cover every test', 'ℹ tests 3\nℹ pass 0\nℹ fail 0\nℹ skipped 1\nℹ todo 2\n', 0, pass('unit'), ['zero-tests-executed']],
+    ['one test executed', 'ℹ tests 3\nℹ pass 1\nℹ fail 0\nℹ skipped 2\n', 0, pass('unit'), []],
+    ['nothing executed in a red run', 'ℹ tests 0\nℹ pass 0\nℹ fail 0\n', 1, fail('unit'), ['zero-tests-executed']],
+    ['Vitest, every test skipped', ' Tests  2 skipped (2)\n', 0, pass('unit'), ['zero-tests-executed']],
+    ['TAP, every test todo', '# tests 2\n# pass 0\n# todo 2\n', 0, pass('unit'), ['zero-tests-executed']],
+    ['Jest, a failure recorded as a pass', 'Tests:       1 failed, 1 passed, 2 total\n', 0, pass('unit'), ['failed-tests-recorded-pass']],
+    // An honest red run, and a red run recorded green on both counts.
+    ['a failure recorded as a failure', 'ℹ tests 1\nℹ pass 0\nℹ fail 1\n', 1, fail('unit'), []],
+    ['a red run recorded as a pass', 'ℹ tests 1\nℹ pass 0\nℹ fail 1\n', 1, pass('unit'), ['failed-tests-recorded-pass', 'exit-code-verdict-mismatch']],
+    // An unrecognized format has no summary; nothing is guessed from it.
+    ['unknown format', 'ran 0 checks, 0 failed\n', 0, pass('unit'), []],
+    ['unknown format in a red run', 'ran 0 checks, 1 failed\n', 1, fail('unit'), []],
+  ];
+  for (const [label, stdout, exitCode, recorded, expected] of cases) {
+    assert.deepEqual(fired(stdout, exitCode, recorded), expected, label);
+  }
+  const unknown = buildReviewPacket(fixtureWorld({ unitStdout: 'ran 0 checks\n' }).sources, fixtureWorld().limits);
+  assert.equal(unknown.packet.execution.checks.find((c) => c.id === 'unit')?.testSummary, null);
+  const failure = rule(checksFor(fixtureWorld({ unitStdout: 'ℹ tests 1\nℹ pass 0\nℹ fail 1\n' }), { recordedVerdicts: [pass('unit')] }).findings, 'failed-tests-recorded-pass');
+  assert.deepEqual(failure.map((f) => [f.severity, f.category]), [['HIGH', 'EVIDENCE_INTEGRITY']]);
 });
 
 test('sarif results become findings and malformed sarif fails closed', () => {
