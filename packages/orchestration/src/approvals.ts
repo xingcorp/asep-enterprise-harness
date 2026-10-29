@@ -3,6 +3,7 @@
 // The validator runs before any state change. Accepting a decision only starts
 // verification against PostgreSQL: a workflow message alone never releases a gate.
 
+import { isExactUsd } from './budget.js';
 import type { ApprovalDecisionValue, ApprovalKind, ControlReceipt, OpenApproval, TaskMessage } from './types.js';
 
 export const ALLOWED_DECISIONS: Readonly<Record<ApprovalKind, readonly ApprovalDecisionValue[]>> = {
@@ -16,10 +17,10 @@ export function approvalRequestId(workflowId: string, gateSeq: number): string {
   return `${workflowId}:${gateSeq}`;
 }
 
-/** Without a policy bound (null) no extension amount is valid. */
+/** A positive amount exact in micro-dollars, within the policy bound. Without a bound (null) no amount is valid. */
 export function isValidExtension(extensionUsd: number | null, maxExtensionUsd: number | null): boolean {
   if (maxExtensionUsd === null) return false;
-  return typeof extensionUsd === 'number' && Number.isFinite(extensionUsd) && extensionUsd > 0 && extensionUsd <= maxExtensionUsd;
+  return typeof extensionUsd === 'number' && isExactUsd(extensionUsd) && extensionUsd > 0 && extensionUsd <= maxExtensionUsd;
 }
 
 /** A budget-extension approve carries an amount within policy; every other decision carries none. */

@@ -22,7 +22,7 @@ import {
 } from './activity-options.js';
 import { ALLOWED_DECISIONS, APPROVAL_KINDS, approvalRequestId, validateApprovalDecision } from './approvals.js';
 import { parseAssuranceOutcome } from './assurance.js';
-import { checkReservation, crossesSoftThreshold, toMicroUsd } from './budget.js';
+import { MAX_USD, checkReservation, crossesSoftThreshold, isExactUsd, toMicroUsd } from './budget.js';
 import { DEFAULT_ORCHESTRATION_POLICY, FAILURE_CLASSES, NEVER_REPLACEABLE_FAILURE_CLASSES } from './defaults.js';
 import { isLegalProjection } from './projection.js';
 import { decideRun, startRun } from './run-core.js';
@@ -30,7 +30,7 @@ import type { RunCommand, RunCoreInput } from './run-core.js';
 import { runTaskSequentially } from './sequential-interpreter.js';
 import type { TaskTrace } from './sequential-interpreter.js';
 import { decideTask, startTask, taskWorkflowId } from './task-core.js';
-import { orchestrationPolicyErrors } from './validation.js';
+import { orchestrationPolicyErrors, runInputErrors, taskInputErrors } from './validation.js';
 import {
   TASK_BASE,
   baseInput,
@@ -176,6 +176,77 @@ test('reservation: attempts, overrun and wall-clock each bind, and are checked b
     'attempts-exhausted');
 });
 
+test('budget precision: usage converts to micro-dollars with ceiling from its exact decimal value', () => {
+  assert.equal(toMicroUsd(5.0000004), 5_000_001, 'a fraction of a micro-dollar is never dropped');
+  assert.equal(toMicroUsd(1e-7), 1, 'a sub-micro amount is one micro-dollar');
+  assert.equal(toMicroUsd(1.1), 1_100_000, 'a plain decimal stays exact, not its binary expansion');
+  assert.equal(toMicroUsd(0.3), 300_000, 'a plain decimal stays exact');
+  assert.equal(toMicroUsd(0), 0);
+  assert.equal(toMicroUsd(MAX_USD), 100_000_000_000_000);
+  for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, -0.000001, 1e300]) {
+    assert.throws(() => toMicroUsd(bad), RangeError, `${bad} is not a money amount`);
+  }
+});
+
+test('budget precision: an amount is exact only if it fits micro-dollars, is not negative and is at most the bound', () => {
+  for (const ok of [0, 0.000001, 1.1, 5, 12.345678, MAX_USD]) assert.equal(isExactUsd(ok), true, `${ok} is exact`);
+  for (const bad of [5.0000004, 1e-7, -1, Number.NaN, Number.POSITIVE_INFINITY, MAX_USD + 0.000001, 1e9]) {
+    assert.equal(isExactUsd(bad), false, `${bad} is not exact`);
+  }
+});
+
+test('budget precision: the input rules reject money that is not exact, not positive where a cap must be, or out of range', () => {
+  assert.deepEqual(taskInputErrors(baseInput()), []);
+  assert.deepEqual(taskInputErrors(baseInput({ attemptBudget: { ...baseInput().attemptBudget, maxCostUsd: 5.0000004 } })),
+    ['attemptBudget.maxCostUsd: must be a positive amount exact in micro-USD and at most 100000000']);
+  assert.deepEqual(taskInputErrors(baseInput({ taskBudget: { ...baseInput().taskBudget, maxCostUsd: 0, softCostUsd: 0 } })),
+    ['taskBudget.maxCostUsd: must be a positive amount exact in micro-USD and at most 100000000']);
+  assert.deepEqual(taskInputErrors(baseInput({ taskBudget: { ...baseInput().taskBudget, softCostUsd: 21 } })),
+    ['taskBudget.softCostUsd: must be an amount exact in micro-USD, at most taskBudget.maxCostUsd']);
+  assert.deepEqual(taskInputErrors(baseInput({ verificationReserve: { costUsd: Number.NaN, wallClockMinutes: 10 } })),
+    ['verificationReserve.costUsd: must be an amount exact in micro-USD and at most 100000000']);
+  assert.deepEqual(taskInputErrors(baseInput({ runRemainingUsd: 1e9 })),
+    ['runRemainingUsd: must be an amount exact in micro-USD and at most 100000000']);
+  assert.deepEqual(taskInputErrors(baseInput({ policy: policy({ maxBudgetExtensionUsd: 0.0000001 }) })),
+    ['policy.maxBudgetExtensionUsd: must be unset or a positive amount exact in micro-USD and at most 100000000']);
+  assert.deepEqual(runInputErrors({ runId: 'r' as RunId, runBudget: { maxCostUsd: 10.5, softCostUsd: 8, maxTasks: 3 } }), []);
+  assert.deepEqual(runInputErrors({ runId: 'r' as RunId, runBudget: { maxCostUsd: 10.0000001, softCostUsd: 11, maxTasks: 3 } }), [
+    'runBudget.maxCostUsd: must be a positive amount exact in micro-USD and at most 100000000',
+    'runBudget.softCostUsd: must be an amount exact in micro-USD, at most runBudget.maxCostUsd',
+  ]);
+});
+
+test('budget precision: a reported 5.0000004 on a cap of 5 is an overrun of one micro-dollar; 1.1 on 1.1 is none', () => {
+  const over = runTaskSequentially(baseInput(), scripted({
+    runAgent: () => ({ kind: 'runAgent', status: 'AGENT_DONE', reportedCostUsd: 5.0000004, reportedToolCalls: 10, wallClockMs: 1000, failureClass: null }),
+  }));
+  assert.deepEqual(effectsOf(over.commands, 'recordOverrun').map((o) => o.overrunUsd), [0.000001]);
+  assert.ok(!requestKinds(over.commands).includes('publishBranch'), 'nothing published after a sub-micro overrun');
+  assert.equal(over.summary.outcome, 'BUDGET_EXHAUSTED');
+  assert.equal(over.summary.reason, 'overrun');
+
+  const exact = runTaskSequentially(baseInput({ attemptBudget: { ...baseInput().attemptBudget, maxCostUsd: 1.1 } }), scripted({
+    runAgent: () => ({ kind: 'runAgent', status: 'AGENT_DONE', reportedCostUsd: 1.1, reportedToolCalls: 10, wallClockMs: 1000, failureClass: null }),
+  }));
+  assert.deepEqual(effectsOf(exact.commands, 'recordOverrun'), []);
+  assert.equal(exact.summary.outcome, 'WAITING_FOR_HUMAN_REVIEW');
+  assert.deepEqual(effectsOf(exact.commands, 'recordUsage').map((u) => u.chargedCostUsd), [2.1]);
+
+  const subMicro = runTaskSequentially(baseInput(), scripted({
+    runAgent: () => ({ kind: 'runAgent', status: 'AGENT_DONE', reportedCostUsd: 1e-7, reportedToolCalls: 10, wallClockMs: 1000, failureClass: null }),
+  }));
+  assert.deepEqual(effectsOf(subMicro.commands, 'recordUsage').map((u) => u.chargedCostUsd), [1.000001], 'sub-micro usage is charged one micro-dollar');
+});
+
+test('budget precision: a reported cost beyond the bound is charged at the bound and is an overrun', () => {
+  const trace = runTaskSequentially(baseInput(), scripted({
+    runAgent: () => ({ kind: 'runAgent', status: 'AGENT_DONE', reportedCostUsd: 1e300, reportedToolCalls: 10, wallClockMs: 1000, failureClass: null }),
+  }));
+  assert.deepEqual(effectsOf(trace.commands, 'recordUsage').map((u) => u.chargedCostUsd), [MAX_USD]);
+  assert.deepEqual(effectsOf(trace.commands, 'recordOverrun').map((o) => o.overrunUsd), [MAX_USD - 5]);
+  assert.equal(trace.summary.outcome, 'BUDGET_EXHAUSTED');
+});
+
 test('soft threshold: crossed once, when spending moves from below to at-or-above it', () => {
   assert.equal(crossesSoftThreshold(toMicroUsd(11), toMicroUsd(12), 12), true);
   assert.equal(crossesSoftThreshold(toMicroUsd(12), toMicroUsd(13), 12), false);
@@ -212,6 +283,9 @@ test('approvals: the validator rejects unknown requests, disallowed decisions, b
   assert.equal(validateApprovalDecision({ ...open, pendingDecisionId: 'd0' }, ['d0'], msg, max).reason, 'decision-conflict');
   // Without a policy bound no extension amount is well formed.
   assert.equal(validateApprovalDecision(open, [], msg, null).reason, 'extension-out-of-bounds');
+  // An amount that is not exact in micro-dollars is refused like an out-of-bound one.
+  assert.equal(validateApprovalDecision(open, [], { ...msg, extensionUsd: 2.0000001 }, max).reason, 'extension-out-of-bounds');
+  assert.equal(validateApprovalDecision(open, [], { ...msg, extensionUsd: Number.NaN }, max).reason, 'extension-out-of-bounds');
 });
 
 // ---------------------------------------------------------------------------

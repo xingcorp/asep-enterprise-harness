@@ -1,12 +1,54 @@
 // Budget arithmetic. Money is held in integer micro-dollars so that sums and
-// comparisons are exact and identical on every replay.
+// comparisons are exact and identical on every replay. Conversion reads the
+// number's shortest decimal form rather than multiplying binary floating point,
+// so 1.1 is exactly 1 100 000 micro-dollars, and it rounds up, so a fraction of a
+// micro-dollar above a cap is still above it.
 
 import type { Budget, TaskBudget, VerificationReserve } from './types.js';
 
 const MICRO = 1_000_000;
 
+/**
+ * The largest money amount an input may carry. Ten attempts, each charged at
+ * most this much for the agent plus its reserve, stay far inside the
+ * safe-integer range of micro-dollars.
+ */
+export const MAX_USD = 100_000_000;
+
+const DECIMAL = /^(\d+)(?:\.(\d+))?(?:e([+-]\d+))?$/;
+
+/** The whole micro-dollars of a non-negative finite amount, and whether any non-zero digit lies beyond them. */
+function decimalMicros(usd: number): { readonly micros: number; readonly remainder: boolean } | null {
+  if (!Number.isFinite(usd) || usd < 0) return null;
+  // String() yields the shortest decimal that reads back as the same number.
+  const match = DECIMAL.exec(String(usd));
+  if (match === null) return null;
+  const integer = match[1]!;
+  const digits = integer + (match[2] ?? '');
+  const cut = integer.length + Number(match[3] ?? '0') + 6;
+  if (cut <= 0) return { micros: 0, remainder: /[1-9]/.test(digits) };
+  const whole = cut >= digits.length ? digits + '0'.repeat(cut - digits.length) : digits.slice(0, cut);
+  const micros = Number(whole);
+  return Number.isSafeInteger(micros) ? { micros, remainder: /[1-9]/.test(digits.slice(cut)) } : null;
+}
+
+/** Micro-dollars, rounded up. Throws for a negative, non-finite or unrepresentably large amount. */
 export function toMicroUsd(usd: number): number {
-  return Math.round(usd * MICRO);
+  const parts = decimalMicros(usd);
+  const micros = parts === null ? null : parts.micros + (parts.remainder ? 1 : 0);
+  if (micros === null || !Number.isSafeInteger(micros)) throw new RangeError(`not a money amount: ${usd}`);
+  return micros;
+}
+
+/** True for an amount exact in micro-dollars, not negative and at most MAX_USD: the rule every money input follows. */
+export function isExactUsd(usd: number): boolean {
+  const parts = decimalMicros(usd);
+  return parts !== null && !parts.remainder && usd <= MAX_USD;
+}
+
+/** Provider-reported cost (untrusted) in micro-dollars; beyond MAX_USD it is charged at MAX_USD, an overrun either way. */
+export function usageMicroUsd(reportedUsd: number): number {
+  return toMicroUsd(Math.min(reportedUsd, MAX_USD));
 }
 
 export function fromMicroUsd(micro: number): number {

@@ -16,7 +16,7 @@ export {
   verificationStartToCloseSeconds,
 } from './activity-options.js';
 export type { ActivityName, ActivityOptions, RetryOptions } from './activity-options.js';
-export { checkReservation, crossesSoftThreshold, fromMicroUsd, toMicroUsd } from './budget.js';
+export { MAX_USD, checkReservation, crossesSoftThreshold, fromMicroUsd, isExactUsd, toMicroUsd, usageMicroUsd } from './budget.js';
 export type { Reservation, ReservationFailureReason, ReservationInput } from './budget.js';
 export {
   ALLOWED_DECISIONS,
@@ -30,7 +30,7 @@ export { parseAssuranceOutcome } from './assurance.js';
 export type { AssuranceContext, ParsedAssuranceOutcome } from './assurance.js';
 export { isLegalProjection, statusForRequest } from './projection.js';
 export { DEFAULT_ORCHESTRATION_POLICY, FAILURE_CLASSES, NEVER_REPLACEABLE_FAILURE_CLASSES } from './defaults.js';
-export { orchestrationPolicyErrors } from './validation.js';
+export { orchestrationPolicyErrors, runInputErrors, taskInputErrors } from './validation.js';
 export { runTaskSequentially } from './sequential-interpreter.js';
 export type { ActivityFailure, Answer, DeliveredMessage, TaskEnvironment, TaskTrace } from './sequential-interpreter.js';
 export type * from './types.js';

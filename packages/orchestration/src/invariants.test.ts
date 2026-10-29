@@ -10,7 +10,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { TaskId, RunId } from '@asep/contracts';
-import { toMicroUsd } from './budget.js';
 import { isLegalProjection } from './projection.js';
 import { decideRun, startRun } from './run-core.js';
 import type { RunCommand, RunCoreInput, RunEvent } from './run-core.js';
@@ -66,9 +65,21 @@ const CLASSES: readonly FailureClass[] = [
   'policy-violation', 'false-completion', 'context', 'duplicate-side-effect',
 ];
 
+// Money in the oracle is counted in micro-dollars independently of the implementation's conversion: every amount
+// the generator produces, and every amount the core records, is exact in micro-dollars, so rounding the scaled
+// number is exact here.
+function micro(usd: number): number {
+  return Math.round(usd * 1_000_000);
+}
+
+/** A random amount in whole cents between lo and hi dollars, so caps are fractional. */
+function cents(rng: Rng, lo: number, hi: number): number {
+  return rng.int(lo * 100, hi * 100) / 100;
+}
+
 function randomInput(rng: Rng): TaskCoreInput {
-  const attemptCost = rng.int(1, 6);
-  const taskCap = rng.int(2, 20);
+  const attemptCost = cents(rng, 1, 6);
+  const taskCap = cents(rng, 2, 20);
   return {
     taskId: 'task-p' as TaskId,
     runId: 'run-p' as RunId,
@@ -78,11 +89,11 @@ function randomInput(rng: Rng): TaskCoreInput {
     taskBudget: {
       maxAttempts: rng.int(1, 4),
       maxCostUsd: taskCap,
-      softCostUsd: rng.int(1, taskCap),
+      softCostUsd: cents(rng, 1, taskCap),
       maxWallClockMinutes: rng.int(30, 240),
     },
-    verificationReserve: { costUsd: rng.int(0, 2), wallClockMinutes: rng.int(0, 20) },
-    runRemainingUsd: rng.int(1, 40),
+    verificationReserve: { costUsd: cents(rng, 0, 2), wallClockMinutes: rng.int(0, 20) },
+    runRemainingUsd: cents(rng, 1, 40),
     governance: {
       publicationApprovalRequired: rng.chance(0.3),
       approvalTtlSeconds: 600,
@@ -92,7 +103,7 @@ function randomInput(rng: Rng): TaskCoreInput {
     policy: {
       ...DEFAULT_ORCHESTRATION_POLICY,
       // Sometimes a hostile policy that lists a never-replaceable class; the core must ignore it.
-      replaceableFailureClasses: rng.chance(0.15)
+      replaceableFailureClasses: rng.chance(0.25)
         ? [...DEFAULT_ORCHESTRATION_POLICY.replaceableFailureClasses, rng.pick(NEVER_REPLACEABLE_FAILURE_CLASSES)]
         : DEFAULT_ORCHESTRATION_POLICY.replaceableFailureClasses,
       maxBudgetExtensionUsd: rng.chance(0.7) ? 10 : null,
@@ -142,9 +153,12 @@ function randomEnvironment(rng: Rng, input: TaskCoreInput): TaskEnvironment {
         case 'runAgent': {
           if (rng.chance(0.15)) return failure(rng);
           const cap = input.attemptBudget;
-          // Mostly within the caps, sometimes exactly at them, sometimes above (an overrun).
-          const cost = rng.chance(0.1) ? Math.round(cap.maxCostUsd * (100 + rng.int(1, 60))) / 100
-            : rng.chance(0.1) ? cap.maxCostUsd : Math.round(rng.next() * cap.maxCostUsd * 100) / 100;
+          // Mostly within the caps, sometimes exactly at them, sometimes above (an overrun), including by less than
+          // a micro-dollar.
+          const c = rng.next();
+          const cost = c < 0.08 ? Math.round(cap.maxCostUsd * (100 + rng.int(1, 60))) / 100
+            : c < 0.12 ? cap.maxCostUsd + rng.pick([0.0000004, 0.000001, 1e-9])
+              : c < 0.2 ? cap.maxCostUsd : Math.round(rng.next() * cap.maxCostUsd * 100) / 100;
           const toolCalls = rng.chance(0.05) ? cap.maxToolCalls + rng.int(1, 5) : rng.int(0, cap.maxToolCalls);
           // Measured wall-clock: mostly within the cap, sometimes exactly at the cap or at the cap plus the
           // kill grace, sometimes one millisecond or minutes beyond that (an overrun).
@@ -279,16 +293,16 @@ function checkTrace(input: TaskCoreInput, trace: TaskTrace, label: string): void
   let overrun = false;
   for (const c of commands) {
     if (c.type === 'effect' && c.effect.kind === 'recordUsage') {
-      spent += toMicroUsd(c.effect.chargedCostUsd);
+      spent += micro(c.effect.chargedCostUsd);
       wallClock += c.effect.chargedWallClockMinutes;
     }
-    if (c.type === 'effect' && c.effect.kind === 'recordExtension') granted += toMicroUsd(c.effect.extensionUsd);
+    if (c.type === 'effect' && c.effect.kind === 'recordExtension') granted += micro(c.effect.extensionUsd);
     if (c.type === 'effect' && c.effect.kind === 'recordOverrun') overrun = true;
     if (c.type === 'request' && c.request.kind === 'ensureAttempt') {
-      const reserve = toMicroUsd(input.attemptBudget.maxCostUsd) + toMicroUsd(input.verificationReserve.costUsd);
+      const reserve = micro(input.attemptBudget.maxCostUsd) + micro(input.verificationReserve.costUsd);
       const minutes = input.attemptBudget.maxWallClockMinutes + input.verificationReserve.wallClockMinutes;
-      assert.ok(spent + reserve <= toMicroUsd(input.taskBudget.maxCostUsd) + granted, `${label}: task cap reservation`);
-      assert.ok(spent + reserve <= toMicroUsd(input.runRemainingUsd), `${label}: run cap reservation`);
+      assert.ok(spent + reserve <= micro(input.taskBudget.maxCostUsd) + granted, `${label}: task cap reservation`);
+      assert.ok(spent + reserve <= micro(input.runRemainingUsd), `${label}: run cap reservation`);
       assert.ok(wallClock + minutes <= input.taskBudget.maxWallClockMinutes, `${label}: wall-clock reservation`);
       assert.ok(!overrun, `${label}: attempt started after a recorded overrun`);
     }
@@ -359,6 +373,20 @@ function checkTrace(input: TaskCoreInput, trace: TaskTrace, label: string): void
     for (const k of ['runVerification', 'commitAttempt', 'publishBranch'] as const) {
       assert.ok(!reqs.some((r) => r.kind === k && r.attemptNumber === n), `${label}: ${k} after a wall-clock overrun of ${n}`);
     }
+  }
+  // An overrun is recorded exactly when the agent's usage exceeded a cap, by any amount: the oracle compares the
+  // reported numbers with the caps directly, so no conversion can round an overrun away.
+  for (const e of trace.events) {
+    if (e.type !== 'result' || e.result.kind !== 'runAgent') continue;
+    const request = seqRequests.get(e.seq);
+    if (request?.kind !== 'runAgent') continue;
+    const r = e.result;
+    const cap = input.attemptBudget;
+    const costOver = r.reportedCostUsd > cap.maxCostUsd;
+    const expected = costOver || Math.ceil(r.reportedToolCalls) > cap.maxToolCalls || r.wallClockMs > toleratedMs;
+    const recorded = effectsOf(commands, 'recordOverrun').find((o) => o.attemptNumber === request.attemptNumber);
+    assert.equal(recorded !== undefined, expected, `${label}: overrun recorded for attempt ${request.attemptNumber}`);
+    if (recorded) assert.equal(recorded.overrunUsd > 0, costOver, `${label}: cost overrun of attempt ${request.attemptNumber}`);
   }
   for (const { n, wallClockMs } of agentResults) {
     const recorded = effectsOf(commands, 'recordOverrun').find((o) => o.attemptNumber === n);
@@ -523,6 +551,7 @@ test('the generator covers repair, replacement, approvals, pause and cancel path
     if (effectsOf(trace.commands, 'recordAttemptOutcome').some((o) => o.terminal === 'budget-exhausted')) seen.add('exhausted');
     if (effectsOf(trace.commands, 'recordOverrun').length > 0) seen.add('overrun');
     if (effectsOf(trace.commands, 'recordOverrun').some((o) => o.overrunWallClockMs > 0)) seen.add('wall-clock-overrun');
+    if (effectsOf(trace.commands, 'recordOverrun').some((o) => o.overrunUsd === 0.000001)) seen.add('micro-overrun');
     const toleratedMs = input.attemptBudget.maxWallClockMinutes * 60_000 + input.policy.agentKillGraceSeconds * 1000;
     if (input.policy.agentKillGraceSeconds > 0 && trace.events.some((e) => e.type === 'result' && e.result.kind === 'runAgent'
       && e.result.status === 'AGENT_DONE' && e.result.wallClockMs === toleratedMs) && reqs.some((r) => r.kind === 'runVerification')) {
@@ -531,12 +560,13 @@ test('the generator covers repair, replacement, approvals, pause and cancel path
     if (effectsOf(trace.commands, 'audit').some((a) => a.action === 'assurance-unavailable')) seen.add('assurance-unavailable');
     if (reqs.some((r) => r.kind === 'ensureAttempt' && r.attemptKind === 'retry' && r.repairOrderRef !== null)) seen.add('lineage-retry');
     const hostile = input.policy.replaceableFailureClasses.filter((c) => NEVER_REPLACEABLE_FAILURE_CLASSES.includes(c));
-    if (trace.events.some((e) => e.type === 'result' && e.result.kind === 'runAgent' && e.result.failureClass !== null
-      && e.result.status !== 'AGENT_DONE' && hostile.includes(e.result.failureClass))) seen.add('hostile-policy-failure');
+    if (trace.events.some((e) => (e.type === 'activityFailed' && hostile.includes(e.failureClass))
+      || (e.type === 'result' && e.result.kind === 'runAgent' && e.result.failureClass !== null
+        && e.result.status !== 'AGENT_DONE' && hostile.includes(e.result.failureClass)))) seen.add('hostile-policy-failure');
   }
   assert.deepEqual([...seen].sort(), [
     'abort', 'approval-expired', 'assurance-unavailable', 'budget-approval', 'exhausted', 'extension-granted',
-    'hostile-policy-failure', 'lineage-retry', 'overrun', 'pause-timeout', 'paused', 'publish-approval', 'recovered',
+    'hostile-policy-failure', 'lineage-retry', 'micro-overrun', 'overrun', 'pause-timeout', 'paused', 'publish-approval', 'recovered',
     'repair', 'retry', 'verification-stop', 'verified-within-grace', 'violation', 'wall-clock-overrun',
   ]);
 });
@@ -582,7 +612,7 @@ test('generated run histories start children one at a time, once each, in submis
         log.push(c);
         if (c.kind === 'startChild') {
           assert.equal(model.active, null, `seed ${seed}: child started while another is active`);
-          assert.equal(c.runRemainingUsd, Math.max(0, toMicroUsd(input.runBudget.maxCostUsd) - model.spent) / 1_000_000, `seed ${seed}: remainder`);
+          assert.equal(c.runRemainingUsd, Math.max(0, micro(input.runBudget.maxCostUsd) - model.spent) / 1_000_000, `seed ${seed}: remainder`);
           model.active = c.taskId;
           started.push(c.taskId);
         }
@@ -603,7 +633,7 @@ test('generated run histories start children one at a time, once each, in submis
       } else if (r < 0.7 && model.active !== null) {
         const cost = rng.int(0, 6);
         event = { type: 'childCompleted', taskId: model.active as TaskId, outcome: 'WAITING_FOR_HUMAN_REVIEW', chargedCostUsd: cost };
-        model.spent += toMicroUsd(cost);
+        model.spent += micro(cost);
         model.active = null;
       } else if (r < 0.8) {
         event = { type: 'continueAsNewSuggested' };

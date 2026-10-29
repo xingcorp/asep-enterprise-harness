@@ -18,7 +18,7 @@
 import { ACTIVITY_OPTIONS } from './activity-options.js';
 import { approvalRequestId, isWellFormedDecision, validateApprovalDecision } from './approvals.js';
 import { parseAssuranceOutcome } from './assurance.js';
-import { checkReservation, crossesSoftThreshold, fromMicroUsd, toMicroUsd } from './budget.js';
+import { checkReservation, crossesSoftThreshold, fromMicroUsd, toMicroUsd, usageMicroUsd } from './budget.js';
 import { NEVER_REPLACEABLE_FAILURE_CLASSES } from './defaults.js';
 import { isLegalProjection, isWorkStatus, statusForRequest } from './projection.js';
 import type {
@@ -370,15 +370,16 @@ function noteAgentUsage(step: Step, a: MutableAttempt, result: Extract<TaskResul
   const toolCalls = nonNegative(result.reportedToolCalls);
   const wallClockMs = nonNegative(result.wallClockMs);
   const capMicro = toMicroUsd(budget.maxCostUsd);
+  const reportedMicro = reportedCostUsd !== null ? usageMicroUsd(reportedCostUsd) : null;
   a.agentUsage = {
-    chargedMicroUsd: reportedCostUsd !== null ? toMicroUsd(reportedCostUsd) : capMicro,
+    chargedMicroUsd: reportedMicro ?? capMicro,
     reportedCostUsd,
     minutes: wallClockMs !== null ? Math.ceil(wallClockMs / 60_000) : budget.maxWallClockMinutes,
   };
   const capMs = budget.maxWallClockMinutes * 60_000;
   const toleratedMs = capMs + s.input.policy.agentKillGraceSeconds * 1000;
   const overrun: AttemptOverrun = {
-    overrunUsd: reportedCostUsd !== null ? fromMicroUsd(Math.max(0, toMicroUsd(reportedCostUsd) - capMicro)) : 0,
+    overrunUsd: reportedMicro !== null ? fromMicroUsd(Math.max(0, reportedMicro - capMicro)) : 0,
     overrunToolCalls: toolCalls !== null ? Math.max(0, Math.ceil(toolCalls) - budget.maxToolCalls) : 0,
     overrunWallClockMs: wallClockMs !== null && wallClockMs > toleratedMs ? Math.ceil(wallClockMs - capMs) : 0,
   };
