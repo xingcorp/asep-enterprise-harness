@@ -9,9 +9,11 @@
 //
 // The flow follows the task state machine: admission, budget check, attempt
 // start, agent, inspection, verification, commit and evidence, one assurance
-// round, the publication gate, push and PR, review handoff. Abandoned attempts
-// are replaced only while nothing has been pushed; a failed verification ends
-// the task; REPAIR starts a repair attempt at the outcome's base.
+// round, the publication gate, push and PR, review handoff. An agent that stops
+// at a cap or overruns one is inspected only and never verified or published.
+// Abandoned and exhausted attempts are replaced only while nothing has been
+// pushed and a fresh reservation fits; a failed verification ends the task;
+// REPAIR starts a repair lineage at the outcome's base, and a retry keeps it.
 
 import { ACTIVITY_OPTIONS } from './activity-options.js';
 import { approvalRequestId, isWellFormedDecision, validateApprovalDecision } from './approvals.js';
@@ -21,11 +23,13 @@ import { isLegalProjection, isWorkStatus, statusForRequest } from './projection.
 import type {
   ApprovalKind,
   AttemptState,
+  AttemptOverrun,
   AttemptTerminal,
   ControlReceipt,
   FailureClass,
   OpenApproval,
   ProjectedTaskStatus,
+  RepairLineage,
   RunEventDetail,
   RunEventType,
   TaskCommand,
@@ -241,19 +245,31 @@ function current(s: Draft): MutableAttempt {
   return attempt(s, s.currentAttempt);
 }
 
+/** The commit an attempt starts from: the lineage's repair base, else the task's base. */
+function baseOf(s: Draft, lineage: RepairLineage | null): string {
+  return lineage?.repairBaseSha ?? s.input.baseSha;
+}
+
 /**
- * Issue the next request, unless a pending cancel or a pause intervenes. The
- * second halves of the commit/evidence and push/PR sections are never withheld:
- * once a critical section starts, it finishes.
+ * True for the request that finishes a critical unit already under way: the
+ * evidence binding after its commit, and the PR upsert once a push has started.
+ */
+function completesStartedUnit(s: Draft, request: TaskRequest): boolean {
+  return request.kind === 'persistEvidence' || (request.kind === 'upsertPullRequest' && s.pushRequested);
+}
+
+/**
+ * Issue the next request, unless a pending cancel or a pause intervenes. A
+ * request that finishes a critical unit already under way is never withheld.
  */
 function issue(step: Step, request: TaskRequest): void {
   const s = step.s;
-  const continuesSection = request.kind === 'persistEvidence' || request.kind === 'upsertPullRequest';
-  if (s.cancelPending && !continuesSection) {
+  const continuesUnit = completesStartedUnit(s, request);
+  if (s.cancelPending && !continuesUnit) {
     close(step, 'CANCELLED', 'cancelled');
     return;
   }
-  if (s.paused && !continuesSection && request.kind !== 'verifyApprovalDecision') {
+  if (s.paused && !continuesUnit && request.kind !== 'verifyApprovalDecision') {
     defer(step, request);
     return;
   }
@@ -275,11 +291,7 @@ function markIssued(s: Draft, request: TaskRequest): void {
       s.attempts.push({
         attemptNumber: request.attemptNumber,
         kind: plan.kind,
-        baseSha: plan.baseSha,
-        round: plan.round,
-        priorAdjudicationId: plan.priorAdjudicationId,
-        parentAttemptNumber: plan.parentAttemptNumber,
-        repairOrderRef: plan.repairOrderRef,
+        lineage: plan.lineage,
         attemptId: null,
         leaseRequested: false,
         leaseReleased: false,
@@ -287,6 +299,10 @@ function markIssued(s: Draft, request: TaskRequest): void {
         workspaceActive: false,
         workspaceDisposed: false,
         agentStarted: false,
+        agentUsage: null,
+        overrun: null,
+        exhausted: false,
+        verificationStarted: false,
         reaped: false,
         declaredComplete: false,
         verdict: null,
@@ -308,6 +324,9 @@ function markIssued(s: Draft, request: TaskRequest): void {
       return;
     case 'runAgent':
       attempt(s, request.attemptNumber).agentStarted = true;
+      return;
+    case 'runVerification':
+      attempt(s, request.attemptNumber).verificationStarted = true;
       return;
     case 'publishBranch':
       s.pushRequested = true;
@@ -333,38 +352,81 @@ function defer(step: Step, request: TaskRequest): void {
 // Attempt bookkeeping
 // ---------------------------------------------------------------------------
 
-function chargeUsage(step: Step, a: MutableAttempt, reportedCostUsd: number | null, wallClockMs: number | null): void {
+function nonNegative(value: number): number | null {
+  return Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+/**
+ * Note the agent's reported usage and detect an overrun: reported cost or tool
+ * calls above a cap the adapter did not stop at. A recorded overrun fails every
+ * later reservation of the task.
+ */
+function noteAgentUsage(step: Step, a: MutableAttempt, result: Extract<TaskResult, { kind: 'runAgent' }>): void {
   const s = step.s;
   const budget = s.input.attemptBudget;
-  const reported = reportedCostUsd !== null && Number.isFinite(reportedCostUsd) && reportedCostUsd >= 0 ? reportedCostUsd : null;
-  const reservedMicro = toMicroUsd(budget.maxCostUsd);
-  // An agent that never reported (it died, timed out or was cancelled) is charged its full reservation.
-  const chargedMicro = !a.agentStarted ? 0 : reported !== null ? toMicroUsd(reported) : reservedMicro;
-  const minutes = !a.agentStarted
-    ? 0
-    : wallClockMs !== null && Number.isFinite(wallClockMs) && wallClockMs >= 0
-      ? Math.ceil(wallClockMs / 60_000)
-      : budget.maxWallClockMinutes;
+  const reportedCostUsd = nonNegative(result.reportedCostUsd);
+  const toolCalls = nonNegative(result.reportedToolCalls);
+  const wallClockMs = nonNegative(result.wallClockMs);
+  const capMicro = toMicroUsd(budget.maxCostUsd);
+  a.agentUsage = {
+    chargedMicroUsd: reportedCostUsd !== null ? toMicroUsd(reportedCostUsd) : capMicro,
+    reportedCostUsd,
+    minutes: wallClockMs !== null ? Math.ceil(wallClockMs / 60_000) : budget.maxWallClockMinutes,
+  };
+  const overrun: AttemptOverrun = {
+    overrunUsd: reportedCostUsd !== null ? fromMicroUsd(Math.max(0, toMicroUsd(reportedCostUsd) - capMicro)) : 0,
+    overrunToolCalls: toolCalls !== null ? Math.max(0, Math.ceil(toolCalls) - budget.maxToolCalls) : 0,
+  };
+  if (overrun.overrunUsd > 0 || overrun.overrunToolCalls > 0) {
+    a.overrun = overrun;
+    s.overrun = true;
+  }
+}
+
+/**
+ * One usage entry per attempt, at its terminal. An agent that never reported (it
+ * died, timed out or was cancelled) is charged its full cap. Verification has no
+ * metered cost source, so once it ran the attempt is also charged its reserve.
+ */
+function recordUsage(step: Step, a: MutableAttempt): void {
+  if (a.usageRecorded) return;
+  a.usageRecorded = true;
+  const s = step.s;
+  const budget = s.input.attemptBudget;
+  const reserve = s.input.verificationReserve;
+  const agent = a.agentUsage
+    ?? (a.agentStarted
+      ? { chargedMicroUsd: toMicroUsd(budget.maxCostUsd), reportedCostUsd: null, minutes: budget.maxWallClockMinutes }
+      : { chargedMicroUsd: 0, reportedCostUsd: null, minutes: 0 });
+  const reserveMicro = a.verificationStarted ? toMicroUsd(reserve.costUsd) : 0;
+  const chargedMicro = agent.chargedMicroUsd + reserveMicro;
+  const minutes = agent.minutes + (a.verificationStarted ? reserve.wallClockMinutes : 0);
   const before = s.spentMicroUsd;
   s.spentMicroUsd += chargedMicro;
   s.spentWallClockMinutes += minutes;
-  a.usageRecorded = true;
   effect(step, {
     kind: 'recordUsage',
     attemptNumber: a.attemptNumber,
     chargedCostUsd: fromMicroUsd(chargedMicro),
-    reportedCostUsd: reported,
+    reportedCostUsd: agent.reportedCostUsd,
+    verificationReserveUsd: fromMicroUsd(reserveMicro),
     chargedWallClockMinutes: minutes,
   });
-  if (reported !== null && toMicroUsd(reported) > reservedMicro) {
-    effect(step, { kind: 'recordOverrun', attemptNumber: a.attemptNumber, overrunUsd: fromMicroUsd(toMicroUsd(reported) - reservedMicro) });
-    s.overrun = true;
+  if (a.overrun !== null) {
+    effect(step, { kind: 'recordOverrun', attemptNumber: a.attemptNumber, ...a.overrun });
+    audit(step, 'budget.overrun', { attemptNumber: a.attemptNumber, ...a.overrun });
   }
   if (!s.softThresholdCrossed && crossesSoftThreshold(before, s.spentMicroUsd, s.input.taskBudget.softCostUsd)) {
     s.softThresholdCrossed = true;
     emit(step, 'budget.threshold_crossed', a.attemptNumber, { thresholdKind: 'soft', budgetScope: 'task' });
     audit(step, 'budget.threshold_crossed', { thresholdKind: 'soft', budgetScope: 'task', spentUsd: fromMicroUsd(s.spentMicroUsd) });
   }
+}
+
+/** An attempt's terminal: its usage entry, then its one outcome record. */
+function endAttempt(step: Step, a: MutableAttempt, terminal: AttemptTerminal): void {
+  recordUsage(step, a);
+  recordOutcome(step, a, terminal);
 }
 
 function recordOutcome(step: Step, a: MutableAttempt, terminal: AttemptTerminal): void {
@@ -418,37 +480,30 @@ function onResult(step: Step, result: TaskResult): void {
         return;
       }
       emit(step, 'task.started', null);
-      s.nextAttempt = {
-        kind: 'initial',
-        baseSha: s.input.baseSha,
-        round: 1,
-        priorAdjudicationId: null,
-        parentAttemptNumber: null,
-        repairOrderRef: null,
-        replacesTimedOut: false,
-      };
+      s.nextAttempt = { kind: 'initial', lineage: null, replacesTimedOut: false };
       budgetCheck(step);
       return;
     case 'ensureAttempt': {
       const a = current(s);
       a.attemptId = result.attemptId;
       emit(step, 'attempt.started', a.attemptNumber);
-      if (a.kind === 'repair') emit(step, 'repair.started', a.attemptNumber, { repairRound: a.round });
+      if (a.kind === 'repair' && a.lineage !== null) emit(step, 'repair.started', a.attemptNumber, { repairRound: a.lineage.round });
       issue(step, { kind: 'acquireLease', attemptNumber: a.attemptNumber });
       return;
     }
     case 'acquireLease': {
       const a = current(s);
-      issue(step, { kind: 'prepareWorkspace', attemptNumber: a.attemptNumber, baseSha: a.baseSha });
+      issue(step, { kind: 'prepareWorkspace', attemptNumber: a.attemptNumber, baseSha: baseOf(s, a.lineage) });
       return;
     }
     case 'prepareWorkspace': {
       const a = current(s);
       a.workspaceActive = true;
       // The parent's harness commit is the repair base. Its worktree keeps that
-      // commit reachable, so it is disposed only once the repair worktree exists.
-      if (a.parentAttemptNumber !== null) disposeWorkspace(step, attempt(s, a.parentAttemptNumber), 'cleanup', 'repaired');
-      issue(step, { kind: 'storeAttemptInputs', attemptNumber: a.attemptNumber, repairOrderRef: a.repairOrderRef });
+      // commit reachable, so it is disposed only once a lineage worktree exists;
+      // a replaced lineage attempt is quarantined, which keeps it reachable too.
+      if (a.lineage !== null) disposeWorkspace(step, attempt(s, a.lineage.parentAttemptNumber), 'cleanup', 'repaired');
+      issue(step, { kind: 'storeAttemptInputs', attemptNumber: a.attemptNumber, repairOrderRef: a.lineage?.repairOrderRef ?? null });
       return;
     }
     case 'storeAttemptInputs': {
@@ -457,13 +512,17 @@ function onResult(step: Step, result: TaskResult): void {
       return;
     }
     case 'runAgent': {
+      // The agent outcome table: a cap stop or an overrun is inspected only, to
+      // record the workspace state; an agent failure abandons the attempt.
       const a = current(s);
-      chargeUsage(step, a, result.reportedCostUsd, result.wallClockMs);
-      if (result.status !== 'AGENT_DONE') {
+      noteAgentUsage(step, a, result);
+      a.declaredComplete = result.status === 'AGENT_DONE';
+      if (result.status === 'BUDGET_EXHAUSTED' || a.overrun !== null) {
+        a.exhausted = true;
+      } else if (result.status !== 'AGENT_DONE') {
         abandon(step, result.failureClass, false, result.failureClass ?? `agent-${result.status.toLowerCase()}`);
         return;
       }
-      a.declaredComplete = true;
       issue(step, { kind: 'inspectWorkspace', attemptNumber: a.attemptNumber });
       return;
     }
@@ -471,6 +530,10 @@ function onResult(step: Step, result: TaskResult): void {
       const a = current(s);
       if (result.overstep) {
         abandon(step, 'policy-violation', false, 'policy-violation');
+        return;
+      }
+      if (a.exhausted) {
+        exhaust(step);
         return;
       }
       issue(step, { kind: 'runVerification', attemptNumber: a.attemptNumber });
@@ -483,7 +546,7 @@ function onResult(step: Step, result: TaskResult): void {
         return;
       }
       a.verdict = 'PASS';
-      issue(step, { kind: 'commitAttempt', attemptNumber: a.attemptNumber, expectedHeadSha: a.baseSha });
+      issue(step, { kind: 'commitAttempt', attemptNumber: a.attemptNumber, expectedHeadSha: baseOf(s, a.lineage) });
       return;
     }
     case 'commitAttempt': {
@@ -499,12 +562,12 @@ function onResult(step: Step, result: TaskResult): void {
         kind: 'assuranceRound',
         request: {
           attemptNumber: a.attemptNumber,
-          round: a.round,
+          round: roundOf(a),
           evidenceId: result.evidenceId,
           taskBaseSha: s.input.baseSha,
           declaredComplete: a.declaredComplete,
-          priorAdjudicationId: a.priorAdjudicationId,
-          idempotencyKey: `${s.workflowId}:assurance:${a.attemptNumber}:${a.round}`,
+          priorAdjudicationId: a.lineage?.priorAdjudicationId ?? null,
+          idempotencyKey: `${s.workflowId}:assurance:${a.attemptNumber}:${roundOf(a)}`,
         },
       });
       return;
@@ -559,7 +622,7 @@ function onActivityFailed(step: Step, request: TaskRequest, failureClass: Failur
       verificationStop(step, 'ERROR');
       return;
     case 'assuranceRound':
-      close(step, 'FAILED', 'assurance-unavailable');
+      assuranceUnavailable(step, failureClass);
       return;
     case 'openApprovalRequest':
     case 'verifyApprovalDecision': {
@@ -595,6 +658,7 @@ function budgetCheck(step: Step): void {
     attemptNumber,
     attemptBudget: s.input.attemptBudget,
     taskBudget: s.input.taskBudget,
+    verificationReserve: s.input.verificationReserve,
     runRemainingUsd: s.input.runRemainingUsd,
     spentMicroUsd: s.spentMicroUsd,
     spentWallClockMinutes: s.spentWallClockMinutes,
@@ -607,35 +671,34 @@ function budgetCheck(step: Step): void {
       kind: 'ensureAttempt',
       attemptNumber,
       attemptKind: plan.kind,
-      baseSha: plan.baseSha,
-      parentAttemptNumber: plan.parentAttemptNumber,
-      repairOrderRef: plan.repairOrderRef,
+      baseSha: baseOf(s, plan.lineage),
+      parentAttemptNumber: plan.lineage?.parentAttemptNumber ?? null,
+      repairOrderRef: plan.lineage?.repairOrderRef ?? null,
     });
     return;
   }
-  if (reservation.reason === 'task-budget') {
-    openApproval(step, 'budget-extension', null, reservation.shortfallUsd);
-    return;
-  }
-  if (plan.kind === 'repair') {
-    close(step, 'FAILED', 'repair-capacity-exhausted');
-    return;
-  }
+  // The reservation-failure table. Running out of attempts fails the task,
+  // whatever the budget says; every budget cause ends it BUDGET_EXHAUSTED, after
+  // a budget-extension approval only for the task cap and only while the policy
+  // sets an extension bound.
   if (reservation.reason === 'attempts-exhausted') {
-    close(step, 'FAILED', 'attempts-exhausted');
+    close(step, 'FAILED', plan.lineage !== null ? 'repair-capacity-exhausted' : 'attempts-exhausted');
+    return;
+  }
+  if (reservation.reason === 'task-budget' && s.input.policy.maxBudgetExtensionUsd !== null) {
+    openApproval(step, 'budget-extension', null, reservation.shortfallUsd);
     return;
   }
   close(step, 'BUDGET_EXHAUSTED', reservation.reason);
 }
 
-/** Abandon the current attempt; replace it only if the class allows, nothing was pushed and attempts remain. */
+/** Abandon the current attempt; replace it, with the same lineage, only if the class allows and nothing was pushed. */
 function abandon(step: Step, failureClass: FailureClass | null, timedOut: boolean, reason: string): void {
   const s = step.s;
   const a = current(s);
   s.phase = 'ATTEMPT_ABANDONED';
   releaseAttempt(step, a, 'quarantine', reason);
-  if (!a.usageRecorded) chargeUsage(step, a, null, null);
-  recordOutcome(step, a, 'failed');
+  endAttempt(step, a, 'failed');
   s.currentAttempt = null;
   const replaceable = failureClass !== null && s.input.policy.replaceableFailureClasses.includes(failureClass);
   if (!replaceable) {
@@ -646,19 +709,23 @@ function abandon(step: Step, failureClass: FailureClass | null, timedOut: boolea
     close(step, 'FAILED', 'failed-after-push');
     return;
   }
-  if (a.attemptNumber >= s.input.taskBudget.maxAttempts) {
-    close(step, 'FAILED', 'attempts-exhausted');
-    return;
-  }
-  s.nextAttempt = {
-    kind: 'retry',
-    baseSha: a.baseSha,
-    round: a.round,
-    priorAdjudicationId: a.priorAdjudicationId,
-    parentAttemptNumber: a.parentAttemptNumber,
-    repairOrderRef: a.repairOrderRef,
-    replacesTimedOut: timedOut,
-  };
+  s.nextAttempt = { kind: 'retry', lineage: a.lineage, replacesTimedOut: timedOut };
+  budgetCheck(step);
+}
+
+/**
+ * End an attempt whose agent stopped at a cap or overran one. Nothing of it is
+ * verified, committed or published; a retry with the same lineage needs a fresh
+ * reservation, which a recorded overrun never gets.
+ */
+function exhaust(step: Step): void {
+  const s = step.s;
+  const a = current(s);
+  s.phase = 'ATTEMPT_EXHAUSTED';
+  releaseAttempt(step, a, 'quarantine', 'budget-exhausted');
+  endAttempt(step, a, 'budget-exhausted');
+  s.currentAttempt = null;
+  s.nextAttempt = { kind: 'retry', lineage: a.lineage, replacesTimedOut: false };
   budgetCheck(step);
 }
 
@@ -666,14 +733,39 @@ function abandon(step: Step, failureClass: FailureClass | null, timedOut: boolea
 function verificationStop(step: Step, verdict: VerificationVerdict): void {
   const a = current(step.s);
   a.verdict = verdict;
-  recordOutcome(step, a, 'verification-failed');
+  endAttempt(step, a, 'verification-failed');
   close(step, 'FAILED', 'verification-failed');
+}
+
+function roundOf(a: MutableAttempt): number {
+  return a.lineage?.round ?? 1;
+}
+
+/**
+ * The assurance activity failed after its retries, or non-retryably. That is an
+ * infrastructure failure, never a task failure: in shadow mode assurance does
+ * not gate a merge, so the attempt continues as PROCEED; in gating mode it
+ * continues as ESCALATE. Either way the PR states that assurance was unavailable
+ * and a human reviews it.
+ */
+function assuranceUnavailable(step: Step, failureClass: FailureClass): void {
+  const s = step.s;
+  const a = current(s);
+  const mode = s.input.governance.assuranceMode;
+  audit(step, 'assurance-unavailable', { attemptNumber: a.attemptNumber, failureClass, assuranceMode: mode });
+  s.publication = {
+    attemptNumber: a.attemptNumber,
+    flagged: mode === 'gating',
+    prBodySectionRef: null,
+    terminal: mode === 'gating' ? 'escalated' : 'proceeded',
+  };
+  publicationGate(step);
 }
 
 function route(step: Step, raw: unknown): void {
   const s = step.s;
   const a = current(s);
-  const parsed = parseAssuranceOutcome(raw, { round: a.round, resultSha: a.resultSha ?? '' });
+  const parsed = parseAssuranceOutcome(raw, { round: roundOf(a), resultSha: a.resultSha ?? '' });
   if (!parsed.ok) {
     audit(step, 'review-slot.contract-violation', { attemptNumber: a.attemptNumber, error: parsed.error });
     close(step, 'FAILED', 'review-slot.contract-violation');
@@ -693,23 +785,25 @@ function route(step: Step, raw: unknown): void {
       publicationGate(step);
       return;
     case 'REPAIR':
-      recordOutcome(step, a, 'repair-requested');
+      endAttempt(step, a, 'repair-requested');
       // The repair attempt needs the writer lease; the parent's worktree stays until the repair worktree exists.
       releaseLease(step, a);
       s.currentAttempt = null;
       s.nextAttempt = {
         kind: 'repair',
-        baseSha: outcome.repairBaseSha,
-        round: outcome.nextRound,
-        priorAdjudicationId: outcome.adjudicationId,
-        parentAttemptNumber: a.attemptNumber,
-        repairOrderRef: outcome.repairOrderRef,
+        lineage: {
+          repairBaseSha: outcome.repairBaseSha,
+          repairOrderRef: outcome.repairOrderRef,
+          round: outcome.nextRound,
+          priorAdjudicationId: outcome.adjudicationId,
+          parentAttemptNumber: a.attemptNumber,
+        },
         replacesTimedOut: false,
       };
       budgetCheck(step);
       return;
     case 'BLOCK':
-      recordOutcome(step, a, 'blocked');
+      endAttempt(step, a, 'blocked');
       close(step, 'BLOCKED', outcome.reason);
       return;
   }
@@ -734,7 +828,7 @@ function handoff(step: Step): void {
     return;
   }
   s.phase = 'REVIEW_HANDOFF';
-  recordOutcome(step, attempt(s, plan.attemptNumber), plan.terminal);
+  endAttempt(step, attempt(s, plan.attemptNumber), plan.terminal);
   close(step, 'WAITING_FOR_HUMAN_REVIEW', plan.terminal === 'escalated' ? 'assurance-escalated' : 'review-handoff');
 }
 
@@ -933,8 +1027,7 @@ function close(step: Step, outcome: TaskOutcome, reason: string, terminal?: Atte
   const attemptTerminal: AttemptTerminal = terminal ?? (outcome === 'CANCELLED' ? 'cancelled' : 'failed');
   for (const a of s.attempts) {
     releaseAttempt(step, a, handedOff ? 'cleanup' : 'quarantine', reason);
-    if (!a.usageRecorded) chargeUsage(step, a, null, null);
-    recordOutcome(step, a, attemptTerminal);
+    endAttempt(step, a, attemptTerminal);
   }
   if (outcome === 'CANCELLED' && s.prNumber !== null) {
     // The PR stays open for a human; the harness never deletes remote refs.

@@ -10,7 +10,7 @@ export { decideRun, runWorkflowId, startRun } from './run-core.js';
 export type { RunBudget, RunCarry, RunCommand, RunCoreInput, RunDecision, RunEvent, RunState } from './run-core.js';
 export {
   ACTIVITY_OPTIONS,
-  CRITICAL_SECTION_REQUESTS,
+  CRITICAL_UNITS,
   EFFECT_ACTIVITY,
   agentStartToCloseSeconds,
   verificationStartToCloseSeconds,

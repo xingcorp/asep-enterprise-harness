@@ -1,4 +1,5 @@
-// Shared test fixtures for the decision-core suites (not a test file itself).
+// Shared test fixtures for the decision-core suites (test support, not a test file;
+// excluded from the purity scan with the tests).
 
 import type {
   ArtifactRef,
@@ -7,15 +8,17 @@ import type {
   RunId,
   TaskId,
 } from '@asep/contracts';
-import { DEFAULT_ORCHESTRATION_POLICY } from './defaults.js';
+import { DEFAULT_ORCHESTRATION_POLICY } from '../defaults.js';
 import type {
+  OrchestrationPolicy,
   TaskCommand,
   TaskCoreInput,
   TaskEffect,
+  TaskGovernance,
   TaskRequest,
   TaskRequestKind,
-} from './types.js';
-import type { Answer, TaskEnvironment } from './sequential-interpreter.js';
+} from '../types.js';
+import type { Answer, TaskEnvironment } from '../sequential-interpreter.js';
 
 export const TASK_BASE = 'b'.repeat(40);
 
@@ -28,6 +31,15 @@ export function ref(name: string): ArtifactRef {
   return { artifactId: `art-${name}` as ArtifactId, sha256: hex.padEnd(64, '0').slice(0, 64), kind: 'test' };
 }
 
+export function governance(overrides: Partial<TaskGovernance> = {}): TaskGovernance {
+  return { publicationApprovalRequired: false, approvalTtlSeconds: 3600, maxPauseHours: 72, assuranceMode: 'shadow', ...overrides };
+}
+
+/** The default policy with a budget-extension bound set, so extension approvals are available. */
+export function policy(overrides: Partial<OrchestrationPolicy> = {}): OrchestrationPolicy {
+  return { ...DEFAULT_ORCHESTRATION_POLICY, maxBudgetExtensionUsd: 50, ...overrides };
+}
+
 export function baseInput(overrides: Partial<TaskCoreInput> = {}): TaskCoreInput {
   return {
     taskId: 'task-1' as TaskId,
@@ -36,9 +48,10 @@ export function baseInput(overrides: Partial<TaskCoreInput> = {}): TaskCoreInput
     baseSha: TASK_BASE,
     attemptBudget: { maxTurns: 10, maxToolCalls: 50, maxCostUsd: 5, maxWallClockMinutes: 30 },
     taskBudget: { maxAttempts: 3, maxCostUsd: 20, softCostUsd: 12, maxWallClockMinutes: 240 },
+    verificationReserve: { costUsd: 1, wallClockMinutes: 10 },
     runRemainingUsd: 100,
-    governance: { publicationApprovalRequired: false, approvalTtlSeconds: 3600, maxPauseHours: 72 },
-    policy: DEFAULT_ORCHESTRATION_POLICY,
+    governance: governance(),
+    policy: policy(),
     ...overrides,
   };
 }
@@ -52,6 +65,17 @@ export function attemptOf(request: TaskRequest): number | null {
 
 export function proceed(name = 'adj-1'): unknown {
   return { kind: 'PROCEED', adjudicationId: name, mode: 'not-required', prBodySectionRef: ref(`pr-${name}`) };
+}
+
+/** A REPAIR outcome for the attempt whose harness commit is shaFor(attemptNumber). */
+export function repair(attemptNumber: number, round: number, name = `adj-r${attemptNumber}`): unknown {
+  return {
+    kind: 'REPAIR',
+    adjudicationId: name,
+    repairOrderRef: ref(`ro-${attemptNumber}`),
+    nextRound: round + 1,
+    repairBaseSha: shaFor(attemptNumber),
+  };
 }
 
 /** The default answer for every request: the happy path. */
@@ -69,7 +93,7 @@ export function happyAnswer(request: TaskRequest): Answer {
     case 'storeAttemptInputs':
       return { kind: 'storeAttemptInputs' };
     case 'runAgent':
-      return { kind: 'runAgent', status: 'AGENT_DONE', reportedCostUsd: 1, wallClockMs: 60_000, failureClass: null };
+      return { kind: 'runAgent', status: 'AGENT_DONE', reportedCostUsd: 1, reportedToolCalls: 10, wallClockMs: 60_000, failureClass: null };
     case 'inspectWorkspace':
       return { kind: 'inspectWorkspace', overstep: false };
     case 'runVerification':

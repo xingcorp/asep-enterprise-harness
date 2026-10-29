@@ -86,12 +86,17 @@ export const ACTIVITY_OPTIONS: Readonly<Record<ActivityName, ActivityOptions>> =
   emitRunEvent: options(30, null, retry(10), false),
 };
 
-/** The commit/evidence and push/PR sections: once started they finish, even under cancellation. */
-export const CRITICAL_SECTION_REQUESTS: readonly TaskRequestKind[] = [
-  'commitAttempt',
-  'persistEvidence',
-  'publishBranch',
-  'upsertPullRequest',
+/**
+ * The critical units: each operation that needs reconciliation, in order. A
+ * cancel that arrives inside a unit is processed once the unit has reconciled,
+ * and once a push has started the PR upsert runs too, so the remote ends with no
+ * ASEP branch or with the branch and its PR. Everything else, including the
+ * assurance round, repair planning and approval waits, is cancellable at once.
+ */
+export const CRITICAL_UNITS: readonly (readonly TaskRequestKind[])[] = [
+  ['commitAttempt', 'persistEvidence'],
+  ['publishBranch'],
+  ['upsertPullRequest'],
 ];
 
 /** The activity that carries out each effect; timers are workflow-native and have none. */

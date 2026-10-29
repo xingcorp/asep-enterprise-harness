@@ -65,6 +65,7 @@ export type TaskPhase =
   | 'PUBLISHING'
   | 'REVIEW_HANDOFF'
   | 'ATTEMPT_ABANDONED'
+  | 'ATTEMPT_EXHAUSTED'
   | 'PAUSED'
   | 'CANCELLING'
   | 'CLEANUP'
@@ -81,6 +82,7 @@ export type AttemptTerminal =
   | 'repair-requested'
   | 'escalated'
   | 'blocked'
+  | 'budget-exhausted'
   | 'failed'
   | 'cancelled';
 
@@ -137,17 +139,33 @@ export interface TaskBudget {
   readonly maxWallClockMinutes: number;
 }
 
+/**
+ * Shadow: assurance never gates a merge, so an unavailable assurance round
+ * continues as PROCEED. Gating: it continues as ESCALATE.
+ */
+export type AssuranceMode = 'shadow' | 'gating';
+
 export interface TaskGovernance {
   readonly publicationApprovalRequired: boolean;
   readonly approvalTtlSeconds: number;
   readonly maxPauseHours: number;
+  readonly assuranceMode: AssuranceMode;
 }
 
 export interface OrchestrationPolicy {
   /** Failure classes after which an abandoned attempt may be replaced by a new one. */
   readonly replaceableFailureClasses: readonly FailureClass[];
-  /** Upper bound of one budget-extension grant. */
-  readonly maxBudgetExtensionUsd: number;
+  /**
+   * Upper bound of one budget-extension grant. Null (unset) makes budget-extension
+   * approval unavailable: a task-cap shortfall then ends the task BUDGET_EXHAUSTED.
+   */
+  readonly maxBudgetExtensionUsd: number | null;
+}
+
+/** Reserved for mandatory verification at every attempt start, apart from the agent's cap. */
+export interface VerificationReserve {
+  readonly costUsd: number;
+  readonly wallClockMinutes: number;
 }
 
 export interface TaskCoreInput {
@@ -157,6 +175,7 @@ export interface TaskCoreInput {
   readonly baseSha: string;
   readonly attemptBudget: Budget;
   readonly taskBudget: TaskBudget;
+  readonly verificationReserve: VerificationReserve;
   /** Run budget left when this task's workflow started. */
   readonly runRemainingUsd: number;
   readonly governance: TaskGovernance;
@@ -180,7 +199,7 @@ export type TaskRequest =
   | {
       readonly kind: 'storeAttemptInputs';
       readonly attemptNumber: number;
-      /** Set for a repair attempt: the inputs are derived with buildRepairContextPack. */
+      /** Set for an attempt with a repair lineage: the inputs are derived with buildRepairContextPack. */
       readonly repairOrderRef: ArtifactRef | null;
     }
   | { readonly kind: 'runAgent'; readonly attemptNumber: number; readonly budget: Budget }
@@ -203,7 +222,8 @@ export type TaskRequest =
       readonly kind: 'upsertPullRequest';
       readonly attemptNumber: number;
       readonly flagged: boolean;
-      readonly prBodySectionRef: ArtifactRef;
+      /** Null when the assurance round was unavailable; the PR body then says so. */
+      readonly prBodySectionRef: ArtifactRef | null;
     };
 
 export type TaskRequestKind = TaskRequest['kind'];
@@ -248,11 +268,18 @@ export type TaskEffect =
   | {
       readonly kind: 'recordUsage';
       readonly attemptNumber: number;
+      /** Agent cost plus, once verification ran, the verification reserve. */
       readonly chargedCostUsd: number;
       readonly reportedCostUsd: number | null;
+      readonly verificationReserveUsd: number;
       readonly chargedWallClockMinutes: number;
     }
-  | { readonly kind: 'recordOverrun'; readonly attemptNumber: number; readonly overrunUsd: number }
+  | {
+      readonly kind: 'recordOverrun';
+      readonly attemptNumber: number;
+      readonly overrunUsd: number;
+      readonly overrunToolCalls: number;
+    }
   | { readonly kind: 'recordExtension'; readonly approvalRequestId: string; readonly extensionUsd: number }
   | { readonly kind: 'reapContainers'; readonly attemptNumber: number }
   | { readonly kind: 'quarantineWorkspace'; readonly attemptNumber: number; readonly reason: string }
@@ -293,11 +320,13 @@ export type TaskResult =
   | { readonly kind: 'storeAttemptInputs' }
   | {
       readonly kind: 'runAgent';
+      /** BUDGET_EXHAUSTED: the adapter stopped the agent at one of its caps. */
       readonly status: AgentStatus;
-      /** Provider-reported cost (untrusted) and harness-measured wall-clock. */
+      /** Provider-reported usage (untrusted) and harness-measured wall-clock. */
       readonly reportedCostUsd: number;
+      readonly reportedToolCalls: number;
       readonly wallClockMs: number;
-      /** Required when status is not AGENT_DONE. */
+      /** Required when status is FAILED or BLOCKED. */
       readonly failureClass: FailureClass | null;
     }
   | { readonly kind: 'inspectWorkspace'; readonly overstep: boolean }
@@ -359,14 +388,36 @@ export interface ControlReceipt {
 
 // --- task state ---------------------------------------------------------------
 
+/**
+ * What an attempt builds on after an assurance REPAIR. It is separate from the
+ * attempt kind: a repair attempt starts a lineage, a retry copies the lineage of
+ * the attempt it replaces, and an initial attempt (or a retry of one) has none.
+ */
+export interface RepairLineage {
+  readonly repairBaseSha: string;
+  readonly repairOrderRef: ArtifactRef;
+  readonly round: number;
+  readonly priorAdjudicationId: string;
+  /** The attempt whose harness commit is the repair base. */
+  readonly parentAttemptNumber: number;
+}
+
+/** The agent's usage as charged: reported cost if usable, else the full cap. */
+export interface AgentUsage {
+  readonly chargedMicroUsd: number;
+  readonly reportedCostUsd: number | null;
+  readonly minutes: number;
+}
+
+export interface AttemptOverrun {
+  readonly overrunUsd: number;
+  readonly overrunToolCalls: number;
+}
+
 export interface AttemptState {
   readonly attemptNumber: number;
   readonly kind: AttemptKind;
-  readonly baseSha: string;
-  readonly round: number;
-  readonly priorAdjudicationId: string | null;
-  readonly parentAttemptNumber: number | null;
-  readonly repairOrderRef: ArtifactRef | null;
+  readonly lineage: RepairLineage | null;
   readonly attemptId: AttemptId | null;
   readonly leaseRequested: boolean;
   readonly leaseReleased: boolean;
@@ -374,6 +425,12 @@ export interface AttemptState {
   readonly workspaceActive: boolean;
   readonly workspaceDisposed: boolean;
   readonly agentStarted: boolean;
+  readonly agentUsage: AgentUsage | null;
+  /** Reported usage above a cap the adapter did not stop at. */
+  readonly overrun: AttemptOverrun | null;
+  /** The agent stopped at a cap or overran one: the attempt is inspected, never verified or published. */
+  readonly exhausted: boolean;
+  readonly verificationStarted: boolean;
   readonly reaped: boolean;
   readonly declaredComplete: boolean;
   readonly verdict: VerificationVerdict | null;
@@ -404,17 +461,13 @@ export interface PendingRequest {
 export interface PublicationPlan {
   readonly attemptNumber: number;
   readonly flagged: boolean;
-  readonly prBodySectionRef: ArtifactRef;
+  readonly prBodySectionRef: ArtifactRef | null;
   readonly terminal: 'proceeded' | 'escalated';
 }
 
 export interface NextAttemptPlan {
   readonly kind: AttemptKind;
-  readonly baseSha: string;
-  readonly round: number;
-  readonly priorAdjudicationId: string | null;
-  readonly parentAttemptNumber: number | null;
-  readonly repairOrderRef: ArtifactRef | null;
+  readonly lineage: RepairLineage | null;
   readonly replacesTimedOut: boolean;
 }
 

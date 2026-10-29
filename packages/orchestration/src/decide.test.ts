@@ -15,7 +15,7 @@ import type { RunId, TaskId } from '@asep/contracts';
 import { taskReachableStates, transitionTask } from '@asep/domain';
 import {
   ACTIVITY_OPTIONS,
-  CRITICAL_SECTION_REQUESTS,
+  CRITICAL_UNITS,
   EFFECT_ACTIVITY,
   agentStartToCloseSeconds,
   verificationStartToCloseSeconds,
@@ -34,16 +34,19 @@ import {
   TASK_BASE,
   baseInput,
   effectsOf,
+  governance,
   happyAnswer,
   indexOfCommand,
+  policy,
   proceed,
   ref,
+  repair,
   requestKinds,
   requests,
   scripted,
   shaFor,
-} from './test-fixtures.js';
-import type { TaskCommand, TaskEffect, TaskEvent, TaskRequestKind } from './types.js';
+} from './test-support/fixtures.js';
+import type { TaskCommand, TaskEffect, TaskEvent, TaskRequest, TaskRequestKind } from './types.js';
 
 console.log('SUITE-ID: asep-suite:orchestration-core');
 
@@ -87,12 +90,14 @@ test('activity options: long activities declare a heartbeat timeout; the agent i
   assert.equal(ACTIVITY_OPTIONS.runVerification.retry.maximumAttempts, 2);
 });
 
-test('activity options: the commit/evidence and push/PR sections are not cancellable', () => {
-  assert.deepEqual([...CRITICAL_SECTION_REQUESTS].sort(),
-    ['commitAttempt', 'persistEvidence', 'publishBranch', 'upsertPullRequest']);
-  for (const name of CRITICAL_SECTION_REQUESTS) assert.equal(ACTIVITY_OPTIONS[name].cancellable, false, name);
-  assert.equal(ACTIVITY_OPTIONS.runAgent.cancellable, true);
-  assert.equal(ACTIVITY_OPTIONS.runVerification.cancellable, true);
+test('activity options: the critical units are commit plus evidence, push, and PR upsert; nothing else is shielded', () => {
+  assert.deepEqual(CRITICAL_UNITS, [['commitAttempt', 'persistEvidence'], ['publishBranch'], ['upsertPullRequest']]);
+  for (const unit of CRITICAL_UNITS) {
+    for (const name of unit) assert.equal(ACTIVITY_OPTIONS[name].cancellable, false, name);
+  }
+  for (const name of ['runAgent', 'runVerification', 'assuranceRound', 'inspectWorkspace', 'prepareWorkspace'] as const) {
+    assert.equal(ACTIVITY_OPTIONS[name].cancellable, true, name);
+  }
 });
 
 test('activity options: derived timeouts add five minutes of grace', () => {
@@ -126,6 +131,7 @@ const RES = {
   attemptNumber: 1,
   attemptBudget: { maxTurns: 1, maxToolCalls: 1, maxCostUsd: 5, maxWallClockMinutes: 30 },
   taskBudget: { maxAttempts: 3, maxCostUsd: 20, softCostUsd: 12, maxWallClockMinutes: 240 },
+  verificationReserve: { costUsd: 1, wallClockMinutes: 10 },
   runRemainingUsd: 100,
   spentMicroUsd: 0,
   spentWallClockMinutes: 0,
@@ -133,17 +139,26 @@ const RES = {
   overrun: false,
 };
 
-test('reservation: an attempt fits exactly at the task cap and fails one micro-dollar above it', () => {
-  assert.deepEqual(checkReservation({ ...RES, spentMicroUsd: toMicroUsd(15) }), { ok: true });
-  const over = checkReservation({ ...RES, spentMicroUsd: toMicroUsd(15) + 1 });
+test('reservation: an attempt and its verification reserve fit exactly at the task cap and fail one micro-dollar above it', () => {
+  assert.deepEqual(checkReservation({ ...RES, spentMicroUsd: toMicroUsd(14) }), { ok: true });
+  const over = checkReservation({ ...RES, spentMicroUsd: toMicroUsd(14) + 1 });
   assert.equal(over.ok, false);
   assert.equal(over.ok === false && over.reason, 'task-budget');
   assert.equal(over.ok === false && over.shortfallUsd, 0.000001);
 });
 
+test('reservation: the verification reserve is reserved on top of the agent cap, in cost and wall-clock', () => {
+  const noReserve = { ...RES, verificationReserve: { costUsd: 0, wallClockMinutes: 0 } };
+  assert.deepEqual(checkReservation({ ...noReserve, spentMicroUsd: toMicroUsd(15) }), { ok: true });
+  assert.equal((checkReservation({ ...RES, spentMicroUsd: toMicroUsd(15) }) as { reason: string }).reason, 'task-budget');
+  assert.deepEqual(checkReservation({ ...noReserve, spentWallClockMinutes: 210 }), { ok: true });
+  assert.equal((checkReservation({ ...RES, spentWallClockMinutes: 210 }) as { reason: string }).reason, 'wall-clock');
+  assert.equal((checkReservation({ ...RES, runRemainingUsd: 5.5 }) as { reason: string }).reason, 'run-budget');
+});
+
 test('reservation: granted extensions raise only the task cap', () => {
   assert.deepEqual(
-    checkReservation({ ...RES, spentMicroUsd: toMicroUsd(18), grantedExtensionMicroUsd: toMicroUsd(3) }),
+    checkReservation({ ...RES, spentMicroUsd: toMicroUsd(17), grantedExtensionMicroUsd: toMicroUsd(3) }),
     { ok: true },
   );
   const run = checkReservation({ ...RES, runRemainingUsd: 4, grantedExtensionMicroUsd: toMicroUsd(50) });
@@ -153,8 +168,11 @@ test('reservation: granted extensions raise only the task cap', () => {
 test('reservation: attempts, overrun and wall-clock each bind, and are checked before the task cap', () => {
   assert.equal((checkReservation({ ...RES, attemptNumber: 4 }) as { reason: string }).reason, 'attempts-exhausted');
   assert.equal((checkReservation({ ...RES, overrun: true }) as { reason: string }).reason, 'overrun');
-  assert.equal((checkReservation({ ...RES, spentWallClockMinutes: 211 }) as { reason: string }).reason, 'wall-clock');
-  assert.deepEqual(checkReservation({ ...RES, spentWallClockMinutes: 210 }), { ok: true });
+  assert.equal((checkReservation({ ...RES, spentWallClockMinutes: 201 }) as { reason: string }).reason, 'wall-clock');
+  assert.deepEqual(checkReservation({ ...RES, spentWallClockMinutes: 200 }), { ok: true });
+  // maxAttempts wins over every budget cause.
+  assert.equal((checkReservation({ ...RES, attemptNumber: 4, overrun: true, runRemainingUsd: 0 }) as { reason: string }).reason,
+    'attempts-exhausted');
 });
 
 test('soft threshold: crossed once, when spending moves from below to at-or-above it', () => {
@@ -191,6 +209,8 @@ test('approvals: the validator rejects unknown requests, disallowed decisions, b
   assert.equal(validateApprovalDecision(publish, [], msg, max).reason, 'extension-out-of-bounds');
   assert.deepEqual(validateApprovalDecision(open, ['d1'], msg, max), { accepted: true, duplicate: true, reason: null });
   assert.equal(validateApprovalDecision({ ...open, pendingDecisionId: 'd0' }, ['d0'], msg, max).reason, 'decision-conflict');
+  // Without a policy bound no extension amount is well formed.
+  assert.equal(validateApprovalDecision(open, [], msg, null).reason, 'extension-out-of-bounds');
 });
 
 // ---------------------------------------------------------------------------
@@ -290,13 +310,15 @@ test('agent failure: an attempt that died without a usage report is charged its 
     runAgent: (_r, n) => (n === 1 ? { kind: 'activityFailed', failureClass: 'environment', timedOut: true } : undefined),
   }));
   const usage = effectsOf(trace.commands, 'recordUsage');
-  assert.deepEqual(usage.map((u) => [u.attemptNumber, u.chargedCostUsd, u.reportedCostUsd]), [[1, 5, null], [2, 1, 1]]);
-  assert.equal(trace.summary.chargedCostUsd, 6);
+  // Attempt 2 also ran verification, so it is charged the verification reserve on top of its agent cost.
+  assert.deepEqual(usage.map((u) => [u.attemptNumber, u.chargedCostUsd, u.reportedCostUsd, u.verificationReserveUsd]),
+    [[1, 5, null, 0], [2, 2, 1, 1]]);
+  assert.equal(trace.summary.chargedCostUsd, 7);
 });
 
 test('agent failure: a non-replaceable failure class ends the task without a new attempt', () => {
   const trace = runTaskSequentially(baseInput(), scripted({
-    runAgent: () => ({ kind: 'runAgent', status: 'FAILED', reportedCostUsd: 1, wallClockMs: 1000, failureClass: 'policy-violation' }),
+    runAgent: () => ({ kind: 'runAgent', status: 'FAILED', reportedCostUsd: 1, reportedToolCalls: 3, wallClockMs: 1000, failureClass: 'policy-violation' }),
   }));
   assert.equal(requestKinds(trace.commands).filter((k) => k === 'ensureAttempt').length, 1);
   assert.deepEqual(outcomes(trace), [[1, 'failed']]);
@@ -336,9 +358,8 @@ test('an overstep found by inspection is a policy violation and is not retried',
 
 for (const verdict of ['FAIL', 'ERROR'] as const) {
   test(`a ${verdict} verification stops the task: no assurance round, no approval, no push`, () => {
-    const trace = runTaskSequentially(baseInput({
-      governance: { publicationApprovalRequired: true, approvalTtlSeconds: 3600, maxPauseHours: 72 },
-    }), scripted({ runVerification: () => ({ kind: 'runVerification', verdict }) }));
+    const trace = runTaskSequentially(baseInput({ governance: governance({ publicationApprovalRequired: true }) }),
+      scripted({ runVerification: () => ({ kind: 'runVerification', verdict }) }));
     const kinds = requestKinds(trace.commands);
     for (const k of ['assuranceRound', 'openApprovalRequest', 'commitAttempt', 'publishBranch'] as const) {
       assert.ok(!kinds.includes(k), `${k} must not run after a verification stop`);
@@ -476,20 +497,21 @@ function idleScript(...events: readonly ((timers: readonly string[]) => TaskEven
   };
 }
 
+// The first attempt needs 5 (agent cap) + 1 (verification reserve) against a task cap of 4.
 const tightBudget = baseInput({ taskBudget: { maxAttempts: 3, maxCostUsd: 4, softCostUsd: 3, maxWallClockMinutes: 240 } });
 
 test('budget extension: a failed task-cap reservation opens a budget-extension approval; approval continues the task', () => {
   const trace = runTaskSequentially(tightBudget, scripted({
-    verifyApprovalDecision: () => ({ kind: 'verifyApprovalDecision', verified: true, decision: 'approve', extensionUsd: 1 }),
+    verifyApprovalDecision: () => ({ kind: 'verifyApprovalDecision', verified: true, decision: 'approve', extensionUsd: 2 }),
   }, {
-    whenIdle: idleScript(() => ({ type: 'approvalDecisionReceived', decisionId: 'd1', approvalRequestId: 'asep-task-task-1:1', decision: 'approve', extensionUsd: 1, principalId: 'human-1' })),
+    whenIdle: idleScript(() => ({ type: 'approvalDecisionReceived', decisionId: 'd1', approvalRequestId: 'asep-task-task-1:1', decision: 'approve', extensionUsd: 2, principalId: 'human-1' })),
   }));
   const open = requests(trace.commands).find((r) => r.kind === 'openApprovalRequest');
   assert.deepEqual(open, {
     kind: 'openApprovalRequest', approvalRequestId: 'asep-task-task-1:1', approvalKind: 'budget-extension',
-    attemptNumber: null, ttlSeconds: 3600, shortfallUsd: 1,
+    attemptNumber: null, ttlSeconds: 3600, shortfallUsd: 2,
   });
-  assert.deepEqual(effectsOf(trace.commands, 'recordExtension'), [{ kind: 'recordExtension', approvalRequestId: 'asep-task-task-1:1', extensionUsd: 1 }]);
+  assert.deepEqual(effectsOf(trace.commands, 'recordExtension'), [{ kind: 'recordExtension', approvalRequestId: 'asep-task-task-1:1', extensionUsd: 2 }]);
   assert.ok(effectsOf(trace.commands, 'cancelTimer').some((t) => t.timerId === 'approval:asep-task-task-1:1'));
   assert.equal(trace.summary.outcome, 'WAITING_FOR_HUMAN_REVIEW');
   assert.ok(effectsOf(trace.commands, 'projectTaskState').some((p) => p.status === 'WAITING_FOR_APPROVAL'));
@@ -522,7 +544,7 @@ test('a decision that PostgreSQL does not confirm never releases the gate', () =
     verifyApprovalDecision: () => ({ kind: 'verifyApprovalDecision', verified: false, decision: null, extensionUsd: null }),
   }, {
     whenIdle: idleScript(
-      () => ({ type: 'approvalDecisionReceived', decisionId: 'forged', approvalRequestId: 'asep-task-task-1:1', decision: 'approve', extensionUsd: 1, principalId: 'x' }),
+      () => ({ type: 'approvalDecisionReceived', decisionId: 'forged', approvalRequestId: 'asep-task-task-1:1', decision: 'approve', extensionUsd: 2, principalId: 'x' }),
       (timers) => ({ type: 'timerFired', timerId: timers[0]! }),
     ),
   }));
@@ -532,6 +554,15 @@ test('a decision that PostgreSQL does not confirm never releases the gate', () =
   assert.equal(trace.summary.outcome, 'BUDGET_EXHAUSTED');
 });
 
+test('budget extension: while maxBudgetExtensionUsd is unset no approval is offered and the task ends BUDGET_EXHAUSTED', () => {
+  const trace = runTaskSequentially({ ...tightBudget, policy: policy({ maxBudgetExtensionUsd: null }) }, scripted());
+  assert.ok(!requestKinds(trace.commands).includes('openApprovalRequest'));
+  assert.ok(!requestKinds(trace.commands).includes('ensureAttempt'));
+  assert.equal(trace.summary.outcome, 'BUDGET_EXHAUSTED');
+  assert.equal(trace.summary.reason, 'task-budget');
+  assertLegalProjections(trace);
+});
+
 test('a run-budget shortfall cannot be extended per task: BUDGET_EXHAUSTED without an approval', () => {
   const trace = runTaskSequentially(baseInput({ runRemainingUsd: 3 }), scripted());
   assert.ok(!requestKinds(trace.commands).includes('openApprovalRequest'));
@@ -539,43 +570,20 @@ test('a run-budget shortfall cannot be extended per task: BUDGET_EXHAUSTED witho
   assertLegalProjections(trace);
 });
 
-test('reported cost above the reservation records an overrun and exhausts the task budget', () => {
-  const trace = runTaskSequentially(baseInput(), scripted({
-    runAgent: () => ({ kind: 'runAgent', status: 'FAILED', reportedCostUsd: 7, wallClockMs: 1000, failureClass: 'provider' }),
-  }));
-  assert.deepEqual(effectsOf(trace.commands, 'recordOverrun'), [{ kind: 'recordOverrun', attemptNumber: 1, overrunUsd: 2 }]);
-  assert.ok(!requestKinds(trace.commands).includes('openApprovalRequest'));
-  assert.equal(requestKinds(trace.commands).filter((k) => k === 'ensureAttempt').length, 1);
-  assert.equal(trace.summary.outcome, 'BUDGET_EXHAUSTED');
-  assertLegalProjections(trace);
-});
-
-test('an attempt whose agent exhausted the budget is still verified, committed and published', () => {
-  const trace = runTaskSequentially(baseInput(), scripted({
-    runAgent: () => ({ kind: 'runAgent', status: 'AGENT_DONE', reportedCostUsd: 9, wallClockMs: 1000, failureClass: null }),
-  }));
-  const kinds = requestKinds(trace.commands);
-  for (const k of ['runVerification', 'commitAttempt', 'persistEvidence', 'assuranceRound', 'publishBranch'] as const) {
-    assert.ok(kinds.includes(k), k);
-  }
-  assert.equal(effectsOf(trace.commands, 'recordOverrun').length, 1);
-  assert.equal(trace.summary.outcome, 'WAITING_FOR_HUMAN_REVIEW');
-});
-
 test('crossing the soft threshold emits one threshold event and work continues', () => {
   const trace = runTaskSequentially(baseInput(), scripted({
     runAgent: (_r, n) => (n < 3
-      ? { kind: 'runAgent', status: 'FAILED', reportedCostUsd: 5, wallClockMs: 1000, failureClass: 'provider' }
-      : { kind: 'runAgent', status: 'AGENT_DONE', reportedCostUsd: 2, wallClockMs: 1000, failureClass: null }),
+      ? { kind: 'runAgent', status: 'FAILED', reportedCostUsd: 5, reportedToolCalls: 5, wallClockMs: 1000, failureClass: 'provider' }
+      : { kind: 'runAgent', status: 'AGENT_DONE', reportedCostUsd: 2, reportedToolCalls: 5, wallClockMs: 1000, failureClass: null }),
   }));
-  // Spending runs 5, 10, 12: the third attempt reaches the soft threshold of 12.
+  // Spending runs 5, 10, 13 (the third attempt also pays its verification reserve): one crossing of 12.
   const crossed = effectsOf(trace.commands, 'emitRunEvent').filter((e) => e.eventType === 'budget.threshold_crossed');
   assert.deepEqual(crossed.map((e) => [e.detail['thresholdKind'], e.detail['budgetScope']]), [['soft', 'task']]);
   assert.equal(trace.summary.outcome, 'WAITING_FOR_HUMAN_REVIEW');
 });
 
 test('with publication approval required, no push happens before an approve', () => {
-  const input = baseInput({ governance: { publicationApprovalRequired: true, approvalTtlSeconds: 600, maxPauseHours: 72 } });
+  const input = baseInput({ governance: governance({ publicationApprovalRequired: true, approvalTtlSeconds: 600 }) });
   const approved = runTaskSequentially(input, scripted({}, {
     whenIdle: idleScript(() => ({ type: 'approvalDecisionReceived', decisionId: 'd1', approvalRequestId: 'asep-task-task-1:1', decision: 'approve', extensionUsd: null, principalId: 'h' })),
   }));
@@ -597,7 +605,7 @@ test('with publication approval required, no push happens before an approve', ()
 });
 
 test('approval decisions are validated before any state change; duplicates return the original receipt', () => {
-  const input = baseInput({ governance: { publicationApprovalRequired: true, approvalTtlSeconds: 600, maxPauseHours: 72 } });
+  const input = baseInput({ governance: governance({ publicationApprovalRequired: true, approvalTtlSeconds: 600 }) });
   const trace = runTaskSequentially(input, scripted({
     verifyApprovalDecision: () => ({ kind: 'verifyApprovalDecision', verified: true, decision: 'approve', extensionUsd: null }),
   }, {
@@ -702,7 +710,7 @@ test('cancel during the agent aborts it, reaps, quarantines, releases and ignore
   }
   assert.equal(cancelled.commands.at(-1)?.type, 'complete');
   assert.equal(state.outcome, 'CANCELLED');
-  const late = drive({ type: 'result', seq, result: { kind: 'runAgent', status: 'AGENT_DONE', reportedCostUsd: 1, wallClockMs: 1, failureClass: null } });
+  const late = drive({ type: 'result', seq, result: { kind: 'runAgent', status: 'AGENT_DONE', reportedCostUsd: 1, reportedToolCalls: 1, wallClockMs: 1, failureClass: null } });
   assert.deepEqual(late.commands, []);
   const again = drive(cancel('c2'));
   assert.equal(again.receipt?.reason, 'closed');
@@ -750,6 +758,283 @@ test('cancel while waiting for an approval cancels the approval request', () => 
   assert.deepEqual(effectsOf(trace.commands, 'cancelApprovalRequest').map((e) => e.approvalRequestId), ['asep-task-task-1:1']);
   assert.equal(trace.summary.outcome, 'CANCELLED');
   assertLegalProjections(trace);
+});
+
+// ---------------------------------------------------------------------------
+// Agent outcome table
+// ---------------------------------------------------------------------------
+
+function requestsOfAttempt(trace: TaskTrace, attemptNumber: number): TaskRequestKind[] {
+  return requests(trace.commands).flatMap((r) => {
+    const n = r.kind === 'assuranceRound' ? r.request.attemptNumber : 'attemptNumber' in r ? r.attemptNumber : null;
+    return n === attemptNumber ? [r.kind] : [];
+  });
+}
+
+function ensured(trace: TaskTrace) {
+  return requests(trace.commands).flatMap((r) => (r.kind === 'ensureAttempt' ? [r] : []));
+}
+
+const NEVER_AFTER_EXHAUSTION = ['runVerification', 'commitAttempt', 'persistEvidence', 'assuranceRound', 'publishBranch', 'upsertPullRequest'] as const;
+
+test('agent outcome: AGENT_DONE having spent exactly its cap gets every check, the commit, the assurance round and the PR', () => {
+  // Task cap 6 = agent cap 5 + verification reserve 1: the agent spends all of its own share.
+  const trace = runTaskSequentially(baseInput({ taskBudget: { maxAttempts: 1, maxCostUsd: 6, softCostUsd: 6, maxWallClockMinutes: 240 } }), scripted({
+    runAgent: () => ({ kind: 'runAgent', status: 'AGENT_DONE', reportedCostUsd: 5, reportedToolCalls: 50, wallClockMs: 1000, failureClass: null }),
+  }));
+  assert.deepEqual(requestsOfAttempt(trace, 1), [
+    'ensureAttempt', 'acquireLease', 'prepareWorkspace', 'storeAttemptInputs', 'runAgent', 'inspectWorkspace',
+    'runVerification', 'commitAttempt', 'persistEvidence', 'assuranceRound', 'publishBranch', 'upsertPullRequest',
+  ]);
+  assert.deepEqual(effectsOf(trace.commands, 'recordOverrun'), []);
+  assert.deepEqual(effectsOf(trace.commands, 'recordUsage').map((u) => [u.chargedCostUsd, u.verificationReserveUsd]), [[6, 1]]);
+  assert.equal(trace.summary.outcome, 'WAITING_FOR_HUMAN_REVIEW');
+});
+
+test('agent outcome: a cap stop is inspected only; the attempt ends budget-exhausted and a retry with a fresh reservation continues', () => {
+  const trace = runTaskSequentially(baseInput(), scripted({
+    runAgent: (_r, n) => (n === 1
+      ? { kind: 'runAgent', status: 'BUDGET_EXHAUSTED', reportedCostUsd: 5, reportedToolCalls: 20, wallClockMs: 1000, failureClass: null }
+      : undefined),
+  }));
+  assert.deepEqual(requestsOfAttempt(trace, 1), ['ensureAttempt', 'acquireLease', 'prepareWorkspace', 'storeAttemptInputs', 'runAgent', 'inspectWorkspace']);
+  assert.deepEqual(outcomes(trace), [[1, 'budget-exhausted'], [2, 'proceeded']]);
+  assert.deepEqual(ensured(trace).map((r) => [r.attemptNumber, r.attemptKind, r.baseSha]), [[1, 'initial', TASK_BASE], [2, 'retry', TASK_BASE]]);
+  assert.deepEqual(effectsOf(trace.commands, 'recordUsage').map((u) => [u.attemptNumber, u.chargedCostUsd, u.verificationReserveUsd]),
+    [[1, 5, 0], [2, 2, 1]]);
+  assert.ok(effectsOf(trace.commands, 'reapContainers').some((e) => e.attemptNumber === 1), 'attempt 1 reaped');
+  assert.ok(effectsOf(trace.commands, 'quarantineWorkspace').some((e) => e.attemptNumber === 1 && e.reason === 'budget-exhausted'), 'attempt 1 quarantined as budget-exhausted');
+  assert.deepEqual(effectsOf(trace.commands, 'recordOverrun'), []);
+  assert.equal(requestKinds(trace.commands).filter((k) => k === 'upsertPullRequest').length, 1);
+  assert.equal(trace.summary.outcome, 'WAITING_FOR_HUMAN_REVIEW');
+  assertLegalProjections(trace);
+});
+
+test('agent outcome: a cap stop with no room for a fresh reservation ends the task BUDGET_EXHAUSTED', () => {
+  // After the stop 5 is spent; a retry needs 5 + 5 + 1 against a cap of 10, and no extension bound is set.
+  const trace = runTaskSequentially(baseInput({
+    taskBudget: { maxAttempts: 3, maxCostUsd: 10, softCostUsd: 9, maxWallClockMinutes: 240 },
+    policy: policy({ maxBudgetExtensionUsd: null }),
+  }), scripted({
+    runAgent: () => ({ kind: 'runAgent', status: 'BUDGET_EXHAUSTED', reportedCostUsd: 5, reportedToolCalls: 20, wallClockMs: 1000, failureClass: null }),
+  }));
+  assert.deepEqual(outcomes(trace), [[1, 'budget-exhausted']]);
+  assert.equal(trace.summary.outcome, 'BUDGET_EXHAUSTED');
+  assert.equal(trace.summary.reason, 'task-budget');
+  assertLegalProjections(trace);
+});
+
+for (const [name, answer, overrun] of [
+  ['reported cost above the cap', { status: 'AGENT_DONE', reportedCostUsd: 7, reportedToolCalls: 10 }, { overrunUsd: 2, overrunToolCalls: 0 }],
+  ['reported tool calls above the cap', { status: 'AGENT_DONE', reportedCostUsd: 1, reportedToolCalls: 53 }, { overrunUsd: 0, overrunToolCalls: 3 }],
+  ['an agent failure that also overran its cost', { status: 'FAILED', reportedCostUsd: 7, reportedToolCalls: 10 }, { overrunUsd: 2, overrunToolCalls: 0 }],
+] as const) {
+  test(`agent outcome: ${name} is an overrun: recorded and audited, never verified or published, and the task ends BUDGET_EXHAUSTED`, () => {
+    const trace = runTaskSequentially(baseInput(), scripted({
+      runAgent: () => ({ kind: 'runAgent', wallClockMs: 1000, failureClass: answer.status === 'FAILED' ? 'provider' : null, ...answer }),
+    }));
+    const kinds = requestKinds(trace.commands);
+    assert.ok(kinds.includes('inspectWorkspace'), 'the overrun attempt is inspected');
+    for (const k of NEVER_AFTER_EXHAUSTION) assert.ok(!kinds.includes(k), `${k} after an overrun`);
+    assert.deepEqual(effectsOf(trace.commands, 'recordOverrun'), [{ kind: 'recordOverrun', attemptNumber: 1, ...overrun }]);
+    assert.ok(effectsOf(trace.commands, 'audit').some((a) => a.action === 'budget.overrun' && a.detail['attemptNumber'] === 1), 'overrun incident audited');
+    assert.deepEqual(outcomes(trace), [[1, 'budget-exhausted']]);
+    // A recorded overrun is not extendable, even though an extension bound is set.
+    assert.ok(!kinds.includes('openApprovalRequest'), 'no extension approval for an overrun');
+    assert.equal(ensured(trace).length, 1);
+    assert.equal(trace.summary.outcome, 'BUDGET_EXHAUSTED');
+    assert.equal(trace.summary.reason, 'overrun');
+    assertLegalProjections(trace);
+  });
+}
+
+test('agent outcome: an infrastructure error is replaced only with a fresh reservation', () => {
+  // The dead attempt is charged its full cap (5); a retry needs 5 + 5 + 1 against a cap of 10.
+  const trace = runTaskSequentially(baseInput({
+    taskBudget: { maxAttempts: 3, maxCostUsd: 10, softCostUsd: 9, maxWallClockMinutes: 240 },
+    policy: policy({ maxBudgetExtensionUsd: null }),
+  }), scripted({
+    runAgent: () => ({ kind: 'activityFailed', failureClass: 'environment', timedOut: true }),
+  }));
+  assert.deepEqual(outcomes(trace), [[1, 'failed']]);
+  assert.equal(ensured(trace).length, 1);
+  assert.equal(trace.summary.outcome, 'BUDGET_EXHAUSTED');
+  assert.equal(trace.summary.reason, 'task-budget');
+});
+
+// ---------------------------------------------------------------------------
+// Repair with a failed reservation, and repair lineage on retry
+// ---------------------------------------------------------------------------
+
+// Attempt 1 needs 5 + 1 and spends 1 + 1; the repair attempt then needs 2 + 5 + 1 = 8 against a cap of 7.
+const repairShort = baseInput({ taskBudget: { maxAttempts: 3, maxCostUsd: 7, softCostUsd: 7, maxWallClockMinutes: 240 } });
+const repairOnce = scripted.bind(null);
+const decide = (decision: 'approve' | 'reject', extensionUsd: number | null) => () => ({
+  type: 'approvalDecisionReceived' as const, decisionId: 'd1', approvalRequestId: 'asep-task-task-1:1', decision, extensionUsd, principalId: 'human-1',
+});
+
+function repairFirst(extra: Parameters<typeof scripted>[0] = {}, hooks: Parameters<typeof scripted>[1] = {}) {
+  return repairOnce({
+    assuranceRound: (r, n) => (n === 1 && r.kind === 'assuranceRound' ? { kind: 'assuranceRound', outcome: repair(1, r.request.round) } : undefined),
+    ...extra,
+  }, hooks);
+}
+
+test('repair budget: a task-cap shortfall with approvals available waits for a budget extension; approve keeps the repair lineage', () => {
+  const trace = runTaskSequentially(repairShort, repairFirst({
+    verifyApprovalDecision: () => ({ kind: 'verifyApprovalDecision', verified: true, decision: 'approve', extensionUsd: 1 }),
+  }, { whenIdle: idleScript(decide('approve', 1)) }));
+  const open = requests(trace.commands).find((r) => r.kind === 'openApprovalRequest');
+  assert.equal(open?.kind === 'openApprovalRequest' && open.approvalKind, 'budget-extension');
+  assert.equal(open?.kind === 'openApprovalRequest' && open.shortfallUsd, 1);
+  assert.ok(effectsOf(trace.commands, 'projectTaskState').some((p) => p.status === 'WAITING_FOR_APPROVAL'), 'projected WAITING_FOR_APPROVAL');
+  assert.deepEqual(ensured(trace).map((r) => [r.attemptNumber, r.attemptKind, r.baseSha, r.parentAttemptNumber, r.repairOrderRef]),
+    [[1, 'initial', TASK_BASE, null, null], [2, 'repair', shaFor(1), 1, ref('ro-1')]]);
+  const rounds = requests(trace.commands).flatMap((r) => (r.kind === 'assuranceRound' ? [r.request] : []));
+  assert.deepEqual(rounds.map((r) => [r.attemptNumber, r.round, r.priorAdjudicationId]), [[1, 1, null], [2, 2, 'adj-r1']]);
+  assert.deepEqual(outcomes(trace), [[1, 'repair-requested'], [2, 'proceeded']]);
+  assert.equal(trace.summary.outcome, 'WAITING_FOR_HUMAN_REVIEW');
+  assertLegalProjections(trace);
+});
+
+test('repair budget: rejecting the extension ends the task BUDGET_EXHAUSTED and publishes nothing', () => {
+  const trace = runTaskSequentially(repairShort, repairFirst({
+    verifyApprovalDecision: () => ({ kind: 'verifyApprovalDecision', verified: true, decision: 'reject', extensionUsd: null }),
+  }, { whenIdle: idleScript(decide('reject', null)) }));
+  assert.ok(!requestKinds(trace.commands).includes('publishBranch'), 'nothing pushed');
+  assert.equal(ensured(trace).length, 1);
+  assert.deepEqual(outcomes(trace), [[1, 'repair-requested']]);
+  assert.equal(trace.summary.outcome, 'BUDGET_EXHAUSTED');
+  assert.ok(effectsOf(trace.commands, 'quarantineWorkspace').some((e) => e.attemptNumber === 1), 'attempt 1 quarantined');
+  assertLegalProjections(trace);
+});
+
+test('repair budget: with approvals unavailable a task-cap shortfall ends the task BUDGET_EXHAUSTED at once', () => {
+  const trace = runTaskSequentially({ ...repairShort, policy: policy({ maxBudgetExtensionUsd: null }) }, repairFirst());
+  assert.ok(!requestKinds(trace.commands).includes('openApprovalRequest'), 'no extension approval');
+  assert.ok(!requestKinds(trace.commands).includes('publishBranch'), 'nothing pushed');
+  assert.equal(trace.summary.outcome, 'BUDGET_EXHAUSTED');
+  assert.equal(trace.summary.reason, 'task-budget');
+  assertLegalProjections(trace);
+});
+
+test('repair budget: a run-remainder shortfall is not extendable and ends the task BUDGET_EXHAUSTED, not FAILED', () => {
+  const trace = runTaskSequentially(baseInput({ runRemainingUsd: 7 }), repairFirst());
+  assert.ok(!requestKinds(trace.commands).includes('openApprovalRequest'), 'no extension approval');
+  assert.equal(trace.summary.outcome, 'BUDGET_EXHAUSTED');
+  assert.equal(trace.summary.reason, 'run-budget');
+  assertLegalProjections(trace);
+});
+
+test('repair budget: with maxAttempts exhausted the task FAILS as repair-capacity-exhausted, whatever the budget says', () => {
+  const trace = runTaskSequentially({ ...repairShort, taskBudget: { ...repairShort.taskBudget, maxAttempts: 1 } }, repairFirst());
+  assert.ok(!requestKinds(trace.commands).includes('openApprovalRequest'), 'no extension approval');
+  assert.equal(trace.summary.outcome, 'FAILED');
+  assert.equal(trace.summary.reason, 'repair-capacity-exhausted');
+});
+
+test('repair lineage: REPAIR, then the repair agent dies, then the replacement keeps the lineage into round 2', () => {
+  const trace = runTaskSequentially(baseInput(), repairFirst({
+    runAgent: (_r, n) => (n === 2 ? { kind: 'activityFailed', failureClass: 'workflow-recovery-failure', timedOut: true } : undefined),
+  }));
+  assert.deepEqual(ensured(trace).map((r) => [r.attemptNumber, r.attemptKind, r.baseSha, r.parentAttemptNumber, r.repairOrderRef]), [
+    [1, 'initial', TASK_BASE, null, null],
+    [2, 'repair', shaFor(1), 1, ref('ro-1')],
+    [3, 'retry', shaFor(1), 1, ref('ro-1')],
+  ]);
+  const all: TaskRequest[] = requests(trace.commands);
+  const prepare3 = all.find((r) => r.kind === 'prepareWorkspace' && r.attemptNumber === 3);
+  assert.equal(prepare3?.kind === 'prepareWorkspace' && prepare3.baseSha, shaFor(1));
+  const store3 = all.find((r) => r.kind === 'storeAttemptInputs' && r.attemptNumber === 3);
+  assert.deepEqual(store3?.kind === 'storeAttemptInputs' && store3.repairOrderRef, ref('ro-1'));
+  const commit3 = all.find((r) => r.kind === 'commitAttempt' && r.attemptNumber === 3);
+  assert.equal(commit3?.kind === 'commitAttempt' && commit3.expectedHeadSha, shaFor(1));
+  const rounds = all.flatMap((r) => (r.kind === 'assuranceRound' ? [r.request] : []));
+  assert.deepEqual(rounds.map((r) => [r.attemptNumber, r.round, r.priorAdjudicationId, r.taskBaseSha]),
+    [[1, 1, null, TASK_BASE], [3, 2, 'adj-r1', TASK_BASE]]);
+  assert.deepEqual(outcomes(trace), [[1, 'repair-requested'], [2, 'failed'], [3, 'proceeded']]);
+  // The parent's worktree goes once the first lineage worktree exists; the dead repair attempt is quarantined, not deleted.
+  assert.deepEqual(effectsOf(trace.commands, 'cleanupWorkspace').map((e) => e.attemptNumber), [1, 3]);
+  assert.deepEqual(effectsOf(trace.commands, 'quarantineWorkspace').map((e) => e.attemptNumber), [2]);
+  assert.equal(effectsOf(trace.commands, 'emitRunEvent').filter((e) => e.eventType === 'workflow.recovered').length, 1);
+  assert.equal(requestKinds(trace.commands).filter((k) => k === 'publishBranch').length, 1);
+  assert.equal(trace.summary.outcome, 'WAITING_FOR_HUMAN_REVIEW');
+  assertLegalProjections(trace);
+});
+
+// ---------------------------------------------------------------------------
+// Assurance-activity failure
+// ---------------------------------------------------------------------------
+
+for (const [mode, flagged, terminal, reason] of [
+  ['shadow', false, 'proceeded', 'review-handoff'],
+  ['gating', true, 'escalated', 'assurance-escalated'],
+] as const) {
+  test(`assurance unavailable in ${mode} mode: audited, then published as ${terminal}; never FAILED`, () => {
+    const trace = runTaskSequentially(baseInput({ governance: governance({ assuranceMode: mode }) }), scripted({
+      assuranceRound: () => ({ kind: 'activityFailed', failureClass: 'provider', timedOut: false }),
+    }));
+    const audit = effectsOf(trace.commands, 'audit').find((a) => a.action === 'assurance-unavailable');
+    assert.deepEqual(audit && [audit.detail['attemptNumber'], audit.detail['assuranceMode'], audit.detail['failureClass']], [1, mode, 'provider']);
+    const pr = requests(trace.commands).find((r) => r.kind === 'upsertPullRequest');
+    assert.equal(pr?.kind === 'upsertPullRequest' && pr.flagged, flagged);
+    assert.equal(pr?.kind === 'upsertPullRequest' && pr.prBodySectionRef, null, 'the PR states that assurance was unavailable');
+    assert.deepEqual(effectsOf(trace.commands, 'recordAttemptOutcome').map((o) => [o.terminal, o.adjudicationId]), [[terminal, null]]);
+    assert.equal(trace.summary.outcome, 'WAITING_FOR_HUMAN_REVIEW');
+    assert.equal(trace.summary.reason, reason);
+    assertLegalProjections(trace);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Cancellation around the critical units
+// ---------------------------------------------------------------------------
+
+test('cancel during the assurance round interrupts it: nothing is pushed, the attempt is cleaned up and the task CANCELLED', () => {
+  const trace = runTaskSequentially(baseInput(), scripted({}, {
+    messagesDuring: (request) => (request.kind === 'assuranceRound' ? [cancel()] : []),
+  }));
+  assert.equal(trace.aborts, 1);
+  const kinds = requestKinds(trace.commands);
+  assert.ok(!kinds.includes('publishBranch') && !kinds.includes('openApprovalRequest'), 'no approval and no push after the cancel');
+  assert.ok(effectsOf(trace.commands, 'quarantineWorkspace').some((e) => e.attemptNumber === 1), 'attempt 1 quarantined');
+  assert.ok(effectsOf(trace.commands, 'releaseLease').some((e) => e.attemptNumber === 1), 'lease 1 released');
+  assert.deepEqual(outcomes(trace), [[1, 'cancelled']]);
+  assert.equal(trace.summary.outcome, 'CANCELLED');
+  assertLegalProjections(trace);
+});
+
+test('cancel during the publication-approval wait ends the task at once and closes the open request', () => {
+  const trace = runTaskSequentially(baseInput({ governance: governance({ publicationApprovalRequired: true }) }),
+    scripted({}, { whenIdle: idleScript(() => cancel()) }));
+  assert.deepEqual(effectsOf(trace.commands, 'cancelApprovalRequest').map((e) => e.approvalRequestId), ['asep-task-task-1:1']);
+  assert.ok(effectsOf(trace.commands, 'cancelTimer').some((t) => t.timerId === 'approval:asep-task-task-1:1'), 'expiry timer cancelled');
+  assert.ok(!requestKinds(trace.commands).includes('publishBranch'), 'nothing pushed');
+  assert.deepEqual(outcomes(trace), [[1, 'cancelled']]);
+  assert.equal(trace.summary.outcome, 'CANCELLED');
+  assertLegalProjections(trace);
+});
+
+test('cancel during evidence binding lets the unit reconcile, then cancels before the assurance round', () => {
+  const trace = runTaskSequentially(baseInput(), scripted({}, {
+    messagesDuring: (request) => (request.kind === 'persistEvidence' ? [cancel()] : []),
+  }));
+  assert.equal(trace.aborts, 0);
+  const kinds = requestKinds(trace.commands);
+  assert.equal(kinds.filter((k) => k === 'persistEvidence').length, 1);
+  assert.ok(!kinds.includes('assuranceRound') && !kinds.includes('publishBranch'), 'no assurance and no push after the cancel');
+  assert.equal(trace.summary.outcome, 'CANCELLED');
+});
+
+test('cancel during the PR upsert lets it complete; the PR stays open and the cancel is audited', () => {
+  const trace = runTaskSequentially(baseInput(), scripted({}, {
+    messagesDuring: (request) => (request.kind === 'upsertPullRequest' ? [cancel()] : []),
+  }));
+  assert.equal(trace.aborts, 0);
+  assert.ok(effectsOf(trace.commands, 'audit').some((a) => a.action === 'workflow.cancel.after-publication'), 'cancel after publication audited');
+  assert.deepEqual(outcomes(trace), [[1, 'cancelled']]);
+  assert.equal(trace.summary.outcome, 'CANCELLED');
+  assert.equal(trace.summary.prNumber, 7);
 });
 
 // ---------------------------------------------------------------------------
@@ -846,6 +1131,10 @@ test('run: the run soft threshold is reported once', () => {
   assert.equal(crossed.length, 1);
 });
 
+test('defaults: no budget-extension bound in code; while it is unset, extension approval is unavailable', () => {
+  assert.equal(DEFAULT_ORCHESTRATION_POLICY.maxBudgetExtensionUsd, null);
+});
+
 test('defaults: replaceable and never-replaceable failure classes match the architecture', () => {
   assert.deepEqual([...DEFAULT_ORCHESTRATION_POLICY.replaceableFailureClasses].sort(), [
     'agent-loop-stall', 'artifact-loss', 'environment', 'provider', 'quota-rate-limit', 'tool', 'workflow-recovery-failure',
@@ -896,8 +1185,8 @@ test('projection: the edges touching the new statuses are the data-model additio
     'EXECUTING->BUDGET_EXHAUSTED', 'EXECUTING->PAUSED', 'EXECUTING->WAITING_FOR_APPROVAL',
     'PAUSED->BLOCKED', 'PAUSED->CANCELLED', 'PAUSED->EXECUTING', 'PAUSED->READY', 'PAUSED->VERIFYING',
     'READY->BUDGET_EXHAUSTED', 'READY->PAUSED', 'READY->WAITING_FOR_APPROVAL',
-    // Not yet in the data-model table: a replacement attempt refused for budget after the task reached
-    // verification (for example an overrun followed by a failed commit).
+    // A replacement attempt refused for budget after the task reached verification (for example a retry
+    // of an exhausted repair attempt); the domain table gains it with the status extension.
     'VERIFYING->BUDGET_EXHAUSTED',
     'VERIFYING->PAUSED', 'VERIFYING->WAITING_FOR_APPROVAL',
     'WAITING_FOR_APPROVAL->BLOCKED', 'WAITING_FOR_APPROVAL->BUDGET_EXHAUSTED', 'WAITING_FOR_APPROVAL->CANCELLED',

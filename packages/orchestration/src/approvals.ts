@@ -16,7 +16,9 @@ export function approvalRequestId(workflowId: string, gateSeq: number): string {
   return `${workflowId}:${gateSeq}`;
 }
 
-export function isValidExtension(extensionUsd: number | null, maxExtensionUsd: number): boolean {
+/** Without a policy bound (null) no extension amount is valid. */
+export function isValidExtension(extensionUsd: number | null, maxExtensionUsd: number | null): boolean {
+  if (maxExtensionUsd === null) return false;
   return typeof extensionUsd === 'number' && Number.isFinite(extensionUsd) && extensionUsd > 0 && extensionUsd <= maxExtensionUsd;
 }
 
@@ -25,7 +27,7 @@ export function isWellFormedDecision(
   kind: ApprovalKind,
   decision: ApprovalDecisionValue,
   extensionUsd: number | null,
-  maxExtensionUsd: number,
+  maxExtensionUsd: number | null,
 ): boolean {
   if (kind === 'budget-extension' && decision === 'approve') return isValidExtension(extensionUsd, maxExtensionUsd);
   return extensionUsd === null;
@@ -46,7 +48,7 @@ export function validateApprovalDecision(
   open: Pick<OpenApproval, 'approvalRequestId' | 'kind' | 'pendingDecisionId'> | null,
   knownDecisionIds: readonly string[],
   message: Extract<TaskMessage, { type: 'approvalDecisionReceived' }>,
-  maxExtensionUsd: number,
+  maxExtensionUsd: number | null,
 ): ControlReceipt {
   if (knownDecisionIds.includes(message.decisionId)) return DUPLICATE;
   if (open === null || open.approvalRequestId !== message.approvalRequestId) return rejected('unknown-approval');

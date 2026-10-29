@@ -39,5 +39,7 @@ export const DEFAULT_ORCHESTRATION_POLICY: OrchestrationPolicy = {
     'artifact-loss',
     'workflow-recovery-failure',
   ],
-  maxBudgetExtensionUsd: 50,
+  // Policy data with no default in code: while it is unset, no budget-extension
+  // approval is offered and a task-cap shortfall ends the task BUDGET_EXHAUSTED.
+  maxBudgetExtensionUsd: null,
 };

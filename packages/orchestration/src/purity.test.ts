@@ -8,18 +8,21 @@
 //
 //   1. every import/export-from of a non-relative module is type-only, and only
 //      from @asep/contracts or @asep/ports (types are erased at build time, so
-//      the core carries no runtime dependency at all);
+//      the core carries no runtime dependency at all); production modules may
+//      import each other relatively;
 //   2. no source file uses a banned global (clock, randomness, timers, process,
 //      crypto, require, dynamic import, global escape hatches).
 //
-// Test files are exempt: they run under node:test, never inside a workflow.
+// Only production source is scanned. Test files and test support
+// (src/test-support/**) are exempt: they run under node:test, never inside a
+// workflow, and may use runtime imports such as node:test and node:assert.
 // Comments and string literals are stripped before scanning, so prose that names
 // a banned global is not a violation, while code inside `${...}` still is.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { dirname, join, relative } from 'node:path';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 console.log('SUITE-ID: asep-suite:orchestration-purity');
@@ -146,18 +149,30 @@ export function findPurityViolations(file: string, source: string): PurityViolat
   return violations;
 }
 
+const TEST_SUPPORT_DIR = 'test-support';
+
 function coreSourceFiles(dir: string): string[] {
   const out: string[] = [];
   for (const name of readdirSync(dir).sort()) {
     const full = join(dir, name);
-    if (statSync(full).isDirectory()) out.push(...coreSourceFiles(full));
-    else if (name.endsWith('.ts') && !name.endsWith('.test.ts') && !name.endsWith('.d.ts')) out.push(full);
+    if (statSync(full).isDirectory()) {
+      if (name !== TEST_SUPPORT_DIR) out.push(...coreSourceFiles(full));
+    } else if (name.endsWith('.ts') && !name.endsWith('.test.ts') && !name.endsWith('.d.ts')) {
+      out.push(full);
+    }
   }
   return out;
 }
 
 test('the core has source files to check (an empty scan must not look green)', () => {
   assert.ok(coreSourceFiles(SRC_DIR).length >= 5, 'expected the core modules under src/');
+});
+
+test('the scan covers production source only: tests and test support are excluded', () => {
+  const scanned = coreSourceFiles(SRC_DIR).map((full) => relative(SRC_DIR, full));
+  assert.ok(scanned.includes('task-core.ts'), 'production modules are scanned');
+  assert.ok(existsSync(join(SRC_DIR, TEST_SUPPORT_DIR, 'fixtures.ts')), 'the test-support exclusion must be exercised');
+  assert.deepEqual(scanned.filter((f) => f.endsWith('.test.ts') || f.split(sep).includes(TEST_SUPPORT_DIR)), []);
 });
 
 test('every core source file is deterministic: type-only imports from contracts/ports, no banned globals', () => {
@@ -186,6 +201,7 @@ const SEEDED: readonly { name: string; source: string; rule: PurityViolation['ru
   { name: 'dynamic import', source: "const m = await import('x');", rule: 'dynamic-import', detail: 'import(' },
   { name: 'global escape hatch', source: 'const g = globalThis;', rule: 'banned-global', detail: 'globalThis' },
   { name: 'clock inside a template substitution', source: 'const s = `at ${Date.now()}`;', rule: 'banned-global', detail: 'Date' },
+  { name: 'test runner in production source', source: "import test from 'node:test';", rule: 'runtime-import', detail: 'node:test' },
 ];
 
 for (const seed of SEEDED) {

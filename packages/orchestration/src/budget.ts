@@ -1,7 +1,7 @@
 // Budget arithmetic. Money is held in integer micro-dollars so that sums and
 // comparisons are exact and identical on every replay.
 
-import type { Budget, TaskBudget } from './types.js';
+import type { Budget, TaskBudget, VerificationReserve } from './types.js';
 
 const MICRO = 1_000_000;
 
@@ -17,6 +17,7 @@ export interface ReservationInput {
   readonly attemptNumber: number;
   readonly attemptBudget: Budget;
   readonly taskBudget: TaskBudget;
+  readonly verificationReserve: VerificationReserve;
   /** Run budget left when the task started; the task's spending counts against it. */
   readonly runRemainingUsd: number;
   readonly spentMicroUsd: number;
@@ -32,19 +33,22 @@ export type Reservation =
   | { readonly ok: false; readonly reason: ReservationFailureReason; readonly shortfallUsd: number };
 
 /**
- * An attempt starts only if its full cost and wall-clock reservations fit. Only a
- * task-cap shortfall can be met by a human extension; the run remainder, the
- * attempt count, the wall-clock cap and an overrun cannot.
+ * An attempt starts only if its agent cap and, separately, its verification
+ * reserve fit, in cost and wall-clock, so agent spending can never consume the
+ * verification budget. The attempt count is checked first: running out of
+ * attempts wins over every budget cause. Only a task-cap shortfall can be met by
+ * a human extension; the run remainder, the wall-clock cap and an overrun cannot.
  */
 export function checkReservation(input: ReservationInput): Reservation {
   if (input.attemptNumber > input.taskBudget.maxAttempts) {
     return { ok: false, reason: 'attempts-exhausted', shortfallUsd: 0 };
   }
   if (input.overrun) return { ok: false, reason: 'overrun', shortfallUsd: 0 };
-  if (input.spentWallClockMinutes + input.attemptBudget.maxWallClockMinutes > input.taskBudget.maxWallClockMinutes) {
+  const minutes = input.attemptBudget.maxWallClockMinutes + input.verificationReserve.wallClockMinutes;
+  if (input.spentWallClockMinutes + minutes > input.taskBudget.maxWallClockMinutes) {
     return { ok: false, reason: 'wall-clock', shortfallUsd: 0 };
   }
-  const needed = input.spentMicroUsd + toMicroUsd(input.attemptBudget.maxCostUsd);
+  const needed = input.spentMicroUsd + toMicroUsd(input.attemptBudget.maxCostUsd) + toMicroUsd(input.verificationReserve.costUsd);
   const runCap = toMicroUsd(input.runRemainingUsd);
   if (needed > runCap) return { ok: false, reason: 'run-budget', shortfallUsd: fromMicroUsd(needed - runCap) };
   const taskCap = toMicroUsd(input.taskBudget.maxCostUsd) + input.grantedExtensionMicroUsd;

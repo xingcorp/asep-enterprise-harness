@@ -1,9 +1,9 @@
 // Property tests for the decision core.
 //
 // A seeded generator drives the task reducer through the sequential interpreter
-// with random activity results, activity failures, worker deaths, assurance
-// outcomes (valid and out of contract), approvals, pauses, resumes, cancels and
-// timer firings. Every generated trace must satisfy the safety invariants the
+// with random budgets and policy, activity results, activity failures, worker
+// deaths, cap stops and overruns, assurance outcomes (valid, out of contract and
+// unavailable), approvals, pauses, resumes, cancels and timer firings. Every generated trace must satisfy the safety invariants the
 // durable workflow relies on. Seeds are fixed, so a failure is reproducible: the
 // assertion message names the seed.
 
@@ -17,7 +17,7 @@ import type { RunCommand, RunCoreInput, RunEvent } from './run-core.js';
 import { runTaskSequentially } from './sequential-interpreter.js';
 import type { Answer, TaskEnvironment, TaskTrace } from './sequential-interpreter.js';
 import { decideTask, startTask } from './task-core.js';
-import { TASK_BASE, attemptOf, effectsOf, happyAnswer, proceed, ref, requests, shaFor } from './test-fixtures.js';
+import { TASK_BASE, attemptOf, effectsOf, happyAnswer, proceed, ref, requests, shaFor } from './test-support/fixtures.js';
 import { DEFAULT_ORCHESTRATION_POLICY } from './defaults.js';
 import type {
   FailureClass,
@@ -81,9 +81,15 @@ function randomInput(rng: Rng): TaskCoreInput {
       softCostUsd: rng.int(1, taskCap),
       maxWallClockMinutes: rng.int(30, 240),
     },
+    verificationReserve: { costUsd: rng.int(0, 2), wallClockMinutes: rng.int(0, 20) },
     runRemainingUsd: rng.int(1, 40),
-    governance: { publicationApprovalRequired: rng.chance(0.3), approvalTtlSeconds: 600, maxPauseHours: 1 },
-    policy: DEFAULT_ORCHESTRATION_POLICY,
+    governance: {
+      publicationApprovalRequired: rng.chance(0.3),
+      approvalTtlSeconds: 600,
+      maxPauseHours: 1,
+      assuranceMode: rng.pick(['shadow', 'gating'] as const),
+    },
+    policy: { ...DEFAULT_ORCHESTRATION_POLICY, maxBudgetExtensionUsd: rng.chance(0.7) ? 10 : null },
   };
 }
 
@@ -127,17 +133,22 @@ function randomEnvironment(rng: Rng, input: TaskCoreInput): TaskEnvironment {
             : happyAnswer(request);
         case 'runAgent': {
           if (rng.chance(0.15)) return failure(rng);
-          const cost = Math.round(rng.next() * input.attemptBudget.maxCostUsd * 160) / 100;
-          if (rng.chance(0.15)) {
+          const cap = input.attemptBudget;
+          // Mostly within the caps, sometimes exactly at them, sometimes above (an overrun).
+          const cost = rng.chance(0.1) ? Math.round(cap.maxCostUsd * (100 + rng.int(1, 60))) / 100
+            : rng.chance(0.1) ? cap.maxCostUsd : Math.round(rng.next() * cap.maxCostUsd * 100) / 100;
+          const toolCalls = rng.chance(0.05) ? cap.maxToolCalls + rng.int(1, 5) : rng.int(0, cap.maxToolCalls);
+          if (rng.chance(0.2)) {
             return {
               kind: 'runAgent',
               status: rng.pick(['FAILED', 'BLOCKED', 'BUDGET_EXHAUSTED'] as const),
               reportedCostUsd: cost,
+              reportedToolCalls: toolCalls,
               wallClockMs: rng.int(1, 3_600_000),
               failureClass: rng.chance(0.9) ? rng.pick(CLASSES) : null,
             };
           }
-          return { kind: 'runAgent', status: 'AGENT_DONE', reportedCostUsd: cost, wallClockMs: rng.int(1, 3_600_000), failureClass: null };
+          return { kind: 'runAgent', status: 'AGENT_DONE', reportedCostUsd: cost, reportedToolCalls: toolCalls, wallClockMs: rng.int(1, 3_600_000), failureClass: null };
         }
         case 'inspectWorkspace':
           if (rng.chance(0.06)) return failure(rng);
@@ -241,23 +252,33 @@ function checkTrace(input: TaskCoreInput, trace: TaskTrace, label: string): void
   assert.deepEqual(ensured.map((r) => r.attemptNumber), ensured.map((_r, i) => i + 1), `${label}: contiguous attempts`);
   assert.ok(ensured.length <= input.taskBudget.maxAttempts, `${label}: attempts within maxAttempts`);
 
-  // Reservation: every attempt start fits the task cap plus granted extensions and the run remainder,
-  // recomputed from the ledger effects issued before it.
+  // Reservation: every attempt start fits its agent cap plus the verification reserve within the task
+  // cap plus granted extensions, the run remainder and the wall-clock cap, recomputed from the ledger
+  // effects issued before it. No attempt starts after a recorded overrun.
   let spent = 0;
   let granted = 0;
   let wallClock = 0;
+  let overrun = false;
   for (const c of commands) {
     if (c.type === 'effect' && c.effect.kind === 'recordUsage') {
       spent += toMicroUsd(c.effect.chargedCostUsd);
       wallClock += c.effect.chargedWallClockMinutes;
     }
     if (c.type === 'effect' && c.effect.kind === 'recordExtension') granted += toMicroUsd(c.effect.extensionUsd);
+    if (c.type === 'effect' && c.effect.kind === 'recordOverrun') overrun = true;
     if (c.type === 'request' && c.request.kind === 'ensureAttempt') {
-      const reserve = toMicroUsd(input.attemptBudget.maxCostUsd);
+      const reserve = toMicroUsd(input.attemptBudget.maxCostUsd) + toMicroUsd(input.verificationReserve.costUsd);
+      const minutes = input.attemptBudget.maxWallClockMinutes + input.verificationReserve.wallClockMinutes;
       assert.ok(spent + reserve <= toMicroUsd(input.taskBudget.maxCostUsd) + granted, `${label}: task cap reservation`);
       assert.ok(spent + reserve <= toMicroUsd(input.runRemainingUsd), `${label}: run cap reservation`);
-      assert.ok(wallClock + input.attemptBudget.maxWallClockMinutes <= input.taskBudget.maxWallClockMinutes, `${label}: wall-clock reservation`);
+      assert.ok(wallClock + minutes <= input.taskBudget.maxWallClockMinutes, `${label}: wall-clock reservation`);
+      assert.ok(!overrun, `${label}: attempt started after a recorded overrun`);
     }
+  }
+
+  // Budget-extension approvals exist only while the policy sets an extension bound.
+  if (input.policy.maxBudgetExtensionUsd === null) {
+    assert.ok(!reqs.some((r) => r.kind === 'openApprovalRequest' && r.approvalKind === 'budget-extension'), `${label}: extension approval without a bound`);
   }
 
   // Exactly one attempt outcome and one usage entry per ensured attempt.
@@ -269,7 +290,55 @@ function checkTrace(input: TaskCoreInput, trace: TaskTrace, label: string): void
     `${label}: one usage entry per attempt`,
   );
 
-  // A push follows that attempt's assurance outcome, which was PROCEED or ESCALATE.
+  // An exhausted attempt is never verified, committed or published; usage includes the verification
+  // reserve exactly when verification ran.
+  for (const o of outcomes.filter((x) => x.terminal === 'budget-exhausted')) {
+    const later = reqs.filter((r) => 'attemptNumber' in r && r.attemptNumber === o.attemptNumber).map((r) => r.kind);
+    for (const k of ['runVerification', 'commitAttempt', 'persistEvidence', 'publishBranch', 'upsertPullRequest'] as const) {
+      assert.ok(!later.includes(k), `${label}: ${k} for exhausted attempt ${o.attemptNumber}`);
+    }
+  }
+  for (const u of effectsOf(commands, 'recordUsage')) {
+    const verified = reqs.some((r) => r.kind === 'runVerification' && r.attemptNumber === u.attemptNumber);
+    assert.equal(u.verificationReserveUsd, verified ? input.verificationReserve.costUsd : 0, `${label}: reserve charge ${u.attemptNumber}`);
+  }
+
+  // Lineage: a retry copies the lineage of the attempt it replaces, a repair starts one at the previous
+  // attempt's commit, and an initial attempt has none. Each assurance round continues its lineage.
+  for (const r of ensured) {
+    if (r.attemptKind === 'initial') {
+      assert.deepEqual([r.baseSha, r.parentAttemptNumber, r.repairOrderRef], [TASK_BASE, null, null], `${label}: initial lineage`);
+    } else if (r.attemptKind === 'retry') {
+      const prev = ensured[r.attemptNumber - 2]!;
+      assert.deepEqual([r.baseSha, r.parentAttemptNumber, r.repairOrderRef], [prev.baseSha, prev.parentAttemptNumber, prev.repairOrderRef],
+        `${label}: retry ${r.attemptNumber} keeps the lineage`);
+    } else {
+      assert.deepEqual([r.baseSha, r.parentAttemptNumber], [shaFor(r.attemptNumber - 1), r.attemptNumber - 1], `${label}: repair lineage`);
+    }
+  }
+  const roundOf = new Map<number, { round: number; prior: string | null }>();
+  for (const r of reqs) if (r.kind === 'assuranceRound') roundOf.set(r.request.attemptNumber, { round: r.request.round, prior: r.request.priorAdjudicationId });
+  const lineageRound = (n: number): { round: number; prior: string | null } => {
+    const r = ensured[n - 1]!;
+    if (r.parentAttemptNumber === null) return { round: 1, prior: null };
+    const parent = roundOf.get(r.parentAttemptNumber);
+    assert.ok(parent, `${label}: parent ${r.parentAttemptNumber} of ${n} had an assurance round`);
+    return { round: parent.round + 1, prior: `adj-${r.parentAttemptNumber}` };
+  };
+  for (const [n, got] of roundOf) assert.deepEqual(got, lineageRound(n), `${label}: assurance round of attempt ${n}`);
+
+  // An unavailable assurance round never fails the task: it continues as PROCEED (shadow) or ESCALATE
+  // (gating), and the PR carries no assurance section.
+  assert.notEqual(trace.summary.reason, 'assurance-unavailable', `${label}: FAILED for assurance unavailability`);
+  for (const a of effectsOf(commands, 'audit').filter((x) => x.action === 'assurance-unavailable')) {
+    const pr = reqs.find((r) => r.kind === 'upsertPullRequest' && r.attemptNumber === a.detail['attemptNumber']);
+    if (pr?.kind === 'upsertPullRequest') {
+      assert.equal(pr.flagged, input.governance.assuranceMode === 'gating', `${label}: unavailable assurance flag`);
+      assert.equal(pr.prBodySectionRef, null, `${label}: unavailable assurance section`);
+    }
+  }
+
+  // A push follows that attempt's assurance outcome, which was PROCEED or ESCALATE, or an unavailable round.
   const seqToRequest = new Map<number, TaskRequest>();
   for (const c of commands) if (c.type === 'request') seqToRequest.set(c.seq, c.request);
   const assuranceKinds = new Map<number, unknown>();
@@ -286,7 +355,8 @@ function checkTrace(input: TaskCoreInput, trace: TaskTrace, label: string): void
     const n = publish.request.attemptNumber;
     const roundAt = requestIndex(commands, (r) => r.kind === 'assuranceRound' && r.request.attemptNumber === n);
     assert.ok(roundAt.length === 1 && roundAt[0]! < at, `${label}: assurance precedes publish`);
-    assert.ok(['PROCEED', 'ESCALATE'].includes(String(assuranceKinds.get(n))), `${label}: publish only after PROCEED/ESCALATE`);
+    const unavailable = effectsOf(commands, 'audit').some((a) => a.action === 'assurance-unavailable' && a.detail['attemptNumber'] === n);
+    assert.ok(unavailable || ['PROCEED', 'ESCALATE'].includes(String(assuranceKinds.get(n))), `${label}: publish only after PROCEED/ESCALATE`);
     const terminal = outcomes.find((o) => o.attemptNumber === n)?.terminal;
     assert.ok(terminal !== 'repair-requested' && terminal !== 'blocked', `${label}: no publish after REPAIR/BLOCK`);
   }
@@ -395,10 +465,15 @@ test('the generator covers repair, replacement, approvals, pause and cancel path
     if (effectsOf(trace.commands, 'audit').some((a) => a.action === 'review-slot.contract-violation')) seen.add('violation');
     if (effectsOf(trace.commands, 'recordAttemptOutcome').some((o) => o.terminal === 'verification-failed')) seen.add('verification-stop');
     if (effectsOf(trace.commands, 'emitRunEvent').some((e) => e.eventType === 'workflow.recovered')) seen.add('recovered');
+    if (effectsOf(trace.commands, 'recordAttemptOutcome').some((o) => o.terminal === 'budget-exhausted')) seen.add('exhausted');
+    if (effectsOf(trace.commands, 'recordOverrun').length > 0) seen.add('overrun');
+    if (effectsOf(trace.commands, 'audit').some((a) => a.action === 'assurance-unavailable')) seen.add('assurance-unavailable');
+    if (reqs.some((r) => r.kind === 'ensureAttempt' && r.attemptKind === 'retry' && r.repairOrderRef !== null)) seen.add('lineage-retry');
   }
   assert.deepEqual([...seen].sort(), [
-    'abort', 'approval-expired', 'budget-approval', 'extension-granted', 'pause-timeout', 'paused', 'publish-approval',
-    'recovered', 'repair', 'retry', 'verification-stop', 'violation',
+    'abort', 'approval-expired', 'assurance-unavailable', 'budget-approval', 'exhausted', 'extension-granted',
+    'lineage-retry', 'overrun', 'pause-timeout', 'paused', 'publish-approval', 'recovered', 'repair', 'retry',
+    'verification-stop', 'violation',
   ]);
 });
 
