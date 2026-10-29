@@ -23,7 +23,7 @@ import { dirname, join } from 'node:path';
 import { Client } from 'pg';
 import { IMAGES } from './images.mjs';
 import {
-  resolveDocker, runContainer, removeContainer, waitReady,
+  resolveDocker, runContainer, removeContainer, waitReady, loopbackPublish, LOOPBACK_HOST,
   discoverItestFiles, missingRequiredItestSuites, REQUIRED_ITEST_SUITES,
 } from './lib.mjs';
 
@@ -120,8 +120,8 @@ async function main() {
   removeContainer(docker.bin, PG_NAME);
   removeContainer(docker.bin, MINIO_NAME);
 
-  const pgUrl = `postgresql://${PG_USER}:${PG_PASSWORD}@127.0.0.1:${PG_PORT}/${PG_DB}`;
-  const s3Endpoint = `http://127.0.0.1:${MINIO_PORT}`;
+  const pgUrl = `postgresql://${PG_USER}:${PG_PASSWORD}@${LOOPBACK_HOST}:${PG_PORT}/${PG_DB}`;
+  const s3Endpoint = `http://${LOOPBACK_HOST}:${MINIO_PORT}`;
 
   try {
     if (OMITTED_BACKENDS.has('postgres')) {
@@ -132,7 +132,7 @@ async function main() {
         image: IMAGES.postgres,
         name: PG_NAME,
         env: { POSTGRES_USER: PG_USER, POSTGRES_PASSWORD: PG_PASSWORD, POSTGRES_DB: PG_DB },
-        ports: [`${PG_PORT}:5432`],
+        ports: [loopbackPublish(PG_PORT, 5432)],
       });
     }
 
@@ -144,7 +144,7 @@ async function main() {
         image: IMAGES.minio,
         name: MINIO_NAME,
         env: { MINIO_ROOT_USER: MINIO_USER, MINIO_ROOT_PASSWORD: MINIO_PASSWORD },
-        ports: [`${MINIO_PORT}:9000`],
+        ports: [loopbackPublish(MINIO_PORT, 9000)],
         args: ['server', '/data'],
       });
     }

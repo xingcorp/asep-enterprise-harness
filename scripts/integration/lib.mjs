@@ -13,7 +13,8 @@
 //      run in ONE child with ASEP_PG_URL / S3 env pointing at the live backends;
 //   5. discovering ZERO itest files fails closed (a broken walk must not look
 //      green by running nothing) — same mechanism as the unit runner;
-//   6. containers are always torn down (finally), even on failure.
+//   6. containers are always torn down (finally), even on failure;
+//   7. every published port binds 127.0.0.1 only (assertLoopbackPublish).
 
 import { spawnSync } from 'node:child_process';
 import { readdirSync, statSync, existsSync } from 'node:fs';
@@ -134,14 +135,46 @@ export async function waitReady(probe, { attempts = 30, intervalMs = 1000 } = {}
   return false;
 }
 
-// Start a digest-pinned container detached, returning its id. Fails closed if
-// the image is not digest-pinned or docker cannot start it.
-export function runContainer(docker, { image, name, args = [], env = {}, ports = [] }) {
+// The only host address a gate backend may be published on. A bare
+// `-p 5432:5432` binds every host interface, so a throwaway database with a
+// well-known password would be reachable from the network for the whole run.
+export const LOOPBACK_HOST = '127.0.0.1';
+const PORT = '([1-9][0-9]{0,4})';
+const LOOPBACK_PUBLISH = new RegExp(`^127\\.0\\.0\\.1:${PORT}:${PORT}(/tcp)?$`);
+
+/** `127.0.0.1:<hostPort>:<containerPort>` — the publish spec the gate uses. */
+export function loopbackPublish(hostPort, containerPort) {
+  return assertLoopbackPublish(`${LOOPBACK_HOST}:${hostPort}:${containerPort}`);
+}
+
+/** Refuse any publish spec that does not name the loopback host explicitly. */
+export function assertLoopbackPublish(spec) {
+  const m = LOOPBACK_PUBLISH.exec(String(spec));
+  if (!m || Number(m[1]) > 65535 || Number(m[2]) > 65535) {
+    throw new Error(
+      `port publish '${spec}' does not bind ${LOOPBACK_HOST}: integration backends ` +
+        'are published on the loopback interface only',
+    );
+  }
+  return spec;
+}
+
+// The `docker run` argv for a gate backend. Pure, so the publish rule is
+// asserted without a daemon.
+export function containerRunArgv({ image, name, args = [], env = {}, ports = [] }) {
   assertDigestPinned(image);
   const argv = ['run', '-d', '--rm', '--name', name];
   for (const [k, v] of Object.entries(env)) argv.push('-e', `${k}=${v}`);
-  for (const p of ports) argv.push('-p', p);
+  for (const p of ports) argv.push('-p', assertLoopbackPublish(p));
   argv.push(image, ...args);
+  return argv;
+}
+
+// Start a digest-pinned container detached, returning its id. Fails closed if
+// the image is not digest-pinned, a port is not published on loopback only, or
+// docker cannot start it.
+export function runContainer(docker, { image, name, args = [], env = {}, ports = [] }) {
+  const argv = containerRunArgv({ image, name, args, env, ports });
   const r = spawnSync(docker, argv, { encoding: 'utf8', shell: false });
   if (r.error || r.status !== 0) {
     throw new Error(

@@ -13,6 +13,8 @@ import assert from 'node:assert/strict';
 import { assertDigestPinned, DIGEST_PINNED, IMAGES } from './images.mjs';
 // @ts-expect-error — .mjs helpers have no type declarations; we test their runtime contract.
 import { discoverItestFiles, missingRequiredItestSuites, REQUIRED_ITEST_SUITES, suiteMarker, resolveDocker, waitReady } from './lib.mjs';
+// @ts-expect-error — .mjs helpers have no type declarations; we test their runtime contract.
+import { assertLoopbackPublish, containerRunArgv, loopbackPublish, runContainer } from './lib.mjs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { readFileSync } from 'node:fs';
@@ -166,6 +168,136 @@ test('compose.yaml health-checks BOTH postgres and minio (gate can wait, not rac
       `service '${svc}' must declare a healthcheck so readiness is waited on`,
     );
   }
+});
+
+// ---------------------------------------------------------------------------
+// Published ports bind the loopback interface only. The backends run with
+// fixed development credentials; a bare `-p 5432:5432` (or a compose
+// `"5432:5432"`) publishes them on every host interface for the whole run.
+// ---------------------------------------------------------------------------
+
+test('a publish spec is accepted only when it names 127.0.0.1 explicitly', () => {
+  assert.equal(assertLoopbackPublish('127.0.0.1:55440:5432'), '127.0.0.1:55440:5432');
+  assert.equal(assertLoopbackPublish('127.0.0.1:59000:9000/tcp'), '127.0.0.1:59000:9000/tcp');
+  assert.equal(loopbackPublish('55440', 5432), '127.0.0.1:55440:5432');
+  for (const bad of [
+    '55440:5432', '5432', '0.0.0.0:55440:5432', '[::]:55440:5432', '::1:55440:5432',
+    'localhost:55440:5432', '127.0.0.10:55440:5432', '127.0.0.1::5432', ' 127.0.0.1:55440:5432',
+    '127.0.0.1:55440:5432 ', '127.0.0.1:70000:5432', '127.0.0.1:55440:5432/udp', '',
+  ]) {
+    assert.throws(() => assertLoopbackPublish(bad), /does not bind 127\.0\.0\.1/, `'${bad}' must be refused`);
+  }
+  assert.throws(() => loopbackPublish('', 5432), /does not bind 127\.0\.0\.1/);
+});
+
+test('the gate publishes every backend port on 127.0.0.1 and refuses anything else before docker runs', () => {
+  const image = `postgres@sha256:${'a'.repeat(64)}`;
+  const argv: string[] = containerRunArgv({
+    image, name: 'n', ports: ['127.0.0.1:55440:5432', '127.0.0.1:55441:5433'],
+  });
+  const published = argv.flatMap((a, i) => (a === '-p' ? [argv[i + 1]] : []));
+  assert.deepEqual(published, ['127.0.0.1:55440:5432', '127.0.0.1:55441:5433']);
+  assert.ok(!argv.includes('-P') && !argv.includes('--publish-all'));
+  // The refusal happens before any docker client is invoked: a bogus binary
+  // would otherwise surface as "failed to start container".
+  assert.throws(
+    () => runContainer('/nonexistent/docker-xyz', { image, name: 'n', ports: ['55440:5432'] }),
+    /does not bind 127\.0\.0\.1/,
+  );
+  assert.throws(() => containerRunArgv({ image, name: 'n', ports: ['0.0.0.0:1:2'] }), /does not bind/);
+});
+
+// Every place the gate could publish a port: its own CLI and helpers, every
+// integration suite it runs, and the CI job that drives it. The only `-p` the
+// gate may emit is the one containerRunArgv guards; the CLI must build every
+// publish spec with loopbackPublish().
+test('no gate source publishes a port except through the loopback-checked builder', () => {
+  const gateSources = [
+    'scripts/integration/lib.mjs',
+    'scripts/integration/run-integration.mjs',
+    'scripts/integration/images.mjs',
+    '.github/workflows/ci.yml',
+    ...discoverItestFiles(REPO_ROOT),
+  ];
+  const PUBLISH_TOKEN = /(['"`])(-p|-P|--publish|--publish-all)(=[^'"`]*)?\1|\bdocker\b[^\n]*\s(-p|-P|--publish(-all)?)[\s=]/;
+  const offenders: string[] = [];
+  for (const rel of gateSources) {
+    const lines = readFileSync(join(REPO_ROOT, rel), 'utf8').split('\n');
+    lines.forEach((line, i) => {
+      if (/^\s*(\/\/|#|\*)/.test(line)) return;
+      if (!PUBLISH_TOKEN.test(line)) return;
+      const guarded = rel === 'scripts/integration/lib.mjs' && line.includes("argv.push('-p', assertLoopbackPublish(p))");
+      if (!guarded) offenders.push(`${rel}:${i + 1}: ${line.trim()}`);
+    });
+  }
+  assert.deepEqual(offenders, [], `unguarded port publish in the gate:\n${offenders.join('\n')}`);
+
+  const cli = readFileSync(join(REPO_ROOT, 'scripts/integration/run-integration.mjs'), 'utf8');
+  const portLists = [...cli.matchAll(/\bports:\s*\[([^\]]*)\]/g)].map((m) => m[1] as string);
+  assert.ok(portLists.length >= 2, 'the CLI publishes PostgreSQL and MinIO');
+  for (const list of portLists) {
+    for (const entry of list.split(/,(?![^(]*\))/).map((e) => e.trim()).filter(Boolean)) {
+      assert.match(entry, /^loopbackPublish\(/, `the CLI must build '${entry}' with loopbackPublish()`);
+    }
+  }
+});
+
+// The publish entries of every compose service, short syntax only: a long-form
+// mapping or anything this parser does not recognise is reported, never skipped.
+function composePublishEntries(compose: string): string[] {
+  const entries: string[] = [];
+  const lines = compose.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] as string;
+    if (/^\s*#/.test(line)) continue;
+    const inline = /^(\s*)ports:\s*(.*)$/.exec(line);
+    if (!inline) continue;
+    const rest = (inline[2] as string).trim();
+    if (rest !== '') {
+      const list = /^\[(.*)\]$/.exec(rest);
+      if (!list) {
+        entries.push(`<unparsed: ${rest}>`);
+        continue;
+      }
+      entries.push(...(list[1] as string).split(',').map((e) => e.trim()).filter(Boolean));
+      continue;
+    }
+    const indent = (inline[1] as string).length;
+    for (let j = i + 1; j < lines.length; j++) {
+      const next = lines[j] as string;
+      if (next.trim() === '' || /^\s*#/.test(next)) continue;
+      if (next.length - next.trimStart().length <= indent) break;
+      const item = /^\s*-\s*(.*)$/.exec(next);
+      entries.push(item ? (item[1] as string).trim() : `<unparsed: ${next.trim()}>`);
+    }
+  }
+  return entries;
+}
+
+test('compose.yaml publishes every service port on 127.0.0.1 only', () => {
+  const compose = readFileSync(join(REPO_ROOT, 'compose.yaml'), 'utf8');
+  const entries = composePublishEntries(compose);
+  assert.ok(entries.length >= 10, `compose publish entries found: ${entries.length}`);
+  const offenders = entries.filter((e) => !/^"127\.0\.0\.1:[^"]*"$/.test(e));
+  assert.deepEqual(offenders, [], `compose ports not bound to 127.0.0.1: ${offenders.join(', ')}`);
+});
+
+test('the compose port parser reports what it cannot read instead of skipping it', () => {
+  const sample = [
+    'services:',
+    '  a:',
+    '    ports: ["127.0.0.1:1:1", "2:2"]',
+    '  b:',
+    '    ports:',
+    '      - "127.0.0.1:3:3"',
+    '      - target: 4',
+    '        published: 4',
+    '  c:',
+    '    ports: "5:5"',
+  ].join('\n');
+  assert.deepEqual(composePublishEntries(sample), [
+    '"127.0.0.1:1:1"', '"2:2"', '"127.0.0.1:3:3"', 'target: 4', '<unparsed: published: 4>', '<unparsed: "5:5">',
+  ]);
 });
 
 // ---------------------------------------------------------------------------
