@@ -1,4 +1,4 @@
-# Phase 3 — Research Register (LOCKED v4, pending controller confirmation)
+# Phase 3 — Research Register (LOCKED v5, pending controller confirmation)
 
 > Dependency and design research for Phase 3 "Durable orchestration" (90-day plan, Days 31–45).
 > Every external fact below was observed on **2026-10-29**: in workflow step 1 unless a row says otherwise, and
@@ -7,6 +7,7 @@
 > `80bb76a`. v2 adds the step-3 observations (P3-PLAN-LOW-001) and the reconciliation's decisions (R1, R14).
 > v3 adds the retention-flag observation made while folding the lock-check of v2 (Q9, P3-PLAN-MED-003).
 > v4 adds the TypeScript compiler API observation behind the AST-based purity check (Q11, P3-S2-MED-002).
+> v5 adds the checker observation behind the checker-based purity check (Q11, R24).
 > Environment observed: Node **24.6.0**, pnpm **10.31.0**, TypeScript **7.0.2**, Docker server **29.6.1**
 > (Docker re-observed in step 3).
 
@@ -197,7 +198,7 @@ fails to bundle, `adapters/temporal` emits its workflow entry through a dedicate
 | Q8 | What exactly does GitHub return when a PR already exists for a head? | Not verified (no live credentials). The adapter keys on HTTP `422` plus a re-list by head, never on message text (CR-27). The HTTP double returns `422` for a duplicate create. |
 | Q9 | Which `temporal operator namespace` flag sets retention on the dev server? | **Resolved (v3, observed 2026-10-29 on the pinned image):** `temporal operator namespace create --retention <duration>` (default `72h0m0s`). The gate uses `24h` and reads it back (C10); production uses `720h` unless the pre-deployment review decides otherwise (architecture §16). The JSON field of the read-back is not verified; S8 pins it from a real run. |
 | Q10 | How does `AsyncCompletionClient` in 1.24.0 report a completion for a completed or superseded attempt? | Verify at S10. CX-35 asserts rejection and the history count, not an error class. |
-| Q11 | Which parser can the package-local purity check use without a new dependency? | **Resolved (v4, observed 2026-10-29 in this worktree):** the repo's TypeScript is 7.0.2 (root `package.json` `"typescript": "^7.0.2"`), the native port. It has no classic `createSourceFile`; its exports are `typescript/unstable/sync` (an `API` class over the bundled native binary), `typescript/unstable/fs` (`createVirtualFileSystem`) and `typescript/unstable/ast` (`SyntaxKind`). A probe parsed an in-memory project and exposed import clauses (`isTypeOnly`), specifiers (`isTypeOnly`), `ElementAccessExpression`, import-equals, dynamic `import()` and decoded identifier text (`\u0044ate` → `Date`) in under 200 ms. The API is marked unstable; the lockfile pins it, and the check fails red if it changes (PR3-42). The only other parser in the tree is `esbuild`, which exposes no AST. |
+| Q11 | Which parser can the package-local purity check use without a new dependency? | **Resolved (v4, observed 2026-10-29 in this worktree):** the repo's TypeScript is 7.0.2 (root `package.json` `"typescript": "^7.0.2"`), the native port. It has no classic `createSourceFile`; its exports are `typescript/unstable/sync` (an `API` class over the bundled native binary), `typescript/unstable/fs` (`createVirtualFileSystem`) and `typescript/unstable/ast` (`SyntaxKind`). A probe parsed an in-memory project and exposed import clauses (`isTypeOnly`), specifiers (`isTypeOnly`), `ElementAccessExpression`, import-equals, dynamic `import()` and decoded identifier text (`\u0044ate` → `Date`) in under 200 ms. The API is marked unstable; the lockfile pins it, and the check fails red if it changes (PR3-42). The only other parser in the tree is `esbuild`, which exposes no AST. **v5 (observed 2026-10-29 in this worktree):** opening the package's own `packages/orchestration/tsconfig.json` with an in-memory overlay for seeded files, `checker.getSymbolAtLocation(moduleSpecifier)` returns the resolved module's source file (`./task-core.js` → `task-core.ts`) and `undefined` for an unresolvable specifier (`./x.mjs` without `allowJs`, `./%74est-support/…`, `./decide.test.ts?cache`), and `checker.getTypeAtLocation(key)` gives a literal type for `"constructor"` and `"constructor" as const`, a union of literals for a key typed `'a' \| 'b'`, and a non-literal type for `string`, `number` and `"constr" + "uctor"`; the whole project loads in about 0.4 s. The Phase 2 fitness guard (`scripts/lib/ts-guard.mjs` on the Phase 2 branch) uses the same calls. |
 
 ## 9. Sources (accessed 2026-10-29)
 

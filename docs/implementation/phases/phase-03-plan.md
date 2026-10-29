@@ -1,6 +1,6 @@
-# Phase 3 — Durable Orchestration — Plan (LOCKED v4, pending controller confirmation)
+# Phase 3 — Durable Orchestration — Plan (LOCKED v5, pending controller confirmation)
 
-> Status: **LOCKED v4 (pending controller confirmation)**. Lane A wrote v1 (`80bb76a`) in workflow step 1. The
+> Status: **LOCKED v5 (pending controller confirmation)**. Lane A wrote v1 (`80bb76a`) in workflow step 1. The
 > controller ran the independent Codex plan review (`phase-03-plan-review-codex-v1.md`, REQUEST_CHANGES 0.98).
 > In step 3 Lane A adjudicated every finding in `phase-03-review-log.md` and folded each accepted one into the
 > design, the exit criteria and the slice that proves it (v2, `98e92cf`). The controller then ran an independent
@@ -8,8 +8,10 @@
 > new finding and every v1 finding it marked PARTIAL (review log, section "Lock-check v2") and folds them in the same
 > way. The controller then ran an independent Codex review of v3 and audit of S2 (`phase-03-review-codex-v3.md`,
 > REQUEST_CHANGES 0.98). v4 adjudicates its 15 findings (review log, section "Review v3") and folds them in. The
-> controller's shared-surface reconciliation v1 (R1–R21) is applied, and it wins wherever it disagrees
-> with this plan.
+> controller then ran an independent Codex re-audit of v4 and of the S2 fixes at `7694b8b`
+> (`phase-03-review-codex-v4.md`, REQUEST_CHANGES 0.98). v5 adjudicates its seven new findings and the three v3
+> findings it marked PARTIAL (review log, section "Review v4") and folds them in. The controller's shared-surface
+> reconciliation v1 (R1–R21 and R24) is applied, and it wins wherever it disagrees with this plan.
 > One item stays open by design: the review-loop slot TypeScript (CR-10) is pasted verbatim from Lane B's locked
 > block `Review-loop slot contract (verbatim for S0)` when the controller hands over the fixed version (R18).
 > Only S2 is implemented before the Phase 2 rebase (R15): `a133e32`, then follow-up commits that bring it in
@@ -45,7 +47,9 @@ Companion documents: `phase-03-architecture.md`, `phase-03-data-model.md`, `phas
 | 3a | Controller | Codex read-only lock-check of v2 → `phase-03-plan-review-codex-v2.md` |
 | 3b | Lane A | lock-check adjudicated and folded; R15–R19 applied; plan LOCKED v3; S2 brought in line |
 | 3c | Controller | Codex read-only review of v3 and audit of S2 at `5e9fb84` → `phase-03-review-codex-v3.md` |
-| 3d | Lane A (this step) | review v3 adjudicated and folded; R21 applied; plan LOCKED v4; S2 fixed, test first |
+| 3d | Lane A | review v3 adjudicated and folded; R21 applied; plan LOCKED v4; S2 fixed, test first |
+| 3e | Controller | Codex read-only re-audit of v4 and the S2 fixes at `7694b8b` → `phase-03-review-codex-v4.md` |
+| 3f | Lane A (this step) | re-audit adjudicated and folded; R24 applied; plan LOCKED v5; S2 fixed, test first |
 | 4 | Lane A, after "implement" | one slice per commit (§26), on this branch only, in the §25 order; S2 first (`a133e32`), as R15 allows |
 | 5 | Controller | independent gate run + Codex final audit; Lane A repairs |
 | 6 | Controller | merge on ACCEPT, in the order Phase 2 → Phase 3 → Phase 4 (R-ordering 4) |
@@ -329,11 +333,16 @@ loop attempt n = 1..maxAttempts:
     activity fails → audit assurance-unavailable; shadow mode → PROCEED; gating mode → ESCALATE; never FAILED
   publication approval            (only if the run requires it; a cancellable wait; a pause applies at once and the
                                    expiry timer keeps running)
-  publishBranch                   (critical unit 2; fence; side-effect protocol; remote reconcile; a non-retryable
-                                   failure is definite → FAILED publication-failed; any other failure is ambiguous)
-  upsertPullRequest               (critical unit 3, always run once push started or failed ambiguously; fence;
-                                   create-conflict reconcile; failure after its retry policy → FAILED
-                                   publication-incomplete, audited with the remote branch, never CANCELLED)
+  publishBranch                   (critical unit 2; fence; side-effect protocol; every result and failure carries
+                                   the publication effect applied | none | unknown, never inferred from retryability
+                                   (R24); none → FAILED publication-failed; unknown → reconcilePublication)
+  reconcilePublication            (read-only remote read after an unknown effect: branch at the attempt's commit →
+                                   PR upsert; absent → FAILED publication-failed; otherwise, or the read fails →
+                                   FAILED publication-incomplete)
+  upsertPullRequest               (critical unit 3, always run once the push applied; fence; create-conflict
+                                   reconcile; effect none → FAILED publication-incomplete; unknown or applied →
+                                   reconcilePublication: PR found → continue, else FAILED publication-incomplete;
+                                   publication-incomplete is audited with the remote branch, never CANCELLED)
   recordAttemptOutcome(proceeded | escalated)
   projectTaskState WAITING_FOR_HUMAN_REVIEW; emit task.completed; cleanup; done
 on abandon (pre-publication only): reapContainers → quarantineWorkspace → releaseLease →
@@ -389,9 +398,12 @@ single commit-to-PR critical section: each operation that needs reconciliation i
 plus evidence binding, push, PR upsert), and a cancel inside a unit is processed once that unit has reconciled.
 Assurance rounds, repair planning and approval waits are cancellable at any time (R17; exits G7, G11, G12). The
 workflow audits accepted controls after acceptance. A cancel never finalizes while a publication unit is
-unreconciled: a PR upsert that fails after its retries ends the task `FAILED / publication-incomplete` (G13). A
-pause during an approval wait applies at once, and the expiry timer keeps running (G14). A run gains a `seal`
-control, and drain seals every open run (D15, M1; R21).
+unreconciled: an `unknown` publication effect is reconciled against the remote first, and a PR upsert that fails
+after its retries, or a publication that cannot reconcile, ends the task `FAILED / publication-incomplete` (G13;
+R21, R24). A pause during an approval wait applies at once, and the expiry timer keeps running (G14). A run gains a
+`seal` control, and drain seals every open run (D15, M1; R21). Seal does not resume a paused task; drain reports the
+sealed runs a paused task holds open as blocking items for an operator to resume or cancel, and never resumes one
+itself (R24).
 
 ## 18. Budgets
 
@@ -601,12 +613,12 @@ v1 → v2 slice mapping: v1 S1 → S0 (shared items) + S1; S2 → S2; S3 → S3;
 |---|---|---|---|---|
 | S0 | **Shared foundation**: every `[S0]` item of the reconciliation, exactly as specified there. (a) the fixed review-loop slot block (CR-10, verbatim Lane B block, R18) in `packages/application/src/review-loop/` (R16): the slot, Lane B's `DisabledAssuranceSlot`, the workspace resolver port and the framework-free conformance kit `review-loop-contract.ts`; (b) a minimal `NotConfiguredAssuranceSlot` in `packages/application/src/orchestration-activities/`; (c) `RunEventSink` + `RunEventConflictError` port, migration `0107_run_events` (unified DDL), PG adapter `adapters/persistence/src/run-events/**`; (d) `run-event` 1.2.0 superset (schema, fixtures, catalog, generated types); (e) the decision core adopts the block's names: its local slot types and terminal names are renamed to the block's (they stay core-local, because production source may type-import only `@asep/contracts`/`@asep/ports`), pinned by a type-level assignability check and the O5 table test (test-only `@asep/application` devDependency, like `@asep/domain`) | `feat(shared): land the review-slot contract, run-event sink and run-event 1.2.0` | G-P2, G-LB; first commit after the rebase | O1–O5, J2 (default slot), A5 (`0107` and the upgrade path), L3 |
 | S1 | Lane A contracts and ports: 3 new schemas + fixtures + snapshots + generated types (incl. `fixedTasks`, the `seal` control, `approval-decision.extensionUsd` and `policy.agentKillGraceSeconds`, R21); `TaskStatus` extension + domain transition table (incl. the R21 edges `WAITING_FOR_APPROVAL ⇄ PAUSED` and `PAUSED → BUDGET_EXHAUSTED`); ports CR-04, CR-07, CR-08, CR-09, CR-24, CR-26 types and error classes; principal types (CR-17); metrics dictionary entry; ADR 0017 | `feat(contracts): add durable-orchestration message contracts and ports` | after S0 | A1, A3, D1 (types compile), L5, domain table tests incl. the unchanged no-ACCEPTED invariant |
-| S2 | `@asep/orchestration`: reducer, activity option table, budget arithmetic (agent cap and verification reserve), the agent-outcome and reservation-failure tables, approval and control handling with the critical units, assurance-outcome routing incl. assurance-activity failure, repair lineage on retry, sequential in-memory interpreter; package-local purity self-check over production source. Core traces in the acceptance tables: (1) cap exhaustion and overrun vs H5/H9; (2) `REPAIR` with a failed reservation: `maxBudgetExtensionUsd` set (approve, reject) or unset, and a run-remainder shortfall; (3) `REPAIR` → agent death → replacement keeping the lineage → round-2 assurance; (4) cancel during assurance and during the publication-approval wait; (5) a non-replaceable agent failure beats a cap stop or an overrun (R20); and for v4 (R21): (6) a hostile policy listing each never-replaceable class; (7) wall-clock at the cap, at cap + grace and above; (8) micro-USD boundaries; (9) a failing PR upsert after a successful or ambiguous push, with a cancel pending; (10) a run sealed below `maxTasks`, created sealed, and sealed across continue-as-new; (11) pause during both approval waits; (12) the three `findAttempt` outcomes; (13) the two approval races, with both mutations shown red; the purity check is AST-based | `feat(orchestration): add the deterministic workflow decision core` (`a133e32`) + `fix(orchestration): …` follow-ups for v3, R20 and v4 | may start before G-P2 | B2 (package-local), D5 (core), D7 (core), D13 (core), D14 (core), D15 (core), G7/G11/G12/G13/G14 (core), H1, H3/H4 (core), H5 (core), H8 (core), H10 (core), H11 (core), H12 (core), I6, I9, J3 (core table), J4 (core), J5 (property), J7, J10 (core) |
+| S2 | `@asep/orchestration`: reducer, activity option table, budget arithmetic (agent cap and verification reserve), the agent-outcome and reservation-failure tables, approval and control handling with the critical units, assurance-outcome routing incl. assurance-activity failure, repair lineage on retry, sequential in-memory interpreter; package-local purity self-check over production source. Core traces in the acceptance tables: (1) cap exhaustion and overrun vs H5/H9; (2) `REPAIR` with a failed reservation: `maxBudgetExtensionUsd` set (approve, reject) or unset, and a run-remainder shortfall; (3) `REPAIR` → agent death → replacement keeping the lineage → round-2 assurance; (4) cancel during assurance and during the publication-approval wait; (5) a non-replaceable agent failure beats a cap stop or an overrun (R20); and for v4 (R21): (6) a hostile policy listing each never-replaceable class; (7) wall-clock at the cap, at cap + grace and above; (8) micro-USD boundaries; (9) a failing PR upsert after a successful or ambiguous push, with a cancel pending; (10) a run sealed below `maxTasks`, created sealed, and sealed across continue-as-new; (11) pause during both approval waits; (12) the three `findAttempt` outcomes; (13) the two approval races, with both mutations shown red; the purity check is AST-based; and for v5 (R24): (14) the publication effect for push and PR upsert (`applied`, `none`, `unknown` with each reconciliation result, and a failing reconciliation), with and without a cancel pending, and the same outcome whatever the retryability; (15) every money cap equal to `MAX_USD` with usage one micro-USD above it, usage above the bound and invalid usage; (16) content-valid `verified: false` decisions for each approval kind in the generator; the purity check uses the TypeScript checker with the module-resolution closure | `feat(orchestration): add the deterministic workflow decision core` (`a133e32`) + `fix(orchestration): …` follow-ups for v3, R20, v4 and v5 | may start before G-P2 | B2 (package-local), D5 (core), D7 (core), D13 (core), D14 (core), D15 (core), G7/G11/G12/G13/G14 (core), H1, H3/H4 (core), H5 (core), H8 (core), H10 (core), H11 (core), H12 (core), I6, I9, J3 (core table), J4 (core), J5 (property), J7, J10 (core) |
 | S3 | Migrations `0100`–`0102`, `0104`–`0106`; `adapters/persistence/src/orchestration/**` (ordinal, registry, approvals + outbox, ledger, projection); the workspace resolver over the lease table; invariant race itests against the Phase 2 fencing primitive | `feat(persistence): make orchestration state idempotent on the fenced lease primitive` | G-P2 | A5 (full set and the upgrade path), D11, E1–E5, E9, E13 (persistence part), E15 |
-| S4 | On the rebased adapters: Git worktree rehydration from the registry; `create` create-or-adopt (base or `repairBaseSha`); commit HEAD CAS; host-id guard; deterministic container names/labels; `ExecutionReaper`; per-call runner abort (CR-26); per-request agent caps (CR-25), with the adapter's stop-to-kill interval exported as a constant for `policy.agentKillGraceSeconds` (R21); orphan-container itest | `feat(workspace): make workspaces, sandboxes and agent caps restart-safe` | G-P2 | E6, E7, E8 (resolves research Q6), E14, H9 |
+| S4 | On the rebased adapters: Git worktree rehydration from the registry; `create` create-or-adopt (base or `repairBaseSha`); commit HEAD CAS; host-id guard; deterministic container names/labels; `ExecutionReaper`; per-call runner abort (CR-26); per-request agent caps (CR-25), with the adapter's stop-to-kill interval exported as a constant for `policy.agentKillGraceSeconds` (R21), re-derived after the rebase from the accepted stop path (container stop timeout plus the bound on forced removal) and bound in the tests to that constant, not a copied literal (R24); orphan-container itest | `feat(workspace): make workspaces, sandboxes and agent caps restart-safe` | G-P2 | E6, E7, E8 (resolves research Q6), E14, H9 |
 | S5 | Forge PR-upsert convergence on the real GitHub adapter (CR-27) + honest HTTP double + contract test; `DurableLocalForge` semantics parity table | `fix(forge): reconcile a pull-request create that conflicts with an existing head` | G-P2 | E12 |
-| S6 | `packages/application/src/orchestration-activities/**`: every activity over `ActivityExecutionContext`; check ids resolved through `VerificationCommandCatalog` (CR-24); fencing on the Phase 2 primitive with the `FAILED` lifecycle; deterministic evidence time; assurance wrapper + context adapter + binding of the S0 `NotConfiguredAssuranceSlot` + `recordAttemptOutcome` activity + admit hook; approval, budget, projection, control and run-event activities; `ensureAttempt` returning the attempt branch and the `findAttempt` lookup (R21); the orchestration policy loader `packages/policy/src/orchestration-policy.ts` (CR-21), which rejects a policy listing a never-replaceable class and sets `agentKillGraceSeconds` from the adapter constant (R21); double-invoke and crash-variant tests | `feat(application): expose step use cases as retry-safe activities` | G-P2 | B7, D6, D13 (lookup activity), D14 (loader), E10, E11, E13 (activity part), J2, J8, J9 |
-| S7 | `adapters/temporal`: workflows (task, run, janitor), activity bridge, error mapping, `WorkflowEngine` client with the connection guard, worker factory, bundler test, the test-support callback injector (CR-16); the input and control mapping (workflow input → core input, rejecting inexact or unbounded money and a policy with a never-replaceable class; `approval-decision.extensionUsd` → the core message; `seal`), and the interpreter's non-retryable flag on activity failures (R21); `workers/temporal-worker` root binding the default slot; Temporal confinement fitness and the shared core-purity rule in `scripts/forbidden-imports.test.ts` | `feat(temporal): run task and run workflows on Temporal` | after S2, S6 | A2, A6, B1, B2 (shared rule), B3, B4, B6, B10, C5, C8, D3, D4, D9 (bridge part), H12 (mapping), I8 |
+| S6 | `packages/application/src/orchestration-activities/**`: every activity over `ActivityExecutionContext`; check ids resolved through `VerificationCommandCatalog` (CR-24); fencing on the Phase 2 primitive with the `FAILED` lifecycle; deterministic evidence time; assurance wrapper + context adapter + binding of the S0 `NotConfiguredAssuranceSlot` + `recordAttemptOutcome` activity + admit hook; approval, budget, projection, control and run-event activities; `ensureAttempt` returning the attempt branch and the `findAttempt` lookup (R21); the publication effect on every push and PR-upsert result and failure, `none` only when the failure provably precedes the forge call, and the read-only `reconcilePublication` activity over the Phase 2 fenced forge (R24); the orchestration policy loader `packages/policy/src/orchestration-policy.ts` (CR-21), which rejects a policy listing a never-replaceable class and sets `agentKillGraceSeconds` from the adapter constant (R21); double-invoke and crash-variant tests | `feat(application): expose step use cases as retry-safe activities` | G-P2 | B7, D6, D13 (lookup activity), D14 (loader), E10, E11, E13 (activity part), J2, J8, J9 |
+| S7 | `adapters/temporal`: workflows (task, run, janitor), activity bridge, error mapping, `WorkflowEngine` client with the connection guard, worker factory, bundler test, the test-support callback injector (CR-16); the input and control mapping (workflow input → core input, rejecting inexact or unbounded money and a policy with a never-replaceable class; `approval-decision.extensionUsd` → the core message; `seal`), and the interpreter's publication effect on activity failures, `unknown` when absent (R24); `workers/temporal-worker` root binding the default slot; Temporal confinement fitness and the shared core-purity rule in `scripts/forbidden-imports.test.ts` | `feat(temporal): run task and run workflows on Temporal` | after S2, S6 | A2, A6, B1, B2 (shared rule), B3, B4, B6, B10, C5, C8, D3, D4, D9 (bridge part), H12 (mapping), I8 |
 | S8 | Gate: digest-pinned Temporal in `run-integration.mjs` (loopback publish, version line, pull/inspect output, namespace retention read-back), omit hook, negative test, new required itest IDs; `compose.yaml` Temporal fix; `DurableLocalForge`; first real end-to-end itest; the manifest-gated replay suite, now required, with its seeded non-deterministic fixture, the first captured histories and `required-scenarios.json` | `feat(integration): provision a digest-pinned Temporal server in the mandatory gate` | after S7 | A4, B5 (staged: S8 scenarios), C1–C4, C6, C7, C10, D2, D7 (e2e), D15 (e2e), L1 |
 | S9 | API routes + application use cases for executions/controls/approvals/view (incl. the run `seal` route and the decision body's `extensionUsd`, R21); principal resolver and capabilities; decision outbox + delivery relay + API chaos entry; production-root `WorkflowEngine` wiring; pilot-main and CLI dispatch via the engine; no-second-driver fitness | `feat(control-plane): drive executions, controls and approvals through the workflow engine` | after S8 | B8, B9, D1, D8, F19, G9, I2, K1–K7 |
 | S10 | Chaos matrix CX-01…CX-36, except CX-25 (S11) and CX-34 (S9), with `assertConvergence` and its negative self-test; captured replay scenarios appended with their histories | `test(chaos): prove crash, duplicate-delivery and outage recovery on real backends` | after S9 (G-P2) | B5 (staged: S10 scenarios), D9 (timing), D10, D12, F1–F18, I4, L2 (recovery rows), L4 |
@@ -1280,16 +1292,19 @@ No genuine blocker for locking the plan. Implementation is gated as in §25.
 ## Output
 
 ```text
-PLAN_STATUS: LOCKED v4 (pending controller confirmation)
+PLAN_STATUS: LOCKED v5 (pending controller confirmation)
 PLAN_V1_SHA: 80bb76a (Codex reviewed: REQUEST_CHANGES 0.98; 1 CRITICAL, 8 HIGH, 9 MEDIUM, 1 LOW)
 PLAN_V2_SHA: 98e92cf (Codex lock-check: REQUEST_CHANGES 0.97; 15 of 19 v1 findings FOLDED, 4 PARTIAL;
   new: 3 HIGH, 7 MEDIUM; all 10 new ACCEPTED, all 4 PARTIAL re-adjudicated and folded or open by design)
 PLAN_V3_SHA: 7cbf5d3 (Codex review of v3 + S2 audit at 5e9fb84: REQUEST_CHANGES 0.98; v2 findings FOLDED except
   P3-PLAN-HIGH-004, PARTIAL by design; new: 2 HIGH + 3 MEDIUM plan, 5 HIGH + 5 MEDIUM S2; all 15 ACCEPTED,
   3 of them already resolved by 5b0afde/e4fd343)
+PLAN_V4_SHA: ecf7b1c (Codex re-audit of v4 + S2 fixes at 7694b8b: REQUEST_CHANGES 0.98; v3 plan findings FOLDED;
+  7 of 10 v3 S2 findings RESOLVED, 3 PARTIAL; new: 2 HIGH + 1 MEDIUM plan, 2 HIGH + 2 MEDIUM S2; all 7 ACCEPTED,
+  the 3 PARTIAL closed by them)
 BASE_SHA: 00a6889 (Phase 2 head, unaccepted; Phase 2 cycle 7 lands first)
 BASELINE: pnpm install --frozen-lockfile exit 0; pnpm verify:all exit 0 (548/548 canonical tests), observed in step 1
-RECONCILIATION: v1 (R1–R21) applied; S0 shared foundation added; S3–S13 gated on Phase 2 acceptance + rebase
+RECONCILIATION: v1 (R1–R21, R24) applied; S0 shared foundation added; S3–S13 gated on Phase 2 acceptance + rebase
 OPEN_BY_DESIGN: CR-10 verbatim slot text, pasted on controller hand-off after Lane B's fixed block locks (R18)
 PLAN_FILES:
   - docs/implementation/phases/phase-03-plan.md

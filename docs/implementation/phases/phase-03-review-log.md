@@ -2,7 +2,8 @@
 
 > Lane A adjudication of the independent Codex plan review (workflow step 3), of the Codex lock-check of the
 > v2 plan (section "Lock-check v2", which also records the v3 freeze gate), and of the Codex review of plan v3 and
-> audit of the S2 code (section "Review v3" at the end, which records the v4 freeze gate).
+> audit of the S2 code (section "Review v3", which records the v4 freeze gate), and of the Codex re-audit of plan v4
+> and the S2 fixes (section "Review v4" at the end, which records the v5 freeze gate).
 > Planner: Lane A (Claude). Reviewer: Codex `gpt-5.6-sol` via the kiro-proxy gateway, read-only, run by the
 > controller on 2026-10-29. Raw review: `phase-03-plan-review-codex-v1.md`.
 > Reviewed base: `80bb76a` · Verdict: **REQUEST_CHANGES** · Confidence: 0.98.
@@ -937,6 +938,10 @@ failure → `publication-incomplete`, push unconfirmed); a non-retryable push fa
 "an accepted cancel ends `CANCELLED`" now allows `FAILED / publication-incomplete` and nothing else. Real proof in
 S11.
 
+**Superseded in part by R24 (section "Review v4").** Retryability no longer decides whether a push happened: the
+publication effect (`applied`, `none`, `unknown`) does, and an `unknown` effect is reconciled against the remote
+before any terminal state.
+
 ### P3-S2-MED-001 — Rounding hid small overruns — ACCEPTED (R21)
 
 **Finding.** `toMicroUsd` rounded (`budget.ts:8-10`), so a reported cost of `5.0000004` on a cap of `5` was no
@@ -951,6 +956,10 @@ the safe-integer range. The workflow-input mapping rejects anything else (S7), t
 extension amount outside it is refused like an out-of-bound one. A reported cost above that bound is charged at the
 bound (it is an overrun either way). The bound is Lane A's choice within R21's "safe-integer range" and is flagged
 for the controller. Architecture §10; data model §4.2.
+
+**Superseded in part by R24 (section "Review v4").** "An overrun either way" was false at a cap equal to the bound;
+overrun detection now compares usage with the cap before any clamping, and a usage value outside its bound is
+itself an overrun.
 
 **Validation.** H12 (new): `5.0000004` on a cap of `5` is an overrun of `0.000001`; `1.1` on `1.1` is none; a
 sub-micro usage is charged one micro-dollar; inexact, negative, non-finite and out-of-range amounts are rejected by
@@ -1074,3 +1083,186 @@ firings can arrive while a request is in flight.
 - [ ] CR-10 verbatim text pasted (open by design; G-LB, R18).
 
 **PLAN_STATUS:** LOCKED v4 (pending controller confirmation)
+
+## Review v4
+
+> Lane A adjudication of the independent Codex re-audit of plan v4 and of the S2 fixes.
+> Reviewer: Codex `gpt-6.1-sol` via the kiro-proxy gateway, read-only, run by the controller on 2026-10-29 as a single
+> uninterrupted run of the Codex CLI 0.165.0; the gateway's own instructions apply (R16). Raw output:
+> `phase-03-review-codex-v4.md`.
+> Reviewed snapshot: `7694b8b` · Verdict: **REQUEST_CHANGES** · Confidence: 0.98.
+> Controller gate at `7694b8b`, clean detached worktree: `pnpm verify:all` three runs in a row, each exit 0, 731 pass,
+> 0 fail, 0 skipped; 53 test files, 31 required suites; no V8 crash.
+> Binding input: reconciliation R24, the controller's final decisions on this re-audit. Lane A applies it exactly as
+> written. Code line numbers below are at `7694b8b` (the code is unchanged between `7694b8b` and this docs commit).
+
+### Summary
+
+The re-audit confirms the five P3-PLAN3 findings FOLDED and P3-PLAN-HIGH-004 still PARTIAL by design until G-LB
+(R18). Of the ten v3 S2 findings, seven are RESOLVED, each turned red by the reviewer's own removal of its fix, and
+three are PARTIAL: P3-S2-HIGH-003, P3-S2-MED-001 and P3-S2-MED-002. It raises seven new findings.
+
+| Group | Count | ACCEPTED | PARTIAL | REJECTED |
+|---|---|---|---|---|
+| Plan HIGH (P3-PLAN4-HIGH-001, 002) | 2 | 2 | 0 | 0 |
+| Plan MEDIUM (P3-PLAN4-MED-001) | 1 | 1 | 0 | 0 |
+| S2 HIGH (P3-S2R-HIGH-001, 002) | 2 | 2 | 0 | 0 |
+| S2 MEDIUM (P3-S2R-MED-001, 002) | 2 | 2 | 0 | 0 |
+| **Total** | **7** | **7** | **0** | **0** |
+
+Each v3 finding the review marks PARTIAL is closed through the new findings that name its remaining gap:
+
+| v3 finding | Remaining gap | Closed through |
+|---|---|---|
+| P3-S2-HIGH-003 | a non-retryable push failure counted as "nothing pushed" | P3-PLAN4-HIGH-001, P3-S2R-HIGH-002 |
+| P3-S2-MED-001 | clamping before the overrun check lost the overrun at a cap equal to `MAX_USD` | P3-PLAN4-HIGH-002, P3-S2R-HIGH-001 |
+| P3-S2-MED-002 | a reflected constructor and a runtime module outside the scanned set passed | P3-S2R-MED-001, P3-S2R-MED-002 |
+
+Two observations without an ID are settled by R24 and folded as well: drain with paused tasks, and the generator's
+coverage of content-valid unconfirmed decisions. R24 also accepts the six lane choices reported at `7694b8b` (PR
+upsert finality after its retry policy, `MAX_USD` as the input bound, kill grace 0 for the current adapter,
+`eventsDuring`, `typescript/unstable/*` in tests, the pause projection edges in S1) and adds one post-rebase
+obligation (kill grace). The S2 code findings are fixed by the follow-up commits after this docs commit, one finding
+or tight group per commit, test first; the step report names each commit, the tests that prove it and the mutation
+check that shows them red without the fix.
+
+New: data model §4.4; risk PR3-44, PR3-45; threat T3-22. Amended: architecture §3, §4.1, §4.2, §5, §6.6, §9, §10;
+data model §3.6; exit B2, D4, G13, H8, H11, H12, I9, M1; plan §17, §26 (S2, S4, S6, S7) and the step table; risk
+PR3-16, PR3-18, PR3-40, PR3-42; threat T3-13, T3-19; research Q11.
+
+### P3-PLAN4-HIGH-001 and P3-S2R-HIGH-002 — Retryability was read as proof that nothing was pushed — ACCEPTED (R24)
+
+**Finding.** Plan v4 and the core treated a non-retryable push failure as definite: nothing pushed, no PR upsert,
+and a pending cancel could finalize (architecture §5 and §4.1 at `7694b8b`; `task-core.ts:700-705`). The error
+mapping itself makes the Phase 2 fencing errors non-retryable, and `pushStep` calls `forge.pushBranch()` before
+`log.complete()`, which throws `SideEffectFencingError` for a missing or foreign `PENDING` record
+(`packages/application/src/pipeline-steps.ts:645-651`, `adapters/persistence/src/side-effect-log.ts:169-180`). So a
+non-retryable failure can follow a completed push. The reviewer's `PUSH_PROBE` reproduced it: the push reached the
+remote, failed non-retryably with a cancel pending, and the task ended `CANCELLED` with `prNumber: null`, no PR
+upsert and no publication audit. The direct test (`decide.test.ts:1508-1511`) and the property oracle
+(`invariants.test.ts:520-524`) both exempted non-retryable push failures.
+
+**Disposition.** ACCEPTED. R24 decides the behavior.
+
+**Locked change.**
+
+- Every result and failure of `publishBranch` and `upsertPullRequest` carries the publication effect: `applied`,
+  `none` or `unknown`. `none` is allowed only when the activity proves it failed before the forge call, or when a
+  reconciliation read shows the effect absent. A fencing error after the forge call, a timeout or any error after
+  the call started is `unknown`, retryable or not. A failure without an effect reaches the core as `unknown`.
+- Retryability no longer reaches the core at all: the `nonRetryable` flag on activity failures is removed, so it
+  cannot stand in for certainty again.
+- `unknown` is reconciled before any terminal state by a read-only `reconcilePublication` (the attempt branch head
+  and the open PR for it; non-cancellable, part of the publication unit, so neither pause nor cancel splits it).
+  After the push: the branch at the attempt's commit → the PR upsert runs; branch absent → `FAILED /
+  publication-failed` (`CANCELLED` with a cancel pending, since nothing was pushed); branch at another commit or a
+  failing read → `FAILED / publication-incomplete`. After the PR upsert: PR found → as a successful upsert; none
+  found, or a failing read → `FAILED / publication-incomplete`.
+- `FAILED / publication-incomplete` keeps its audit row naming the remote branch and is never `CANCELLED`.
+- The test and the property oracle that exempted non-retryable failures are rewritten: a task may end without a PR
+  after a push request only when the push failed with effect `none` or the reconciliation found the branch absent.
+
+Architecture §4.1, §5, §9; data model §4.4; plan §17, §26 (S2, S6, S7); risk PR3-18, PR3-40, PR3-44; threat T3-19.
+
+**Validation.** G13 rewritten: the effect matrix for push and PR upsert, each with and without a cancel pending,
+with the same outcome whatever the retryability, `PUSH_PROBE` as a direct trace, and the property oracle above; D4
+pins the bridge's effect mapping (S7).
+
+### P3-PLAN4-HIGH-002 and P3-S2R-HIGH-001 — Clamping before the overrun check hid an overrun at the bound — ACCEPTED (R24)
+
+**Finding.** The plan allows caps up to `100 000 000` USD and also clamps reported usage to that bound before the
+overrun check (`budget.ts:50-52`, `task-core.ts:407-416`), so "an overrun either way" (architecture §10 at `7694b8b`;
+this log, P3-S2-MED-001) is false at a cap equal to the bound. The reviewer's `CAP_PROBE` (every money cap
+`MAX_USD`, zero reserve, reported cost `MAX_USD + 1`) passed `taskInputErrors()` with no error and published with no
+`recordOverrun`. The existing test only tried a huge cost on the default cap of 5 (`decide.test.ts:247-253`), and
+the generator only produced small caps.
+
+**Disposition.** ACCEPTED. R24 decides the behavior; `MAX_USD` stays the input bound.
+
+**Locked change.** Usage is compared with the cap before any clamping. A usage value outside its representable bound
+is itself an overrun (inspect-only, incident), whatever the cap: a reported cost above `MAX_USD`, and, as every
+instance of the class, a cost, tool-call count or measured wall-clock that is negative, not a number or not finite.
+The overrun records `usageOutOfBound: true`. Only the ledger amount saturates: a cost above the bound is charged at
+the bound, an invalid cost at the attempt cap, an invalid wall-clock at the attempt's wall-clock cap. Architecture
+§10 (outcome table and budget precision); data model §3.6 (`usage_out_of_bound`), §4.4; risk PR3-16; threat T3-13.
+
+**Validation.** H12 amended: `CAP_PROBE` as a direct trace; usage one micro-USD above a cap equal to `MAX_USD`; usage
+equal to that cap is not an overrun; usage above the bound and invalid usage are overruns with `usageOutOfBound`;
+micro-USD boundaries next to the bound; the generator produces caps at and next to the bound.
+
+### P3-PLAN4-MED-001 — Risk and threat registers still said an overrun always ends `BUDGET_EXHAUSTED` — ACCEPTED (R24)
+
+**Finding.** PR3-16 and T3-13 still concluded that an overrun always ends the task `BUDGET_EXHAUSTED`
+(`phase-03-risk-register.md:27`, `phase-03-threat-model-delta.md:62` at `7694b8b`), while H8 already carries the
+two R20 exceptions.
+
+**Disposition.** ACCEPTED.
+
+**Locked change.** PR3-16 and T3-13 state the two exceptions exactly as H8 does: with no attempt left the task ends
+`FAILED / attempts-exhausted`, and an agent failure whose class is not replaceable wins, ending the task `FAILED`
+with that class while the overrun is still recorded and audited.
+
+**Validation.** Documentation only; H8 is the executable criterion.
+
+### P3-S2R-MED-001 — A reflected Function constructor passed the purity check — ACCEPTED (R24)
+
+**Finding.** The detector matched denied names only in the AST shapes it listed (`purity.test.ts:64`, `:143`).
+`Reflect.get(() => {}, "constructor")("return Date.now()")()` reaches the `Function` constructor and the clock
+without naming either; the reviewer appended it to `task-core.ts` in memory and all 183 package tests stayed green.
+
+**Disposition.** ACCEPTED.
+
+**Locked change.** The check asks the TypeScript checker, as the Phase 2 guard does. In production core source,
+`Reflect`, `Proxy`, `Function`, `eval` and `globalThis` are violations, and so is any `constructor`, `prototype` or
+`__proto__` member, as an identifier or a literal key. A computed member access whose key type is not a finite union
+of literals is a violation, and literal keys are checked against the deny set. The detector is a defence layer, not
+a proof; the plan says so. Architecture §3; exit B2; risk PR3-42; threat T3-22.
+
+**Validation.** B2 amended: the reflected constructor and its computed and member-access equivalents are seeded
+violations; a clean-set control stays green.
+
+### P3-S2R-MED-002 — Relative imports were checked by string, not by resolution — ACCEPTED (R24)
+
+**Finding.** The detector normalized the specifier string but never proved the target is a scanned file
+(`purity.test.ts:102-106`, `:211`). A relative `.mjs` module (outside the `.ts` scan) passed, as did
+`./%74est-support/fixtures.ts` and `./decide.test.ts?cache`; the reviewer's hidden `.mjs` holding `Date.now()` kept
+all 183 tests green.
+
+**Disposition.** ACCEPTED.
+
+**Locked change.** Every relative import, re-export and import type is resolved with the compiler's module
+resolution, and its target must be a `.ts` file of the scanned production set. A non-`.ts` target, a specifier
+without the `.js` extension, a percent-encoded path and a query or fragment suffix are violations, as is a specifier
+that does not resolve. Architecture §3; exit B2; research Q11.
+
+**Validation.** B2 amended: the hidden `.mjs`, `%74est-support` and `?cache` probes are seeded violations, with the
+reflected constructor of MED-001.
+
+### Observations settled by R24
+
+- **Drain with paused tasks.** Seal does not resume a paused task: a sealed run whose queue waits behind a run pause
+  stays open (`run-core.ts:287`), and a test requires it (`decide.test.ts:1683-1692`). This does not break R21's "no
+  task open" condition. Drain now reports sealed runs held open by a paused task as blocking items for an operator
+  to resume or cancel, and never resumes one itself. Architecture §4.2, §6.6, §9; plan §17; exit M1.
+- **Generator coverage.** The `unconfirmed-approve` marker did not check the amount, so it counted a publish-change
+  approve carrying an amount (seed 535 in the review), which is not content-valid (`approvals.ts:33`). The generator
+  now emits a content-valid `verified: false` decision for each kind (`publish-change` with a null amount,
+  `budget-extension` with a valid amount), and the marker checks validity per kind. Exit I9.
+- **Post-rebase kill grace.** After the rebase onto the accepted Phase 2, the kill grace is re-derived from the
+  accepted stop path (container stop timeout plus the bound on forced removal), and the tests bind to the adapter's
+  constant, not a copied literal. Architecture §10; plan §26 (S4); exit H11; risk PR3-45.
+- **Gate crashes.** If `verify:all` crashes again with `Check failed: end > addr.`, the step report records the
+  suite, the run number and the machine load, and the crash rate; no silent rerun until green.
+
+### Freeze gate (v5)
+
+- [x] Every finding of the re-audit dispositioned: 7/7 new ACCEPTED; the three v3 PARTIAL findings closed through
+      them; the v3 RESOLVED statuses and P3-PLAN-HIGH-004 (PARTIAL by design) confirmed.
+- [x] 0 unresolved CRITICAL/HIGH in the plan, **except** the verbatim-text part of P3-PLAN-HIGH-004, which is open by
+      design until G-LB and blocks S0. The S2 code HIGHs are folded here and fixed by the follow-up commits.
+- [x] Canonical docs updated: plan, architecture, data model, exit criteria, risk register, research register,
+      threat model delta.
+- [x] Reconciliation R24 applied.
+- [ ] CR-10 verbatim text pasted (open by design; G-LB, R18).
+
+**PLAN_STATUS:** LOCKED v5 (pending controller confirmation)

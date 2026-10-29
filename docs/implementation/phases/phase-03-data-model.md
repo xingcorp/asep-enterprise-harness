@@ -1,9 +1,10 @@
-# Phase 3 — Data Model (LOCKED v4, pending controller confirmation)
+# Phase 3 — Data Model (LOCKED v5, pending controller confirmation)
 
 > Companion to `phase-03-plan.md`. PostgreSQL 17 (same digest-pinned image as Phase 2). Base `00a6889`; v1 of
 > this document is at `80bb76a`, v2 at `98e92cf`, v3 at `7cbf5d3`. v2 folded in the Codex plan review; v3 folds in
 > the Codex lock-check of v2 and the controller's reconciliation R15–R19; v4 folds in the Codex review of v3 and
-> reconciliation R21 (`phase-03-review-log.md`, section "Review v3"). The reconciliation wins
+> reconciliation R21 (`phase-03-review-log.md`, section "Review v3"); v5 folds in the Codex re-audit of v4 and
+> reconciliation R24 (section "Review v4"). The reconciliation wins
 > where it and this document disagree.
 > Lane A migration range: **`0100`–`0199`** (lane contract). Migrations are append-only, checksummed and applied
 > in strictly ascending id order by the Phase 2 migrator, which allows gaps (`adapters/persistence/src/migrator.ts:45-51`).
@@ -252,6 +253,9 @@ create table budget_ledger (
   attempt_id      char(26),
   entry_kind      text not null check (entry_kind in ('attempt-usage','extension-granted','overrun')),
   cost_usd        numeric not null check (cost_usd >= 0),
+  usage_out_of_bound boolean not null default false
+                  check (entry_kind = 'overrun' or not usage_out_of_bound),  -- R24: reported usage was not a valid
+                                                                              -- amount within its bound
   input_tokens    bigint, output_tokens bigint, tool_calls integer, wall_clock_ms bigint,
   source          text not null check (source in ('provider-reported','harness-measured','human-granted')),
   idempotency_key text not null,                -- e.g. '<attemptId>:attempt-usage', '<approvalRequestId>:extension'
@@ -431,6 +435,24 @@ lock changes SR-C5, S0 takes the locked list.
 All of these are additive, so `snapshots/v1` is kept and the compat gate must classify the change as MINOR.
 Neither lane bumps `run-event` again in Phase 3/4 without a new reconciliation (R5). The metrics-dictionary
 referential-integrity check is updated in lockstep (CR-19).
+
+### 4.4 Publication activity results (R24; core DTOs, no schema change)
+
+`publishBranch` and `upsertPullRequest` report a publication **effect** with every result and every failure:
+
+| Effect | Meaning | Allowed when |
+|---|---|---|
+| `applied` | the remote holds the effect (branch at the attempt's commit; the PR) | the forge call completed, or a reconciliation read found it |
+| `none` | the remote does not hold it | the activity proves it failed before issuing the forge call, or a reconciliation read shows it absent |
+| `unknown` | either is possible | anything else: a fencing error after the forge call, a timeout, any error after the call started, whatever its retryability; also the interpreter's reading of a failure that carries no effect |
+
+A result carries `effect: 'applied'` (and the PR number for the upsert). A failure carries the effect in its
+details. `unknown` leads to `reconcilePublication` (read-only: the attempt branch head and the open PR for it)
+before any terminal state, and an unreconcilable publication ends the task `FAILED / publication-incomplete` with
+the audit row `publication.incomplete` (attempt, remote branch, whether the push was confirmed, whether a cancel
+was pending). Retryability stays the engine's concern and never reaches the core (architecture §4.1, §5). The
+overrun ledger entry records `usage_out_of_bound` when the reported cost, tool calls or measured wall-clock was not
+a valid amount within its bound (§3.6, architecture §10).
 
 ## 5. Idempotency key catalog (every durable write Phase 3 adds or relies on)
 
