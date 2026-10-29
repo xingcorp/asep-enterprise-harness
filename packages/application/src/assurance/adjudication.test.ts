@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { adjudicate, type AdjudicationInput, type ReviewInput } from './adjudication.js';
+import { AdjudicationInputError, adjudicate, type AdjudicationInput, type ReviewInput } from './adjudication.js';
 import { sha256Hex } from './canonical-json.js';
 import { parseUnifiedDiff } from './diff.js';
 import { findingFingerprint } from './findings.js';
@@ -274,6 +274,35 @@ test('reviewer failure escalates in gating mode', () => {
     reviews: [completedReview(PRIMARY, reviewOutput()), failed(COMPARATOR, 'rate-limited')],
   }).record;
   assert.equal(mixed.outcome, 'ESCALATE');
+});
+
+test('a review whose status and output disagree is rejected', () => {
+  // Output exists exactly for a valid completion. Every other pairing describes no real
+  // review, so the round is refused rather than decided: a valid status without output
+  // would otherwise count as a clean approval.
+  const output = reviewOutput();
+  const inconsistent: readonly ReviewInput[] = [
+    { reviewerConfigId: PRIMARY, status: 'COMPLETED_VALID', failureReason: null, recordSha256: 'a'.repeat(64), output: null },
+    ...(['COMPLETED_INVALID', 'FAILED', 'EGRESS_STOPPED', 'SKIPPED_PUSH_GUARD'] as const).map(
+      (status): ReviewInput => ({ reviewerConfigId: PRIMARY, status, failureReason: 'any-reason', recordSha256: null, output }),
+    ),
+  ];
+  for (const review of inconsistent) {
+    for (const mode of ['gating', 'shadow'] as const) {
+      assert.throws(
+        () => adjudicate({ ...adjudicationBase(), mode, reviews: [review] }),
+        (err: unknown) => err instanceof AdjudicationInputError && /must carry output exactly when it completed validly/.test(err.message),
+        `${review.status} with${review.output === null ? 'out' : ''} output (${mode})`,
+      );
+    }
+  }
+
+  // The consistent pairs of the same statuses are decided.
+  const consistent: readonly ReviewInput[] = [
+    completedReview(PRIMARY, output),
+    ...(['COMPLETED_INVALID', 'FAILED', 'EGRESS_STOPPED'] as const).map((status) => failed(PRIMARY, 'any-reason', status)),
+  ];
+  for (const review of consistent) assert.doesNotThrow(() => adjudicate({ ...adjudicationBase(), reviews: [review] }), review.status);
 });
 
 test('over-budget and context overflow escalate in gating and are recorded in shadow', () => {
