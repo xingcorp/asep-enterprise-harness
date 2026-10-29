@@ -2117,6 +2117,18 @@ check of the validator against the committed table runs either way. Exit D16.
 - **R34** settles the owner and name case, the reading of "informational and audited", the narrow repair and the
   6000 publication seeds; the plan and the review log follow it.
 
+### S2 follow-up commits (v8 LOWs)
+
+One finding per commit, on top of the docs commit `b97ed1c`, test first. The counts are of the decision-core test files
+(`decide.test.ts` and `invariants.test.ts`, or `decide.test.ts` alone where noted). `pnpm verify:all` passed after each
+commit: 996, 1011 and 1012 tests, 0 fail, 0 skipped, 53 test files, 31 required suites. No commit changes a decision.
+
+| Finding | Commit | Proof |
+|---|---|---|
+| P3-S2V8-LOW-001 | `5728c7c` | 16 of 365 tests were red before the fix: a rename only the PR's head, base, or head and base shows, on both paths, with and without a cancel; each observed owner and name audited once, in the order read; a rename audited also when the publication does not reconcile; and both property suites (the oracle derives the expected audits from the read on its own). Auditing only the branch's repository fails 15; auditing heads but not bases 6; not deduplicating 20; auditing only on a reconciled read 3. |
+| P3-S2V8-LOW-002 | `b4097b0` | With the previous commit's tests, the reviewer's `Number(observed.id) === binding.id` left all 365 tests green. With this commit it fails 4 of 380: the binding id as a string on the branch, the PR head and the PR base (on both paths, with and without a cancel), and the publication property on its own (`publication seed 574: PR 7 is not shown to be attempt 1's`). A loose `==` comparison fails the same 4. The missing, zero, negative and unsafe ids are refused by both the code and the mutant, and are held by 12 direct tests. A generator without malformed ids fails the publication coverage, which requires every kind of malformed id and a read that only strict identity refuses, on both paths. |
+| P3-S2V8-LOW-003 | `a4dc968` | With the re-check still writing a diagnostic, the new test, which runs it against a git binary that does not exist, was red. Writing a diagnostic instead of skipping fails it (1 of 374 in `decide.test.ts`); skipping without the reason 1; not returning after the skip 1. With git removed from `PATH`, the runner reports the re-check as skipped with the reason, and the check of the validator against the committed table passes. |
+
 ### Freeze gate (v8, after the re-audit)
 
 - [x] Every finding of the re-audit dispositioned: 5/5 LOWs ACCEPTED; the RESOLVED and FOLDED statuses confirmed.
