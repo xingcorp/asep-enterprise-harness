@@ -91,7 +91,8 @@ export interface AdjudicationInput {
   /** Exactly one per planned reviewer, in plan order. */
   readonly reviews: readonly ReviewInput[];
   readonly priorFindings: readonly PriorFindingInput[];
-  readonly fence: { readonly leaseId: string; readonly leaseEpoch: number };
+  /** The caller's lease identity, recorded as the fence that authorized the decision write. */
+  readonly fence: { readonly leaseId: string; readonly fencingEpoch: number };
 }
 
 export type AdjudicationRule = 'A1' | 'A2' | 'A3' | 'A4' | 'A5' | 'A6' | 'A7' | 'A8' | 'A9' | 'A10' | 'A11';
@@ -140,7 +141,7 @@ export interface AdjudicationRecord {
   readonly closureDecisions: readonly ClosureDecision[];
   readonly policyVersion: string;
   readonly inputs: { readonly packetSha256: string; readonly checkReportSha256: string; readonly reviewRecordSha256s: readonly string[] };
-  readonly fence: { readonly leaseId: string; readonly leaseEpoch: number };
+  readonly fence: { readonly leaseId: string; readonly fencingEpoch: number };
 }
 
 /** A finding as adjudicated this round, in review-finding/v1 shape. */
@@ -480,7 +481,7 @@ export function adjudicate(input: AdjudicationInput): Adjudication {
     closureDecisions,
     policyVersion: input.policyVersion,
     inputs: { packetSha256: input.packetSha256, checkReportSha256: input.checks.reportSha256, reviewRecordSha256s },
-    fence: { leaseId: input.fence.leaseId, leaseEpoch: input.fence.leaseEpoch },
+    fence: { leaseId: input.fence.leaseId, fencingEpoch: input.fence.fencingEpoch },
   };
   return { record, findings: evaluated };
 }

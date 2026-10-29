@@ -370,6 +370,6 @@ export function adjudicationBase(options: { readonly round?: number; readonly wo
     reviewers: [{ reviewerConfigId: PRIMARY, role: 'primary', independentOfImplementer: true }],
     reviews: [completedReview(PRIMARY, reviewOutput())],
     priorFindings: [],
-    fence: { leaseId: 'lease-1', leaseEpoch: 1 },
+    fence: { leaseId: 'lease-1', fencingEpoch: 1 },
   };
 }

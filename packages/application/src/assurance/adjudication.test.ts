@@ -155,7 +155,7 @@ test('rule table is total and deterministic', () => {
     checkReportSha256: input.checks.reportSha256,
     reviewRecordSha256s: shas,
   });
-  assert.deepEqual(first.fence, input.fence);
+  assert.deepEqual(first.fence, { leaseId: 'lease-1', fencingEpoch: 1 });
   const changed = adjudicate({ ...input, reviews: [{ ...input.reviews[0]!, recordSha256: 'e'.repeat(64) }] }).record;
   assert.notEqual(changed.adjudicationId, first.adjudicationId);
 
