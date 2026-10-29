@@ -170,6 +170,7 @@ const FINDING_KEYS = [
   'evidence',
   'requiredFix',
   'fingerprint',
+  'unresolvedReference',
 ] as const;
 
 function finding(value: unknown, at: string): CheckFinding {
@@ -181,6 +182,9 @@ function finding(value: unknown, at: string): CheckFinding {
   const lineStart = nullableLine(f['lineStart'], `${at}.lineStart`);
   const lineEnd = nullableLine(f['lineEnd'], `${at}.lineEnd`);
   if (lineEnd !== null && (lineStart === null || lineEnd < lineStart)) reject(`${at} has an invalid line range`);
+  const unresolvedReference = f['unresolvedReference'];
+  if (typeof unresolvedReference !== 'boolean') reject(`${at}.unresolvedReference must be a boolean`);
+  if (unresolvedReference && source !== 'sarif') reject(`${at}: only a SARIF finding has an unresolved reference`);
   return {
     source,
     raisedBy,
@@ -193,6 +197,7 @@ function finding(value: unknown, at: string): CheckFinding {
     evidence: text(f['evidence'], `${at}.evidence`),
     requiredFix: text(f['requiredFix'], `${at}.requiredFix`),
     fingerprint: digest(f['fingerprint'], `${at}.fingerprint`),
+    unresolvedReference,
   };
 }
 

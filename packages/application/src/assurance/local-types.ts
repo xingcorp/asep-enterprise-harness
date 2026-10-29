@@ -98,6 +98,8 @@ export interface ReviewFindingRecord {
   readonly lineEnd?: number;
   readonly ruleId?: string;
   readonly priorFindingId?: string;
+  /** SARIF only: the result's rule or artifact reference could not be resolved; never linked to a prior. */
+  readonly unresolvedReference?: true;
 }
 
 export interface PacketIdentity {

@@ -232,6 +232,7 @@ export function pickFindingRecord(f: ReviewFindingRecord): ReviewFindingRecord {
     ...(f.lineEnd === undefined ? {} : { lineEnd: f.lineEnd }),
     ...(f.ruleId === undefined ? {} : { ruleId: f.ruleId }),
     ...(f.priorFindingId === undefined ? {} : { priorFindingId: f.priorFindingId }),
+    ...(f.unresolvedReference === undefined ? {} : { unresolvedReference: f.unresolvedReference }),
   };
 }
 
@@ -350,8 +351,9 @@ const FINDING: Shape = {
     lineEnd: 'number',
     ruleId: 'string',
     priorFindingId: 'string',
+    unresolvedReference: 'boolean',
   },
-  optional: ['groundingReason', 'requirementId', 'file', 'lineStart', 'lineEnd', 'ruleId', 'priorFindingId'],
+  optional: ['groundingReason', 'requirementId', 'file', 'lineStart', 'lineEnd', 'ruleId', 'priorFindingId', 'unresolvedReference'],
 };
 
 /** The complete review-packet/v1 shape. A field that is not here cannot reach a reviewer. */

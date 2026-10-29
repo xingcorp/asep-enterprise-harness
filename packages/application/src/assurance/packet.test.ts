@@ -12,6 +12,7 @@ import {
 import { renderReviewPrompt, PromptRenderError } from './prompt.js';
 import { excerptTail, parseTestSummary } from './execution-manifest.js';
 import { fixtureWorld, utf8, refFor, worldFromDiff, type FixtureWorld } from './test-support.js';
+import type { ReviewFindingRecord } from './local-types.js';
 
 console.log('SUITE-ID: asep-suite:review-packet');
 
@@ -396,6 +397,29 @@ function sortKeys(value: unknown): unknown {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return value;
   return Object.fromEntries(Object.entries(value as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
 }
+
+test('a prior finding keeps exactly its review-finding fields, its unresolved flag included', () => {
+  const world = fixtureWorld({ round: 2 });
+  const prior: ReviewFindingRecord = {
+    id: 'prior-sarif',
+    source: 'sarif',
+    raisedBy: 'sarif:semgrep',
+    fingerprint: 'a'.repeat(64),
+    severity: 'HIGH',
+    category: 'SECURITY',
+    evidence: '[unresolved reference: artifactLocation.uriBaseId] [js.eval-use] eval() on user input',
+    requiredFix: 'Resolve the semgrep result js.eval-use reported by check semgrep',
+    grounded: true,
+    lifecycleState: 'OPEN',
+    ruleId: 'js.eval-use',
+    unresolvedReference: true,
+  };
+  // An adjudicated finding carries more than its record; the packet copies the record only.
+  const adjudicated = { ...prior, ref: 'prior:prior-sarif', blocking: true };
+  const { packet } = buildReviewPacket({ ...world.sources, priorFindings: [adjudicated] }, world.limits);
+  assert.deepEqual(packet.priorFindings, [prior]);
+  assertPacketWhitelist(packet);
+});
 
 test('packet sources must agree with the attempt under review', () => {
   const world = fixtureWorld();

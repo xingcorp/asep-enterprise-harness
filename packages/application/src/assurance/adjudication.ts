@@ -367,6 +367,7 @@ export function adjudicate(input: AdjudicationInput): Adjudication {
     ...optional('file', f.file),
     ...optional('lineStart', f.lineStart),
     ...optional('lineEnd', f.lineEnd),
+    ...(f.unresolvedReference ? { unresolvedReference: true as const } : {}),
     blocking: blockingSeverity.has(f.severity),
   }));
 
@@ -440,7 +441,8 @@ export function adjudicate(input: AdjudicationInput): Adjudication {
   // prior is carried by the re-raise. The re-raise then stands for the pair at the higher
   // severity, so it never downgrades a prior it does not shield, and a linked prior is not
   // counted again below. An ungrounded finding links nothing, so it can never stand in for a
-  // prior that still blocks.
+  // prior that still blocks, and neither does a finding whose reference could not be resolved:
+  // it neither inherits a prior's shield nor takes its place.
   const priors = sortBy(input.priorFindings, (p) => p.record.id).map((prior) => ({
     prior,
     state: effectiveFindingState(persistedAggregate(prior, input.roundOpenedAt), input.roundOpenedAt),
@@ -448,7 +450,7 @@ export function adjudicate(input: AdjudicationInput): Adjudication {
   const linked = new Set<string>();
   const regressions = new Set<string>();
   for (const [i, f] of evaluated.entries()) {
-    if (!f.grounded) continue;
+    if (!f.grounded || f.unresolvedReference === true) continue;
     const matches = priors.filter((p) => persistedIdentity(p.prior.record) === persistedIdentity(f));
     if (matches.length === 0) continue;
     for (const m of matches) linked.add(m.prior.record.id);

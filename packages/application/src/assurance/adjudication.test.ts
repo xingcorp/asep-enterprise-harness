@@ -607,6 +607,7 @@ test('a SARIF finding blocks until a human closes it', () => {
     evidence: '[js.eval-use] eval() on user input',
     requiredFix: 'Resolve the Semgrep result js.eval-use reported by check semgrep',
     fingerprint: SARIF_PRIOR.fingerprint,
+    unresolvedReference: false,
   };
   const stillThere = round({ findings: [current] });
   assert.deepEqual(decided(stillThere), ['OPEN', 'unchanged', 'REPAIR']);
@@ -655,6 +656,63 @@ test('a scanner log claiming a SARIF finding gone does not close it', () => {
     [record.closureDecisions[0]!.effectiveState, record.closureDecisions[0]!.rule, record.outcome, record.blocking.map((b) => b.findingRef)],
     ['OPEN', 'unchanged', 'REPAIR', ['prior:prior-sarif']],
   );
+});
+
+test('a finding with an unresolved reference is never linked to a prior', () => {
+  // A SARIF result whose file sits under a base the harness cannot bind, raised in an earlier
+  // round and again now: the same raiser and fingerprint, both flagged.
+  const fingerprint = sha256Hex(
+    JSON.stringify(['SECURITY', 'check:semgrep', null, 'js.eval-use', 'unresolved-reference', '{"artifactLocation":{"uri":"src/feature.ts","uriBaseId":"FOREIGN"},"ruleId":"js.eval-use"}']),
+  );
+  const evidence = '[unresolved reference: artifactLocation.uriBaseId] [js.eval-use] eval() on user input';
+  const current: CheckFinding = {
+    source: 'sarif',
+    raisedBy: 'sarif:semgrep',
+    ruleId: 'js.eval-use',
+    severity: 'HIGH',
+    category: 'SECURITY',
+    file: null,
+    lineStart: null,
+    lineEnd: null,
+    evidence,
+    requiredFix: 'Resolve the semgrep result js.eval-use reported by check semgrep',
+    fingerprint,
+    unresolvedReference: true,
+  };
+  const prior: ReviewFindingRecord = {
+    id: 'prior-flagged',
+    source: 'sarif',
+    raisedBy: 'sarif:semgrep',
+    fingerprint,
+    severity: 'HIGH',
+    category: 'SECURITY',
+    evidence,
+    requiredFix: current.requiredFix,
+    grounded: true,
+    lifecycleState: 'OPEN',
+    ruleId: 'js.eval-use',
+    unresolvedReference: true,
+  };
+  const round = (state: ReviewFindingRecord['lifecycleState'], waiverExpiresAt: string | null) => {
+    const base = reReview({});
+    return adjudicate({
+      ...base,
+      checks: { ...base.checks, findings: [...base.checks.findings, current] },
+      priorFindings: [{ record: { ...prior, lifecycleState: state }, waiverExpiresAt }],
+    });
+  };
+  const ref = `sarif:semgrep#${fingerprint}`;
+
+  // An open prior: the flagged finding does not carry it, so each blocks on its own.
+  const open = round('OPEN', null);
+  assert.deepEqual(open.record.blocking.map((b) => b.findingRef).sort(), ['prior:prior-flagged', ref].sort());
+  const evaluated = open.findings.find((f) => f.ref === ref)!;
+  assert.deepEqual([evaluated.priorFindingId, evaluated.unresolvedReference, evaluated.lifecycleState], [undefined, true, 'OPEN']);
+
+  // A waived prior shields nothing it is not linked to: the flagged finding still blocks.
+  const waived = round('WAIVED', '2026-12-01T00:00:00.000Z');
+  assert.deepEqual(waived.record.blocking.map((b) => b.findingRef), [ref]);
+  assert.equal(waived.record.outcome, 'REPAIR');
 });
 
 test('a re-raised finding is reconciled with its prior before it blocks', () => {
