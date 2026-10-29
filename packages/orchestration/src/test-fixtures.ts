@@ -1,0 +1,138 @@
+// Shared test fixtures for the decision-core suites (not a test file itself).
+
+import type {
+  ArtifactRef,
+  ArtifactId,
+  AttemptId,
+  RunId,
+  TaskId,
+} from '@asep/contracts';
+import { DEFAULT_ORCHESTRATION_POLICY } from './defaults.js';
+import type {
+  TaskCommand,
+  TaskCoreInput,
+  TaskEffect,
+  TaskRequest,
+  TaskRequestKind,
+} from './types.js';
+import type { Answer, TaskEnvironment } from './sequential-interpreter.js';
+
+export const TASK_BASE = 'b'.repeat(40);
+
+export function shaFor(attemptNumber: number): string {
+  return attemptNumber.toString(16).padStart(40, 'c');
+}
+
+export function ref(name: string): ArtifactRef {
+  const hex = Array.from(name, (c) => c.charCodeAt(0).toString(16)).join('');
+  return { artifactId: `art-${name}` as ArtifactId, sha256: hex.padEnd(64, '0').slice(0, 64), kind: 'test' };
+}
+
+export function baseInput(overrides: Partial<TaskCoreInput> = {}): TaskCoreInput {
+  return {
+    taskId: 'task-1' as TaskId,
+    runId: 'run-1' as RunId,
+    risk: 'R0',
+    baseSha: TASK_BASE,
+    attemptBudget: { maxTurns: 10, maxToolCalls: 50, maxCostUsd: 5, maxWallClockMinutes: 30 },
+    taskBudget: { maxAttempts: 3, maxCostUsd: 20, softCostUsd: 12, maxWallClockMinutes: 240 },
+    runRemainingUsd: 100,
+    governance: { publicationApprovalRequired: false, approvalTtlSeconds: 3600, maxPauseHours: 72 },
+    policy: DEFAULT_ORCHESTRATION_POLICY,
+    ...overrides,
+  };
+}
+
+/** Attempt number of a request, or null for task-level requests. */
+export function attemptOf(request: TaskRequest): number | null {
+  if (request.kind === 'assuranceRound') return request.request.attemptNumber;
+  if ('attemptNumber' in request) return request.attemptNumber;
+  return null;
+}
+
+export function proceed(name = 'adj-1'): unknown {
+  return { kind: 'PROCEED', adjudicationId: name, mode: 'not-required', prBodySectionRef: ref(`pr-${name}`) };
+}
+
+/** The default answer for every request: the happy path. */
+export function happyAnswer(request: TaskRequest): Answer {
+  const n = attemptOf(request) ?? 0;
+  switch (request.kind) {
+    case 'admitTask':
+      return { kind: 'admitTask', admitted: true, reason: 'admitted' };
+    case 'ensureAttempt':
+      return { kind: 'ensureAttempt', attemptId: `att-${request.attemptNumber}` as AttemptId };
+    case 'acquireLease':
+      return { kind: 'acquireLease' };
+    case 'prepareWorkspace':
+      return { kind: 'prepareWorkspace' };
+    case 'storeAttemptInputs':
+      return { kind: 'storeAttemptInputs' };
+    case 'runAgent':
+      return { kind: 'runAgent', status: 'AGENT_DONE', reportedCostUsd: 1, wallClockMs: 60_000, failureClass: null };
+    case 'inspectWorkspace':
+      return { kind: 'inspectWorkspace', overstep: false };
+    case 'runVerification':
+      return { kind: 'runVerification', verdict: 'PASS' };
+    case 'commitAttempt':
+      return { kind: 'commitAttempt', resultSha: shaFor(n) };
+    case 'persistEvidence':
+      return { kind: 'persistEvidence', evidenceId: `ev-${n}` };
+    case 'assuranceRound':
+      return { kind: 'assuranceRound', outcome: proceed(`adj-${n}`) };
+    case 'openApprovalRequest':
+      return { kind: 'openApprovalRequest' };
+    case 'verifyApprovalDecision':
+      return { kind: 'verifyApprovalDecision', verified: true, decision: 'approve', extensionUsd: null };
+    case 'publishBranch':
+      return { kind: 'publishBranch' };
+    case 'upsertPullRequest':
+      return { kind: 'upsertPullRequest', prNumber: 7 };
+  }
+}
+
+export type Responder = (request: TaskRequest, occurrence: number) => Answer | undefined;
+
+/** A scripted environment: per-kind overrides fall back to the happy path. */
+export function scripted(
+  overrides: Partial<Record<TaskRequestKind, Responder>> = {},
+  hooks: Partial<Pick<TaskEnvironment, 'messagesDuring' | 'whenIdle'>> = {},
+): TaskEnvironment {
+  const seen = new Map<TaskRequestKind, number>();
+  return {
+    respond(request) {
+      const occurrence = (seen.get(request.kind) ?? 0) + 1;
+      seen.set(request.kind, occurrence);
+      return overrides[request.kind]?.(request, occurrence) ?? happyAnswer(request);
+    },
+    messagesDuring: hooks.messagesDuring ?? (() => []),
+    whenIdle:
+      hooks.whenIdle ??
+      ((_state, timers) => {
+        throw new Error(`test environment has no idle script (timers: ${timers.join(',')})`);
+      }),
+  };
+}
+
+export function requests(commands: readonly TaskCommand[]): TaskRequest[] {
+  return commands.flatMap((c) => (c.type === 'request' ? [c.request] : []));
+}
+
+export function requestKinds(commands: readonly TaskCommand[]): TaskRequestKind[] {
+  return requests(commands).map((r) => r.kind);
+}
+
+export function effects(commands: readonly TaskCommand[]): TaskEffect[] {
+  return commands.flatMap((c) => (c.type === 'effect' ? [c.effect] : []));
+}
+
+export function effectsOf<K extends TaskEffect['kind']>(
+  commands: readonly TaskCommand[],
+  kind: K,
+): Extract<TaskEffect, { kind: K }>[] {
+  return effects(commands).filter((e): e is Extract<TaskEffect, { kind: K }> => e.kind === kind);
+}
+
+export function indexOfCommand(commands: readonly TaskCommand[], match: (c: TaskCommand) => boolean): number {
+  return commands.findIndex(match);
+}

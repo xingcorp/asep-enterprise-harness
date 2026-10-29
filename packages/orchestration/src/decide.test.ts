@@ -1,0 +1,906 @@
+// Decision-core behavior tables: the task reducer, the run reducer and the pure
+// building blocks they use (activity options, budget reservation, approvals,
+// assurance-outcome validation, task-status projection).
+//
+// Scenarios run through the sequential in-memory interpreter, which drives the
+// reducer exactly as the Temporal workflow will: one awaited request at a time,
+// effects executed in order, messages delivered between results.
+
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import type { RunId, TaskId } from '@asep/contracts';
+import { taskReachableStates, transitionTask } from '@asep/domain';
+import {
+  ACTIVITY_OPTIONS,
+  CRITICAL_SECTION_REQUESTS,
+  EFFECT_ACTIVITY,
+  agentStartToCloseSeconds,
+  verificationStartToCloseSeconds,
+} from './activity-options.js';
+import { ALLOWED_DECISIONS, APPROVAL_KINDS, approvalRequestId, validateApprovalDecision } from './approvals.js';
+import { parseAssuranceOutcome } from './assurance.js';
+import { checkReservation, crossesSoftThreshold, toMicroUsd } from './budget.js';
+import { DEFAULT_ORCHESTRATION_POLICY, FAILURE_CLASSES } from './defaults.js';
+import { isLegalProjection } from './projection.js';
+import { decideRun, startRun } from './run-core.js';
+import type { RunCommand, RunCoreInput } from './run-core.js';
+import { runTaskSequentially } from './sequential-interpreter.js';
+import type { TaskTrace } from './sequential-interpreter.js';
+import { decideTask, startTask, taskWorkflowId } from './task-core.js';
+import {
+  TASK_BASE,
+  baseInput,
+  effectsOf,
+  happyAnswer,
+  indexOfCommand,
+  proceed,
+  ref,
+  requestKinds,
+  requests,
+  scripted,
+  shaFor,
+} from './test-fixtures.js';
+import type { TaskCommand, TaskEffect, TaskEvent, TaskRequestKind } from './types.js';
+
+console.log('SUITE-ID: asep-suite:orchestration-core');
+
+function assertLegalProjections(trace: TaskTrace): void {
+  let from = 'READY' as Parameters<typeof isLegalProjection>[0];
+  for (const p of effectsOf(trace.commands, 'projectTaskState')) {
+    assert.ok(isLegalProjection(from, p.status), `illegal projection ${from} -> ${p.status}`);
+    from = p.status;
+  }
+}
+
+function outcomes(trace: TaskTrace) {
+  return effectsOf(trace.commands, 'recordAttemptOutcome').map((o) => [o.attemptNumber, o.terminal]);
+}
+
+// ---------------------------------------------------------------------------
+// Activity options
+// ---------------------------------------------------------------------------
+
+const ALL_REQUESTS: readonly TaskRequestKind[] = [
+  'admitTask', 'ensureAttempt', 'acquireLease', 'prepareWorkspace', 'storeAttemptInputs', 'runAgent',
+  'inspectWorkspace', 'runVerification', 'commitAttempt', 'persistEvidence', 'assuranceRound',
+  'openApprovalRequest', 'verifyApprovalDecision', 'publishBranch', 'upsertPullRequest',
+];
+
+test('activity options: every activity declares an explicit retry limit and start-to-close timeout', () => {
+  for (const [name, o] of Object.entries(ACTIVITY_OPTIONS)) {
+    assert.ok(Number.isInteger(o.retry.maximumAttempts) && o.retry.maximumAttempts >= 1, `${name} maximumAttempts`);
+    assert.ok(o.startToCloseSeconds > 0, `${name} startToClose`);
+    assert.ok(o.retry.initialIntervalSeconds > 0 && o.retry.backoffCoefficient >= 1, `${name} backoff`);
+    assert.ok(o.retry.maximumIntervalSeconds >= o.retry.initialIntervalSeconds, `${name} max interval`);
+  }
+  for (const kind of ALL_REQUESTS) assert.ok(kind in ACTIVITY_OPTIONS, `no options for request ${kind}`);
+});
+
+test('activity options: long activities declare a heartbeat timeout; the agent is never engine-retried', () => {
+  const long = ['prepareWorkspace', 'runAgent', 'inspectWorkspace', 'runVerification', 'commitAttempt',
+    'persistEvidence', 'assuranceRound', 'publishBranch', 'upsertPullRequest'] as const;
+  for (const name of long) assert.ok((ACTIVITY_OPTIONS[name].heartbeatTimeoutSeconds ?? 0) > 0, name);
+  assert.equal(ACTIVITY_OPTIONS.runAgent.retry.maximumAttempts, 1);
+  assert.equal(ACTIVITY_OPTIONS.runVerification.retry.maximumAttempts, 2);
+});
+
+test('activity options: the commit/evidence and push/PR sections are not cancellable', () => {
+  assert.deepEqual([...CRITICAL_SECTION_REQUESTS].sort(),
+    ['commitAttempt', 'persistEvidence', 'publishBranch', 'upsertPullRequest']);
+  for (const name of CRITICAL_SECTION_REQUESTS) assert.equal(ACTIVITY_OPTIONS[name].cancellable, false, name);
+  assert.equal(ACTIVITY_OPTIONS.runAgent.cancellable, true);
+  assert.equal(ACTIVITY_OPTIONS.runVerification.cancellable, true);
+});
+
+test('activity options: derived timeouts add five minutes of grace', () => {
+  assert.equal(agentStartToCloseSeconds({ maxTurns: 1, maxToolCalls: 1, maxCostUsd: 1, maxWallClockMinutes: 30 }), 30 * 60 + 300);
+  assert.equal(verificationStartToCloseSeconds([60, 120]), 180 + 300);
+  assert.equal(verificationStartToCloseSeconds([]), 300);
+});
+
+test('activity options: every effect except timers runs as an activity with explicit options', () => {
+  const kinds: readonly TaskEffect['kind'][] = [
+    'projectTaskState', 'emitRunEvent', 'recordAttemptOutcome', 'recordUsage', 'recordOverrun', 'recordExtension',
+    'reapContainers', 'quarantineWorkspace', 'cleanupWorkspace', 'releaseLease', 'expireApprovalRequest',
+    'cancelApprovalRequest', 'recordControl', 'audit', 'startTimer', 'cancelTimer',
+  ];
+  for (const kind of kinds) {
+    const activity = EFFECT_ACTIVITY[kind];
+    if (kind === 'startTimer' || kind === 'cancelTimer') {
+      assert.equal(activity, null, kind);
+      continue;
+    }
+    assert.ok(activity !== null && activity in ACTIVITY_OPTIONS, kind);
+    assert.equal(ACTIVITY_OPTIONS[activity].cancellable, false, `${kind} must complete even when the task is cancelled`);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Budget reservation
+// ---------------------------------------------------------------------------
+
+const RES = {
+  attemptNumber: 1,
+  attemptBudget: { maxTurns: 1, maxToolCalls: 1, maxCostUsd: 5, maxWallClockMinutes: 30 },
+  taskBudget: { maxAttempts: 3, maxCostUsd: 20, softCostUsd: 12, maxWallClockMinutes: 240 },
+  runRemainingUsd: 100,
+  spentMicroUsd: 0,
+  spentWallClockMinutes: 0,
+  grantedExtensionMicroUsd: 0,
+  overrun: false,
+};
+
+test('reservation: an attempt fits exactly at the task cap and fails one micro-dollar above it', () => {
+  assert.deepEqual(checkReservation({ ...RES, spentMicroUsd: toMicroUsd(15) }), { ok: true });
+  const over = checkReservation({ ...RES, spentMicroUsd: toMicroUsd(15) + 1 });
+  assert.equal(over.ok, false);
+  assert.equal(over.ok === false && over.reason, 'task-budget');
+  assert.equal(over.ok === false && over.shortfallUsd, 0.000001);
+});
+
+test('reservation: granted extensions raise only the task cap', () => {
+  assert.deepEqual(
+    checkReservation({ ...RES, spentMicroUsd: toMicroUsd(18), grantedExtensionMicroUsd: toMicroUsd(3) }),
+    { ok: true },
+  );
+  const run = checkReservation({ ...RES, runRemainingUsd: 4, grantedExtensionMicroUsd: toMicroUsd(50) });
+  assert.equal(run.ok === false && run.reason, 'run-budget');
+});
+
+test('reservation: attempts, overrun and wall-clock each bind, and are checked before the task cap', () => {
+  assert.equal((checkReservation({ ...RES, attemptNumber: 4 }) as { reason: string }).reason, 'attempts-exhausted');
+  assert.equal((checkReservation({ ...RES, overrun: true }) as { reason: string }).reason, 'overrun');
+  assert.equal((checkReservation({ ...RES, spentWallClockMinutes: 211 }) as { reason: string }).reason, 'wall-clock');
+  assert.deepEqual(checkReservation({ ...RES, spentWallClockMinutes: 210 }), { ok: true });
+});
+
+test('soft threshold: crossed once, when spending moves from below to at-or-above it', () => {
+  assert.equal(crossesSoftThreshold(toMicroUsd(11), toMicroUsd(12), 12), true);
+  assert.equal(crossesSoftThreshold(toMicroUsd(12), toMicroUsd(13), 12), false);
+  assert.equal(crossesSoftThreshold(toMicroUsd(1), toMicroUsd(2), 12), false);
+});
+
+// ---------------------------------------------------------------------------
+// Approvals
+// ---------------------------------------------------------------------------
+
+test('approvals: exactly budget-extension and publish-change exist, each deciding approve or reject', () => {
+  assert.deepEqual([...APPROVAL_KINDS], ['budget-extension', 'publish-change']);
+  assert.deepEqual(ALLOWED_DECISIONS['budget-extension'], ['approve', 'reject']);
+  assert.deepEqual(ALLOWED_DECISIONS['publish-change'], ['approve', 'reject']);
+  assert.equal(approvalRequestId('asep-task-t', 3), 'asep-task-t:3');
+});
+
+test('approvals: the validator rejects unknown requests, disallowed decisions, bad extensions and conflicts', () => {
+  const open = { approvalRequestId: 'w:1', kind: 'budget-extension' as const, pendingDecisionId: null };
+  const msg = { type: 'approvalDecisionReceived' as const, decisionId: 'd1', approvalRequestId: 'w:1', decision: 'approve' as const, extensionUsd: 5, principalId: 'p' };
+  const max = 50;
+  assert.deepEqual(validateApprovalDecision(open, [], msg, max), { accepted: true, duplicate: false, reason: null });
+  assert.equal(validateApprovalDecision(null, [], msg, max).reason, 'unknown-approval');
+  assert.equal(validateApprovalDecision(open, [], { ...msg, approvalRequestId: 'w:2' }, max).reason, 'unknown-approval');
+  assert.equal(validateApprovalDecision(open, [], { ...msg, decision: 'request-repair' as never }, max).reason, 'decision-not-allowed');
+  assert.equal(validateApprovalDecision(open, [], { ...msg, extensionUsd: null }, max).reason, 'extension-out-of-bounds');
+  assert.equal(validateApprovalDecision(open, [], { ...msg, extensionUsd: 51 }, max).reason, 'extension-out-of-bounds');
+  assert.equal(validateApprovalDecision(open, [], { ...msg, extensionUsd: 0 }, max).reason, 'extension-out-of-bounds');
+  assert.deepEqual(validateApprovalDecision(open, [], { ...msg, decision: 'reject', extensionUsd: null }, max),
+    { accepted: true, duplicate: false, reason: null });
+  const publish = { ...open, kind: 'publish-change' as const };
+  assert.equal(validateApprovalDecision(publish, [], msg, max).reason, 'extension-out-of-bounds');
+  assert.deepEqual(validateApprovalDecision(open, ['d1'], msg, max), { accepted: true, duplicate: true, reason: null });
+  assert.equal(validateApprovalDecision({ ...open, pendingDecisionId: 'd0' }, ['d0'], msg, max).reason, 'decision-conflict');
+});
+
+// ---------------------------------------------------------------------------
+// Assurance outcome validation
+// ---------------------------------------------------------------------------
+
+const CTX = { round: 1, resultSha: shaFor(1) };
+
+test('assurance: the four outcome kinds validate', () => {
+  assert.equal(parseAssuranceOutcome(proceed(), CTX).ok, true);
+  assert.equal(parseAssuranceOutcome({ kind: 'ESCALATE', adjudicationId: 'a', reason: 'reviewer-unavailable', prBodySectionRef: ref('x') }, CTX).ok, true);
+  assert.equal(parseAssuranceOutcome({ kind: 'REPAIR', adjudicationId: 'a', repairOrderRef: ref('r'), nextRound: 2, repairBaseSha: shaFor(1) }, CTX).ok, true);
+  assert.equal(parseAssuranceOutcome({ kind: 'BLOCK', adjudicationId: 'a', reason: 'secret-in-diff' }, CTX).ok, true);
+});
+
+test('assurance: anything outside the contract is a violation', () => {
+  const bad: readonly unknown[] = [
+    null,
+    'PROCEED',
+    { kind: 'APPROVED', adjudicationId: 'a' },
+    { kind: 'PROCEED', prBodySectionRef: ref('x') },
+    { kind: 'PROCEED', adjudicationId: '', prBodySectionRef: ref('x') },
+    { kind: 'PROCEED', adjudicationId: 'a' },
+    { kind: 'PROCEED', adjudicationId: 'a', prBodySectionRef: { artifactId: 'x', sha256: 'nothex', kind: 'k' } },
+    { kind: 'ESCALATE', adjudicationId: 'a', prBodySectionRef: ref('x') },
+    { kind: 'REPAIR', adjudicationId: 'a', repairOrderRef: ref('r'), nextRound: 3, repairBaseSha: shaFor(1) },
+    { kind: 'REPAIR', adjudicationId: 'a', repairOrderRef: ref('r'), nextRound: 2, repairBaseSha: shaFor(9) },
+    { kind: 'REPAIR', adjudicationId: 'a', nextRound: 2, repairBaseSha: shaFor(1) },
+    { kind: 'BLOCK', adjudicationId: 'a' },
+  ];
+  for (const raw of bad) assert.equal(parseAssuranceOutcome(raw, CTX).ok, false, JSON.stringify(raw));
+});
+
+// ---------------------------------------------------------------------------
+// Task reducer: happy path and admission
+// ---------------------------------------------------------------------------
+
+test('task: an R0 task runs one attempt to review handoff with one push and one PR', () => {
+  const trace = runTaskSequentially(baseInput(), scripted());
+  assert.deepEqual(requestKinds(trace.commands), [
+    'admitTask', 'ensureAttempt', 'acquireLease', 'prepareWorkspace', 'storeAttemptInputs', 'runAgent',
+    'inspectWorkspace', 'runVerification', 'commitAttempt', 'persistEvidence', 'assuranceRound',
+    'publishBranch', 'upsertPullRequest',
+  ]);
+  assert.equal(trace.summary.outcome, 'WAITING_FOR_HUMAN_REVIEW');
+  assert.equal(trace.summary.prNumber, 7);
+  assert.deepEqual(outcomes(trace), [[1, 'proceeded']]);
+  assert.deepEqual(effectsOf(trace.commands, 'projectTaskState').map((p) => p.status),
+    ['EXECUTING', 'VERIFYING', 'WAITING_FOR_HUMAN_REVIEW']);
+  assert.equal(effectsOf(trace.commands, 'cleanupWorkspace').length, 1);
+  assert.equal(effectsOf(trace.commands, 'releaseLease').length, 1);
+  const commit = requests(trace.commands).find((r) => r.kind === 'commitAttempt');
+  assert.equal(commit?.kind === 'commitAttempt' && commit.expectedHeadSha, TASK_BASE);
+  assertLegalProjections(trace);
+});
+
+test('task: a deferred admission blocks before any attempt exists', () => {
+  const trace = runTaskSequentially(baseInput({ risk: 'R3' }), scripted({
+    admitTask: () => ({ kind: 'admitTask', admitted: false, reason: 'risk-deferred' }),
+  }));
+  assert.deepEqual(requestKinds(trace.commands), ['admitTask']);
+  assert.equal(trace.summary.outcome, 'BLOCKED');
+  assert.deepEqual(outcomes(trace), []);
+  assertLegalProjections(trace);
+});
+
+test('task: the workflow id is derived from the task id', () => {
+  assert.equal(taskWorkflowId('t-9' as TaskId), 'asep-task-t-9');
+  assert.equal(startTask(baseInput()).state.workflowId, 'asep-task-task-1');
+});
+
+// ---------------------------------------------------------------------------
+// Agent failure and worker death
+// ---------------------------------------------------------------------------
+
+test('agent failure: worker death during the agent replaces the attempt before any push', () => {
+  const trace = runTaskSequentially(baseInput(), scripted({
+    runAgent: (_r, n) => (n === 1 ? { kind: 'activityFailed', failureClass: 'workflow-recovery-failure', timedOut: true } : undefined),
+  }));
+  const ensured = requests(trace.commands).filter((r) => r.kind === 'ensureAttempt');
+  assert.deepEqual(ensured.map((r) => r.kind === 'ensureAttempt' && [r.attemptNumber, r.attemptKind, r.baseSha]),
+    [[1, 'initial', TASK_BASE], [2, 'retry', TASK_BASE]]);
+  assert.deepEqual(outcomes(trace), [[1, 'failed'], [2, 'proceeded']]);
+  const abandon = effectsOf(trace.commands, 'reapContainers').map((e) => e.attemptNumber);
+  assert.deepEqual(abandon, [1]);
+  assert.ok(effectsOf(trace.commands, 'quarantineWorkspace').some((e) => e.attemptNumber === 1));
+  assert.ok(effectsOf(trace.commands, 'releaseLease').some((e) => e.attemptNumber === 1));
+  const recovered = effectsOf(trace.commands, 'emitRunEvent').filter((e) => e.eventType === 'workflow.recovered');
+  assert.deepEqual(recovered.map((e) => e.detail['recoveryKind']), ['attempt-replaced']);
+  assert.equal(requestKinds(trace.commands).filter((k) => k === 'upsertPullRequest').length, 1);
+  assert.equal(trace.summary.outcome, 'WAITING_FOR_HUMAN_REVIEW');
+  assertLegalProjections(trace);
+});
+
+test('agent failure: an attempt that died without a usage report is charged its full reservation', () => {
+  const trace = runTaskSequentially(baseInput(), scripted({
+    runAgent: (_r, n) => (n === 1 ? { kind: 'activityFailed', failureClass: 'environment', timedOut: true } : undefined),
+  }));
+  const usage = effectsOf(trace.commands, 'recordUsage');
+  assert.deepEqual(usage.map((u) => [u.attemptNumber, u.chargedCostUsd, u.reportedCostUsd]), [[1, 5, null], [2, 1, 1]]);
+  assert.equal(trace.summary.chargedCostUsd, 6);
+});
+
+test('agent failure: a non-replaceable failure class ends the task without a new attempt', () => {
+  const trace = runTaskSequentially(baseInput(), scripted({
+    runAgent: () => ({ kind: 'runAgent', status: 'FAILED', reportedCostUsd: 1, wallClockMs: 1000, failureClass: 'policy-violation' }),
+  }));
+  assert.equal(requestKinds(trace.commands).filter((k) => k === 'ensureAttempt').length, 1);
+  assert.deepEqual(outcomes(trace), [[1, 'failed']]);
+  assert.equal(trace.summary.outcome, 'FAILED');
+});
+
+test('agent failure: once a push may exist, a failure is terminal and no attempt replaces it', () => {
+  const trace = runTaskSequentially(baseInput(), scripted({
+    upsertPullRequest: () => ({ kind: 'activityFailed', failureClass: 'provider', timedOut: false }),
+  }));
+  assert.equal(requestKinds(trace.commands).filter((k) => k === 'ensureAttempt').length, 1);
+  assert.equal(trace.summary.outcome, 'FAILED');
+  assert.deepEqual(outcomes(trace), [[1, 'failed']]);
+});
+
+test('agent failure: replacement stops at maxAttempts', () => {
+  const trace = runTaskSequentially(baseInput(), scripted({
+    runAgent: () => ({ kind: 'activityFailed', failureClass: 'provider', timedOut: false }),
+  }));
+  assert.equal(requestKinds(trace.commands).filter((k) => k === 'ensureAttempt').length, 3);
+  assert.deepEqual(outcomes(trace), [[1, 'failed'], [2, 'failed'], [3, 'failed']]);
+  assert.equal(trace.summary.outcome, 'FAILED');
+});
+
+test('an overstep found by inspection is a policy violation and is not retried', () => {
+  const trace = runTaskSequentially(baseInput(), scripted({
+    inspectWorkspace: () => ({ kind: 'inspectWorkspace', overstep: true }),
+  }));
+  assert.equal(requestKinds(trace.commands).filter((k) => k === 'ensureAttempt').length, 1);
+  assert.equal(trace.summary.outcome, 'FAILED');
+  assert.ok(effectsOf(trace.commands, 'quarantineWorkspace').some((q) => q.reason === 'policy-violation'));
+});
+
+// ---------------------------------------------------------------------------
+// Verification stop
+// ---------------------------------------------------------------------------
+
+for (const verdict of ['FAIL', 'ERROR'] as const) {
+  test(`a ${verdict} verification stops the task: no assurance round, no approval, no push`, () => {
+    const trace = runTaskSequentially(baseInput({
+      governance: { publicationApprovalRequired: true, approvalTtlSeconds: 3600, maxPauseHours: 72 },
+    }), scripted({ runVerification: () => ({ kind: 'runVerification', verdict }) }));
+    const kinds = requestKinds(trace.commands);
+    for (const k of ['assuranceRound', 'openApprovalRequest', 'commitAttempt', 'publishBranch'] as const) {
+      assert.ok(!kinds.includes(k), `${k} must not run after a verification stop`);
+    }
+    const recorded = effectsOf(trace.commands, 'recordAttemptOutcome');
+    assert.deepEqual(recorded.map((o) => [o.terminal, o.verificationVerdict]), [['verification-failed', verdict]]);
+    assert.equal(trace.summary.outcome, 'FAILED');
+    assertLegalProjections(trace);
+  });
+}
+
+test('a verification activity that gives up is a verification stop with verdict ERROR', () => {
+  const trace = runTaskSequentially(baseInput(), scripted({
+    runVerification: () => ({ kind: 'activityFailed', failureClass: 'environment', timedOut: false }),
+  }));
+  assert.deepEqual(effectsOf(trace.commands, 'recordAttemptOutcome').map((o) => [o.terminal, o.verificationVerdict]),
+    [['verification-failed', 'ERROR']]);
+  assert.equal(requestKinds(trace.commands).filter((k) => k === 'ensureAttempt').length, 1);
+  assert.equal(trace.summary.outcome, 'FAILED');
+});
+
+// ---------------------------------------------------------------------------
+// Assurance outcome routing
+// ---------------------------------------------------------------------------
+
+test('assurance routing: ESCALATE publishes a flagged PR and hands off to human review', () => {
+  const trace = runTaskSequentially(baseInput(), scripted({
+    assuranceRound: () => ({ kind: 'assuranceRound', outcome: { kind: 'ESCALATE', adjudicationId: 'adj-e', reason: 'reviewer-unavailable', prBodySectionRef: ref('esc') } }),
+  }));
+  const pr = requests(trace.commands).find((r) => r.kind === 'upsertPullRequest');
+  assert.equal(pr?.kind === 'upsertPullRequest' && pr.flagged, true);
+  assert.deepEqual(pr?.kind === 'upsertPullRequest' && pr.prBodySectionRef, ref('esc'));
+  assert.deepEqual(effectsOf(trace.commands, 'recordAttemptOutcome').map((o) => [o.terminal, o.adjudicationId]),
+    [['escalated', 'adj-e']]);
+  assert.equal(trace.summary.outcome, 'WAITING_FOR_HUMAN_REVIEW');
+});
+
+test('assurance routing: PROCEED publishes an unflagged PR carrying the assurance section', () => {
+  const trace = runTaskSequentially(baseInput(), scripted());
+  const pr = requests(trace.commands).find((r) => r.kind === 'upsertPullRequest');
+  assert.equal(pr?.kind === 'upsertPullRequest' && pr.flagged, false);
+  assert.deepEqual(pr?.kind === 'upsertPullRequest' && pr.prBodySectionRef, ref('pr-adj-1'));
+});
+
+test('assurance routing: BLOCK publishes nothing and blocks the task', () => {
+  const trace = runTaskSequentially(baseInput(), scripted({
+    assuranceRound: () => ({ kind: 'assuranceRound', outcome: { kind: 'BLOCK', adjudicationId: 'adj-b', reason: 'secret-in-diff' } }),
+  }));
+  const kinds = requestKinds(trace.commands);
+  assert.ok(!kinds.includes('publishBranch') && !kinds.includes('upsertPullRequest'));
+  assert.deepEqual(outcomes(trace), [[1, 'blocked']]);
+  assert.ok(effectsOf(trace.commands, 'reapContainers').some((e) => e.attemptNumber === 1));
+  assert.ok(effectsOf(trace.commands, 'quarantineWorkspace').some((e) => e.attemptNumber === 1));
+  assert.equal(trace.summary.outcome, 'BLOCKED');
+  assertLegalProjections(trace);
+});
+
+test('assurance routing: REPAIR starts a repair attempt at repairBaseSha with the next round and prior adjudication', () => {
+  const trace = runTaskSequentially(baseInput(), scripted({
+    assuranceRound: (r, n) => (n === 1
+      ? { kind: 'assuranceRound', outcome: { kind: 'REPAIR', adjudicationId: 'adj-r1', repairOrderRef: ref('ro-1'), nextRound: 2, repairBaseSha: shaFor(1) } }
+      : undefined),
+  }));
+  const all = requests(trace.commands);
+  const ensure2 = all.find((r) => r.kind === 'ensureAttempt' && r.attemptNumber === 2);
+  assert.deepEqual(ensure2, {
+    kind: 'ensureAttempt', attemptNumber: 2, attemptKind: 'repair', baseSha: shaFor(1),
+    parentAttemptNumber: 1, repairOrderRef: ref('ro-1'),
+  });
+  const prepare2 = all.find((r) => r.kind === 'prepareWorkspace' && r.attemptNumber === 2);
+  assert.equal(prepare2?.kind === 'prepareWorkspace' && prepare2.baseSha, shaFor(1));
+  const store2 = all.find((r) => r.kind === 'storeAttemptInputs' && r.attemptNumber === 2);
+  assert.deepEqual(store2?.kind === 'storeAttemptInputs' && store2.repairOrderRef, ref('ro-1'));
+  const commit2 = all.find((r) => r.kind === 'commitAttempt' && r.attemptNumber === 2);
+  assert.equal(commit2?.kind === 'commitAttempt' && commit2.expectedHeadSha, shaFor(1));
+  const rounds = all.flatMap((r) => (r.kind === 'assuranceRound' ? [r.request] : []));
+  assert.deepEqual(rounds.map((r) => [r.attemptNumber, r.round, r.priorAdjudicationId, r.taskBaseSha]),
+    [[1, 1, null, TASK_BASE], [2, 2, 'adj-r1', TASK_BASE]]);
+  assert.notEqual(rounds[0]!.idempotencyKey, rounds[1]!.idempotencyKey);
+  assert.deepEqual(outcomes(trace), [[1, 'repair-requested'], [2, 'proceeded']]);
+  // The parent's workspace is disposed only after the repair workspace exists.
+  const prepared2At = indexOfCommand(trace.commands, (c) => c.type === 'request' && c.request.kind === 'storeAttemptInputs' && c.request.attemptNumber === 2);
+  const parentCleanupAt = indexOfCommand(trace.commands, (c) => c.type === 'effect' && c.effect.kind === 'cleanupWorkspace' && c.effect.attemptNumber === 1);
+  assert.ok(parentCleanupAt > 0 && parentCleanupAt < prepared2At, 'parent cleanup between repair prepare and inputs');
+  assert.equal(requestKinds(trace.commands).filter((k) => k === 'publishBranch').length, 1);
+  assert.equal(effectsOf(trace.commands, 'projectTaskState').filter((p) => p.status === 'EXECUTING').length, 1,
+    'the task stays VERIFYING through the repair attempt');
+  assertLegalProjections(trace);
+});
+
+test('assurance routing: REPAIR without attempt capacity fails the task and publishes nothing', () => {
+  const trace = runTaskSequentially(baseInput({
+    taskBudget: { maxAttempts: 1, maxCostUsd: 20, softCostUsd: 12, maxWallClockMinutes: 240 },
+  }), scripted({
+    assuranceRound: () => ({ kind: 'assuranceRound', outcome: { kind: 'REPAIR', adjudicationId: 'adj-r', repairOrderRef: ref('ro'), nextRound: 2, repairBaseSha: shaFor(1) } }),
+  }));
+  assert.ok(!requestKinds(trace.commands).includes('publishBranch'));
+  assert.equal(trace.summary.outcome, 'FAILED');
+  assert.equal(trace.summary.reason, 'repair-capacity-exhausted');
+  assert.ok(effectsOf(trace.commands, 'quarantineWorkspace').some((e) => e.attemptNumber === 1));
+  assert.ok(effectsOf(trace.commands, 'releaseLease').some((e) => e.attemptNumber === 1));
+  assertLegalProjections(trace);
+});
+
+for (const [name, outcome] of [
+  ['an unknown kind', { kind: 'APPROVED', adjudicationId: 'x' }],
+  ['REPAIR at the wrong base', { kind: 'REPAIR', adjudicationId: 'x', repairOrderRef: ref('r'), nextRound: 2, repairBaseSha: shaFor(5) }],
+  ['REPAIR with a skipped round', { kind: 'REPAIR', adjudicationId: 'x', repairOrderRef: ref('r'), nextRound: 4, repairBaseSha: shaFor(1) }],
+] as const) {
+  test(`assurance routing: ${name} is a contract violation: audited, task FAILED, nothing published`, () => {
+    const trace = runTaskSequentially(baseInput(), scripted({ assuranceRound: () => ({ kind: 'assuranceRound', outcome }) }));
+    assert.ok(effectsOf(trace.commands, 'audit').some((a) => a.action === 'review-slot.contract-violation'));
+    assert.ok(!requestKinds(trace.commands).includes('publishBranch'));
+    assert.deepEqual(outcomes(trace), [[1, 'failed']]);
+    assert.equal(trace.summary.outcome, 'FAILED');
+  });
+}
+
+test('the assurance round carries the declared completion of the attempt', () => {
+  const trace = runTaskSequentially(baseInput(), scripted());
+  const round = requests(trace.commands).find((r) => r.kind === 'assuranceRound');
+  assert.equal(round?.kind === 'assuranceRound' && round.request.declaredComplete, true);
+});
+
+// ---------------------------------------------------------------------------
+// Budgets and approvals
+// ---------------------------------------------------------------------------
+
+function idleScript(...events: readonly ((timers: readonly string[]) => TaskEvent)[]) {
+  let i = 0;
+  return (_s: unknown, timers: readonly string[]): TaskEvent => {
+    const next = events[i++];
+    if (!next) throw new Error(`idle script exhausted (timers: ${timers.join(',')})`);
+    return next(timers);
+  };
+}
+
+const tightBudget = baseInput({ taskBudget: { maxAttempts: 3, maxCostUsd: 4, softCostUsd: 3, maxWallClockMinutes: 240 } });
+
+test('budget extension: a failed task-cap reservation opens a budget-extension approval; approval continues the task', () => {
+  const trace = runTaskSequentially(tightBudget, scripted({
+    verifyApprovalDecision: () => ({ kind: 'verifyApprovalDecision', verified: true, decision: 'approve', extensionUsd: 1 }),
+  }, {
+    whenIdle: idleScript(() => ({ type: 'approvalDecisionReceived', decisionId: 'd1', approvalRequestId: 'asep-task-task-1:1', decision: 'approve', extensionUsd: 1, principalId: 'human-1' })),
+  }));
+  const open = requests(trace.commands).find((r) => r.kind === 'openApprovalRequest');
+  assert.deepEqual(open, {
+    kind: 'openApprovalRequest', approvalRequestId: 'asep-task-task-1:1', approvalKind: 'budget-extension',
+    attemptNumber: null, ttlSeconds: 3600, shortfallUsd: 1,
+  });
+  assert.deepEqual(effectsOf(trace.commands, 'recordExtension'), [{ kind: 'recordExtension', approvalRequestId: 'asep-task-task-1:1', extensionUsd: 1 }]);
+  assert.ok(effectsOf(trace.commands, 'cancelTimer').some((t) => t.timerId === 'approval:asep-task-task-1:1'));
+  assert.equal(trace.summary.outcome, 'WAITING_FOR_HUMAN_REVIEW');
+  assert.ok(effectsOf(trace.commands, 'projectTaskState').some((p) => p.status === 'WAITING_FOR_APPROVAL'));
+  assertLegalProjections(trace);
+});
+
+test('budget extension: a rejected extension ends the task BUDGET_EXHAUSTED', () => {
+  const trace = runTaskSequentially(tightBudget, scripted({
+    verifyApprovalDecision: () => ({ kind: 'verifyApprovalDecision', verified: true, decision: 'reject', extensionUsd: null }),
+  }, {
+    whenIdle: idleScript(() => ({ type: 'approvalDecisionReceived', decisionId: 'd1', approvalRequestId: 'asep-task-task-1:1', decision: 'reject', extensionUsd: null, principalId: 'h' })),
+  }));
+  assert.equal(trace.summary.outcome, 'BUDGET_EXHAUSTED');
+  assert.ok(!requestKinds(trace.commands).includes('ensureAttempt'));
+  assertLegalProjections(trace);
+});
+
+test('approval expiry is a timer; it expires the request and follows the reject path', () => {
+  const trace = runTaskSequentially(tightBudget, scripted({}, {
+    whenIdle: idleScript((timers) => ({ type: 'timerFired', timerId: timers[0]! })),
+  }));
+  assert.deepEqual(effectsOf(trace.commands, 'startTimer'), [{ kind: 'startTimer', timerId: 'approval:asep-task-task-1:1', seconds: 3600 }]);
+  assert.deepEqual(effectsOf(trace.commands, 'expireApprovalRequest').map((e) => e.approvalRequestId), ['asep-task-task-1:1']);
+  assert.ok(effectsOf(trace.commands, 'emitRunEvent').some((e) => e.eventType === 'approval.expired'));
+  assert.equal(trace.summary.outcome, 'BUDGET_EXHAUSTED');
+});
+
+test('a decision that PostgreSQL does not confirm never releases the gate', () => {
+  const trace = runTaskSequentially(tightBudget, scripted({
+    verifyApprovalDecision: () => ({ kind: 'verifyApprovalDecision', verified: false, decision: null, extensionUsd: null }),
+  }, {
+    whenIdle: idleScript(
+      () => ({ type: 'approvalDecisionReceived', decisionId: 'forged', approvalRequestId: 'asep-task-task-1:1', decision: 'approve', extensionUsd: 1, principalId: 'x' }),
+      (timers) => ({ type: 'timerFired', timerId: timers[0]! }),
+    ),
+  }));
+  assert.ok(effectsOf(trace.commands, 'audit').some((a) => a.action === 'approval.unverified'));
+  assert.deepEqual(effectsOf(trace.commands, 'recordExtension'), []);
+  assert.ok(!requestKinds(trace.commands).includes('ensureAttempt'));
+  assert.equal(trace.summary.outcome, 'BUDGET_EXHAUSTED');
+});
+
+test('a run-budget shortfall cannot be extended per task: BUDGET_EXHAUSTED without an approval', () => {
+  const trace = runTaskSequentially(baseInput({ runRemainingUsd: 3 }), scripted());
+  assert.ok(!requestKinds(trace.commands).includes('openApprovalRequest'));
+  assert.equal(trace.summary.outcome, 'BUDGET_EXHAUSTED');
+  assertLegalProjections(trace);
+});
+
+test('reported cost above the reservation records an overrun and exhausts the task budget', () => {
+  const trace = runTaskSequentially(baseInput(), scripted({
+    runAgent: () => ({ kind: 'runAgent', status: 'FAILED', reportedCostUsd: 7, wallClockMs: 1000, failureClass: 'provider' }),
+  }));
+  assert.deepEqual(effectsOf(trace.commands, 'recordOverrun'), [{ kind: 'recordOverrun', attemptNumber: 1, overrunUsd: 2 }]);
+  assert.ok(!requestKinds(trace.commands).includes('openApprovalRequest'));
+  assert.equal(requestKinds(trace.commands).filter((k) => k === 'ensureAttempt').length, 1);
+  assert.equal(trace.summary.outcome, 'BUDGET_EXHAUSTED');
+  assertLegalProjections(trace);
+});
+
+test('an attempt whose agent exhausted the budget is still verified, committed and published', () => {
+  const trace = runTaskSequentially(baseInput(), scripted({
+    runAgent: () => ({ kind: 'runAgent', status: 'AGENT_DONE', reportedCostUsd: 9, wallClockMs: 1000, failureClass: null }),
+  }));
+  const kinds = requestKinds(trace.commands);
+  for (const k of ['runVerification', 'commitAttempt', 'persistEvidence', 'assuranceRound', 'publishBranch'] as const) {
+    assert.ok(kinds.includes(k), k);
+  }
+  assert.equal(effectsOf(trace.commands, 'recordOverrun').length, 1);
+  assert.equal(trace.summary.outcome, 'WAITING_FOR_HUMAN_REVIEW');
+});
+
+test('crossing the soft threshold emits one threshold event and work continues', () => {
+  const trace = runTaskSequentially(baseInput(), scripted({
+    runAgent: (_r, n) => (n < 3
+      ? { kind: 'runAgent', status: 'FAILED', reportedCostUsd: 5, wallClockMs: 1000, failureClass: 'provider' }
+      : { kind: 'runAgent', status: 'AGENT_DONE', reportedCostUsd: 2, wallClockMs: 1000, failureClass: null }),
+  }));
+  // Spending runs 5, 10, 12: the third attempt reaches the soft threshold of 12.
+  const crossed = effectsOf(trace.commands, 'emitRunEvent').filter((e) => e.eventType === 'budget.threshold_crossed');
+  assert.deepEqual(crossed.map((e) => [e.detail['thresholdKind'], e.detail['budgetScope']]), [['soft', 'task']]);
+  assert.equal(trace.summary.outcome, 'WAITING_FOR_HUMAN_REVIEW');
+});
+
+test('with publication approval required, no push happens before an approve', () => {
+  const input = baseInput({ governance: { publicationApprovalRequired: true, approvalTtlSeconds: 600, maxPauseHours: 72 } });
+  const approved = runTaskSequentially(input, scripted({}, {
+    whenIdle: idleScript(() => ({ type: 'approvalDecisionReceived', decisionId: 'd1', approvalRequestId: 'asep-task-task-1:1', decision: 'approve', extensionUsd: null, principalId: 'h' })),
+  }));
+  const kinds = requestKinds(approved.commands);
+  assert.ok(kinds.indexOf('openApprovalRequest') < kinds.indexOf('publishBranch'));
+  assert.ok(kinds.indexOf('verifyApprovalDecision') < kinds.indexOf('publishBranch'));
+  assert.equal(approved.summary.outcome, 'WAITING_FOR_HUMAN_REVIEW');
+  assertLegalProjections(approved);
+
+  const rejected = runTaskSequentially(input, scripted({
+    verifyApprovalDecision: () => ({ kind: 'verifyApprovalDecision', verified: true, decision: 'reject', extensionUsd: null }),
+  }, {
+    whenIdle: idleScript(() => ({ type: 'approvalDecisionReceived', decisionId: 'd1', approvalRequestId: 'asep-task-task-1:1', decision: 'reject', extensionUsd: null, principalId: 'h' })),
+  }));
+  assert.ok(!requestKinds(rejected.commands).includes('publishBranch'));
+  assert.deepEqual(outcomes(rejected), [[1, 'failed']]);
+  assert.equal(rejected.summary.outcome, 'BLOCKED');
+  assertLegalProjections(rejected);
+});
+
+test('approval decisions are validated before any state change; duplicates return the original receipt', () => {
+  const input = baseInput({ governance: { publicationApprovalRequired: true, approvalTtlSeconds: 600, maxPauseHours: 72 } });
+  const trace = runTaskSequentially(input, scripted({
+    verifyApprovalDecision: () => ({ kind: 'verifyApprovalDecision', verified: true, decision: 'approve', extensionUsd: null }),
+  }, {
+    whenIdle: idleScript(
+      () => ({ type: 'approvalDecisionReceived', decisionId: 'd1', approvalRequestId: 'asep-task-task-1:9', decision: 'approve', extensionUsd: null, principalId: 'h' }),
+      () => ({ type: 'approvalDecisionReceived', decisionId: 'd1', approvalRequestId: 'asep-task-task-1:1', decision: 'approve', extensionUsd: null, principalId: 'h' }),
+    ),
+    messagesDuring: (request) => (request.kind === 'verifyApprovalDecision'
+      ? [
+          { type: 'approvalDecisionReceived', decisionId: 'd1', approvalRequestId: 'asep-task-task-1:1', decision: 'approve', extensionUsd: null, principalId: 'h' },
+          { type: 'approvalDecisionReceived', decisionId: 'd2', approvalRequestId: 'asep-task-task-1:1', decision: 'reject', extensionUsd: null, principalId: 'h2' },
+        ]
+      : []),
+  }));
+  assert.deepEqual(trace.receipts.map((r) => [r.accepted, r.duplicate, r.reason]), [
+    [false, false, 'unknown-approval'],
+    [true, false, null],
+    [true, true, null],
+    [false, false, 'decision-conflict'],
+  ]);
+  assert.equal(requestKinds(trace.commands).filter((k) => k === 'verifyApprovalDecision').length, 1);
+  assert.equal(trace.summary.outcome, 'WAITING_FOR_HUMAN_REVIEW');
+});
+
+// ---------------------------------------------------------------------------
+// Pause, resume, cancel
+// ---------------------------------------------------------------------------
+
+const pause = (requestId = 'p1') => ({ type: 'pauseRequested' as const, requestId, principalId: 'op' });
+const resume = (requestId = 'r1') => ({ type: 'resumeRequested' as const, requestId, principalId: 'op' });
+const cancel = (requestId = 'c1') => ({ type: 'cancelRequested' as const, requestId, principalId: 'op' });
+
+test('pause takes effect at the next boundary; resume continues from the recorded phase', () => {
+  const trace = runTaskSequentially(baseInput(), scripted({}, {
+    messagesDuring: (request) => (request.kind === 'runAgent' ? [pause('p1'), pause('p1'), pause('p2')] : []),
+    whenIdle: idleScript(() => resume('r1')),
+  }));
+  assert.deepEqual(trace.receipts.map((r) => [r.accepted, r.duplicate, r.reason]), [
+    [true, false, null],
+    [true, true, null],
+    [false, false, 'already-paused'],
+    [true, false, null],
+  ]);
+  const kinds = requestKinds(trace.commands);
+  assert.equal(kinds.filter((k) => k === 'inspectWorkspace').length, 1);
+  const pausedAt = indexOfCommand(trace.commands, (c) => c.type === 'effect' && c.effect.kind === 'projectTaskState' && c.effect.status === 'PAUSED');
+  const inspectAt = indexOfCommand(trace.commands, (c) => c.type === 'request' && c.request.kind === 'inspectWorkspace');
+  assert.ok(pausedAt > 0 && pausedAt < inspectAt, 'the next phase starts only after resume');
+  assert.deepEqual(effectsOf(trace.commands, 'recordControl').map((c) => [c.control, c.requestId]), [['pause', 'p1'], ['resume', 'r1']]);
+  assert.equal(trace.summary.outcome, 'WAITING_FOR_HUMAN_REVIEW');
+  assertLegalProjections(trace);
+});
+
+test('resume of a task that is not paused is refused', () => {
+  const trace = runTaskSequentially(baseInput(), scripted({}, {
+    messagesDuring: (request) => (request.kind === 'runAgent' ? [resume('r1')] : []),
+  }));
+  assert.deepEqual(trace.receipts.map((r) => r.reason), ['not-paused']);
+  assert.equal(trace.summary.outcome, 'WAITING_FOR_HUMAN_REVIEW');
+});
+
+test('a pause that outlives maxPauseHours blocks the task and cleans up', () => {
+  const trace = runTaskSequentially(baseInput(), scripted({}, {
+    messagesDuring: (request) => (request.kind === 'inspectWorkspace' ? [pause()] : []),
+    whenIdle: idleScript((timers) => ({ type: 'timerFired', timerId: timers[0]! })),
+  }));
+  assert.deepEqual(effectsOf(trace.commands, 'startTimer').map((t) => [t.timerId, t.seconds]), [['pause:1', 72 * 3600]]);
+  assert.deepEqual(outcomes(trace), [[1, 'cancelled']]);
+  assert.ok(effectsOf(trace.commands, 'reapContainers').some((e) => e.attemptNumber === 1));
+  assert.ok(effectsOf(trace.commands, 'quarantineWorkspace').some((e) => e.attemptNumber === 1));
+  assert.ok(effectsOf(trace.commands, 'releaseLease').some((e) => e.attemptNumber === 1));
+  assert.equal(trace.summary.outcome, 'BLOCKED');
+  assert.equal(trace.summary.reason, 'pause-timeout');
+  assertLegalProjections(trace);
+});
+
+test('cancel during the agent aborts it, reaps, quarantines, releases and ignores the late result', () => {
+  let last = startTask(baseInput());
+  let state = last.state;
+  const drive = (event: TaskEvent) => {
+    const d = decideTask(state, event);
+    state = d.state;
+    return d;
+  };
+  // Walk to the agent request with happy-path results.
+  let seq = -1;
+  for (;;) {
+    const request = last.commands.find((c): c is Extract<TaskCommand, { type: 'request' }> => c.type === 'request');
+    assert.ok(request, 'expected a request');
+    seq = request.seq;
+    if (request.request.kind === 'runAgent') break;
+    const result = happyAnswer(request.request);
+    assert.ok(result.kind !== 'activityFailed');
+    last = drive({ type: 'result', seq, result });
+  }
+  const cancelled = drive(cancel());
+  assert.equal(cancelled.abortInFlight, true);
+  assert.deepEqual(cancelled.receipt, { accepted: true, duplicate: false, reason: null });
+  const kinds = cancelled.commands.map((c) => (c.type === 'effect' ? c.effect.kind : c.type));
+  for (const k of ['recordControl', 'reapContainers', 'quarantineWorkspace', 'releaseLease', 'recordAttemptOutcome'] as const) {
+    assert.ok(kinds.includes(k), k);
+  }
+  assert.equal(cancelled.commands.at(-1)?.type, 'complete');
+  assert.equal(state.outcome, 'CANCELLED');
+  const late = drive({ type: 'result', seq, result: { kind: 'runAgent', status: 'AGENT_DONE', reportedCostUsd: 1, wallClockMs: 1, failureClass: null } });
+  assert.deepEqual(late.commands, []);
+  const again = drive(cancel('c2'));
+  assert.equal(again.receipt?.reason, 'closed');
+});
+
+test('cancel during commit finishes the commit section, then cancels without assurance or push', () => {
+  const trace = runTaskSequentially(baseInput(), scripted({}, {
+    messagesDuring: (request) => (request.kind === 'commitAttempt' ? [cancel()] : []),
+  }));
+  const kinds = requestKinds(trace.commands);
+  assert.ok(kinds.includes('persistEvidence'));
+  assert.ok(!kinds.includes('assuranceRound') && !kinds.includes('publishBranch'));
+  assert.equal(trace.aborts, 0);
+  assert.deepEqual(outcomes(trace), [[1, 'cancelled']]);
+  assert.equal(trace.summary.outcome, 'CANCELLED');
+  assertLegalProjections(trace);
+});
+
+test('cancel during the push finishes the PR, leaves it open and audits it', () => {
+  const trace = runTaskSequentially(baseInput(), scripted({}, {
+    messagesDuring: (request) => (request.kind === 'publishBranch' ? [cancel()] : []),
+  }));
+  assert.equal(requestKinds(trace.commands).filter((k) => k === 'upsertPullRequest').length, 1);
+  assert.equal(trace.aborts, 0);
+  const audit = effectsOf(trace.commands, 'audit').find((a) => a.action === 'workflow.cancel.after-publication');
+  assert.equal(audit?.detail['prNumber'], 7);
+  assert.deepEqual(outcomes(trace), [[1, 'cancelled']]);
+  assert.equal(trace.summary.outcome, 'CANCELLED');
+  assert.equal(trace.summary.prNumber, 7);
+  assertLegalProjections(trace);
+});
+
+test('cancel before any attempt leaves no attempt effects', () => {
+  const trace = runTaskSequentially(baseInput(), scripted({}, {
+    messagesDuring: (request) => (request.kind === 'admitTask' ? [cancel()] : []),
+  }));
+  assert.deepEqual(requestKinds(trace.commands), ['admitTask']);
+  assert.deepEqual(outcomes(trace), []);
+  assert.equal(effectsOf(trace.commands, 'releaseLease').length, 0);
+  assert.equal(trace.summary.outcome, 'CANCELLED');
+});
+
+test('cancel while waiting for an approval cancels the approval request', () => {
+  const trace = runTaskSequentially(tightBudget, scripted({}, { whenIdle: idleScript(() => cancel()) }));
+  assert.deepEqual(effectsOf(trace.commands, 'cancelApprovalRequest').map((e) => e.approvalRequestId), ['asep-task-task-1:1']);
+  assert.equal(trace.summary.outcome, 'CANCELLED');
+  assertLegalProjections(trace);
+});
+
+// ---------------------------------------------------------------------------
+// The run workflow
+// ---------------------------------------------------------------------------
+
+const RUN: RunCoreInput = { runId: 'run-1' as RunId, runBudget: { maxCostUsd: 10, softCostUsd: 8, maxTasks: 3 } };
+const submit = (taskId: string, requestId = `s-${taskId}`) => ({ type: 'submitTask' as const, taskId: taskId as TaskId, requestId });
+const done = (taskId: string, chargedCostUsd: number) => ({ type: 'childCompleted' as const, taskId: taskId as TaskId, outcome: 'WAITING_FOR_HUMAN_REVIEW' as const, chargedCostUsd });
+
+function startedChildren(commands: readonly RunCommand[]) {
+  return commands.flatMap((c) => (c.kind === 'startChild' ? [[c.taskId, c.runRemainingUsd]] : []));
+}
+
+test('run: tasks run one at a time in submission order, each capped by the run remainder', () => {
+  let d = startRun(RUN, null);
+  const log: RunCommand[] = [...d.commands];
+  for (const e of [submit('a'), submit('b'), done('a', 4), done('b', 3)] as const) {
+    d = decideRun(d.state, e);
+    log.push(...d.commands);
+  }
+  assert.deepEqual(startedChildren(log), [['a', 10], ['b', 6]]);
+  assert.ok(log.some((c) => c.kind === 'emitRunEvent' && c.eventType === 'run.started'));
+});
+
+test('run: submitTask is deduplicated by task id, and the run task limit is enforced', () => {
+  let d = startRun({ ...RUN, runBudget: { ...RUN.runBudget, maxTasks: 2 } }, null);
+  d = decideRun(d.state, submit('a'));
+  assert.deepEqual(d.receipt, { accepted: true, duplicate: false, reason: null });
+  d = decideRun(d.state, submit('a', 'other-request'));
+  assert.deepEqual(d.receipt, { accepted: true, duplicate: true, reason: null });
+  assert.deepEqual(startedChildren(d.commands), []);
+  d = decideRun(d.state, submit('b'));
+  d = decideRun(d.state, submit('c'));
+  assert.deepEqual(d.receipt, { accepted: false, duplicate: false, reason: 'run-task-limit' });
+});
+
+test('run: continue-as-new waits for the active child and carries queue, dedup set and budget totals', () => {
+  let d = startRun(RUN, null);
+  d = decideRun(d.state, submit('a'));
+  d = decideRun(d.state, submit('b'));
+  d = decideRun(d.state, { type: 'continueAsNewSuggested' });
+  assert.deepEqual(d.commands.filter((c) => c.kind === 'continueAsNew'), [], 'never while a child is active');
+  d = decideRun(d.state, done('a', 4));
+  const can = d.commands.find((c) => c.kind === 'continueAsNew');
+  assert.ok(can && can.kind === 'continueAsNew');
+  assert.deepEqual(startedChildren(d.commands), [], 'the next child starts in the new run');
+  assert.deepEqual(can.carry.queue, ['b']);
+  assert.deepEqual([...can.carry.submitted].sort(), ['a', 'b']);
+  assert.equal(can.carry.spentMicroUsd, toMicroUsd(4));
+  assert.equal(can.carry.finishedTasks, 1);
+
+  let next = startRun(RUN, can.carry);
+  assert.ok(!next.commands.some((c) => c.kind === 'emitRunEvent' && c.eventType === 'run.started'), 'run.started only once');
+  assert.deepEqual(startedChildren(next.commands), [['b', 6]]);
+  next = decideRun(next.state, submit('a', 'replayed'));
+  assert.deepEqual(next.receipt, { accepted: true, duplicate: true, reason: null });
+});
+
+test('run: the run completes when maxTasks children have finished', () => {
+  let d = startRun({ ...RUN, runBudget: { ...RUN.runBudget, maxTasks: 1 } }, null);
+  d = decideRun(d.state, submit('a'));
+  d = decideRun(d.state, done('a', 1));
+  const complete = d.commands.find((c) => c.kind === 'complete');
+  assert.ok(complete && complete.kind === 'complete' && complete.outcome === 'COMPLETED');
+  assert.ok(d.commands.some((c) => c.kind === 'emitRunEvent' && c.eventType === 'run.completed'));
+});
+
+test('run pause forwards to the child and holds the queue; cancel cancels the child and drops the queue', () => {
+  let d = startRun(RUN, null);
+  d = decideRun(d.state, submit('a'));
+  d = decideRun(d.state, submit('b'));
+  d = decideRun(d.state, { type: 'pauseRequested', requestId: 'p1', principalId: 'op' });
+  assert.deepEqual(d.commands.filter((c) => c.kind === 'signalChild').map((c) => c.kind === 'signalChild' && [c.taskId, c.signal]), [['a', 'pause']]);
+  d = decideRun(d.state, done('a', 1));
+  assert.deepEqual(startedChildren(d.commands), [], 'no new child while paused');
+  d = decideRun(d.state, { type: 'resumeRequested', requestId: 'r1', principalId: 'op' });
+  assert.deepEqual(startedChildren(d.commands), [['b', 9]]);
+  d = decideRun(d.state, { type: 'cancelRequested', requestId: 'c1', principalId: 'op' });
+  assert.ok(d.commands.some((c) => c.kind === 'cancelChild' && c.taskId === 'b'));
+  d = decideRun(d.state, { type: 'childCompleted', taskId: 'b' as TaskId, outcome: 'CANCELLED', chargedCostUsd: 0 });
+  const complete = d.commands.find((c) => c.kind === 'complete');
+  assert.ok(complete && complete.kind === 'complete' && complete.outcome === 'CANCELLED');
+});
+
+test('run: the run soft threshold is reported once', () => {
+  let d = startRun(RUN, null);
+  const log: RunCommand[] = [];
+  for (const e of [submit('a'), submit('b'), done('a', 5), done('b', 4)] as const) {
+    d = decideRun(d.state, e);
+    log.push(...d.commands);
+  }
+  const crossed = log.filter((c) => c.kind === 'emitRunEvent' && c.eventType === 'budget.threshold_crossed');
+  assert.equal(crossed.length, 1);
+});
+
+test('defaults: replaceable and never-replaceable failure classes match the architecture', () => {
+  assert.deepEqual([...DEFAULT_ORCHESTRATION_POLICY.replaceableFailureClasses].sort(), [
+    'agent-loop-stall', 'artifact-loss', 'environment', 'provider', 'quota-rate-limit', 'tool', 'workflow-recovery-failure',
+  ]);
+  for (const never of ['policy-violation', 'false-completion', 'duplicate-side-effect'] as const) {
+    assert.ok(!DEFAULT_ORCHESTRATION_POLICY.replaceableFailureClasses.includes(never), never);
+  }
+});
+
+test('the core failure classes are exactly the classes of the canonical failure taxonomy', () => {
+  const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+  const yaml = readFileSync(join(repoRoot, 'policies', 'failure-taxonomy.yaml'), 'utf8');
+  const section = yaml.slice(yaml.indexOf('\nclasses:'));
+  const names = [...section.matchAll(/^ {2}([a-z][a-z-]*):\s*$/gm)].map((m) => m[1]);
+  assert.equal(names.length, 17);
+  assert.deepEqual([...FAILURE_CLASSES].sort(), [...names].sort());
+});
+
+// ---------------------------------------------------------------------------
+// Projection edges
+// ---------------------------------------------------------------------------
+
+test('projection: between the existing statuses the core allows exactly the domain transition table', () => {
+  const existing = taskReachableStates();
+  for (const from of existing) {
+    for (const to of existing) {
+      let domainAllows = true;
+      try {
+        transitionTask({ id: 't' as TaskId, status: from, version: 0 }, to);
+      } catch {
+        domainAllows = false;
+      }
+      assert.equal(isLegalProjection(from, to), domainAllows, `${from} -> ${to}`);
+    }
+  }
+});
+
+test('projection: the edges touching the new statuses are the data-model additions plus VERIFYING -> BUDGET_EXHAUSTED', () => {
+  const added = new Set(['PAUSED', 'WAITING_FOR_APPROVAL', 'BUDGET_EXHAUSTED']);
+  const all = [...taskReachableStates(), ...added] as Parameters<typeof isLegalProjection>[0][];
+  const edges: string[] = [];
+  for (const from of all) {
+    for (const to of all) {
+      if ((added.has(from) || added.has(to)) && isLegalProjection(from, to)) edges.push(`${from}->${to}`);
+    }
+  }
+  assert.deepEqual(edges.sort(), [
+    'EXECUTING->BUDGET_EXHAUSTED', 'EXECUTING->PAUSED', 'EXECUTING->WAITING_FOR_APPROVAL',
+    'PAUSED->BLOCKED', 'PAUSED->CANCELLED', 'PAUSED->EXECUTING', 'PAUSED->READY', 'PAUSED->VERIFYING',
+    'READY->BUDGET_EXHAUSTED', 'READY->PAUSED', 'READY->WAITING_FOR_APPROVAL',
+    // Not yet in the data-model table: a replacement attempt refused for budget after the task reached
+    // verification (for example an overrun followed by a failed commit).
+    'VERIFYING->BUDGET_EXHAUSTED',
+    'VERIFYING->PAUSED', 'VERIFYING->WAITING_FOR_APPROVAL',
+    'WAITING_FOR_APPROVAL->BLOCKED', 'WAITING_FOR_APPROVAL->BUDGET_EXHAUSTED', 'WAITING_FOR_APPROVAL->CANCELLED',
+    'WAITING_FOR_APPROVAL->EXECUTING', 'WAITING_FOR_APPROVAL->READY', 'WAITING_FOR_APPROVAL->VERIFYING',
+  ].sort());
+});

@@ -259,6 +259,16 @@ importers:
         specifier: 2.9.0
         version: 2.9.0
 
+  packages/orchestration:
+    dependencies:
+      '@asep/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+    devDependencies:
+      '@asep/domain':
+        specifier: workspace:*
+        version: link:../domain
+
   packages/policy:
     dependencies:
       '@asep/contracts':

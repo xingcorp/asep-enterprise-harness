@@ -213,6 +213,14 @@ export const REQUIRED_SUITES = Object.freeze({
   // (nodejs/node#66366): this run's own test child, a child started with the
   // runners' argv, and every test entry point of the repository.
   'asep-suite:node-test-flags': 'scripts/node-test-flags.test.ts',
+  // The deterministic workflow decision core: the task and run reducer tables
+  // (agent failure and replacement, budgets, approvals, assurance routing,
+  // pause/cancel, sequential children), the generated-trace safety properties
+  // (one push per task, reservation, one outcome per attempt, assurance before
+  // publish), and the static determinism rules for its source files.
+  'asep-suite:orchestration-core': 'packages/orchestration/src/decide.test.ts',
+  'asep-suite:orchestration-properties': 'packages/orchestration/src/invariants.test.ts',
+  'asep-suite:orchestration-purity': 'packages/orchestration/src/purity.test.ts',
 });
 
 /** The machine-readable marker a suite prints at module load: `SUITE-ID: <id>`. */

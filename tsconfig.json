@@ -18,6 +18,7 @@
     { "path": "workers/workflow-worker" },
     { "path": "apps/control-plane-api" },
     { "path": "evals" },
-    { "path": "scripts" }
+    { "path": "scripts" },
+    { "path": "packages/orchestration" }
   ]
 }
