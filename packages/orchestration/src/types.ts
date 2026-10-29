@@ -179,6 +179,8 @@ export interface TaskCoreInput {
   readonly runId: RunId;
   readonly risk: RiskLevel;
   readonly baseSha: string;
+  /** The branch the task's PR targets; the PR upsert uses it and a publication reconciliation checks the PR's base. */
+  readonly baseBranch: string;
   readonly attemptBudget: Budget;
   readonly taskBudget: TaskBudget;
   readonly verificationReserve: VerificationReserve;
@@ -229,6 +231,8 @@ export type TaskRequest =
   | {
       readonly kind: 'upsertPullRequest';
       readonly attemptNumber: number;
+      /** The PR's base: the task input's base branch. */
+      readonly baseBranch: string;
       readonly flagged: boolean;
       /** Null when the assurance round was unavailable; the PR body then says so. */
       readonly prBodySectionRef: ArtifactRef | null;
@@ -240,6 +244,8 @@ export type TaskRequest =
       readonly remoteBranch: string;
       /** The attempt's commit: the push applied exactly when the branch head is this commit. */
       readonly expectedHeadSha: string;
+      /** The base a PR of this attempt must have. */
+      readonly expectedBaseBranch: string;
     };
 
 export type TaskRequestKind = TaskRequest['kind'];
@@ -375,11 +381,19 @@ export type TaskResult =
   | { readonly kind: 'upsertPullRequest'; readonly effect: 'applied'; readonly prNumber: number }
   | {
       readonly kind: 'reconcilePublication';
-      /** The remote branch head, or null when the branch does not exist. */
+      /** The remote branch head as read, or null when the branch does not exist. */
       readonly branchHeadSha: string | null;
-      /** The open PR whose head is the branch, or null when there is none. */
-      readonly prNumber: number | null;
+      /** The open PR whose head is the branch, as read, or null when there is none. */
+      readonly pullRequest: ObservedPullRequest | null;
     };
+
+/** A PR as a reconciliation read observed it; the core, not the activity, decides whether it is the attempt's. */
+export interface ObservedPullRequest {
+  readonly number: number;
+  readonly headBranch: string;
+  readonly headSha: string;
+  readonly baseBranch: string;
+}
 
 /**
  * Whether a publication activity's external effect (the push, the PR upsert)

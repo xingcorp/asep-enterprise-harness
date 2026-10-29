@@ -742,25 +742,36 @@ function reconcilePublication(step: Step): void {
   const s = step.s;
   const a = attempt(s, publication(s).attemptNumber);
   if (a.branch === null || a.resultSha === null) throw new Error('publication without a remote branch or a commit');
-  issue(step, { kind: 'reconcilePublication', attemptNumber: a.attemptNumber, remoteBranch: a.branch, expectedHeadSha: a.resultSha });
+  issue(step, {
+    kind: 'reconcilePublication',
+    attemptNumber: a.attemptNumber,
+    remoteBranch: a.branch,
+    expectedHeadSha: a.resultSha,
+    expectedBaseBranch: s.input.baseBranch,
+  });
 }
 
 /**
- * Settle an unknown effect from what the remote holds. Before the push is
- * confirmed this reconciles the push: the branch at the attempt's commit means
- * it applied, an absent branch that nothing was pushed, and anything else
- * cannot be reconciled. After it, this reconciles the PR upsert.
+ * Settle an unknown effect from what the remote holds. The remote is this
+ * attempt's publication only when the branch tip is the attempt's commit and a
+ * PR, if there is one, has that branch as head, that commit as head SHA and the
+ * task's base branch as base; the same rule holds before and after the push is
+ * confirmed. Before it, a remote with no branch and no PR means nothing was
+ * pushed; after it, the PR must be there. Anything else cannot be reconciled.
  */
 function publicationReconciled(step: Step, result: Extract<TaskResult, { kind: 'reconcilePublication' }>): void {
   const s = step.s;
+  const a = attempt(s, publication(s).attemptNumber);
+  const pr = result.pullRequest;
+  const ownRemote = result.branchHeadSha === a.resultSha
+    && (pr === null || (pr.headBranch === a.branch && pr.headSha === a.resultSha && pr.baseBranch === s.input.baseBranch));
   if (!s.pushConfirmed) {
-    const a = attempt(s, publication(s).attemptNumber);
-    if (result.branchHeadSha === null) close(step, 'FAILED', 'publication-failed');
-    else if (result.branchHeadSha === a.resultSha) pushApplied(step);
+    if (ownRemote) pushApplied(step);
+    else if (result.branchHeadSha === null && pr === null) close(step, 'FAILED', 'publication-failed');
     else publicationIncomplete(step);
     return;
   }
-  if (result.prNumber !== null) pullRequestUpserted(step, result.prNumber);
+  if (ownRemote && pr !== null) pullRequestUpserted(step, pr.number);
   else publicationIncomplete(step);
 }
 
@@ -769,6 +780,7 @@ function upsertPullRequest(step: Step): void {
   issue(step, {
     kind: 'upsertPullRequest',
     attemptNumber: plan.attemptNumber,
+    baseBranch: step.s.input.baseBranch,
     flagged: plan.flagged,
     prBodySectionRef: plan.prBodySectionRef,
   });

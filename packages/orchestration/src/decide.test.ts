@@ -33,6 +33,7 @@ import { decideTask, startTask, taskWorkflowId } from './task-core.js';
 import { orchestrationPolicyErrors, runInputErrors, taskInputErrors } from './validation.js';
 import {
   TASK_BASE,
+  TASK_BASE_BRANCH,
   baseInput,
   effectsOf,
   governance,
@@ -48,7 +49,17 @@ import {
   scripted,
   shaFor,
 } from './test-support/fixtures.js';
-import type { FailureClass, PublicationEffect, TaskCommand, TaskEffect, TaskEvent, TaskMessage, TaskRequest, TaskRequestKind } from './types.js';
+import type {
+  FailureClass,
+  ObservedPullRequest,
+  PublicationEffect,
+  TaskCommand,
+  TaskEffect,
+  TaskEvent,
+  TaskMessage,
+  TaskRequest,
+  TaskRequestKind,
+} from './types.js';
 
 console.log('SUITE-ID: asep-suite:orchestration-core');
 
@@ -1552,9 +1563,14 @@ test('cancel during evidence binding lets the unit reconcile, then cancels befor
 const publicationFails = (effect?: PublicationEffect, failureClass: FailureClass = 'provider') => () => ({
   kind: 'activityFailed' as const, failureClass, timedOut: false, ...(effect === undefined ? {} : { effect }),
 });
-const reconciled = (branchHeadSha: string | null, prNumber: number | null) => () => ({
-  kind: 'reconcilePublication' as const, branchHeadSha, prNumber,
+const reconciled = (branchHeadSha: string | null, pullRequest: ObservedPullRequest | null) => () => ({
+  kind: 'reconcilePublication' as const, branchHeadSha, pullRequest,
 });
+/** The open PR of attempt 1 as a read reports it: by default exactly the attempt's (its branch, its commit, the task base). */
+const prOfAttempt = (number: number, overrides: Partial<ObservedPullRequest> = {}): ObservedPullRequest => ({
+  number, headBranch: branchFor(1), headSha: shaFor(1), baseBranch: TASK_BASE_BRANCH, ...overrides,
+});
+const OTHER_SHA = 'f'.repeat(40);
 const cancelDuring = (kind: TaskRequestKind) => (request: TaskRequest) => (request.kind === kind ? [cancel()] : []);
 
 function assertPublicationIncomplete(trace: TaskTrace, pushConfirmed: boolean, cancelRequested: boolean): void {
@@ -1597,9 +1613,9 @@ test('publication: a push that reached the remote and then failed with a fencing
     const trace = runTaskSequentially(baseInput(), scripted({ publishBranch: publicationFails('unknown', 'duplicate-side-effect') }, {
       eventsDuring: cancelled ? cancelDuring('publishBranch') : () => [],
     }));
-    assert.deepEqual(reconcileRequests(trace), [
-      { kind: 'reconcilePublication', attemptNumber: 1, remoteBranch: branchFor(1), expectedHeadSha: shaFor(1) },
-    ], 'the remote is read before any terminal state');
+    assert.deepEqual(reconcileRequests(trace), [{
+      kind: 'reconcilePublication', attemptNumber: 1, remoteBranch: branchFor(1), expectedHeadSha: shaFor(1), expectedBaseBranch: TASK_BASE_BRANCH,
+    }], 'the remote is read before any terminal state');
     assert.equal(requestKinds(trace.commands).filter((k) => k === 'upsertPullRequest').length, 1, 'the branch is there, so its PR upsert runs');
     assert.equal(trace.aborts, 0);
     assertPublished(trace, 7, cancelled);
@@ -1665,7 +1681,7 @@ for (const cancelled of [false, true]) {
   for (const effect of ['unknown', 'applied'] as const) {
     test(`publication: a PR upsert that fails with effect ${effect} is reconciled; a PR found counts as upserted, ${when}`, () => {
       const trace = runTaskSequentially(baseInput(), scripted({
-        upsertPullRequest: publicationFails(effect), reconcilePublication: reconciled(shaFor(1), 9),
+        upsertPullRequest: publicationFails(effect), reconcilePublication: reconciled(shaFor(1), prOfAttempt(9)),
       }, { eventsDuring: duringPush }));
       assert.deepEqual(reconcileRequests(trace).map((r) => r.attemptNumber), [1]);
       assertPublished(trace, 9, cancelled);
@@ -1686,6 +1702,57 @@ for (const cancelled of [false, true]) {
     }, { eventsDuring: duringPush }));
     assert.equal(reconcileRequests(trace).length, 1, 'the remote is read before any terminal state');
     assertPublicationIncomplete(trace, true, cancelled);
+  });
+}
+
+// A reconciliation settles a publication only when the remote is exactly this attempt's: the branch tip is the
+// attempt's commit, and a PR, if any, has that branch as head, that commit as head SHA and the task's base branch.
+// The same rule holds after the push and after the PR upsert; anything else is not reconciled.
+const NOT_THIS_ATTEMPT: readonly (readonly [string, string | null, ObservedPullRequest | null])[] = [
+  ['the branch moved to another commit and a PR follows it', OTHER_SHA, prOfAttempt(9, { headSha: OTHER_SHA })],
+  ['the branch moved to another commit and the PR is still at the attempt commit', OTHER_SHA, prOfAttempt(9)],
+  ['the branch is at the attempt commit but the PR head is another commit', shaFor(1), prOfAttempt(9, { headSha: OTHER_SHA })],
+  ['the branch is at the attempt commit but the PR head is another branch', shaFor(1), prOfAttempt(9, { headBranch: 'asep/run-1/task-1/att-9' })],
+  ['the branch is at the attempt commit but the PR targets another base', shaFor(1), prOfAttempt(9, { baseBranch: 'release' })],
+  ['the branch is missing while a PR for it is open', null, prOfAttempt(9)],
+];
+
+for (const cancelled of [false, true]) {
+  const when = cancelled ? 'with a cancel pending' : 'without a cancel';
+
+  test(`publication: a PR found after a failed PR upsert while the branch holds another commit is not this attempt's publication, ${when}`, () => {
+    const trace = runTaskSequentially(baseInput(), scripted({
+      upsertPullRequest: publicationFails('unknown'), reconcilePublication: reconciled(OTHER_SHA, prOfAttempt(9, { headSha: OTHER_SHA })),
+    }, { eventsDuring: cancelled ? cancelDuring('publishBranch') : () => [] }));
+    assertPublicationIncomplete(trace, true, cancelled);
+  });
+
+  for (const [name, branchHeadSha, pullRequest] of NOT_THIS_ATTEMPT) {
+    test(`publication: after a failed PR upsert, ${name}: FAILED / publication-incomplete, ${when}`, () => {
+      const trace = runTaskSequentially(baseInput(), scripted({
+        upsertPullRequest: publicationFails('unknown'), reconcilePublication: reconciled(branchHeadSha, pullRequest),
+      }, { eventsDuring: cancelled ? cancelDuring('publishBranch') : () => [] }));
+      assert.equal(reconcileRequests(trace).length, 1, 'the remote is read before any terminal state');
+      assertPublicationIncomplete(trace, true, cancelled);
+    });
+
+    test(`publication: after an unknown push, ${name}: FAILED / publication-incomplete, ${when}`, () => {
+      const trace = runTaskSequentially(baseInput(), scripted({
+        publishBranch: publicationFails('unknown'), reconcilePublication: reconciled(branchHeadSha, pullRequest),
+      }, { eventsDuring: cancelled ? cancelDuring('publishBranch') : () => [] }));
+      assert.equal(reconcileRequests(trace).length, 1, 'the remote is read before any terminal state');
+      assert.ok(!requestKinds(trace.commands).includes('upsertPullRequest'), 'no PR upsert for a remote that is not this attempt');
+      assertPublicationIncomplete(trace, false, cancelled);
+    });
+  }
+
+  test(`publication: after an unknown push, the attempt's branch with the attempt's own PR is a confirmed push, and the upsert runs, ${when}`, () => {
+    const trace = runTaskSequentially(baseInput(), scripted({
+      publishBranch: publicationFails('unknown'), reconcilePublication: reconciled(shaFor(1), prOfAttempt(9)),
+    }, { eventsDuring: cancelled ? cancelDuring('publishBranch') : () => [] }));
+    const upserts = requests(trace.commands).filter((r) => r.kind === 'upsertPullRequest');
+    assert.deepEqual(upserts.map((r) => r.kind === 'upsertPullRequest' && r.baseBranch), [TASK_BASE_BRANCH], 'the PR targets the task base');
+    assertPublished(trace, 7, cancelled);
   });
 }
 

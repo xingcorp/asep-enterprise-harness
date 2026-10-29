@@ -21,6 +21,7 @@ import type {
 import type { Answer, TaskEnvironment } from '../sequential-interpreter.js';
 
 export const TASK_BASE = 'b'.repeat(40);
+export const TASK_BASE_BRANCH = 'main';
 
 export function shaFor(attemptNumber: number): string {
   return attemptNumber.toString(16).padStart(40, 'c');
@@ -51,6 +52,7 @@ export function baseInput(overrides: Partial<TaskCoreInput> = {}): TaskCoreInput
     runId: 'run-1' as RunId,
     risk: 'R0',
     baseSha: TASK_BASE,
+    baseBranch: TASK_BASE_BRANCH,
     attemptBudget: { maxTurns: 10, maxToolCalls: 50, maxCostUsd: 5, maxWallClockMinutes: 30 },
     taskBudget: { maxAttempts: 3, maxCostUsd: 20, softCostUsd: 12, maxWallClockMinutes: 240 },
     verificationReserve: { costUsd: 1, wallClockMinutes: 10 },
@@ -120,7 +122,11 @@ export function happyAnswer(request: TaskRequest): Answer {
     case 'upsertPullRequest':
       return { kind: 'upsertPullRequest', effect: 'applied', prNumber: 7 };
     case 'reconcilePublication':
-      return { kind: 'reconcilePublication', branchHeadSha: request.expectedHeadSha, prNumber: 7 };
+      return {
+        kind: 'reconcilePublication',
+        branchHeadSha: request.expectedHeadSha,
+        pullRequest: { number: 7, headBranch: request.remoteBranch, headSha: request.expectedHeadSha, baseBranch: request.expectedBaseBranch },
+      };
   }
 }
 
