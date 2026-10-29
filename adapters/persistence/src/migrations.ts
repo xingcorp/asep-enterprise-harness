@@ -421,6 +421,127 @@ alter table side_effect_records
   references repository_bindings (id, organization_id, project_id);
 `;
 
+// ---------------------------------------------------------------------------
+// 0013 — side-effect records are DB-coherent and their outcome is a closed
+// shape.
+//
+// After 0012 the binding column existed but was NULLABLE, nothing tied it to the
+// legacy `scope` text it duplicated, and both identity and lookups still ran on
+// text (`scope`, `semantic_key`). `result_ref` was free JSONB. So the database
+// would accept a crash-recovery record with no binding, one whose binding was
+// not its attempt's binding, and an outcome of any shape at all.
+//
+// This migration makes the record's identity typed and coherent:
+//   - attempt_id + operation become real columns (backfilled from the old
+//     semantic key) and the record is FK-bound to its ATTEMPT, including the
+//     attempt's binding, so a record can only name the binding its attempt
+//     belongs to;
+//   - repository_binding_id becomes NOT NULL;
+//   - uniqueness is (organization, project, binding, attempt, operation);
+//   - the text columns `scope` and `semantic_key` are dropped (their old unique
+//     constraint goes with them), so nothing can key on text any more;
+//   - result_ref must be NULL unless COMPLETED, and when COMPLETED must be the
+//     exact closed shape for the operation (no extra keys), enforced by a CHECK.
+//
+// Existing COMPLETED rows written before the `kind` discriminator existed are
+// backfilled first; push records gain their outcome from the request
+// fingerprint (`push:<branch>@<sha>`), the only place it was recorded. A row
+// that still does not fit makes the migration FAIL rather than be waved
+// through. Append-only: earlier migrations are untouched.
+// ---------------------------------------------------------------------------
+const M0013 = `
+alter table attempts
+  add constraint attempts_id_scope_binding_uq
+  unique (id, organization_id, project_id, repository_binding_id);
+
+alter table side_effect_records add column attempt_id char(26);
+alter table side_effect_records add column operation text;
+
+update side_effect_records
+  set attempt_id = split_part(semantic_key, ':', 1),
+      operation  = split_part(semantic_key, ':', 2);
+
+update side_effect_records
+  set repository_binding_id = scope
+  where repository_binding_id is null;
+
+update side_effect_records
+  set result_ref = result_ref || jsonb_build_object('kind', operation)
+  where state = 'COMPLETED' and result_ref is not null
+    and jsonb_typeof(result_ref) = 'object' and not (result_ref ? 'kind');
+
+update side_effect_records
+  set result_ref = jsonb_build_object(
+    'kind', 'push',
+    'branch', natural_key,
+    'commitSha', split_part(request_fingerprint, '@', 2))
+  where state = 'COMPLETED' and operation = 'push' and result_ref is null;
+
+alter table side_effect_records
+  alter column repository_binding_id set not null,
+  alter column attempt_id set not null,
+  alter column operation set not null;
+
+alter table side_effect_records
+  add constraint side_effect_operation_known
+  check (operation in ('commit', 'push', 'pr-upsert'));
+
+alter table side_effect_records
+  add constraint side_effect_attempt_binding_fk
+  foreign key (attempt_id, organization_id, project_id, repository_binding_id)
+  references attempts (id, organization_id, project_id, repository_binding_id);
+
+alter table side_effect_records
+  add constraint side_effect_identity_uq
+  unique (organization_id, project_id, repository_binding_id, attempt_id, operation);
+
+alter table side_effect_records drop column scope;
+alter table side_effect_records drop column semantic_key;
+
+create function asep_side_effect_result_valid(op text, st text, ref jsonb)
+returns boolean
+language sql
+immutable
+as $fn$
+  select coalesce(
+    case
+      when st <> 'COMPLETED' then ref is null
+      when ref is null or jsonb_typeof(ref) <> 'object' then false
+      when op = 'commit' then
+        ref - 'kind' - 'commitSha' - 'evidenceId' = '{}'::jsonb
+        and ref->>'kind' = 'commit'
+        and jsonb_typeof(ref->'commitSha') = 'string'
+        and ref->>'commitSha' ~ '^[0-9a-f]{40}$'
+        and jsonb_typeof(ref->'evidenceId') = 'string'
+        and ref->>'evidenceId' ~ '^[0-9A-HJKMNP-TV-Z]{26}$'
+      when op = 'push' then
+        ref - 'kind' - 'branch' - 'commitSha' = '{}'::jsonb
+        and ref->>'kind' = 'push'
+        and jsonb_typeof(ref->'branch') = 'string'
+        and length(btrim(ref->>'branch')) > 0
+        and jsonb_typeof(ref->'commitSha') = 'string'
+        and ref->>'commitSha' ~ '^[0-9a-f]{40}$'
+      when op = 'pr-upsert' then
+        ref - 'kind' - 'number' - 'url' - 'headBranch' - 'baseBranch' = '{}'::jsonb
+        and ref->>'kind' = 'pr-upsert'
+        and jsonb_typeof(ref->'number') = 'number'
+        and ref->>'number' ~ '^[1-9][0-9]*$'
+        and jsonb_typeof(ref->'url') = 'string'
+        and ref->>'url' ~ '^https?://'
+        and jsonb_typeof(ref->'headBranch') = 'string'
+        and length(btrim(ref->>'headBranch')) > 0
+        and jsonb_typeof(ref->'baseBranch') = 'string'
+        and length(btrim(ref->>'baseBranch')) > 0
+      else false
+    end,
+    false)
+$fn$;
+
+alter table side_effect_records
+  add constraint side_effect_result_closed
+  check (asep_side_effect_result_valid(operation, state, result_ref));
+`;
+
 // Ordered, immutable migration set. Order is by id; the runner asserts it.
 export const MIGRATIONS: readonly Migration[] = Object.freeze([
   { id: '0001_init_tenancy', sql: M0001 },
@@ -435,4 +556,5 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   { id: '0010_human_authorizations', sql: M0010 },
   { id: '0011_hierarchy_binding_coherence', sql: M0011 },
   { id: '0012_side_effect_binding_fk', sql: M0012 },
+  { id: '0013_side_effect_records_closed', sql: M0013 },
 ]);

@@ -66,7 +66,11 @@ audit_events, idempotency_records span all.
 `id pk`, `organization_id`, `project_id`, `run_id null`, `task_id null`, `attempt_id null`, `actor text`, `action text`, `occurred_at`, `detail jsonb`. Append-only.
 
 ### side_effect_records  (was `idempotency_records` — redesigned per disp. P2-PLAN-HIGH-005)
-`id pk`, `organization_id`, `project_id`, `scope text`, `semantic_key text`, `request_fingerprint text`, `state text check in ('PENDING','COMPLETED','FAILED')`, `owner_token text` (fencing), `result_ref` (scoped FK null), `natural_key text` (remote reconciliation key, e.g. head_branch/commit trailer), `created_at`, `updated_at`, `version`. Unique `(organization_id, project_id, scope, semantic_key)` — **tenant-scoped**, not global.
+`id pk`, `organization_id`, `project_id`, `repository_binding_id char(26) not null`, `attempt_id char(26) not null`, `operation text check in ('commit','push','pr-upsert')`, `request_fingerprint text`, `state text check in ('PENDING','COMPLETED','FAILED')`, `owner_token text` (fencing), `result_ref jsonb` (closed shape, see below), `natural_key text` (remote reconciliation key, e.g. head_branch), `created_at`, `updated_at`, `version`. Unique `(organization_id, project_id, repository_binding_id, attempt_id, operation)` — **tenant-scoped and typed**, not global and not text.
+
+**DB coherence (migration 0013, cycle-6 HIGH-005).** Composite FK `(repository_binding_id, organization_id, project_id)` → `repository_bindings` (0012) and composite FK `(attempt_id, organization_id, project_id, repository_binding_id)` → `attempts`, so a record can only name a binding in its own tenant **and** only its attempt's binding. The text columns `scope` and `semantic_key` that 0007 keyed on are dropped; nothing keys on text.
+
+**Closed outcome.** `result_ref` is `NULL` unless `state = 'COMPLETED'`; when COMPLETED it is exactly one of `{kind:'commit',commitSha,evidenceId}`, `{kind:'push',branch,commitSha}`, `{kind:'pr-upsert',number,url,headBranch,baseBranch}` for its operation, with no extra keys, a 40-hex SHA, a ULID evidence id and an http(s) PR URL. The CHECK `side_effect_result_closed` (function `asep_side_effect_result_valid`) enforces this in the database; `SqlSideEffectLog.complete()` validates with `parseSideEffectResultRef` before writing and parses again on read; `SideEffectCompleteInput` in `packages/ports` pins the shape to the operation at the type level.
 
 **Crash-safe side-effect protocol.** A result-only row cannot atomically cover an external Git/GitHub side effect: a crash after push but before recording replays the push. Each side effect (commit, exact-ref push, PR upsert) runs: (1) insert/claim a `PENDING` row with a fencing `owner_token` and the `request_fingerprint`; (2) perform the external op; (3) mark `COMPLETED` with `result_ref` + `natural_key`. On restart, a `PENDING`/`FAILED` row triggers **reconciliation by natural key** (does the remote ref / PR / commit already exist?) rather than blind replay. Reuse of a `semantic_key` with a **different** `request_fingerprint` fails closed (a new business intent must not reuse a completed key). Fault-injection tests kill the executor immediately before and after each Git/object/GitHub call and before/after the DB write; restart must converge to exactly one commit, one expected remote ref and one PR.
 
@@ -105,6 +109,13 @@ Expiry is driven by `expires_at` + heartbeat; a stale `ACTIVE` lease past `expir
 0005_command_executions   command_executions
 0006_pull_requests        pull_requests + head_branch unique
 0007_audit_side_effects   audit_events, side_effect_records
+0008_binding_scoped_fks   binding-scoped composite FKs
+0009_scoped_evidence_refs scoped evidence references
+0010_human_authorizations human authorization records
+0011_hierarchy_binding_coherence  binding carried coherently down the hierarchy
+0012_side_effect_binding_fk       side_effect_records.repository_binding_id + scoped FK
+0013_side_effect_records_closed   typed identity (attempt_id, operation), attempt-binding FK,
+                                  text keys dropped, closed result_ref CHECK
 ```
 
 Each migration has a checksum recorded in a `schema_migrations` table; re-running an altered applied migration fails closed. A clean-DB forward test asserts the full set applies and the resulting schema matches expectation.

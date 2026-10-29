@@ -40,6 +40,7 @@ import type {
   EvidenceStore,
   SideEffectLog,
   SideEffectRecord,
+  SideEffectResultRef,
   SideEffectBeginInput,
   SideEffectCompleteInput,
 } from '@asep/ports';
@@ -469,7 +470,7 @@ test('evidenceStep sets resultSha to the harness commit SHA and stores at the pr
 class MemorySideEffectLog implements SideEffectLog {
   readonly rows = new Map<string, {
     operation: string; state: 'PENDING' | 'COMPLETED' | 'FAILED';
-    fingerprint: string; owner: string; naturalKey?: string; resultRef?: unknown;
+    fingerprint: string; owner: string; naturalKey?: string; resultRef?: SideEffectResultRef;
   }>();
 
   private key(op: string, binding: string, attempt: string) {
@@ -1054,18 +1055,23 @@ test('HIGH-005: a WELL-FORMED persisted pr-upsert record is still adopted (not b
   assert.equal(res.pr.baseBranch, 'main');
 });
 
-test('HIGH-005: a legacy record with NO kind discriminator is still validated, then adopted', async () => {
-  // Rows written before the union existed carry no `kind`. The parser treats the
-  // expected kind as the discriminator but STILL checks every field — so legacy
-  // rows are accepted only when genuinely well-formed.
-  const res = await prStepWith(completedPrLog({
-    number: 9, url: 'https://forge/pr/9', headBranch: 'asep/attempt/a1', baseBranch: 'main',
-  }));
-  assert.equal(res.adopted, true);
-  assert.equal(res.pr.number, 9);
-  // And a legacy row that is malformed is still refused.
+test('a record with NO kind discriminator is refused (closed shape)', async () => {
+  // The outcome is a CLOSED shape: `kind` is required and must match the
+  // operation. Migration 0013 backfills `kind` on every pre-union row and its
+  // CHECK refuses a row without one, so a kind-less payload can only come from
+  // something that bypassed the store — exactly what must not be adopted.
   await assert.rejects(
-    () => prStepWith(completedPrLog({ number: 9, url: '', headBranch: 'h', baseBranch: 'b' })),
+    () => prStepWith(completedPrLog({
+      number: 9, url: 'https://forge/pr/9', headBranch: 'asep/attempt/a1', baseBranch: 'main',
+    })),
+    (err: unknown) => (err as { name?: string })?.name === 'SideEffectResultRefError',
+  );
+  // An extra, unvalidated key is refused as well.
+  await assert.rejects(
+    () => prStepWith(completedPrLog({
+      kind: 'pr-upsert', number: 9, url: 'https://forge/pr/9',
+      headBranch: 'asep/attempt/a1', baseBranch: 'main', merged: true,
+    })),
     (err: unknown) => (err as { name?: string })?.name === 'SideEffectResultRefError',
   );
 });

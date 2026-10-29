@@ -55,8 +55,9 @@ import type {
   GitChangeObservation,
   EvidenceStore,
   SideEffectLog,
+  PullRequestResultRef,
 } from '@asep/ports';
-import { parseSideEffectResultRef } from '@asep/ports';
+import { parseSideEffectResultRef, SideEffectResultRefError } from '@asep/ports';
 import { requiredLevels, type AssuranceLevel } from '@asep/policy';
 import { transitionTask, type TaskAggregate } from '@asep/domain';
 import type { StepStatus } from './execute-task.js';
@@ -334,11 +335,6 @@ function commitFingerprint(attemptId: AttemptId): string {
   return `commit:${attemptId}`;
 }
 
-interface CommitResultRef {
-  readonly commitSha: string;
-  readonly evidenceId: string;
-}
-
 export async function commitStep(input: CommitStepInput): Promise<CommitStepResult> {
   const begun = await input.log.begin(input.scope, {
     operation: 'commit',
@@ -383,7 +379,7 @@ export async function commitStep(input: CommitStepInput): Promise<CommitStepResu
         repositoryBindingId: input.repositoryBindingId,
         attemptId: input.attemptId,
         ownerToken: input.leaseId,
-        resultRef: { commitSha: found.commitSha, evidenceId: found.evidenceId },
+        resultRef: { kind: 'commit', commitSha: found.commitSha, evidenceId: found.evidenceId },
       });
       return {
         step: 'commit',
@@ -408,13 +404,12 @@ export async function commitStep(input: CommitStepInput): Promise<CommitStepResu
     identity: input.identity,
   });
   // Persist the commit SHA + the evidence id it embeds so a resume adopts BOTH.
-  const resultRef: CommitResultRef = { commitSha, evidenceId: input.evidenceId };
   await input.log.complete(input.scope, {
     operation: 'commit',
     repositoryBindingId: input.repositoryBindingId,
     attemptId: input.attemptId,
     ownerToken: input.leaseId,
-    resultRef,
+    resultRef: { kind: 'commit', commitSha, evidenceId: input.evidenceId },
   });
   return { step: 'commit', status: 'OK', commitSha, evidenceId: input.evidenceId, adopted: false };
 }
@@ -615,8 +610,17 @@ export async function pushStep(input: PushStepInput): Promise<PushStepResult> {
     ownerToken: input.leaseId,
     naturalKey: input.branch,
   });
-  // Already COMPLETED for this exact fingerprint → adopt, do not replay.
+  // Already COMPLETED for this exact fingerprint → adopt, do not replay. The
+  // recorded outcome is parsed, not assumed: a record naming another branch or
+  // commit is not this push, whatever its fingerprint says.
   if (begun.existed && begun.state === 'COMPLETED') {
+    const rec = parseSideEffectResultRef(begun.resultRef, 'push');
+    if (rec.branch !== input.branch || rec.commitSha !== input.commitSha) {
+      throw new SideEffectResultRefError(
+        'push',
+        `recorded ${rec.branch}@${rec.commitSha} is not ${input.branch}@${input.commitSha}`,
+      );
+    }
     return { step: 'push', status: 'OK', pushed: false, adopted: true };
   }
   // Crash-after-push-before-complete (HIGH-006): the record is still PENDING, so
@@ -636,6 +640,7 @@ export async function pushStep(input: PushStepInput): Promise<PushStepResult> {
         attemptId: input.attemptId,
         ownerToken: input.leaseId,
         naturalKey: input.branch,
+        resultRef: { kind: 'push', branch: input.branch, commitSha: input.commitSha },
       });
       return { step: 'push', status: 'OK', pushed: false, adopted: true };
     }
@@ -654,6 +659,7 @@ export async function pushStep(input: PushStepInput): Promise<PushStepResult> {
     attemptId: input.attemptId,
     ownerToken: input.leaseId,
     naturalKey: input.branch,
+    resultRef: { kind: 'push', branch: input.branch, commitSha: input.commitSha },
   });
   return { step: 'push', status: 'OK', pushed: true, adopted: false };
 }
@@ -687,6 +693,19 @@ export interface UpsertPrStepResult {
 
 function prFingerprint(input: UpsertPrStepInput): string {
   return `pr:${input.headBranch}->${input.base}`;
+}
+
+// The closed record of a PR upsert. Built field by field rather than spreading
+// the forge's answer, so whatever else a forge returns (head SHA, state, …)
+// never leaks into the authoritative row.
+function prResult(pr: PullRequestRef): PullRequestResultRef {
+  return {
+    kind: 'pr-upsert',
+    number: pr.number,
+    url: pr.url,
+    headBranch: pr.headBranch,
+    baseBranch: pr.baseBranch,
+  };
 }
 
 export async function upsertPrStep(input: UpsertPrStepInput): Promise<UpsertPrStepResult> {
@@ -745,7 +764,7 @@ export async function upsertPrStep(input: UpsertPrStepInput): Promise<UpsertPrSt
         repositoryBindingId: input.repositoryBindingId,
         attemptId: input.attemptId,
         ownerToken: input.leaseId,
-        resultRef: existing,
+        resultRef: prResult(existing),
         naturalKey: input.headBranch,
       });
       return { step: 'upsert-pr', status: 'OK', pr: existing, adopted: true };
@@ -764,7 +783,7 @@ export async function upsertPrStep(input: UpsertPrStepInput): Promise<UpsertPrSt
     repositoryBindingId: input.repositoryBindingId,
     attemptId: input.attemptId,
     ownerToken: input.leaseId,
-    resultRef: pr,
+    resultRef: prResult(pr),
     naturalKey: input.headBranch,
   });
   return { step: 'upsert-pr', status: 'OK', pr, adopted: false };

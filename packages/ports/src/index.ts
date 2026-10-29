@@ -368,21 +368,27 @@ export type SideEffectState = 'PENDING' | 'COMPLETED' | 'FAILED';
 // P2-REREVIEW HIGH-005, exit D6).
 //
 // THE HOLE. `resultRef` was typed `unknown` and persisted as free JSONB, and
-// every consumer recovered it with a blind cast (`begun.resultRef as
-// CommitResultRef`). On a resume the adopted commit SHA and evidence id — the
-// facts the whole crash-safety protocol hinges on — were therefore trusted
-// without ever being checked. A row with a missing, truncated, or wrong-shaped
-// payload (a partial write, a hand-edited row, a schema drift) would sail
-// through the cast and be adopted as authoritative.
+// every consumer recovered it with a blind cast. On a resume the adopted commit
+// SHA and evidence id — the facts the whole crash-safety protocol hinges on —
+// were therefore trusted without ever being checked.
 //
-// So the payload is now a CLOSED discriminated union with a runtime parser.
-// Writers construct one of these shapes; readers must call
-// `parseSideEffectResultRef` and fail closed on anything else, rather than
-// asserting a type the database never guaranteed.
+// So the payload is a CLOSED discriminated union, one shape per operation, and
+// it is closed at every boundary: writers must construct one of these shapes
+// (the complete() input type pins the shape to the operation), the persistence
+// adapter validates it before writing, the database refuses any other JSON with
+// a CHECK constraint, and readers get it back already parsed. "Closed" is
+// literal: an extra key is as much a violation as a missing one, because a
+// payload carrying fields nobody validated is a payload nobody can trust.
 export interface CommitResultRef {
   readonly kind: 'commit';
   readonly commitSha: string;      // 40-hex harness commit
   readonly evidenceId: string;     // the id embedded in its ASEP-Evidence trailer
+}
+
+export interface PushResultRef {
+  readonly kind: 'push';
+  readonly branch: string;         // the exact namespaced branch that was pushed
+  readonly commitSha: string;      // 40-hex commit the remote ref was set to
 }
 
 export interface PullRequestResultRef {
@@ -393,9 +399,9 @@ export interface PullRequestResultRef {
   readonly baseBranch: string;
 }
 
-export type SideEffectResultRef = CommitResultRef | PullRequestResultRef;
+export type SideEffectResultRef = CommitResultRef | PushResultRef | PullRequestResultRef;
 
-/** A persisted result_ref did not match any known shape — refuse to adopt it. */
+/** A persisted result_ref did not match its operation's shape — refuse to adopt it. */
 export class SideEffectResultRefError extends Error {
   constructor(operation: string, reason: string) {
     super(
@@ -408,67 +414,81 @@ export class SideEffectResultRefError extends Error {
 
 const SHA40 = /^[0-9a-f]{40}$/;
 
+const RESULT_KEYS: Readonly<Record<SideEffectResultRef['kind'], readonly string[]>> = {
+  'commit': ['kind', 'commitSha', 'evidenceId'],
+  'push': ['kind', 'branch', 'commitSha'],
+  'pr-upsert': ['kind', 'number', 'url', 'headBranch', 'baseBranch'],
+};
+
+function nonEmptyString(rec: Record<string, unknown>, key: string, op: string): string {
+  const v = rec[key];
+  if (typeof v !== 'string' || v.trim() === '') {
+    throw new SideEffectResultRefError(op, `${key} is missing`);
+  }
+  return v;
+}
+
 /**
- * Validate a persisted `result_ref` against the closed union. Returns the typed
- * ref, or throws SideEffectResultRefError. `expect` pins which shape the caller
- * requires, so a commit record carrying a PR payload (or vice versa) fails
- * closed instead of being coerced.
+ * Validate a `result_ref` against the closed shape for `expect`. Returns the
+ * typed ref, or throws SideEffectResultRefError. `expect` pins which shape the
+ * caller requires, so a commit record carrying a PR payload (or vice versa)
+ * fails closed instead of being coerced. The `kind` discriminator is REQUIRED
+ * and must equal `expect`; unknown keys are rejected.
  */
+export function parseSideEffectResultRef(raw: unknown, expect: 'commit'): CommitResultRef;
+export function parseSideEffectResultRef(raw: unknown, expect: 'push'): PushResultRef;
+export function parseSideEffectResultRef(raw: unknown, expect: 'pr-upsert'): PullRequestResultRef;
 export function parseSideEffectResultRef(
   raw: unknown,
-  expect: 'commit',
-): CommitResultRef;
-export function parseSideEffectResultRef(
-  raw: unknown,
-  expect: 'pr-upsert',
-): PullRequestResultRef;
+  expect: SideEffectResultRef['kind'],
+): SideEffectResultRef;
 export function parseSideEffectResultRef(
   raw: unknown,
   expect: SideEffectResultRef['kind'],
 ): SideEffectResultRef {
-  if (raw === null || typeof raw !== 'object') {
-    throw new SideEffectResultRefError(expect, `expected an object, got ${typeof raw}`);
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new SideEffectResultRefError(expect, `expected an object, got ${Array.isArray(raw) ? 'array' : typeof raw}`);
   }
   const rec = raw as Record<string, unknown>;
-  // Records written before this union existed carry no `kind`. Treat the
-  // EXPECTED kind as the discriminator in that case (the semantic key already
-  // pins the operation), then validate the fields strictly — so legacy rows are
-  // still checked, never waved through.
-  const kind = typeof rec['kind'] === 'string' ? rec['kind'] : expect;
-  if (kind !== expect) {
-    throw new SideEffectResultRefError(expect, `payload declares kind '${String(kind)}'`);
+  if (rec['kind'] !== expect) {
+    throw new SideEffectResultRefError(
+      expect,
+      rec['kind'] === undefined ? 'kind discriminator is missing' : `payload declares kind '${String(rec['kind'])}'`,
+    );
+  }
+  const allowed = RESULT_KEYS[expect];
+  const extra = Object.keys(rec).filter((k) => !allowed.includes(k));
+  if (extra.length > 0) {
+    throw new SideEffectResultRefError(expect, `unexpected key(s) ${extra.join(', ')}`);
   }
   if (expect === 'commit') {
-    const commitSha = rec['commitSha'];
-    const evidenceId = rec['evidenceId'];
-    if (typeof commitSha !== 'string' || !SHA40.test(commitSha)) {
+    const commitSha = nonEmptyString(rec, 'commitSha', expect);
+    if (!SHA40.test(commitSha)) {
       throw new SideEffectResultRefError(expect, 'commitSha is not a 40-hex commit id');
     }
-    if (typeof evidenceId !== 'string' || evidenceId === '') {
-      throw new SideEffectResultRefError(expect, 'evidenceId is missing');
+    return { kind: 'commit', commitSha, evidenceId: nonEmptyString(rec, 'evidenceId', expect) };
+  }
+  if (expect === 'push') {
+    const commitSha = nonEmptyString(rec, 'commitSha', expect);
+    if (!SHA40.test(commitSha)) {
+      throw new SideEffectResultRefError(expect, 'commitSha is not a 40-hex commit id');
     }
-    return { kind: 'commit', commitSha, evidenceId };
+    return { kind: 'push', branch: nonEmptyString(rec, 'branch', expect), commitSha };
   }
   const number = rec['number'];
-  const url = rec['url'];
-  const headBranch = rec['headBranch'];
-  const baseBranch = rec['baseBranch'];
   if (typeof number !== 'number' || !Number.isInteger(number) || number <= 0) {
     throw new SideEffectResultRefError(expect, 'number is not a positive integer');
   }
-  for (const [name, value] of [
-    ['url', url], ['headBranch', headBranch], ['baseBranch', baseBranch],
-  ] as const) {
-    if (typeof value !== 'string' || value === '') {
-      throw new SideEffectResultRefError(expect, `${name} is missing`);
-    }
+  const url = nonEmptyString(rec, 'url', expect);
+  if (!/^https?:\/\//.test(url)) {
+    throw new SideEffectResultRefError(expect, 'url is not an http(s) URL');
   }
   return {
     kind: 'pr-upsert',
     number,
-    url: url as string,
-    headBranch: headBranch as string,
-    baseBranch: baseBranch as string,
+    url,
+    headBranch: nonEmptyString(rec, 'headBranch', expect),
+    baseBranch: nonEmptyString(rec, 'baseBranch', expect),
   };
 }
 
@@ -478,7 +498,9 @@ export interface SideEffectRecord {
   readonly requestFingerprint: string;
   readonly ownerToken?: string;
   readonly naturalKey?: string;
-  readonly resultRef?: unknown;
+  // Present exactly when state is COMPLETED, already validated against the
+  // operation's closed shape.
+  readonly resultRef?: SideEffectResultRef;
   // True when begin() found an existing record for this key (the caller must
   // reconcile a PENDING/COMPLETED row rather than perform the effect again).
   readonly existed: boolean;
@@ -493,14 +515,21 @@ export interface SideEffectBeginInput {
   readonly naturalKey?: string;
 }
 
-export interface SideEffectCompleteInput {
-  readonly operation: SideEffectOperation;
+interface SideEffectCompleteBase {
   readonly repositoryBindingId: RepositoryBindingId;
   readonly attemptId: AttemptId;
   readonly ownerToken: string;
-  readonly resultRef?: unknown;
   readonly naturalKey?: string;
 }
+
+// The result shape is pinned to the operation by the type: a commit can only be
+// completed with a CommitResultRef, a push with a PushResultRef, a PR upsert
+// with a PullRequestResultRef. A completion without its outcome is not
+// representable.
+export type SideEffectCompleteInput =
+  | (SideEffectCompleteBase & { readonly operation: 'commit'; readonly resultRef: CommitResultRef })
+  | (SideEffectCompleteBase & { readonly operation: 'push'; readonly resultRef: PushResultRef })
+  | (SideEffectCompleteBase & { readonly operation: 'pr-upsert'; readonly resultRef: PullRequestResultRef });
 
 export class SideEffectFingerprintError extends Error {}
 export class SideEffectFencingError extends Error {}

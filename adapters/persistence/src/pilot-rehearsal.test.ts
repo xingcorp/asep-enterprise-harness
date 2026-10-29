@@ -23,6 +23,7 @@ import { PgliteClient } from './pglite-client.js';
 import { migrate } from './migrator.js';
 import {
   OrganizationRepository, ProjectRepository, RepositoryBindingRepository,
+  RunRepository, TaskRepository, AttemptRepository,
 } from './repositories.js';
 import { SqlWorkspaceLeaseRepository } from './lease-repository.js';
 import { SqlSideEffectLog } from './side-effect-log.js';
@@ -43,10 +44,19 @@ async function seed(dataDir?: string) {
   const binding = await bindings.create(scope, {
     githubHost: 'github.com', githubOwner: 'acme', githubRepo: 'web', defaultBaseBranch: 'main',
   });
-  return { client, scope, binding };
+  // Side-effect records are FK-bound to a real attempt (migration 0013).
+  const run = await new RunRepository(client).create(scope, {
+    repositoryBindingId: binding.id, status: 'EXECUTING', risk: 'R0',
+  });
+  const task = await new TaskRepository(client).create(scope, {
+    runId: run.id, repositoryBindingId: binding.id, risk: 'R0',
+  });
+  const attempt = await new AttemptRepository(client).create(scope, {
+    taskId: task.id, repositoryBindingId: binding.id,
+  });
+  const attemptId: AttemptId = attempt.id;
+  return { client, scope, binding, attemptId };
 }
-
-const attemptId = 'attempt-1' as AttemptId;
 
 // --- Fault 2 — DB restart mid-attempt: a PENDING side-effect row is reconciled
 // (adopted) on recovery, NOT replayed. Injected with a REAL process-level DB
@@ -62,7 +72,7 @@ test('M3/Fault2: a PENDING side effect survives a REAL DB restart and is ADOPTED
   const dbDir = mkdtempSync(join(tmpdir(), 'asep-rehearsal-db-'));
   try {
     // First process: seed + begin(), then "crash" (close the client).
-    const { client: first, scope, binding } = await seed(dbDir);
+    const { client: first, scope, binding, attemptId } = await seed(dbDir);
     const beginInput = {
       operation: 'push' as const,
       repositoryBindingId: binding.id,
@@ -155,7 +165,7 @@ test('M3/Fault4: a stale (expired) lease is swept so a fresh acquire wins; a liv
 test('M3/Fault5: a delayed retry of a COMPLETED forge side effect is adopted (single PR)', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'asep-rehearsal-'));
   try {
-    const { client, scope, binding } = await seed();
+    const { client, scope, binding, attemptId } = await seed();
     const log = new SqlSideEffectLog(client);
     const beginInput = {
       operation: 'pr-upsert' as const,
@@ -165,7 +175,10 @@ test('M3/Fault5: a delayed retry of a COMPLETED forge side effect is adopted (si
       ownerToken: 'lease-1',
     };
     await log.begin(scope, beginInput);
-    const pr = { number: 7, url: 'https://github.com/acme/web/pull/7', headBranch: 'asep/x', baseBranch: 'main' };
+    const pr = {
+      kind: 'pr-upsert' as const, number: 7, url: 'https://github.com/acme/web/pull/7',
+      headBranch: 'asep/x', baseBranch: 'main',
+    };
     await log.complete(scope, { ...beginInput, resultRef: pr, naturalKey: 'asep/x' });
     // A delayed retry after the rate-limit backoff adopts the COMPLETED record.
     const adopt = await log.begin(scope, beginInput);
