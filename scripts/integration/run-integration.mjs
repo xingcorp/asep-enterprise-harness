@@ -26,6 +26,7 @@ import {
   resolveDocker, runContainer, removeContainer, waitReady, loopbackPublish, LOOPBACK_HOST,
   discoverItestFiles, missingRequiredItestSuites, REQUIRED_ITEST_SUITES,
 } from './lib.mjs';
+import { nodeTestArgs } from '../lib/node-test-flags.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(HERE, '..', '..');
@@ -162,8 +163,9 @@ async function main() {
     if (!minioOk) return fail(`MinIO never became healthy at ${s3Endpoint}`);
     process.stdout.write('integration-gate: MinIO healthy\n');
 
-    // Run the itest suites in ONE shell-free child with live-backend env.
-    const args = ['--import', 'tsx', '--test', ...files];
+    // Run the itest suites in ONE shell-free child with live-backend env, with
+    // the V8 flags every test process needs (lib/node-test-flags.mjs).
+    const args = nodeTestArgs(files);
     const child = spawnSync(process.execPath, args, {
       cwd: REPO_ROOT,
       shell: false,

@@ -16,7 +16,7 @@
 # Steps (in order):
 #   1.  format:check                — whitespace/newline/CRLF/tab structural lint
 #   2.  typecheck                   — tsc -b --strict across the whole build graph
-#   3.  test                        — full workspace test matrix (tsx --test)
+#   3.  test                        — full workspace test matrix (node --test under tsx)
 #   4.  contracts test              — schema + fixture validation (@asep/contracts)
 #   5.  policy test                 — parity + taxonomy tests (@asep/policy)
 #   6.  contracts compat:gate       — live schemas vs frozen v1 snapshots
@@ -79,8 +79,10 @@ step "test"                pnpm test
 step "contracts test"      pnpm --filter @asep/contracts test
 step "policy test"         pnpm --filter @asep/policy test
 step "contracts compat"    pnpm --filter @asep/contracts compat:gate
-step "forbidden-imports"   pnpm exec tsx --test scripts/forbidden-imports.test.ts
-step "project-references"  pnpm exec tsx --test scripts/project-references.test.ts
+# Every Node process that runs tests starts with --no-wasm-code-gc
+# (nodejs/node#66366; see scripts/lib/node-test-flags.mjs).
+step "forbidden-imports"   pnpm exec node --no-wasm-code-gc --import tsx --test scripts/forbidden-imports.test.ts
+step "project-references"  pnpm exec node --no-wasm-code-gc --import tsx --test scripts/project-references.test.ts
 step "scan:secret"         pnpm scan:secret
 step "scan:large-file"     pnpm scan:large-file
 step "scan:pii"            pnpm scan:pii

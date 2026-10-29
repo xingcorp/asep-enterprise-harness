@@ -32,6 +32,7 @@ import {
   REQUIRED_SUITES,
   missingRequiredSuites,
 } from './lib/canonical-tests.mjs';
+import { nodeTestArgs } from './lib/node-test-flags.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(HERE, '..');
@@ -65,8 +66,9 @@ export function runCanonicalTests(opts = {}) {
   // the artifact-store suite intermittently time out under contention. Cap the
   // parallelism so the DB-heavy suites don't starve each other, keeping the gate
   // deterministic. Overridable via ASEP_TEST_CONCURRENCY for a faster local run.
+  // The V8 flags every test process needs come first (lib/node-test-flags.mjs).
   const concurrency = process.env['ASEP_TEST_CONCURRENCY'] ?? '2';
-  const args = ['--import', 'tsx', `--test-concurrency=${concurrency}`, '--test', ...files];
+  const args = nodeTestArgs(files, { concurrency });
   const child = spawnSync(process.execPath, args, {
     cwd: REPO_ROOT,
     shell: false,

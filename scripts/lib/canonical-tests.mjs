@@ -209,6 +209,10 @@ export const REQUIRED_SUITES = Object.freeze({
   // The resume path is admitted from the task row's own risk BEFORE its lease:
   // a deferred risk (R2–R4) stops having touched nothing but that read.
   'asep-suite:resume-attempt': 'packages/application/src/resume-attempt.test.ts',
+  // Every Node process that runs tests starts with --no-wasm-code-gc
+  // (nodejs/node#66366): this run's own test child, a child started with the
+  // runners' argv, and every test entry point of the repository.
+  'asep-suite:node-test-flags': 'scripts/node-test-flags.test.ts',
 });
 
 /** The machine-readable marker a suite prints at module load: `SUITE-ID: <id>`. */

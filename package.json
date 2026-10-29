@@ -12,7 +12,7 @@
     "typecheck": "tsc -b --pretty false",
     "test": "node scripts/run-canonical-tests.mjs",
     "test:integration": "node scripts/integration/run-integration.mjs",
-    "test:live:claude": "tsx --test adapters/agent-claude/src/claude-live.live.ts",
+    "test:live:claude": "node --no-wasm-code-gc --import tsx --test adapters/agent-claude/src/claude-live.live.ts",
     "format:check": "bash scripts/format-check.sh",
     "scan:secret": "bash scripts/secret-scan.sh",
     "scan:large-file": "bash scripts/large-file-scan.sh",

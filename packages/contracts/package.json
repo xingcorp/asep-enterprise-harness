@@ -10,7 +10,7 @@
     "typecheck": "tsc -b --pretty false",
     "gen:types": "tsx src/gen/generate-types.ts",
     "compat:gate": "tsx src/compat-gate.ts",
-    "test": "tsx --test src/**/*.test.ts"
+    "test": "node --no-wasm-code-gc --import tsx --test src/**/*.test.ts"
   },
   "dependencies": {
     "ajv": "8.20.0",
