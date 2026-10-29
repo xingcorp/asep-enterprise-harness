@@ -1,6 +1,6 @@
-# Phase 4 — Architecture (LOCKED v5, pending controller confirmation)
+# Phase 4 — Architecture (LOCKED v6, pending controller confirmation)
 
-> Companion to `phase-04-plan.md`. Base `00a6889`; v1 reviewed at `a2a7b8a`; v2 lock-checked at `3201335`; v3 reviewed at `9e3a1c3` (v4: budget and unsafe paths §8, egress paths §9, finding identity, changed-line predicate and scanner recheck §11); v4 re-checked at `7cc20f4` (v5: final-byte budget §8, identity encoding, no-downgrade reconciliation and effective scanner recheck §11). Thesis unchanged from the ADRs: an
+> Companion to `phase-04-plan.md`. Base `00a6889`; v1 reviewed at `a2a7b8a`; v2 lock-checked at `3201335`; v3 reviewed at `9e3a1c3` (v4: budget and unsafe paths §8, egress paths §9, finding identity, changed-line predicate and scanner recheck §11); v4 re-checked at `7cc20f4` (v5: final-byte budget §8, identity encoding, no-downgrade reconciliation and effective scanner recheck §11); v5 re-checked at `fb2e432` (v6, R32: `includedBytes` as the stored size §8, scanner-recheck closure deferred and SARIF references resolved or flagged §11). Thesis unchanged from the ADRs: an
 > agent cannot approve its own work (README thesis 3), every framework sits behind a port (ADR 0005),
 > deterministic evidence is stronger than model review (ADR 0010), raw evidence is captured before any reduction
 > (ADR 0009), humans own high-risk decisions (ADR 0014). v2 changes are driven by the Codex plan review and the
@@ -302,13 +302,15 @@ loader, which rejects `gating` (exit K3). The drill factory `createAssuranceDril
 | prior adjudicated findings with ids and lifecycle state (re-review) | `FindingStore` |
 | byte budget, included bytes, omissions with reason | builder |
 
-**Byte budget** (plan §8, R23, R28). `includedBytes` is the UTF-8 length of the **final** canonical packet bytes plus
-the bytes of every content part the prompt embeds (cumulative diff, repair delta, post-images). It is recorded
-alongside the packet (the builder's result, the slot output, `review_rounds.packet_included_bytes`) and never inside the
-hashed packet, which carries only `budget.maxBytes`, `budget.overBudget` and the omissions; `overBudget` is
-`includedBytes > maxBytes` or a diff over its reader limit, and the renderer refuses such a packet. Invariant, checked
-by an independent oracle at the cap and at cap + 1: an accepted packet's final canonical bytes plus its embedded parts
-are at most `maxBytes`. The renderer then measures the canonical prompt bytes against the same
+**Byte budget** (plan §8, R23, R28, R32). The packet is over budget when its canonical bytes as they would be sent
+(carrying `overBudget: false`) plus every content part the prompt embeds (cumulative diff, repair delta, post-images)
+exceed `maxBytes`, or a diff did not fit its reader limit; the renderer refuses such a packet. `includedBytes` is the
+**stored** packet's final size — its canonical bytes after the flag is set, plus the embedded parts — for accepted and
+rejected packets alike (a rejected packet's `true` is one byte shorter than the `false` it was measured with). It is
+recorded alongside the packet (the builder's result, the slot output, `review_rounds.packet_included_bytes`) and never
+inside the hashed packet, which carries only `budget.maxBytes`, `budget.overBudget` and the omissions. Invariant,
+checked by an independent oracle at the cap and at cap + 1: an accepted packet's final canonical bytes plus its
+embedded parts are at most `maxBytes`. The renderer then measures the canonical prompt bytes against the same
 `maxBytes` and refuses a larger prompt with `PromptOverBudgetError` (recorded `FAILED`, reason `prompt-over-budget`,
 rule A3). Nothing is truncated.
 
@@ -418,7 +420,7 @@ Waiver expiry is evaluated at the round's opening time, never at the adjudicatin
 ```text
 claims  = reviewer claims on F this round
 if F.source = deterministic:   VERIFIED iff the same rule does not fire on the new tree
-else if F.source = sarif:      VERIFIED iff scannerRecheck(F) (below); otherwise unchanged (still blocking)
+else if F.source = sarif:      unchanged: only a human disposition closes F (R32; scanner output never does)
 else if a human RESOLUTION_VERIFIED disposition exists:                    VERIFIED
 else if ∃ claim c: c.status = RESOLVED ∧ c.raiser ≠ R(F) ∧ eligible(c.raiser vs implementer)
         ∧ grounded(c.resolution) ∧ changedLine(c, F):                      VERIFIED
@@ -438,23 +440,23 @@ changedLine(c, F) = E exists ∧ ( c.resolutionLine ∈ E.added.lines           
 
 Context lines of a hunk, even next to an edit, are in neither set and never close a finding.
 
-**Scanner recheck** for a SARIF prior `F` (raised by `sarif:<tool>`, rule `r`, fingerprint `fp`, file `f`, scanner
-version `v` recorded with `F`), identical to plan §13 (R23, R28):
+**SARIF findings in Phase 4** (plan §13, §14, R32). Scanner-recheck closure is deferred (plan DF-9): a SARIF finding
+closes only by an authorized human disposition, and a later log that no longer reports it changes nothing. Model
+output never closes a deterministic or SARIF finding. Ingestion keeps every result:
 
 ```text
-scannerRecheck(F) = runs(tool) ≠ ∅ ∧ ∀ run ∈ runs(tool): run.executionSuccessful
-                  ∧ ∃ run ∈ runs(tool): run.toolVersion = v ∧ r ∈ run.effectiveRules ∧ f ∈ run.scannedFiles
-                  ∧ no SARIF finding of the tool this round has fingerprint fp
-effectiveRules    = declared rules whose defaultConfiguration.enabled ≠ false, that no invocation's
-                    ruleConfigurationOverrides disables, and that no execution or configuration notification is
-                    associated with; empty when an error notification names no rule or a reference points into
-                    another tool component
-scannedFiles      = normalized paths of run.artifacts whose roles, when present, include analysisTarget
+rule(result)  = the one rule id that every present form names, resolved against tool.driver.rules:
+                result.ruleId, rules[result.ruleIndex].id, result.rule.id, rules[result.rule.index].id
+file(result)  = the repository path of locations[0].physicalLocation.artifactLocation:
+                its uri, or run.artifacts[index].location.uri, agreeing when both are present
+unresolved    = a rule reference with a toolComponent or only a guid, an index outside its array, forms that
+                disagree, any uriBaseId (none is bound to the repaired root in Phase 4), a URI that is not a
+                repository path
+finding       = always kept; when unresolved: the unresolved part is null, the evidence names the reference,
+                the flag and the raw reference enter the fingerprint, and the finding is never linked to a prior
 ```
 
-A declared rule is not proof that it ran. Then the harness records `RESOLUTION_VERIFIED` by
-`harness-rule:scanner-recheck`; otherwise only a named human closes `F`. Model output never closes a deterministic or
-SARIF finding.
+No scanner run is recorded in the check report: nothing in Phase 4 reads one.
 
 ## 12. Measurement architecture (reviewer benchmark)
 

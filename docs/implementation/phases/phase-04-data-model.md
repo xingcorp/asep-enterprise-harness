@@ -1,11 +1,13 @@
-# Phase 4 — Data Model (LOCKED v5, pending controller confirmation)
+# Phase 4 — Data Model (LOCKED v6, pending controller confirmation)
 
 > Companion to `phase-04-plan.md`. PostgreSQL 17 (digest-pinned in `compose.yaml`). Base `00a6889`; v1 reviewed at
 > `a2a7b8a`; v2 lock-checked at `3201335`; v3 reviewed at `9e3a1c3` (v4: §2.1 identity, §2.3 budget, §2.4 closure
 > rules, §2.8 scanner runs, `review_findings` identity, disposition actor rules, §7.1 vocabulary); v4 re-checked at
 `7cc20f4` (v5: §2.1 identity encoding, §2.3 budget outside the hashed packet, §2.4 adjudication id, §2.8 effective
 scanner runs, `review_rounds.packet_included_bytes`, `prompt-over-budget` and integer micro-USD cost in
-`review_records`, money in events). Conventions inherited from `phase-02-data-model.md` §1: ULID `char(26)` ids, `timestamptz` UTC,
+`review_records`, money in events); v5 re-checked at `fb2e432` (v6, R32: §2.1 and `review_findings` unresolved-reference
+flag, §2.3 `includedBytes` as the stored size, §2.4 and `finding_dispositions_harness_verify_ck` without scanner-recheck
+closure, §2.8 without scanner runs). Conventions inherited from `phase-02-data-model.md` §1: ULID `char(26)` ids, `timestamptz` UTC,
 > optimistic `version` columns on mutable aggregates, `TenantScope` first on every repository method, composite
 > foreign keys onto `(id, organization_id, project_id)`, append-only checksummed migrations
 > (`adapters/persistence/src/migrator.ts`: strictly ascending ids, checksum per applied id). v2 writes the full DDL
@@ -44,6 +46,7 @@ Lane B adds five schema files; the compat-gate count and `COMPATIBILITY.md` are 
 | `groundingReason` | string | no | required when `grounded` is false |
 | `lifecycleState` | enum `OPEN, ACKNOWLEDGED, FIXED, VERIFIED, CLOSED, REFUTED, ADJUDICATED, WAIVED` | yes | `docs/architecture/04-state-machines.md:40-48` |
 | `requirementId`, `file`, `lineStart`, `lineEnd`, `ruleId`, `priorFindingId` | | no | `file` a normalized repo path (plan §10.1); `priorFindingId` links a re-raised finding to the prior it matched (plan §12) |
+| `unresolvedReference` | const `true` | no | SARIF only (R32): the result's rule or artifact reference could not be resolved (plan §14 item 6); the unresolved part is absent, the evidence names the reference, and the finding is never linked to a prior |
 
 Identity within a round (plan §12): `(raisedBy, fingerprint, requirementId, finding key)`; findings are never merged
 across requirement ids or keys, and a merge keeps grounded and the highest severity. Identity across rounds, for
@@ -51,7 +54,9 @@ reconciliation with prior findings: `(raisedBy, fingerprint, requirementId)`. Ev
 itself (`[category, file|null, lineBucket|null, ruleId|null]`), is encoded as a canonical JSON array before it is
 hashed or compared, never as a joined string, so `null` and `""` differ and a separator inside a field cannot make
 two tuples equal (R28). A re-raise linked to a prior it does not shield blocks at the highest severity of the pair
-(plan §12).
+(plan §12). A SARIF finding flagged `unresolvedReference` has the fingerprint `[category, file|null, lineBucket|null,
+ruleId|null, "unresolved-reference", rawReference]` (`rawReference` the canonical JSON of the result's reference
+fields), so it never shares an identity with a resolved finding, and it is never matched to a prior (R32).
 
 ### 2.2 `review-record/v1`
 
@@ -75,7 +80,7 @@ outputTokens, reasoningTokens, wallClockMs, transportAttempts}`), `providerCalls
 | `change` | `{taskBaseSha, resultSha, repairBaseSha|null, cumulativeDiff: ArtifactRef, repairDelta: ArtifactRef|null, files: [{path, status, binary, postImage: ArtifactRef|null, lineCount, omittedReason|null}]}`; `omittedReason` ∈ `binary, too-large, deleted, submodule, non-utf8, unsafe-path` (`unsafe-path`: a path that is not normalizable, kept so the push guard blocks on it, never read) |
 | `execution` | `{verdict: PASS|FAIL|ERROR|NOT_RECORDED, environment: {imageDigest, lockfileHash, nodeVersion|null}|null, checks: [{id, category, command, exitCode, durationMs, stdout: {artifactId, sha256, bytes, excerptTail}|null, stderr: (same)|null, testSummary: {runner, tests, pass, fail, skipped, todo}|null}]}`; `NOT_RECORDED` (with `environment: null`, `checks: []`) is used only by corpus packets (plan §7.8), never at runtime |
 | `priorFindings` | `review-finding/v1[]` (re-review only, adjudicated, with ids and lifecycle state) |
-| `budget` | `{maxBytes, overBudget, omissions: [{path, reason}]}`. The packet does not carry its own measured size (R28): `includedBytes` = UTF-8 length of the final canonical packet bytes plus the bytes of the cumulative diff, the repair delta and every post-image the prompt embeds, recorded alongside (`BuildReviewPacketOutput.includedBytes`, `review_rounds.packet_included_bytes`); `overBudget` = `includedBytes > maxBytes` or a diff over its reader limit, so an accepted packet carries `false` and is measured with it; the rendered prompt is measured separately against `maxBytes` (plan §8); the slot step returns only the omission count (`omittedFiles`), the list stays here |
+| `budget` | `{maxBytes, overBudget, omissions: [{path, reason}]}`. The packet does not carry its own measured size (R28): `includedBytes` = UTF-8 length of the **stored** canonical packet bytes, measured after `overBudget` is set, plus the bytes of the cumulative diff, the repair delta and every post-image the prompt embeds, for accepted and rejected packets alike (R32), recorded alongside (`BuildReviewPacketOutput.includedBytes`, `review_rounds.packet_included_bytes`); `overBudget` = the packet as it would be sent (carrying `false`) plus those parts exceeds `maxBytes`, or a diff over its reader limit, so an accepted packet's `includedBytes` is at most `maxBytes` and a rejected packet's stored `true` is one byte shorter than the `false` it was measured with; the rendered prompt is measured separately against `maxBytes` (plan §8); the slot step returns only the omission count (`omittedFiles`), the list stays here |
 
 No field exists for coder self-report, ContextPack, events, commit messages or other reviewers' output.
 
@@ -86,9 +91,9 @@ BLOCK`), `reason` (escalation/block reason or null), `ruleFired` (`A1`…`A11`, 
 (`{wouldBe, reason, blockingFindings}` or null), `pushGuard` (`PASS`/`BLOCK` + reason), `egressDecision`,
 `blocking` (`[{findingId, source, raisedBy, severity, reason}]`), `grounding` (`[{findingId, grounded, reason}]`),
 `verdictMismatches` (`[{reviewId, verdict, groundedBlockingCount}]`), `closureDecisions` (`[{priorFindingId,
-raisedBy, claims: [{by, status}], effectiveState, rule: deterministic-recheck|scanner-recheck|human|independent-reviewer|raiser-claim|closure-without-change|regression|unchanged}]`;
-`regression` names a prior that a finding of this round re-raised after it was verified or closed, `scanner-recheck` a SARIF
-finding the harness verified with the proof of plan §13),
+raisedBy, claims: [{by, status}], effectiveState, rule: deterministic-recheck|human|independent-reviewer|raiser-claim|closure-without-change|regression|unchanged}]`;
+`regression` names a prior that a finding of this round re-raised after it was verified or closed; there is no
+scanner-recheck rule in Phase 4: a SARIF finding closes only by a human disposition, R32, plan DF-9),
 `policyVersion`, `inputs` (`{packetSha256, checkReportSha256, reviewRecordSha256s[]}`), `fence` (`{leaseId,
 fencingEpoch}`). `adjudicationId` = sha256 of the canonical JSON array `[roundKey, policyVersion, packetSha256,
 checkReportSha256, sorted reviewRecordSha256s]` (R28). No timestamp field: the decision time lives in the `adjudications.decided_at` column only (plan §11).
@@ -113,12 +118,10 @@ Plan §18.4 lists the one new `eventType` (`review.finding_dispositioned`) and t
 
 `check-report` (canonical JSON, `check-report/v1`, built and parsed by `packages/application/src/assurance/check-report.ts`,
 S6): the packet sha256, push-guard decision, egress decision with its hits (`{kind, part, detail}`, where `detail` is
-a path, a pattern label or a fixed reason — never the matched text), every deterministic and SARIF finding, the
-scanner runs the SARIF logs describe (`[{checkId, tool, toolVersion|null, executionSuccessful, effectiveRules[],
-scannedFiles[]}]`, the evidence a scanner recheck needs, plan §13: `effectiveRules` are the declared rules the run's
-effective configuration enabled and no notification reported on, `scannedFiles` the normalized repository paths of
-the run's analysis-target artifacts; every run names a SARIF log the report lists), and the sha256 and size of each SARIF log the checks read (the raw outputs themselves are artifacts the check step stores,
-S12). There is no timestamp in it. There is no JSON Schema file: the harness writes it and re-reads it by content
+a path, a pattern label or a fixed reason — never the matched text), every deterministic and SARIF finding (each with
+`unresolvedReference`, `true` only for a SARIF result whose reference could not be resolved, plan §14 item 6), and the
+sha256 and size of each SARIF log the checks read (the raw outputs themselves are artifacts the check step stores,
+S12). v6 records no scanner runs: with scanner-recheck closure deferred (R32), nothing in Phase 4 reads them. There is no timestamp in it. There is no JSON Schema file: the harness writes it and re-reads it by content
 address, and a strict structural parser guards every read (v3; replaces the v2 schema file, which would have needed
 a new `ajv` dependency in `@asep/application`). Unknown or missing keys, wrong types, a sha256 mismatch, an egress
 decision for another packet, and a push-guard or egress decision that does not follow from the report's own findings
@@ -365,10 +368,14 @@ create table review_findings (
   grounding_reason text,
   blocking         boolean     not null,
   prior_finding_id char(26),
+  unresolved_reference boolean not null default false,
   lifecycle_state  text        not null,
   created_at       timestamptz not null,
   version          integer     not null default 0,
   constraint review_findings_source_ck      check (source in ('model','deterministic','sarif')),
+  -- an unresolved SARIF reference is flagged and kept, never linked to a prior (R32)
+  constraint review_findings_unresolved_ck  check (not unresolved_reference
+                                              or (source = 'sarif' and prior_finding_id is null)),
   constraint review_findings_record_ck      check ((source = 'model') = (review_record_id is not null)),
   constraint review_findings_raiser_ck      check ((source = 'model') = (raised_by !~ '^(deterministic|sarif):')),
   constraint review_findings_fingerprint_ck check (fingerprint ~ '^[0-9a-f]{64}$'),
@@ -453,15 +460,14 @@ create table finding_dispositions (
                                                    or disposition in ('RESOLUTION_CLAIMED','RESOLUTION_VERIFIED')),
   -- the raiser of a finding can never verify its resolution
   constraint finding_dispositions_raiser_ck      check (disposition <> 'RESOLUTION_VERIFIED' or actor <> finding_raised_by),
-  -- harness rules refute ungrounded findings, verify deterministic and scanner re-checks, and reopen
+  -- harness rules refute ungrounded findings, verify deterministic re-checks, and reopen; no harness rule
+  -- verifies a SARIF finding in Phase 4 (R32)
   constraint finding_dispositions_harness_ck     check (actor_kind <> 'harness-rule'
                                                    or disposition in ('REJECTED_WITH_EVIDENCE','RESOLUTION_VERIFIED','REOPENED')),
   constraint finding_dispositions_harness_verify_ck check (not (actor_kind = 'harness-rule'
                                                    and disposition = 'RESOLUTION_VERIFIED')
                                                    or (finding_raised_by like 'deterministic:%'
-                                                       and actor = 'harness-rule:deterministic-recheck')
-                                                   or (finding_raised_by like 'sarif:%'
-                                                       and actor = 'harness-rule:scanner-recheck')),
+                                                       and actor = 'harness-rule:deterministic-recheck')),
   -- model output never closes a deterministic or SARIF finding
   constraint finding_dispositions_reviewer_verify_ck check (not (actor_kind = 'reviewer'
                                                    and disposition = 'RESOLUTION_VERIFIED')
@@ -693,6 +699,12 @@ re-run with these additions, all as expected (29 of 29): a round with a packet d
 `prompt-over-budget` and no request is accepted and an unknown reason rejected; a `COMPLETED` record without a review
 record artifact is rejected by `review_records_completed_ck`; an integer `cost_micro_usd` with a price source is
 accepted, and a negative one or one without a price source rejected by `review_records_cost_ck`.
+For v6 (R32) the blocks were extracted and applied again in the same way, the earlier probes re-run, and these probes
+added; results are recorded in the review log ("Review v5", "DDL re-validation (v6)"): a harness `RESOLUTION_VERIFIED`
+by `harness-rule:scanner-recheck` on a `sarif:` finding is now rejected by `finding_dispositions_harness_verify_ck`,
+while `harness-rule:deterministic-recheck` on a `deterministic:` finding and a human `RESOLUTION_VERIFIED` on a
+`sarif:` finding are accepted; a `sarif` finding with `unresolved_reference` and no prior is accepted, and one linked to
+a prior, or a `model` or `deterministic` finding with the flag, is rejected by `review_findings_unresolved_ck`.
 
 ### 3.6 Rollback (forward compensating migrations; applied only by operator decision, never by editing `02xx`)
 

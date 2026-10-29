@@ -1,6 +1,20 @@
-# Phase 4 — Independent Assurance — Plan (LOCKED v5, pending controller confirmation)
+# Phase 4 — Independent Assurance — Plan (LOCKED v6, pending controller confirmation)
 
-> Status: **LOCKED v5 (pending controller confirmation).** v4, its slot block and the code fixes at `7cc20f4` received
+> Status: **LOCKED v6 (pending controller confirmation).** v5, its slot block and the code fixes at `fb2e432` received
+> an independent re-check (`phase-04-review-codex-v5.md`, Codex `gpt-6.1-sol`, REQUEST_CHANGES 0.99, `HAND-OFF:
+> NOT_READY`: the v4 severity, identity, budget and pattern fixes resolved; new 1 plan MEDIUM and 1 plan LOW, 1 slot HIGH
+> and 1 slot MEDIUM, 3 code HIGH, 1 code MEDIUM and 1 code LOW, one surviving mutation and one mutant wrongly declared
+> equivalent). Every finding is dispositioned in `phase-04-review-log.md` ("Review v5") and the controller's decision
+> R32 is applied as written, consistent with R29 and R31. v6 gives a late lease grant its own contract code
+> `lease-granted` with the R29 recovery (RLC-16, RLC-18), makes the atomicity proof mandatory for every stateful slot,
+> adds the registration-before-effect ordering case (RLC-19), states the single R29 exception to "every terminal is
+> recorded" with its gap report (SR-A3, SR-A14, exits H4 and J6), defers scanner-recheck closure out of Phase 4 (§5.3
+> DF-9; §13: a SARIF finding closes only by an authorized human), keeps every SARIF result through reference resolution
+> or an `unresolved-reference` flag (§14), makes `includedBytes` the stored packet's final size (§8) and makes the
+> publication path scanner fail closed (§7.5); the code fixes land as separate commits (§0 "What v6 changes").
+>
+> v5 status, kept for the record: **LOCKED v5 (pending controller confirmation)**, superseded by v6 before it was
+> confirmed. v4, its slot block and the code fixes at `7cc20f4` received
 > an independent re-check (`phase-04-review-codex-v4.md`, Codex `gpt-6.1-sol`, REQUEST_CHANGES 0.99, `HAND-OFF:
 > NOT_READY`: every v3 plan and slot finding folded; seven code items resolved and four partial; new 1 plan HIGH, 2 plan
 > MEDIUM, 2 slot MEDIUM, 3 code HIGH and 2 code MEDIUM, one surviving mutation). Every finding is dispositioned in
@@ -53,7 +67,7 @@
 > Companion documents: `phase-04-architecture.md`, `phase-04-data-model.md`, `phase-04-exit-criteria.md`,
 > `phase-04-risk-register.md`, `phase-04-research-register.md`, `phase-04-threat-model-delta.md`,
 > `phase-04-review-log.md`, `phase-04-plan-review-codex-v1.md`, `phase-04-plan-review-codex-v2.md`,
-> `phase-04-review-codex-v3.md`, `phase-04-review-codex-v4.md`.
+> `phase-04-review-codex-v3.md`, `phase-04-review-codex-v4.md`, `phase-04-review-codex-v5.md`.
 
 ```text
 BASE_SHA:        00a68895d205122767167942326e2e0466571059   (head of phase/02-single-agent-vertical-slice; Phase 2 NOT yet accepted)
@@ -61,6 +75,7 @@ REVIEWED_V1:     a2a7b8ad09a5389339fc3ef7131ae7b2b294d97f
 REVIEWED_V2:     32013356e0845354f40ac6f63925f928637d6fb3   (lock-check, REQUEST_CHANGES 0.97)
 REVIEWED_V3:     9e3a1c32e869193e981a867e8bb9fbd1abaec9c8   (plan, slot block and pre-S0 code, REQUEST_CHANGES 0.99)
 REVIEWED_V4:     7cc20f474ef0d53532ff386777eae7d5d07dae24   (plan v4, slot block and code fixes, REQUEST_CHANGES 0.99)
+REVIEWED_V5:     fb2e4323a61e128553043b08157f02c70a1684c9   (plan v5, slot block and code fixes, REQUEST_CHANGES 0.99)
 TARGET_BRANCH:   phase/04-independent-assurance
 SCOPE SOURCE:    docs/implementation/90-day-plan.md:33-40 (Days 46–60)
 EXIT CRITERION:  "reviewer performance measured on historical defects" (90-day-plan.md:40)
@@ -147,6 +162,20 @@ What v5 changes (re-check `phase-04-review-codex-v4.md`, controller decisions R2
 | Identity encoding | tuples joined with separators | canonical JSON arrays for every identity, fingerprint and dedupe key; `null` ≠ `""` (§12) |
 | `prompt-over-budget` | a failure reason the DDL rejected | in `review_records_failure_ck`; S8 adds the persistence regression (data model §3.1) |
 | Path-leak patterns | parsed out of `check-publication.sh` (an appended pattern was missed) | one data file read by the script and the collector; executable parity test; the collector never replaces the full gate (§7.5) |
+
+What v6 changes (re-check `phase-04-review-codex-v5.md`, controller decision R32, consistent with R29 and R31):
+
+| Area | v5 | v6 |
+|---|---|---|
+| Late lease grant | a `fence: null` write refused because a lease now exists raised `AssuranceFencedError`, which the activity policy reads as supersession | `ReviewLoopContractError` code `lease-granted`, a typed non-retryable result; the workflow looks the lease up and records the terminal with its fence, at most two lookups (R29); RLC-16 race and RLC-18 (§18, §18.2, SR-A14) |
+| Atomicity proof | not-applicable whenever the fixture could not inject a commit failure | mandatory for every stateful slot: the fixture is a union, and only a slot declaring `stateless: true` (disabled, not-configured, scripted) reports the stateful cases not-applicable (§18, §18.2) |
+| Registration before effect | proved only by refusing an unregistered attempt id | RLC-19, a workflow-level ordering case Lane A runs: no attempt-bound effect before the attempt's registration is reconciled (§18, §18.2, SR-A11) |
+| Unrecorded terminals | "every terminal is recorded", stated without exception | the single R29 exception — the store cannot be read or written after the retry policy — ends `FAILED` / `attempt-state-unknown` with the attempt's idempotency key in the audit entry, and telemetry completeness reports the gap with that key (SR-A3, SR-A14, exits H4, J6) |
+| SARIF closure | a scanner recheck proving effective execution and coverage verified a SARIF finding | deferred out of Phase 4 (DF-9): only an authorized human closes a SARIF finding; model output and scanner output never do, and a log that no longer reports it changes nothing (§13) |
+| SARIF ingestion | `ruleIndex`, `rule` and `artifactLocation.index` ignored; an artifact under a foreign `uriBaseId` counted | rule and artifact references resolve to the driver's rules and `run.artifacts`; a reference that cannot be resolved keeps the result as a finding flagged `unresolved-reference`, never dropped and never linked to a prior (§12, §14) |
+| `includedBytes` | measured with `overBudget: false` for every packet | the stored packet's final size, measured after the flag is set, for accepted and rejected packets alike; the accepted-packet invariant is unchanged (§8) |
+| Publication path scanner | a grep error, an invalid pattern or no input file read as clean; the pattern list exempt from its own scan | each is exit 2; `--` before file names; the list is scanned like any other file; tracked files enumerated with `git ls-files -z` (§7.5) |
+| Corpus wording | `provenance: excerpt-only` next to the R22 vocabulary | the verification mode is described; no extra provenance value (§7.5) |
 
 ---
 
@@ -347,6 +376,7 @@ about reviewer quality; the Phase 1 historical-task dataset (PP2, `phase-01-exit
 | DF-6 | Production-valid measurement on an independent, human-labelled pilot-repository corpus | the pilot repository (Phase 1 PP1/PP2, Phase 2 K2/K6) |
 | DF-7 | Deterministic red→green closure proof for model findings | a sandboxed rerun of named regression checks on the pre-repair tree |
 | DF-8 | Independent blind human relabel of the self-history corpus | a named human labeller; optional — not a Phase 4 MUST by user decision U-2 |
+| DF-9 | Scanner-recheck closure of SARIF findings (R32: three review rounds found new ways a log could falsely prove a fix, and no real scanner is wired in Phase 4) | real CodeQL and semgrep SARIF log fixtures; SARIF 2.1.0 `reportingDescriptorReference` resolution including `tool.extensions`; artifact index and `uriBaseId` binding to the repaired tree; effective configuration and notifications; the probes of `phase-04-review-codex-v4.md` and `phase-04-review-codex-v5.md` as tests |
 
 ---
 
@@ -473,9 +503,10 @@ Floors make the measurement falsifiable; failing one does not fail the phase, be
   built from the local object store where the object still exists, or from the controller's private bundle.
 - **Full re-derivation from git needs the private bundle** `~/.openclaw/archive/asep-pre-rewrite-history.bundle`
   (held by the controller outside the repository). Without it, a clean clone can verify only the internal
-  consistency of the excerpts (bytes hash to their names; manifest hash), and items from unreachable trees are
-  marked `provenance: excerpt-only`. The verifier takes the bundle path from an explicit argument supplied by the
-  controller; Lane B never reads it on its own.
+  consistency of the excerpts (bytes hash to their names; manifest hash): for an item whose reachability is
+  `private-bundle-only`, that internal check is the only verification a clean clone can run, and checking its
+  excerpts against git needs the bundle. This is a verification mode, not a provenance value. The verifier takes the
+  bundle path from an explicit argument supplied by the controller; Lane B never reads it on its own.
 - **Provenance vocabulary (R22).** A reviewed tree that cannot be identified — Phase 1 cycle 1, whose review
   document was never committed, and Phase 2 re-review v4, whose document `5c5471b` added together with v5's — is
   never guessed: its items are excluded `reviewed-tree-unknown`. A tree or fix commit that exists only before the
@@ -500,6 +531,12 @@ Floors make the measurement falsifiable; failing one does not fail the phase, be
   requires the same hits, including after a pattern is appended to a copy of the file. The collector checks excerpts
   only: it **never replaces the full publication gate** (LICENSE, the git-history secret scan, the dependency-license
   inventory, the scanners' self-tests), which still runs over the whole repository before any public push.
+- **The path scanner fails closed (R32).** In `scripts/check-publication.sh` grep's status is read as 0 (a hit),
+  1 (clean) or anything else (the scan failed); a failed scan, a pattern that is not a valid ERE (each pattern is run
+  once on empty input when the list is read), an input file that cannot be read, or no input file at all makes the
+  scan exit 2, never clean. File names follow `--`. The pattern list is scanned like any other tracked file (it does
+  not match itself; a private path in one of its comments fails the gate), and the full gate enumerates tracked files
+  with `git ls-files -z`, so a name Git would quote is still scanned.
 
 ### 7.6 Comparator choice (D-4)
 
@@ -679,14 +716,17 @@ terminal, verification stops included (R3). Task status stays `VERIFYING` across
 **Byte budget (R23, R28).** Two measurements, each against the reviewer's `packetBudgetBytes`, carried in the packet
 as `budget.maxBytes`:
 
-- **Packet**, at build, before rendering: `includedBytes` = the UTF-8 length of the **final** canonical packet bytes
-  (the exact bytes that are hashed, stored and rendered) plus the byte length of every content part the prompt embeds
-  (cumulative diff, repair delta, each post-image). Every content-bearing field — the objective, requirement
-  statements, paths, commands, excerpts, prior findings — is inside the canonical packet and so is counted. The
-  packet does not carry its own measured size: `includedBytes` is recorded alongside it (the builder's result,
-  `BuildReviewPacketOutput.includedBytes`, the round row's `packet_included_bytes`), never inside the hashed packet.
-  `budget.overBudget` is set when `includedBytes > maxBytes` or a diff did not fit its reader limit; it is a decision,
-  not a size, and an accepted packet is measured with the `false` it carries. **Invariant:** an accepted packet's
+- **Packet**, at build, before rendering. The decision: the packet is over budget when the UTF-8 length of the
+  canonical packet as it would be sent (carrying `overBudget: false`) plus the byte length of every content part the
+  prompt embeds (cumulative diff, repair delta, each post-image) exceeds `maxBytes`, or a diff did not fit its reader
+  limit. Every content-bearing field — the objective, requirement statements, paths, commands, excerpts, prior
+  findings — is inside the canonical packet and so is counted. `budget.overBudget` records that decision; it is a
+  decision, not a size. The record (R32): `includedBytes` is the **stored** packet's final size — the UTF-8 length of
+  the exact canonical bytes that are hashed and stored, measured after the flag is set, plus the embedded parts — for
+  accepted and rejected packets alike. For an accepted packet it is the size the decision measured; a rejected
+  packet's stored `true` is one byte shorter than the `false` it was measured with. The packet does not carry its own
+  measured size: `includedBytes` is recorded alongside it (the builder's result, `BuildReviewPacketOutput.includedBytes`,
+  the round row's `packet_included_bytes`), never inside the hashed packet. **Invariant:** an accepted packet's
   canonical serialized byte length, plus its embedded parts, is at most its cap — checked by an independent oracle
   (`Buffer.byteLength` of the canonical JSON of the final packet object) at the cap and at cap + 1.
 - **Rendered prompt**, before sending: the canonical prompt bytes (instructions, the datamarked input and the output
@@ -878,6 +918,10 @@ text) of a canonical JSON array of its fields, never a joined string: separators
 equal, and `null` and `""` stay distinct. This covers the finding fingerprint, the within-round identity, the
 cross-round identity, the check-finding merge and dedupe keys, the adjudication id, the review id, the ordering keys
 of the record and the reviewer-list comparison.
+
+**Unresolved SARIF references (R32).** A SARIF finding flagged `unresolved-reference` (§14 item 6) is never matched
+to a prior: it neither inherits a prior's shield nor takes a prior's place in `B`, and the prior is evaluated on its
+own. Its fingerprint carries the flag and the raw reference, so it never shares an identity with a resolved finding.
 The persisted `adjudications` row enforces "shadow ⇒ PROCEED or BLOCK" with a check
 constraint (data model §3). A shadow `BLOCK` (A1) carries **no shadow verdict**, neither in `BlockOutcome` nor in
 the row (`adjudications_shadow_ck` sets `would_be_outcome` only for a shadow `PROCEED`): the push guard is not a
@@ -903,7 +947,7 @@ gating decision, so there is no would-be outcome to record (P4-PLAN2-MED-005; co
   - `FIXED → VERIFIED` (non-blocking) requires one of: (a) a **different** reviewer configuration, eligible by
     family against the implementer, reporting `RESOLVED` with a grounded resolution citation that satisfies the
     **changed-line predicate** below; (b) a named human disposition; (c) for deterministic findings only, the same
-    deterministic check no longer firing on the new tree; (d) for SARIF findings only, a **scanner recheck** (below).
+    deterministic check no longer firing on the new tree. A SARIF finding is verified only by (b) (below).
   - **Changed-line predicate (R23; identical in architecture §11).** A resolution citation `(file, line)` closes a
     prior finding `F` only if, in the repair delta's entry for `file`:
     - `line` is an **added** (`+`) line of that entry's post-image; or
@@ -916,19 +960,12 @@ gating decision, so there is no would-be outcome to record (P4-PLAN2-MED-005; co
     does a line outside every hunk. A citation that is grounded but fails the predicate is a claim at most (`FIXED`,
     by the raiser) and never a verification. The golden test cites the unchanged context line directly above an
     added line and requires the finding to stay blocking.
-  - **SARIF findings (R23, R28).** A SARIF finding stays blocking until an authorized closure; model output can never
-    close it. The harness closes it (`RESOLUTION_VERIFIED` by `harness-rule:scanner-recheck`) only when this round's
-    check report proves **effective execution and coverage** on this attempt's tree: a run of the same scanner
-    (`tool.driver.name`) at the same version (`tool.driver.version` or `semanticVersion`, as recorded with the prior);
-    the finding's rule (`tool.driver.rules[].id`) **enabled in the run's effective configuration** — its
-    `defaultConfiguration.enabled` is not `false`, no `invocations[].ruleConfigurationOverrides[]` entry disables it,
-    and no `toolExecutionNotifications[]` or `toolConfigurationNotifications[]` entry is associated with it (a
-    notification about a rule is read as the rule failing or being skipped; an `error` notification that names no rule,
-    or a reference into another tool component, leaves the run proving no rule); every
-    `invocations[].executionSuccessful` of every run of that scanner `true`; the finding's file among the run's scanned
-    artifacts (`run.artifacts[]` whose `roles`, when present, include `analysisTarget`); and no result for the finding's
-    fingerprint. A declared rule is not proof that it ran. Anything the SARIF cannot prove counts as not proven, and
-    then only a named human closes it. In shadow mode this changes only the shadow verdict.
+  - **SARIF findings (R23, R32).** A SARIF finding stays blocking until an authorized human disposition closes it.
+    Model output never closes it, and neither does scanner output: a later SARIF log that no longer reports the
+    result, however clean its run looks, changes nothing. Scanner-recheck closure is deferred out of Phase 4 (DF-9):
+    three review rounds found new ways a log could falsely prove a fix (declared against effective rules, then
+    reference forms and foreign base URIs), and no real scanner is wired in Phase 4. The domain has no harness rule
+    that verifies a SARIF finding, and the database refuses one (data model §3.1).
   - A `RESOLVED` claim whose cited file was not touched by the repair delta stays `OPEN`
     (`closure-without-change`).
   - A finding of this round that matches a `VERIFIED` or `CLOSED` prior is a regression linked to that prior (§12).
@@ -959,10 +996,16 @@ gating decision, so there is no would-be outcome to record (P4-PLAN2-MED-005; co
 4. **Trojan Source:** bidirectional and zero-width Unicode in added lines → SECURITY finding.
 5. **Dependency and invariant checks:** manifest/lockfile changes flagged; `ArchitectureInvariant` 1.1.0
    `forbidden-import` rules over added import specifiers.
-6. **Project tools via SARIF 2.1.0 subset** from L4/L5 artifacts; malformed SARIF fails closed. Each run's scanner
-   identity and effective execution (tool, version, whether every invocation completed successfully, the rules its
-   effective configuration ran, the files it scanned) is recorded in the check report as evidence for a scanner
-   recheck (§13).
+6. **Project tools via SARIF 2.1.0 subset** from L4/L5 artifacts; a log whose structure cannot be read (version,
+   runs, results, messages, levels, regions) fails closed as one `sarif-malformed` finding. **Ingestion never loses a
+   result (R32).** A result's rule is resolved from `ruleId`, `ruleIndex`, `rule.id` and `rule.index` against
+   `tool.driver.rules`; its file from `physicalLocation.artifactLocation.uri` and `artifactLocation.index` against
+   `run.artifacts`. Forms that name the same rule and file give the same finding and fingerprint. A reference that
+   cannot be resolved — every reference with a `toolComponent`, a rule named only by `guid`, an index outside its
+   array, forms that disagree, a URI that is not a repository path, and any `uriBaseId`, because no base is bound to
+   the repaired repository root in Phase 4 (DF-9) — keeps the result as a finding flagged `unresolved-reference`: the
+   unresolved part is null, the evidence names the reference, the flag and the raw reference enter the fingerprint,
+   and the finding is never linked to a prior (§12). Scanner runs are not recorded: nothing in Phase 4 reads them.
 7. Raw check output is stored before any reduction (ADR 0009).
 
 ---
@@ -1062,8 +1105,8 @@ a reopened `FAILED` call adopts an existing raw response instead of calling.
 Lane A copies the block below verbatim into its plan and lands it in S0 as three files under
 `packages/application/src/review-loop/` (re-exported from `packages/application/src/index.ts`). The types file is
 complete, including the envelope helper; the two helper files are given as signatures (`declare`) with their
-behaviour specified in §18.2. This is the **v5 block** (R18, R23, R28): it replaces the v2, v3 and v4 texts, none of
-which Lane A has received, and goes to Lane A only after the controller's focused check (R23 hand-off rule). v4
+behaviour specified in §18.2. This is the **v6 block** (R18, R23, R28, R29, R32): it replaces the v2–v5 texts, none
+of which Lane A has received, and goes to Lane A only after the controller's focused check (R23 hand-off rule). v4
 changes against v3: every output is JSON (`recordAttemptOutcome` resolves `null`); the envelope helper validates
 plain JSON recursively before it measures; both writing helpers carry the caller's fence; a recorded attempt's
 redelivery is a no-op when identical and a coded conflict otherwise; `ReviewLoopContractError` carries a code;
@@ -1073,7 +1116,13 @@ the envelope helper); `AttemptOutcomeInput` is a union whose `fence` is `null` o
 lease, with the eight pre-lease obligations written into the block and the kit gaining RLC-16 and RLC-17;
 `RunReviewerOutput` and the outcome types are discriminated unions, so the record reference, the provider-call count,
 the mode and the shadow verdict are consistent in the type; `BuildReviewPacketOutput` reports `includedBytes`, which
-the hashed packet no longer carries; `reviewId` hashes a canonical JSON array.
+the hashed packet no longer carries; `reviewId` hashes a canonical JSON array. v6 changes against v5 (R32, consistent
+with R29): a `fence: null` write refused because the attempt's history now shows a lease raises the new code
+`lease-granted`, never `AssuranceFencedError`, and the kit gains RLC-18 for the R29 recovery; the conformance fixture is
+a union, so a stateful implementation must supply every hook (the atomicity case included) and only a slot declaring
+`stateless: true` reports the stateful cases not-applicable; `runRegistrationOrderingContract` (RLC-19) lets Lane A prove
+registration before any attempt-bound effect; the pre-lease doc states the single R29 exception to "every terminal is
+recorded"; `includedBytes` is the stored packet's final size.
 
 Location: Lane A's v1 plan put the port and kit in `packages/ports` (CR-10). The slot returns `AdmissionResult`,
 which lives in `@asep/application` (`packages/application/src/risk-admission.ts:30-36`), and ports must not depend
@@ -1316,14 +1365,17 @@ export interface BuildReviewPacketOutput {
   readonly packetRef: ArtifactRef;
   readonly packetSha256: string;
   /**
-   * UTF-8 length of the final canonical packet bytes plus every content part the prompt
-   * embeds (cumulative diff, repair delta, post-images). Recorded here and with the round,
-   * never inside the hashed packet.
+   * UTF-8 length of the stored canonical packet bytes, measured after budget.overBudget is
+   * set, for accepted and rejected packets alike, plus every content part the prompt embeds
+   * (cumulative diff, repair delta, post-images). Recorded here and with the round, never
+   * inside the hashed packet.
    */
   readonly includedBytes: number;
   /**
-   * includedBytes > plan.packetBudgetBytes, or a diff did not fit its reader limit. Such a
-   * packet is never rendered or sent; content is never cut to fit.
+   * The packet as it would be sent (carrying overBudget false) plus its embedded parts
+   * exceeds plan.packetBudgetBytes, or a diff did not fit its reader limit. Such a packet is
+   * never rendered or sent; content is never cut to fit. When false, includedBytes is at
+   * most plan.packetBudgetBytes.
    */
   readonly overBudget: boolean;
   /** Number of changed files whose content the packet omits, for any reason. */
@@ -1565,7 +1617,7 @@ export interface LeasedAttemptOutcomeInput extends AttemptOutcomeFields {
 
 /**
  * The terminal of an attempt that never held a workspace lease, recorded with fence null
- * (R28). Obligations, each proved by the conformance kit (RLC-16, RLC-17):
+ * (R28). Obligations, each proved by the conformance kit (RLC-16…RLC-19):
  *  1. the composition registers the attempt before any attempt-bound effect;
  *  2. the write transaction checks the tenant and locks the same attempt row that lease
  *     acquisition locks;
@@ -1576,6 +1628,14 @@ export interface LeasedAttemptOutcomeInput extends AttemptOutcomeFields {
  *  6. the terminal, its idempotency record and its events commit atomically;
  *  7. an attempt that ever held a lease must present its caller fence (LeasedAttemptOutcomeInput);
  *  8. buildRepairContextPack always requires a fence.
+ * A write refused under obligation 3 throws ReviewLoopContractError 'lease-granted', never
+ * AssuranceFencedError: a grant that committed late is not a supersession. The workflow then
+ * looks the lease up and records the same terminal with that lease's fence, at most two
+ * lookups (R29). The single exception to "every terminal is recorded" is a store that cannot
+ * be read or written after the retry policy (a failed lookup, or a failed pre-lease terminal
+ * write): the task ends FAILED / attempt-state-unknown, its audit entry carries the attempt's
+ * idempotency key, and telemetry completeness reports the attempt as a gap with that key
+ * (R29, R32).
  */
 export interface PreLeaseAttemptOutcomeInput extends AttemptOutcomeFields {
   readonly terminal: PreLeaseAttemptTerminal;
@@ -1636,12 +1696,14 @@ export interface ReviewLoopSlot {
 
   /**
    * Called at every attempt terminal, verification stops included; every terminal is
-   * recorded. A leased attempt is recorded with its caller fence before the lease is
-   * released; an attempt that never held a lease with fence null (PreLeaseAttemptOutcomeInput).
-   * Resolves null. Keyed by attemptId: a redelivery whose input equals the recorded one,
-   * fence aside, writes nothing and resolves null; any other input for a recorded attempt
-   * throws ReviewLoopContractError 'conflicting-redelivery' and writes nothing. The fence,
-   * or for fence null the attempt's never-leased history, is checked before the comparison.
+   * recorded, with the one exception stated on PreLeaseAttemptOutcomeInput. A leased attempt
+   * is recorded with its caller fence before the lease is released; an attempt that never
+   * held a lease with fence null (PreLeaseAttemptOutcomeInput). Resolves null. Keyed by
+   * attemptId: a redelivery whose input equals the recorded one, fence aside, writes nothing
+   * and resolves null; any other input for a recorded attempt throws ReviewLoopContractError
+   * 'conflicting-redelivery' and writes nothing. The fence, or for fence null the attempt's
+   * never-leased history ('lease-granted' if a lease ever existed), is checked before the
+   * comparison.
    */
   recordAttemptOutcome(input: AttemptOutcomeInput, ctx: AssuranceStepContext): Promise<null>;
 
@@ -1670,6 +1732,12 @@ export type ReviewLoopContractErrorCode =
   | 'not-in-scope'
   /** A redelivery for a recorded attempt whose input differs from the recorded one. */
   | 'conflicting-redelivery'
+  /**
+   * A fence-null terminal refused because the attempt's durable history shows a lease: a
+   * grant committed late. Not a supersession: the workflow looks the lease up and records the
+   * terminal with its fence (R29).
+   */
+  | 'lease-granted'
   /** An output that violates this contract (a defect of the implementation itself). */
   | 'invalid-output';
 
@@ -1813,7 +1881,7 @@ export interface RepairContextFixture {
   readonly rotateFence: () => Promise<AssuranceFence>;
 }
 
-/** An attempt registered in the backing store that has never held a workspace lease, for RLC-16 and RLC-17. */
+/** An attempt registered in the backing store that has never held a workspace lease, for RLC-16, RLC-17 and RLC-18. */
 export interface PreLeaseAttemptFixture {
   /** A valid pre-lease terminal of that attempt: fence null, terminal in PRE_LEASE_ATTEMPT_TERMINALS. */
   readonly attemptOutcome: PreLeaseAttemptOutcomeInput;
@@ -1827,7 +1895,8 @@ export interface PreLeaseAttemptFixture {
   readonly endLease: () => Promise<void>;
 }
 
-export interface ReviewLoopConformanceFixture {
+/** What every conformance fixture provides, stateful or not. */
+export interface ConformanceFixtureBase {
   /** A valid round-1 input that the implementation's backing store accepts. */
   readonly input: AssuranceSlotInput;
   /** A valid round-1 input whose change trips the push guard; null when the implementation cannot produce one. */
@@ -1835,43 +1904,53 @@ export interface ReviewLoopConformanceFixture {
   /** A valid terminal of `input`'s attempt, carrying `input.fence`. */
   readonly attemptOutcome: LeasedAttemptOutcomeInput;
   /**
-   * Simulates a lease handoff of `input`'s attempt in the backing store and returns the new
-   * holder's fence; null for a stateless implementation (fencing cases then report
-   * not-applicable).
-   */
-  readonly rotateFence: (() => Promise<AssuranceFence>) | null;
-  /** Releases the lease of `input`'s attempt in the backing store; null for a stateless implementation. */
-  readonly endLease: (() => Promise<void>) | null;
-  /**
    * Brings the backing store to a persisted REPAIR adjudication of `input`'s task with the
    * repair attempt's lease held; null when the implementation cannot reach REPAIR (the
    * repair-helper parts of RLC-14 and RLC-15 then report not-applicable in the detail).
    */
   readonly prepareRepair: (() => Promise<RepairContextFixture>) | null;
-  /**
-   * Registers a fresh attempt of `input`'s task that has never held a lease; null for a
-   * stateless implementation (RLC-16 and RLC-17's pre-lease parts then report not-applicable).
-   */
-  readonly preLeaseAttempt: (() => Promise<PreLeaseAttemptFixture>) | null;
-  /**
-   * Makes the next write transaction of the backing store fail at commit; null when the
-   * implementation cannot inject that (RLC-16's atomicity part then reports not-applicable).
-   */
-  readonly failNextCommit: (() => void) | null;
-  /**
-   * Canonical bytes of every row and run event the backing store holds for one round key,
-   * in a stable order; null for a stateless implementation (RLC-11 then reports
-   * not-applicable).
-   */
-  readonly persistedRoundBytes: ((roundKey: string) => Promise<string>) | null;
+}
+
+/**
+ * The fixture of an implementation that persists anything (rows, artifacts or events).
+ * Every hook is required, and no case that needs one may report not-applicable: the
+ * atomicity part of RLC-16 included (R32).
+ */
+export interface StatefulConformanceFixture extends ConformanceFixtureBase {
+  readonly stateless: false;
+  /** Simulates a lease handoff of `input`'s attempt in the backing store and returns the new holder's fence. */
+  readonly rotateFence: () => Promise<AssuranceFence>;
+  /** Releases the lease of `input`'s attempt in the backing store. */
+  readonly endLease: () => Promise<void>;
+  /** Registers a fresh attempt of `input`'s task that has never held a lease. */
+  readonly preLeaseAttempt: () => Promise<PreLeaseAttemptFixture>;
+  /** Makes the next write transaction of the backing store fail at commit. */
+  readonly failNextCommit: () => void;
+  /** Canonical bytes of every row and run event the backing store holds for one round key, in a stable order. */
+  readonly persistedRoundBytes: (roundKey: string) => Promise<string>;
   /**
    * Canonical bytes of every row, artifact and run event the backing store holds for one
-   * attempt id (its attempt outcome, its repair ContextPack), in a stable order; null for a
-   * stateless implementation ("no state change" in RLC-08, RLC-14 and RLC-15 then reports
-   * not-applicable).
+   * attempt id (its attempt outcome, its repair ContextPack), in a stable order.
    */
-  readonly persistedAttemptBytes: ((attemptId: AttemptId) => Promise<string>) | null;
+  readonly persistedAttemptBytes: (attemptId: AttemptId) => Promise<string>;
 }
+
+/**
+ * The fixture of an implementation that persists nothing. Only the disabled, not-configured
+ * and scripted slots declare it (R32); the fencing, pre-lease, atomicity, persistence and
+ * "no state change" parts of the cases then report not-applicable.
+ */
+export interface StatelessConformanceFixture extends ConformanceFixtureBase {
+  readonly stateless: true;
+  readonly rotateFence: null;
+  readonly endLease: null;
+  readonly preLeaseAttempt: null;
+  readonly failNextCommit: null;
+  readonly persistedRoundBytes: null;
+  readonly persistedAttemptBytes: null;
+}
+
+export type ReviewLoopConformanceFixture = StatefulConformanceFixture | StatelessConformanceFixture;
 
 /** The implementation under test over an empty backing store; the kit builds a fresh one per case. */
 export type ReviewLoopConformanceSubject = () => Promise<{
@@ -1886,13 +1965,36 @@ export interface ReviewLoopConformanceResult {
 }
 
 /**
- * Runs cases RLC-01…RLC-17 against any implementation. Framework-free; callers assert on
+ * Runs cases RLC-01…RLC-18 against any implementation. Framework-free; callers assert on
  * the result. `makeCtx(logicalTime)` returns a live context whose now() is `logicalTime`;
  * the kit reuses one value for every redelivery of one execution.
  */
 export declare function runReviewLoopContract(
   makeSubject: ReviewLoopConformanceSubject,
   makeCtx: (logicalTime: string) => AssuranceStepContext,
+): Promise<readonly ReviewLoopConformanceResult[]>;
+
+/** One step of an attempt's life as the composition commits it, for RLC-19. */
+export type AttemptLifecycleStep =
+  /** The attempt is durably registered and the workflow has read that registration back. */
+  | { readonly kind: 'registration-reconciled'; readonly attemptId: AttemptId }
+  /** Anything bound to the attempt: lease acquisition, workspace creation, agent start, a slot call, a terminal write. */
+  | { readonly kind: 'attempt-bound-effect'; readonly attemptId: AttemptId; readonly effect: string };
+
+export interface RegistrationOrderingScenario {
+  readonly name: string;
+  /** Drives the composition's workflow through the scenario and returns every step it committed, in commit order. */
+  readonly run: () => Promise<readonly AttemptLifecycleStep[]>;
+}
+
+/**
+ * Runs case RLC-19 (R28 obligation 1, R32) against the orchestration composition: in every
+ * scenario, no attempt-bound effect of an attempt precedes that attempt's
+ * registration-reconciled step. The kit first runs its own check on a fixed trace whose
+ * first step is an effect, and fails the case unless that trace is refused.
+ */
+export declare function runRegistrationOrderingContract(
+  scenarios: readonly RegistrationOrderingScenario[],
 ): Promise<readonly ReviewLoopConformanceResult[]>;
 
 export interface WorkspaceResolverConformanceFixture {
@@ -1944,24 +2046,31 @@ and exit J2 to this vocabulary at hand-off (R18). **Every terminal is recorded**
 fence before the lease is released, an attempt that never held a lease with `fence: null`, and only with a terminal in
 `PRE_LEASE_ATTEMPT_TERMINALS` (`cancelled`, `infrastructure-failed`). Lane A confirms that list against its core: it
 lists every path on which an attempt is registered and never leased, with the terminal it emits, and returns any
-terminal outside the list to the controller.
+terminal outside the list to the controller. A `fence: null` write refused with `lease-granted` is recovered by looking
+the lease up (SR-A14). **The single exception (R29, R32):** when the store cannot be read or written after the retry
+policy — a failed lookup, or a failed pre-lease terminal write — the task ends `FAILED` / `attempt-state-unknown`, the
+audit entry carries the attempt's idempotency key, the terminal is not recorded, and telemetry completeness (exit J6)
+reports the attempt as a gap with that key; it is never hidden. `attempt-state-unknown` is a task outcome, not a
+pre-lease terminal.
 
 **Pre-lease terminals (R28).** The eight obligations written on `PreLeaseAttemptOutcomeInput` in the block, with the
 party that carries each and the case that proves it:
 
 | # | Obligation | Carried by | Proved by |
 |---|---|---|---|
-| 1 | the attempt is registered before any attempt-bound effect | composition (Lane A) | RLC-16 (an unregistered attempt id → `not-in-scope`) |
+| 1 | the attempt is registered before any attempt-bound effect | composition (Lane A) | RLC-16 (an unregistered attempt id → `not-in-scope`); RLC-19 (no attempt-bound effect before the registration is reconciled) |
 | 2 | the write transaction checks the tenant and locks the attempt row that lease acquisition locks | slot implementation and composition | RLC-16 (foreign scope → `not-in-scope`; the race) |
-| 3 | `fence: null` only when durable history shows the attempt never had a lease | slot implementation | RLC-16 race; RLC-17 (refused after release and after takeover) |
+| 3 | `fence: null` only when durable history shows the attempt never had a lease; otherwise `lease-granted` | slot implementation | RLC-16 race; RLC-17 (refused after release and after takeover); RLC-18 (the R29 recovery) |
 | 4 | the terminal is `cancelled` or `infrastructure-failed` | slot implementation (and the type) | RLC-16 (`proceeded` with `fence: null` → `invalid-input`) |
 | 5 | lease acquisition refuses an attempt that already has a terminal, under the same lock | composition (Lane A) | RLC-16 (`acquireLease()` after the terminal → refused; the race) |
-| 6 | terminal, idempotency record and events commit atomically | slot implementation | RLC-16 (a commit failure changes nothing; the retry records) |
+| 6 | terminal, idempotency record and events commit atomically | slot implementation | RLC-16 (a commit failure changes nothing; the retry records; mandatory for every stateful subject) |
 | 7 | an attempt that ever held a lease presents its caller fence | slot implementation (and the type) | RLC-17 |
 | 8 | `buildRepairContextPack` always requires a fence | slot implementation (and the type) | RLC-17 (`fence: null` → `invalid-input`) |
 
 `runReviewLoopContract` cases, run by both lanes (Lane A against the scripted, disabled and not-configured slots;
-Lane B against `createAssuranceSlot` on PGlite and on real PostgreSQL). Every case starts from a fresh subject:
+Lane B against `createAssuranceSlot` on PGlite and on real PostgreSQL). Every case starts from a fresh subject. Only
+the disabled, not-configured and scripted slots may present a `StatelessConformanceFixture`; any other subject is
+stateful, supplies every hook, and a stateful case it cannot pass fails (R32):
 
 | Case | Assertion |
 |---|---|
@@ -1970,7 +2079,7 @@ Lane B against `createAssuranceSlot` on PGlite and on real PostgreSQL). Every ca
 | RLC-03 | `slotVersion` other than `review-loop/v1` → `ReviewLoopContractError` code `invalid-input` |
 | RLC-04 | round 1 with a `priorAdjudicationId`, or round > 1 without one → `ReviewLoopContractError` code `invalid-input` |
 | RLC-05 | after `rotateFence()`, a call with the old fence → `AssuranceFencedError` and no state change; the new fence completes and converges to RLC-02's outcome |
-| RLC-06 | outcome invariants, checked at runtime on every output the subject returns (the types state them too, R28): `roundKey = idempotencyKey`; mode `shadow` or `not-required` ⇒ kind ∈ {PROCEED, BLOCK}; only `PROCEED` has a `shadow` key, and it is non-null iff mode `shadow`; REPAIR and ESCALATE have mode `gating`; REPAIR ⇒ `nextRound = round + 1` and `repairBaseSha = resultSha`; every `runReviewer` output with status `COMPLETED_VALID` or `COMPLETED_INVALID` has a non-null `reviewRecordRef` and `providerCalls ≥ 1`, `FAILED` has a null one, and `EGRESS_STOPPED` or `SKIPPED_PUSH_GUARD` has a null one and `providerCalls = 0`; `buildReviewPacket` reports `overBudget` exactly when `includedBytes > plan.packetBudgetBytes` or a diff was over its reader limit. Negative fixtures: the scripted slot, told to return each violating shape, fails the case |
+| RLC-06 | outcome invariants, checked at runtime on every output the subject returns (the types state them too, R28): `roundKey = idempotencyKey`; mode `shadow` or `not-required` ⇒ kind ∈ {PROCEED, BLOCK}; only `PROCEED` has a `shadow` key, and it is non-null iff mode `shadow`; REPAIR and ESCALATE have mode `gating`; REPAIR ⇒ `nextRound = round + 1` and `repairBaseSha = resultSha`; every `runReviewer` output with status `COMPLETED_VALID` or `COMPLETED_INVALID` has a non-null `reviewRecordRef` and `providerCalls ≥ 1`, `FAILED` has a null one, and `EGRESS_STOPPED` or `SKIPPED_PUSH_GUARD` has a null one and `providerCalls = 0`; `buildReviewPacket` with `overBudget: false` has `includedBytes ≤ plan.packetBudgetBytes` and no diff over its reader limit, and with `overBudget: true` has a diff over its reader limit or `includedBytes + 1 > plan.packetBudgetBytes` (the stored `true` is one byte shorter than the `false` the size was decided on). Negative fixtures: the scripted slot, told to return each violating shape, fails the case |
 | RLC-07 | an aborted signal → `AssuranceCancelledError`; a later call with a live signal converges to RLC-02's outcome |
 | RLC-08 | `recordAttemptOutcome(attemptOutcome)` resolves exactly `null` (never `undefined`) and changes `persistedAttemptBytes` of the attempt (the terminal is recorded) |
 | RLC-09 | `admitWithAssurance` with `promotedReviewerConfigIds: []` equals `admitRisk` for R0–R4; R3/R4 are `DEFERRED` for every capability |
@@ -1980,14 +2089,17 @@ Lane B against `createAssuranceSlot` on PGlite and on real PostgreSQL). Every ca
 | RLC-13 | an input whose `scope` is another tenant's → `ReviewLoopContractError` code `not-in-scope` and no state change (not-applicable for a stateless implementation) |
 | RLC-14 | helper fencing (R23), for `recordAttemptOutcome` (with `attemptOutcome`) and `buildRepairContextPack` (with `prepareRepair()`'s input), each on a fresh subject: the fence with `fencingEpoch` one below or one above, or with another `leaseId`, → `AssuranceFencedError` and `persistedAttemptBytes` unchanged; after the matching `rotateFence()`, the old fence → `AssuranceFencedError` and unchanged, and the new holder's fence succeeds; after `endLease()`, `recordAttemptOutcome` with the fence that held the lease → `AssuranceFencedError` and unchanged (a terminal is recorded before release) |
 | RLC-15 | helper redelivery (R23), for both helpers, each on a fresh subject after one successful call: the identical input → the same output (`null`; the same `contextPackRef` bytes) and `persistedAttemptBytes` unchanged; the identical input under the holder's new fence after `rotateFence()` → the same output and unchanged; an input that differs in one field (`terminal` or `failureClass`; `repairOrderRef` or `originalContextPackRef`) → `ReviewLoopContractError` code `conflicting-redelivery` and unchanged; with a stale fence, a conflicting input → `AssuranceFencedError` (the fence is checked first) |
-| RLC-16 | pre-lease terminal (R28 obligations 1–6), each on a fresh subject with `preLeaseAttempt()`: its `attemptOutcome` (`fence: null`) resolves `null` and changes `persistedAttemptBytes` (terminal, idempotency record and events), and a later `acquireLease()` resolves `null` (refused) with the bytes unchanged; an identical redelivery → `null` and unchanged; the same outcome with terminal `proceeded` → `ReviewLoopContractError` `invalid-input` and unchanged; under another tenant's scope, or for an attempt id the store never registered, → `not-in-scope` and unchanged; after `failNextCommit()` the call fails and the bytes are unchanged, and the retry records it (not-applicable when `failNextCommit` is null); **race**, on each of 20 fresh subjects: `recordAttemptOutcome(attemptOutcome)` and `acquireLease()` started together → exactly one wins: either the outcome is recorded and `acquireLease()` resolves `null`, or `acquireLease()` resolves a fence and `recordAttemptOutcome` throws `AssuranceFencedError` with the terminal unrecorded |
-| RLC-17 | `fence: null` is refused once a lease ever existed (R28 obligations 3, 7, 8): `fixture.attemptOutcome` with `fence: null` and terminal `cancelled` → `AssuranceFencedError` and `persistedAttemptBytes` unchanged while the lease is held, again after `rotateFence()`, and again after `endLease()` (durable history, not the current lease state); for a `preLeaseAttempt()` whose `acquireLease()` succeeded, its `attemptOutcome` → `AssuranceFencedError` and unchanged, also after its `endLease()`; `buildRepairContextPack` with `prepareRepair()`'s input and `fence: null` → `ReviewLoopContractError` `invalid-input` and unchanged |
+| RLC-16 | pre-lease terminal (R28 obligations 1–6), each on a fresh subject with `preLeaseAttempt()`: its `attemptOutcome` (`fence: null`) resolves `null` and changes `persistedAttemptBytes` (terminal, idempotency record and events), and a later `acquireLease()` resolves `null` (refused) with the bytes unchanged; an identical redelivery → `null` and unchanged; the same outcome with terminal `proceeded` → `ReviewLoopContractError` `invalid-input` and unchanged; under another tenant's scope, or for an attempt id the store never registered, → `not-in-scope` and unchanged; after `failNextCommit()` the call fails and the bytes are unchanged, and the retry records it (mandatory for a stateful subject; not-applicable only for a `StatelessConformanceFixture`, R32); **race**, on each of 20 fresh subjects: `recordAttemptOutcome(attemptOutcome)` and `acquireLease()` started together → exactly one wins: either the outcome is recorded and `acquireLease()` resolves `null`, or `acquireLease()` resolves a fence and `recordAttemptOutcome` throws `ReviewLoopContractError` `lease-granted` (never `AssuranceFencedError`) with the terminal unrecorded, after which the same outcome with that fence (the R29 recovery) resolves `null` and records it |
+| RLC-17 | `fence: null` is refused once a lease ever existed (R28 obligations 3, 7, 8; R32): `fixture.attemptOutcome` with `fence: null` and terminal `cancelled` → `ReviewLoopContractError` `lease-granted` (never `AssuranceFencedError`) and `persistedAttemptBytes` unchanged while the lease is held, again after `rotateFence()`, and again after `endLease()` (durable history, not the current lease state); for a `preLeaseAttempt()` whose `acquireLease()` succeeded, its `attemptOutcome` → `lease-granted` and unchanged, also after its `endLease()`; `buildRepairContextPack` with `prepareRepair()`'s input and `fence: null` → `ReviewLoopContractError` `invalid-input` and unchanged |
+| RLC-18 | late grant (R29, R32), on a fresh subject with `preLeaseAttempt()`: `acquireLease()` resolves a fence `F` (the grant committed before the terminal write); `attemptOutcome` (`fence: null`) → `ReviewLoopContractError` `lease-granted`, never `AssuranceFencedError`, and `persistedAttemptBytes` unchanged; the same outcome with `fence: F` — the workflow's recovery after its lookup finds the lease — resolves `null` and records the terminal; its identical redelivery → `null` and unchanged; a later `fence: null` delivery → `lease-granted` and unchanged |
+| RLC-19 | registration before effect (R28 obligation 1, R32), run by Lane A through `runRegistrationOrderingContract` against its workflow with at least these scenarios: a first attempt, a repair attempt, a cancellation before any lease, an `acquireLease` that fails or is aborted (the R29 path) and a worker crash followed by redelivery. In every scenario each `attempt-bound-effect` of an attempt comes after that attempt's `registration-reconciled` step. Negative fixture: the kit's own trace whose first step is an effect must be refused, or the case fails |
 
 The two writing helpers check, in order: the envelope (`invalid-payload`, money included), the input rules
 (`invalid-input`: slot version, lineage, a `fence: null` with a terminal outside `PRE_LEASE_ATTEMPT_TERMINALS`, a
 `fence: null` for `buildRepairContextPack`), the scope (`not-in-scope`, also for an attempt the store never
 registered), the caller's fence — or, for `fence: null`, the attempt's durable lease history under the attempt-row lock
-(`AssuranceFencedError` if a lease ever existed) — then the recorded input for the attempt (identical: return the
+(`ReviewLoopContractError` `lease-granted` if a lease ever existed: a late grant, not a supersession) — then the
+recorded input for the attempt (identical: return the
 stored output; different: `conflicting-redelivery`). The fence or history check, the comparison and the write share one
 transaction, which also writes the idempotency record and the events; every refusal changes nothing. "Identical" means
 deep-equal after removing `fence`, so the current holder after a takeover may redeliver the same facts.
@@ -2003,13 +2115,13 @@ PostgreSQL and by Lane B against its fake (exit E13):
 | WRC-04 | `fencingEpoch` one below or one above the current epoch → `refused` / `stale-epoch` |
 | WRC-05 | after `endLease()` → `refused` / `lease-not-active` |
 
-### 18.3 Obligations of the orchestration composition (SR-A1…SR-A10)
+### 18.3 Obligations of the orchestration composition (SR-A1…SR-A14)
 
 | ID | Obligation |
 |---|---|
 | SR-A1 | Call the slot after evidence persistence and before push; never at a verification stop. Map outcomes: PROCEED → push, PR with `prBodySectionRef` content, `WAITING_FOR_HUMAN_REVIEW`; REPAIR → new attempt; ESCALATE → push, PR flagged "assurance not satisfied", `WAITING_FOR_HUMAN_REVIEW`; BLOCK → no push, task `BLOCKED`. |
 | SR-A2 | A repair attempt gets a fresh workspace at `repairBaseSha`; the orchestrator acquires that attempt's workspace lease, calls `buildRepairContextPack` with that lease's fence, and starts the agent with the ContextPack its `contextPackRef` references (the "task baseSha + apply diff" design is withdrawn, R3). |
-| SR-A3 | Call `recordAttemptOutcome` at every attempt terminal, verification stops included: **every terminal is recorded** (R28). An attempt that holds its lease is recorded with the fence of that lease as the caller holds it, **before** releasing the lease (R23); an `AssuranceFencedError` means the lease was taken over or ended, and the current holder records the terminal. An attempt that never held a lease is recorded with `fence: null` and a terminal in `PRE_LEASE_ATTEMPT_TERMINALS`. |
+| SR-A3 | Call `recordAttemptOutcome` at every attempt terminal, verification stops included: **every terminal is recorded** (R28), with the single exception below (R29, R32). An attempt that holds its lease is recorded with the fence of that lease as the caller holds it, **before** releasing the lease (R23); an `AssuranceFencedError` means the lease was taken over or ended, and the current holder records the terminal. An attempt that never held a lease is recorded with `fence: null` and a terminal in `PRE_LEASE_ATTEMPT_TERMINALS`; a `lease-granted` refusal is recovered under SR-A14. **Exception:** when the store cannot be read or written after the retry policy (a failed `findAttempt` or `findLease` lookup, or a failed pre-lease terminal write), the task ends `FAILED` with reason `attempt-state-unknown`, the audit entry carries the attempt's idempotency key, the terminal is not recorded, and telemetry completeness (exit J6) reports the attempt as a gap with that idempotency key. |
 | SR-A4 | Pass `(risk) => slot.admitWithAssurance(risk, capability)` through the optional `admit` hook (SR-X1). |
 | SR-A5 | Emit `workflow.recovered` through the shared `RunEventSink`. |
 | SR-A6 | Do not emit `attempt.declared_complete`, `attempt.completed`, `review.completed`, `review.finding_dispositioned` or `repair.started`; Lane B's slot owns them, so no event is double-counted. |
@@ -2017,10 +2129,11 @@ PostgreSQL and by Lane B against its fake (exit E13):
 | SR-A8 | Implement `AssuranceWorkspaceResolver` over the workspace-lease table and pass `runWorkspaceResolverContract` on real PostgreSQL (R18). |
 | SR-A9 | Carry the activity's logical time (the workflow time at scheduling) in the activity input; the context adapter's `now()` returns it on every redelivery of that execution (R15). |
 | SR-A10 | When the assurance activity fails after its retry policy, or non-retryably: audit `assurance-unavailable`; shadow mode → continue as PROCEED with no section; gating mode → ESCALATE; never `FAILED`; call `recordAttemptOutcome` with `assuranceUnavailable: true` and `adjudicationId: null` (R19). |
-| SR-A11 | Pre-lease obligations of the composition (R28 1, 2, 5): register the attempt before any attempt-bound effect; acquire a workspace lease under the lock on the attempt row that `recordAttemptOutcome` also takes, and refuse acquisition for an attempt that already has a terminal. Pass RLC-16 and RLC-17 with a fixture whose `acquireLease` is the composition's own acquisition. |
+| SR-A11 | Pre-lease obligations of the composition (R28 1, 2, 5): register the attempt before any attempt-bound effect; acquire a workspace lease under the lock on the attempt row that `recordAttemptOutcome` also takes, and refuse acquisition for an attempt that already has a terminal. Pass RLC-16, RLC-17 and RLC-18 with a fixture whose `acquireLease` is the composition's own acquisition, and RLC-19 (`runRegistrationOrderingContract`) against the workflow. |
 | SR-A12 | Before hand-off, list every path on which an attempt is registered and never leased, with the terminal it emits; any terminal outside `PRE_LEASE_ATTEMPT_TERMINALS` goes back to the controller (R28). |
 | SR-A13 | Money at the seam is integer micro-USD (R28): `budgetRemaining.costMicroUsd` from the workflow's integer ledger, `cost.modelCostMicroUsd` and `cost.computeCostMicroUsd` as the adapter converted them (once, with ceiling); never a floating USD value. |
-| — | Activity policy: heartbeat timeout ≥ 60 s; retry transient errors; never retry `ReviewLoopContractError` (any code) or `AssuranceFencedError` within the same delivery; code `conflicting-redelivery` maps to a non-retryable activity failure (R23); on `AssuranceFencedError` the attempt is superseded under Lane A's lease-takeover semantics. |
+| SR-A14 | Late grant (R29, R32). When `acquireLease` fails or is aborted the grant may have committed: run the non-cancellable `findLease(attemptId)` lookup. Found: record the terminal with that lease's fence, then release. Not found: record it with `fence: null`; if that write raises `ReviewLoopContractError` `lease-granted` (a grant committed between the lookup and the write), look up again and record with the fence found — at most two lookups, because a recorded terminal refuses any later grant and a lease in history never disappears. A lookup that fails after its retry policy, or a pre-lease terminal write that fails after it, ends the task under SR-A3's exception. |
+| — | Activity policy: heartbeat timeout ≥ 60 s; retry transient errors; never retry `ReviewLoopContractError` (any code) or `AssuranceFencedError` within the same delivery; code `conflicting-redelivery` maps to a non-retryable activity failure (R23); code `lease-granted` maps to a typed non-retryable result that the workflow handles under SR-A14, never to supersession (R32); on `AssuranceFencedError` the attempt is superseded under Lane A's lease-takeover semantics. |
 
 ### 18.4 Other S0 items Lane B depends on (R4, R5)
 
@@ -2071,8 +2184,8 @@ repository with TypeScript 7.0.2 and the repository's base compiler options (`st
 `exactOptionalPropertyTypes`, declaration emit, `types: ["node"]`), **against the real built declarations** of
 `@asep/contracts` and `@asep/ports` and the real `AdmissionResult` of `@asep/application` from this branch's
 `tsc -b` output, with seeded negative controls that must fail, and its envelope helper is executed from the block
-text on the RLC-01 fixtures. The v5 commands and results are in the review log ("Review v4", "Slot block type-check
-and helper execution (v5)"); earlier versions' results are in the sections before it.
+text on the RLC-01 fixtures. The v6 commands and results are in the review log ("Review v5", "Slot block type-check
+and helper execution (v6)"); earlier versions' results are in the sections before it.
 
 `run-event` 1.2.0 (R5), Lane B's part of the superset — one new `eventType` and optional fields:
 
@@ -2115,7 +2228,7 @@ request lands in a Lane B slice after the rebase onto S0, unless noted.
 
 | ID | Item |
 |---|---|
-| SR-S0-1 | `packages/application/src/review-loop/{slot.ts, disabled-slot.ts, review-loop-contract.ts}` + export lines (§18 "Review-loop slot contract (verbatim for S0)" v5 and §18.2): the slot, the envelope helper, the workspace resolver port, the disabled slot, the slot kit (RLC-01…17), the resolver kit (WRC-01…05) and the scripted slot |
+| SR-S0-1 | `packages/application/src/review-loop/{slot.ts, disabled-slot.ts, review-loop-contract.ts}` + export lines (§18 "Review-loop slot contract (verbatim for S0)" v6 and §18.2): the slot, the envelope helper, the workspace resolver port, the disabled slot, the slot kit (RLC-01…18), the registration-ordering kit (RLC-19), the resolver kit (WRC-01…05) and the scripted slot |
 | SR-S0-2 | `RunEventSink`, `RunEventConflictError` in `packages/ports/src/index.ts` (§18.4) |
 | SR-S0-3 | Lane B's `run-event` 1.2.0 additions (§18.4) inside the single superset bump |
 | SR-S0-4 | `run_events` DDL union in Lane A's `0107` (§18.4); Lane B's `0201_run_events` is withdrawn |
@@ -2279,7 +2392,7 @@ rule of §21.2.
 | S10 | `adapters/reviewer-openai` + credential source + request-byte egress re-check | fake HTTP server rows for every adapter MUST; exact request body asserted; credential canary absent; rotation on 401; expiry refresh; no `process.env` in adapter source; gateway-alteration detection (returned `instructions` vs sent, usage attribution) recorded per call against a fake gateway that mimics the injection; opt-in probe of primary (`gpt-6.1-sol`) and comparator records the gateway's behaviour and confirms detection live | after S0 | `feat(reviewer): OpenAI-compatible Responses reviewer with an injected credential source` |
 | S11 | `adapters/reviewer-replay` | exact replay by request hash; miss and manifest mismatch fail closed; scripted provider marked fake | after S0 | `feat(reviewer): deterministic replay and scripted reviewers` |
 | S12 | step use cases `planAssurance`, `buildReviewPacket`, `runDeterministicChecks`, `runReviewer`, `adjudicateRound` (application, against fakes) | JSON round trip within the envelope; zero provider calls on push-guard BLOCK and on every egress stop; crash at each step boundary converges with byte-identical records (fixed logical time); the workspace comes only from the resolver and every refusal stops the step before any read (E13); resolver kit WRC-01…05 on the fake; parallel reviewers blind | after S0 | `feat(assurance): idempotent assurance step use cases` |
-| S13 | `createAssuranceSlot` (composite, `recordAttemptOutcome`, `admitWithAssurance`, `buildRepairContextPack`, event emission); SR-X1 | conformance kit RLC-01…17 on PGlite (helper fencing, redelivery and pre-lease terminals included); events per §15 with deterministic ids; repair ContextPack by `ArtifactRef` with `generatedAt` from the REPAIR decision; `admitWithAssurance` equals `admitRisk` for production capability; governed-execution suite unchanged | after S0 | `feat(assurance): implement the review-loop slot and attempt-outcome events` |
+| S13 | `createAssuranceSlot` (composite, `recordAttemptOutcome`, `admitWithAssurance`, `buildRepairContextPack`, event emission); SR-X1 | conformance kit RLC-01…18 on PGlite (helper fencing, redelivery, pre-lease terminals, the late grant and the atomicity case included); events per §15 with deterministic ids; repair ContextPack by `ArtifactRef` with `generatedAt` from the REPAIR decision; `admitWithAssurance` equals `admitRisk` for production capability; governed-execution suite unchanged | after S0 | `feat(assurance): implement the review-loop slot and attempt-outcome events` |
 | S14 | `runAssuredTask` sequential driver + durable-shaped fake | shadow mode changes no workflow decision except BLOCK; drill gating loop bounded by `maxRounds`; activity-granular fake converges under retries, cancellation and a lease handoff | after S0 | `feat(assurance): sequential proof driver and activity-granular fake` |
 | S15 | `assurance-root.ts` + CLI (`asep assurance report`, disposition entry for humans) | fail-closed config; gating unreachable from production composition (policy with `gating` refused); credential source injected; disabled-reviewer literal | after S0 | `feat(control-plane): compose the independent reviewer behind a fail-closed root` |
 | S16 | **assurance-only** loop itest | real PG + Git + sandbox + real adapter vs local fake HTTP: shadow PROCEED with recorded wouldBe; push-guard BLOCK with zero gateway requests and zero forge calls; each egress stop with zero gateway requests; drill composition: REPAIR → re-review closed by the other reviewer → PROCEED, raiser-only closure → ESCALATE at max rounds; conformance kit on real PG | after P2 + S0 | `test(control-plane): assurance-only loop on real backends` |
@@ -2406,7 +2519,7 @@ migration (data model §3.6).
    `…MEASUREMENT_PENDING…`. Neither `gpt-6.1-sol` nor the comparator has been probed by the lane (not verified); the gateway's request alteration is verified by the controller (U-3).
 4. **Phase 2 agent-runtime repair**: S22. Without it the verdict carries `ASSURANCE_ONLY_LOOP`.
 5. **Pilot repository**: DF-6 only.
-6. **Controller confirmation of v5**: the S19 freeze, every S20 part and the hand-off of the slot block to Lane A wait for it (§7.8, R18, R23, R28).
+6. **Controller confirmation of v6**: the S19 freeze, every S20 part and the hand-off of the slot block to Lane A wait for it (§7.8, R18, R23, R28, R32).
 
 None blocks plan lock.
 
@@ -2415,12 +2528,13 @@ None blocks plan lock.
 ## Output
 
 ```text
-PLAN_STATUS: LOCKED v5 (pending controller confirmation)
+PLAN_STATUS: LOCKED v6 (pending controller confirmation)
 BASE_SHA: 00a68895d205122767167942326e2e0466571059 (Phase 2 not accepted)
 REVIEWED_V1: a2a7b8ad09a5389339fc3ef7131ae7b2b294d97f — Codex REQUEST_CHANGES 0.99 (1 CRITICAL, 8 HIGH, 5 MEDIUM, 1 LOW), all dispositioned
 REVIEWED_V2: 32013356e0845354f40ac6f63925f928637d6fb3 — Codex gpt-6.1-sol lock-check REQUEST_CHANGES 0.97 (14/15 v1 folded, v1 MED-001 partial; new 2 HIGH, 8 MEDIUM), all dispositioned
 REVIEWED_V3: 9e3a1c32e869193e981a867e8bb9fbd1abaec9c8 — Codex gpt-6.1-sol review of plan, slot block and pre-S0 code REQUEST_CHANGES 0.99 (all v2 findings folded; new 6 MEDIUM plan/slot, 6 HIGH + 3 MEDIUM + 1 LOW code, 1 surviving mutation), all dispositioned
 REVIEWED_V4: 7cc20f474ef0d53532ff386777eae7d5d07dae24 — Codex gpt-6.1-sol re-check of plan v4, slot block and code fixes REQUEST_CHANGES 0.99, HAND-OFF NOT_READY (all v3 plan/slot findings folded; 7 code items resolved, 4 partial; new 1 HIGH + 2 MEDIUM plan, 2 MEDIUM slot, 3 HIGH + 2 MEDIUM code, 1 surviving mutation), all dispositioned
+REVIEWED_V5: fb2e4323a61e128553043b08157f02c70a1684c9 — Codex gpt-6.1-sol re-check of plan v5, slot block and code fixes REQUEST_CHANGES 0.99, HAND-OFF NOT_READY (v4 severity, identity, budget and pattern fixes resolved; new 1 MEDIUM + 1 LOW plan, 1 HIGH + 1 MEDIUM slot, 3 HIGH + 1 MEDIUM + 1 LOW code, 1 surviving mutation, 1 mutant wrongly declared equivalent), all dispositioned
 BASELINE: lane-observed at a2a7b8a — verify:all exit 0; tests 548 pass 548; 50 files; 28 required suites; compat 13 schemas
 PLAN_FILES:
   - docs/implementation/phases/phase-04-plan.md
@@ -2435,9 +2549,10 @@ PLAN_FILES:
   - docs/implementation/phases/phase-04-plan-review-codex-v2.md
   - docs/implementation/phases/phase-04-review-codex-v3.md
   - docs/implementation/phases/phase-04-review-codex-v4.md
+  - docs/implementation/phases/phase-04-review-codex-v5.md
 NEW_THIRD_PARTY_DEPENDENCIES: none
 GATING: shadow only in Phase 4 (user decision); gating/promotion/thresholds/R2 admission deferred
-SLOT_BLOCK: v5 (R18, R19, R23, R28), type-checked against the real built @asep/contracts, @asep/ports and AdmissionResult with 15 negative controls; envelope helper executed from the block text on the RLC-01 fixtures, money included; hand-off to Lane A only after the controller's focused check
+SLOT_BLOCK: v6 (R18, R19, R23, R28, R29, R32), type-checked against the real built @asep/contracts, @asep/ports and AdmissionResult with 18 negative controls; envelope helper executed from the block text on the RLC-01 fixtures, money included; hand-off to Lane A only after the controller's focused check
 SHARED_SURFACE_REQUESTS: §19 (S0 4, ports 3, contracts 6 (+ SR-C3 withdrawn, SR-C5 moved to S0), migrations 3 (+ 0201_run_events withdrawn), fencing CR-F1, gates 4 (both runners), dictionary 2 + loader, other 8, controller 3)
-READY_FOR_IMPLEMENTATION: pure-core parts of S3–S7 and S19 (provenance and excerpts) per §21.1; S19 freeze and S20 after v5 confirmation; integration parts after Phase 2 acceptance, Lane A S0 and per-step controller release
+READY_FOR_IMPLEMENTATION: pure-core parts of S3–S7 and S19 (provenance and excerpts) per §21.1; S19 freeze and S20 after v6 confirmation; integration parts after Phase 2 acceptance, Lane A S0 and per-step controller release
 ```

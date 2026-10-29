@@ -15,6 +15,8 @@
 > v5: the re-check of v4, the slot block and the code fixes (`phase-04-review-codex-v4.md`, Codex `gpt-6.1-sol`,
 > snapshot `7cc20f4`, REQUEST_CHANGES 0.99) and controller decisions R26 and R28 are dispositioned in "Review v4"
 > below.
+> v6: the re-check of v5, the slot block and the code fixes (`phase-04-review-codex-v5.md`, Codex `gpt-6.1-sol`,
+> snapshot `fb2e432`, REQUEST_CHANGES 0.99) and controller decision R32 are dispositioned in "Review v5" below.
 >
 > Each finding is dispositioned `ACCEPTED` / `PARTIALLY_ACCEPTED` / `REJECTED_WITH_EVIDENCE`. Nothing was
 > auto-accepted: each finding's cited code was re-read before deciding. An accepted finding names its design
@@ -1025,6 +1027,244 @@ Every numbered finding of the review is dispositioned (10 accepted, 0 rejected) 
 documents. Remaining before the corpus freeze and before Lane A receives the block: the controller's re-check of the
 v5 block and of the code fixes at the lane head, and confirmation of v5.
 
+## Review v5 (Codex `gpt-6.1-sol`, snapshot `fb2e432`)
+
+> Raw review: `phase-04-review-codex-v5.md` (verbatim copy with provenance). Verdict: REQUEST_CHANGES, confidence
+> 0.99, `HAND-OFF: NOT_READY`. Controller decision applied alongside: `reconciliation-v1.md` R32 (final decisions for
+> this re-check; applied as written), checked against R29 (pre-lease recovery and the store-unreadable exception) and
+> R31 (publication identity, Lane A's). Each finding's cited text was re-read at `fb2e432` before deciding; line numbers
+> below refer to `fb2e432`. The controller's checks at that snapshot, on a clean detached worktree: `pnpm verify:all`
+> exit 0, 620 pass, 0 fail, 0 skipped, 60 files, 37 required suites; shellcheck (Docker `koalaman/shellcheck:stable`)
+> on `scripts/check-publication.sh`: one SC2046 warning, identical to the `00a6889` version, no new warning.
+
+### Summary
+
+| Severity | Count | ACCEPTED | PARTIAL | REJECTED |
+|---|---|---|---|---|
+| HIGH — slot block (P4-SLOT5) | 1 | 1 | 0 | 0 |
+| HIGH — code (P4-CODE5) | 3 | 3 | 0 | 0 |
+| MEDIUM — plan (P4-PLAN5) | 1 | 1 | 0 | 0 |
+| MEDIUM — slot block (P4-SLOT5) | 1 | 1 | 0 | 0 |
+| MEDIUM — code (P4-CODE5) | 1 | 1 | 0 | 0 |
+| LOW — plan (P4-PLAN5) | 1 | 1 | 0 | 0 |
+| LOW — code (P4-CODE5) | 1 | 1 | 0 | 0 |
+| **Total numbered** | **9** | **9** | **0** | **0** |
+| Unnumbered: surviving SARIF severity mutation; blocking-order mutant wrongly declared equivalent; `result.rule.toolComponent` overlooked; line-based `git ls-files`; `providerCalls` typed as any number; R31 note | 6 | 5 | 0 | 0 (1 acknowledged, no change) |
+
+The re-check confirmed P4-CODE4-HIGH-001, HIGH-003, MED-001, MED-002, v3 P4-CODE-HIGH-003, MED-001, MED-002 and the v4
+CRITICAL mutation as RESOLVED, the block's helper as rejecting 27/27 hostile payloads, and the block as type-checking
+with 0 diagnostics and 15/15 controls. Its PARTIAL items continue here: P4-SLOT4-MED-002 → P4-SLOT5-HIGH-001 and
+P4-SLOT5-MED-001; P4-CODE4-HIGH-002 and v3 P4-CODE-HIGH-005 → P4-CODE5-HIGH-001 and HIGH-002, which R32 settles by
+deferring scanner-recheck closure out of Phase 4.
+
+The plan and slot-block fixes land in the docs-only commit that carries this section; each code finding lands in its
+own commit with a failing-first test and a mutation check, reported in the lane report.
+
+### P4-PLAN5-MED-001 — The R29 exception to "every terminal is recorded" was not stated — ACCEPTED
+**Concern:** R29 lets a terminal go unrecorded when a lookup fails after its retry policy; the plan, SR-A3 and H4 still
+said "every terminal" without exception, and J6 did not require a gap report keyed by the attempt's idempotency key
+(`phase-04-plan.md:1638`, `:1943`, `:2012`; `phase-04-exit-criteria.md:133`, `:165`).
+**Disposition:** Correct (all five lines re-read). R32 widens the wording to a store that cannot be read or written
+after the retry policy (a failed lookup, or a failed pre-lease terminal write), matching Lane A's turn 9.
+**Locked change:** the block's `PreLeaseAttemptOutcomeInput` and `recordAttemptOutcome` docs; plan §18.2 terminal
+vocabulary; SR-A3 (the exception, `FAILED` / `attempt-state-unknown`, the idempotency key in the audit entry, the gap
+report); SR-A14; exits H4 and J6. `attempt-state-unknown` is a task outcome, not a pre-lease terminal (the allowlist is
+unchanged).
+**Validation:** exit H4; exit J6 (`assurance-dashboards.itest.ts` › "telemetry completeness reports an unrecorded
+terminal with its idempotency key").
+
+### P4-PLAN5-LOW-001 — `provenance: excerpt-only` sat next to the R22 vocabulary — ACCEPTED
+**Concern:** the plan still marked items `provenance: excerpt-only` beside `private-bundle-only`
+(`phase-04-plan.md:477`, `:482`).
+**Disposition:** Correct (`:477` re-read).
+**Locked change:** plan §7.5 describes the verification mode (a clean clone checks a `private-bundle-only` item's
+excerpts only for internal consistency; checking them against git needs the bundle) and states that this is not a
+provenance value.
+**Validation:** wording only; the collector has no `excerpt-only` value (`evals/review-corpus/collect.ts` vocabulary
+unchanged).
+
+### P4-SLOT5-HIGH-001 — A late lease grant was read as supersession — ACCEPTED
+**Concern:** a `fence: null` write refused because a grant committed late raised `AssuranceFencedError`, and the
+activity policy maps every `AssuranceFencedError` to supersession; R29 requires a lookup and a write with the found
+fence (`phase-04-plan.md:1644`, `:1989`, `:2012`, `:2023`).
+**Disposition:** Correct: `:1989` names `AssuranceFencedError` for a null fence on a leased attempt and `:2023` reads
+every `AssuranceFencedError` as supersession. R32: a distinct code.
+**Locked change:** `ReviewLoopContractErrorCode` gains `lease-granted`; the pre-lease doc, the `recordAttemptOutcome`
+doc and the §18.2 check order name it; RLC-16's race expects `lease-granted` and then the recovery write; RLC-17
+expects `lease-granted` (never `AssuranceFencedError`); new RLC-18 (late grant: refusal, recovery with the found fence,
+redelivery); SR-A14 (the R29 procedure, at most two lookups, lookup failure under SR-A3's exception); activity policy
+(`lease-granted` → a typed non-retryable result the workflow handles under SR-A14, never supersession); risk PR4-39;
+threat T4-30; exits E12, H4.
+**Validation:** RLC-16, RLC-17, RLC-18; exit H4 (`steps.test.ts` › "a late lease grant is refused with lease-granted and
+recorded with its fence"); the helper probe below constructs the code from the block text.
+
+### P4-SLOT5-MED-001 — Atomicity could be skipped and registration ordering was unproven — ACCEPTED
+**Concern:** a stateful implementation could pass `failNextCommit: null` and report RLC-16's atomicity part
+not-applicable; the unregistered-attempt case did not prove registration before every attempt-bound effect
+(`phase-04-plan.md:1857`, `:1954`, `:1983`; `phase-04-exit-criteria.md:96`).
+**Disposition:** Correct (`:1857` re-read: "null when the implementation cannot inject that").
+**Locked change:** `ReviewLoopConformanceFixture` is now `StatefulConformanceFixture | StatelessConformanceFixture`: a
+stateful fixture must supply every hook (the commit-failure hook included), and only the disabled, not-configured and
+scripted slots may declare `stateless: true`; RLC-16's atomicity part is mandatory for stateful subjects; new
+`runRegistrationOrderingContract` (RLC-19), which Lane A runs against its workflow (scenarios: first attempt, repair
+attempt, cancel before any lease, failed or aborted acquisition, crash and redelivery), with the kit's own negative
+trace; SR-A11; exit E12; risk PR4-41.
+**Validation:** controls C16 and C17 (a stateful fixture without the hook, a stateless one with a persistence hook) and
+C18 (an effect without an attempt id) fail to type-check; RLC-16, RLC-19; exit E12 (`slot.test.ts` › "the
+registration-ordering kit refuses an effect before registration").
+
+### P4-CODE5-HIGH-001 — A valid reference form changed a SARIF finding's fingerprint and closed its prior — ACCEPTED
+**Concern:** `result.ruleIndex`, `result.rule` and `artifactLocation.index` were ignored, so the same result written in
+another form got another fingerprint, and the recheck closed the HIGH prior as `VERIFIED` (`checks.ts:633`, `:645`;
+`adjudication.ts:255`).
+**Disposition:** Correct: `checks.ts:633` reads only `result.ruleId`, `:645-646` only `artifactLocation.uri`, and
+`adjudication.ts:255` closes on the fingerprint's absence. R32 settles it two ways: the recheck closure is removed
+(nothing a log says can close a SARIF finding), and ingestion resolves every reference form or flags it.
+**Locked change:** plan §5.3 DF-9 (scanner-recheck closure deferred, with entry criteria), §13 (a SARIF finding closes
+only by an authorized human), §14 item 6 (reference resolution and the `unresolved-reference` flag), §12 (a flagged
+finding is never linked to a prior); architecture §11; data model §2.1, §2.4, §2.8, `review_findings.unresolved_reference`
+and `review_findings_unresolved_ck`, `finding_dispositions_harness_verify_ck` without `scanner-recheck`; exits E6, F3;
+threat T4-28; risks PR4-42, PR4-43. Code: remove the recheck path, the scanner-run record and the domain's
+`scanner-recheck` rule; resolve references.
+**Validation:** exit E6 (`adjudication.test.ts` › "a SARIF finding blocks until a human closes it", "a scanner log
+claiming a SARIF finding gone does not close it"; `assurance.test.ts` › "only a human verifies a SARIF finding"); exit F3
+(`checks.test.ts` › "sarif references resolve to one finding or are flagged, never dropped": the four probe forms give
+one fingerprint; `adjudication.test.ts` › "a finding with an unresolved reference is never linked to a prior");
+mutation checks in the commit report.
+
+### P4-CODE5-HIGH-002 — Coverage under a foreign `uriBaseId` counted for the repaired tree — ACCEPTED
+**Concern:** an artifact with `uriBaseId: "FOREIGN"` bound by `originalUriBaseIds` to another checkout still counted as
+scanned, and the recheck closed the prior (`checks.ts:583`; `adjudication.ts:255`).
+**Disposition:** Correct (`checks.ts:583` reads only `location.uri`). Settled with HIGH-001: no coverage is recorded any
+more, and a result whose location carries any `uriBaseId` is flagged `unresolved-reference`, because nothing binds a
+base to the repaired repository root in Phase 4 (binding is a DF-9 entry criterion).
+**Locked change:** as P4-CODE5-HIGH-001.
+**Validation:** `checks.test.ts` › "sarif references resolve to one finding or are flagged, never dropped" (the review's
+`FOREIGN` probe is flagged and kept); "a scanner log claiming a SARIF finding gone does not close it".
+
+### P4-CODE5-HIGH-003 — The path scanner read its own failure as clean — ACCEPTED
+**Concern:** grep ran inside an `if`, so an invalid ERE or a grep that could not run gave exit 0 in `--scan-paths`;
+file names were not preceded by `--` (`scripts/check-publication.sh:62`, `:68`, `:157`).
+**Disposition:** Correct: `:68` is `if grep -nE -e "$pat" "$file" …; then`, so status 2 reads as no hit, and `:62`
+skips a path that is not a regular file. The review's shell probe table (`[` and a 127 status exit 0) agrees.
+**Locked change:** plan §7.5 "The path scanner fails closed"; exit I13; threat T4-29. Code: read grep's status as 0, 1
+or other; exit 2 on any other status, on a pattern that fails when run once on empty input, on an unreadable input file
+and on no input file; `--` before file names.
+**Validation:** exit I13 (`collect.test.ts` › "the publication path scanner fails closed": the review's probe table as
+cases); shellcheck through Docker reports no new warning (lane report).
+
+### P4-CODE5-MED-001 — The pattern list was exempt from the full scan as a whole file — ACCEPTED
+**Concern:** the full gate exempted `scripts/lib/publication-leak-patterns.txt`, so a concrete private path in one of
+its comments would pass (`scripts/check-publication.sh:55`, `:56`, `:171`).
+**Disposition:** Correct: `:56` lists the file in `EXEMPT_REGEX`, and the list does not match itself (the review's grep
+returned 1), so the exemption bought nothing. The same step enumerated files with line-based `git ls-files` (`:173`),
+which drops a name Git quotes (inherited; R32 fixes it here).
+**Locked change:** plan §7.5; exit I13. Code: remove the list from `EXEMPT_REGEX`; enumerate with `git ls-files -z`.
+**Validation:** exit I13 (`collect.test.ts` › "the publication path scanner fails closed": a private path in a comment of
+the list fails the tracked-file scan; a tracked name with a quote-worthy character is scanned).
+
+### P4-CODE5-LOW-001 — `includedBytes` of a rejected packet was not its stored size — ACCEPTED
+**Concern:** `includedBytes` was measured on the candidate carrying `overBudget: false`, while a rejected packet is
+stored with `true`, one byte shorter; the slot doc called it the final bytes (`packet.ts:309`, `:313`;
+`phase-04-plan.md:1319`).
+**Disposition:** Correct (`packet.ts:309-313` re-read). R32: measure after the flag is set, accepted and rejected alike.
+**Locked change:** plan §8; the block's `BuildReviewPacketOutput` docs; RLC-06's budget invariant (accepted:
+`includedBytes ≤ cap`; rejected: a diff over its limit or `includedBytes + 1 > cap`); architecture §8; data model §2.3;
+exit D7.
+**Validation:** exit D7 (`packet.test.ts` › "included bytes are the stored packet's final size", oracle on the returned
+packet object for accepted and rejected packets).
+
+### Surviving mutation: SARIF exempt from the severity maximum — ACCEPTED
+**Concern:** `const severity = f.source === 'sarif' ? f.severity : …` at `adjudication.ts:499` left 67/67 pure-core tests
+green; the downgrade fixtures were model findings only.
+**Disposition:** Correct.
+**Validation:** `adjudication.test.ts` › "a SARIF re-raise never downgrades a prior that still blocks" (HIGH→MEDIUM,
+CRITICAL→LOW); the mutation is re-run in the commit report.
+
+### Blocking-order mutant declared equivalent in `dec419b` — ACCEPTED
+**Concern:** restoring the joined order key changes the order of blocking records when reviewer ids contain LF and `/`
+(`["a\nz", "a/z"]`), and no test noticed (`adjudication.ts:523`).
+**Disposition:** Correct; the v4 lane report was wrong to call this mutant equivalent: the record's order is
+observable even when the outcome is not. The other three (dedupe key, merge key, `persistedIdentity`) are confirmed
+equivalent by the review.
+**Validation:** `adjudication.test.ts` › "blocking records are in canonical tuple order"; restoring the joined key must
+fail (commit report).
+
+### `result.rule.toolComponent` was not fail-closed — ACCEPTED
+**Concern:** the v4 lane report said every `toolComponent` reference fails closed; `result.rule.toolComponent` was
+ignored (`checks.ts:633`).
+**Disposition:** Correct; the claim covered overrides and notifications only. Superseded by the R32 ingestion rules:
+every `toolComponent` reference flags the result.
+**Validation:** `checks.test.ts` › "sarif references resolve to one finding or are flagged, never dropped".
+
+### `providerCalls` typed as any number — ACKNOWLEDGED, no change
+**Concern:** `CompletedReviewerOutput.providerCalls` is `number`, so the type admits 0 (`phase-04-plan.md:1386`).
+**Disposition:** TypeScript has no plain integer-range type; RLC-06 checks `providerCalls ≥ 1` at runtime on every
+output, as the review notes (`:1973`). R28 asked for the status/reference combinations in the type, which hold.
+
+### R31 note — recorded
+`PROCEED` does not prove a remote publication reconciled; R31's identity predicate binds Lane A after the outcome.
+Nothing in the slot decides publication, so the block is unchanged; SR-A1 maps outcomes only.
+
+### R32 applied
+
+| Item | Applied as | Where |
+|---|---|---|
+| R29 exception wording | store unreadable or unwritable after retries; `attempt-state-unknown`; idempotency key; gap report | block docs; plan §18.2, SR-A3, SR-A14; exits H4, J6 |
+| Late grant | `lease-granted`, typed non-retryable, R29 recovery, RLC-18 | block; plan §18.2, SR-A14, activity policy; exits E12, H4 |
+| Atomicity mandatory | fixture union; stateless only for disabled, not-configured, scripted | block kit; plan §18.2; exit E12 |
+| Registration before effect | RLC-19 for Lane A's workflow | block kit; plan §18.2, SR-A11 |
+| Scanner-recheck closure deferred | human-only SARIF closure; DF-9 entry criteria | plan §5.3, §13; architecture §11; data model §2.4, §3.1; exit E6 |
+| Ingestion never loses a finding | reference resolution; `unresolved-reference` flag; never linked to a prior | plan §12, §14; architecture §11; data model §2.1, §2.8, §3.1; exit F3 |
+| SARIF severity | HIGH→MEDIUM, CRITICAL→LOW tests | exit E4 |
+| Blocking order | LF and `/` reviewer ids; canonical order | exit E4 |
+| `check-publication.sh` fails closed | grep 0/1/other, ERE validation, unreadable input, no files, `--`, no list exemption, `git ls-files -z` | plan §7.5; exit I13; threat T4-29 |
+| `includedBytes` | the stored packet's final size | plan §8; block; architecture §8; data model §2.3; exit D7 |
+| Plan wording | verification mode, not `excerpt-only` | plan §7.5 |
+
+### Slot block type-check and helper execution (v6)
+
+The block was extracted from plan §18 with
+`awk '/^### Review-loop slot contract \(verbatim for S0\)/{f=1} f&&/^```typescript$/{inb=1;next} inb&&/^```$/{exit} inb{print}'`
+into a scratch directory outside the repository (892 lines, sha256
+`023f16dc7135ec32cdddffead29ad2bfd6ac3daee2918138d8b469a37943a04d`; `cmp` against a second extraction: identical) and
+compiled as one module with TypeScript 7.0.2 and the v5 options (`strict`, `noUncheckedIndexedAccess`,
+`exactOptionalPropertyTypes`, declaration emit, `types: ["node"]`, `NodeNext`), with `@asep/contracts` and `@asep/ports`
+mapped to this branch's built declarations (rebuilt by `pnpm -s typecheck`, exit 0) and `AdmissionResult` re-exported
+from `packages/application/dist/risk-admission.js`. `tsc -p tsconfig.json`: exit 0. The control project over the same
+block: the fifteen v5 controls plus C16 (a `StatefulConformanceFixture` with `failNextCommit: null`), C17 (a
+`StatelessConformanceFixture` with a `persistedAttemptBytes` hook) and C18 (an `attempt-bound-effect` step without an
+`attemptId`), each expected to fail, and two positive lines (`new ReviewLoopContractError('lease-granted', …)`; a list
+holding one fixture of each kind) expected to compile. `tsc -p tsconfig.control.json`: exit 1 with exactly 18 errors,
+one per control line (TS2741 ×2, TS2322 ×12, TS2554, TS2345, TS2353 ×2), none on the positive lines.
+
+The envelope helper was executed from the block text with Node 24.6.0's type stripping
+(`node --disable-warning=ExperimentalWarning probe.mjs ./src/review-loop/slot-block.ts`) and again from the `tsc` emit
+(`node probe.mjs ./dist/review-loop/slot-block.js`): the same 27 rejections and 8 acceptances as v5, 65 536 bytes
+accepted and 65 537 rejected with `invalid-payload`, `'é'` 4 bytes, exit 0 both ways and identical output. The
+review's own `stripTypeScriptTypes` probe over the plan text, run from the repository root, printed `negative 27/27
+positive 9/9`, `65536 ACCEPT`, `65537 ReviewLoopContractError invalid-payload`, and, extended by one line,
+`lease-granted ReviewLoopContractError lease-granted true false` (the code constructs from the block text, the error is
+an `Error` and not an `AssuranceFencedError`); exit 0. Not verified: compilation as three separate files inside
+`packages/application` (they do not exist until S0), and the kit's runtime behaviour (its functions are declarations
+until S0).
+
+### DDL re-validation (v6)
+
+The §3.1–§3.3 blocks and the §3.6 rollback were extracted again and applied on PGlite `0.5.4` after the twelve Phase 2
+migrations in a fresh scratch directory outside the repository: all applied. The v5 probe was re-run with one changed
+expectation and five additions, all as expected (35 of 35): a harness `RESOLUTION_VERIFIED` by
+`harness-rule:scanner-recheck` on a `sarif:` finding is now rejected by `finding_dispositions_harness_verify_ck`, and a
+human's (no fence, as `finding_dispositions_fence_ck` requires) accepted; a `sarif` finding with `unresolved_reference`
+and no prior is accepted; one linked to a prior, a `model` finding with the flag and a `deterministic` finding with the
+flag are rejected by `review_findings_unresolved_ck`; an unflagged `sarif` finding linked to a prior is accepted.
+
+### Freeze gate (v6)
+
+Every numbered finding of the review is dispositioned (9 accepted, 0 rejected) and R32 is applied in the documents,
+consistent with R29 and R31. Remaining before the corpus freeze and before Lane A receives the block: the controller's
+re-check of the v6 block and of the code fixes at the lane head, and confirmation of v6.
+
 ---
 
 ## Disposition template
@@ -1049,4 +1289,6 @@ v3 record: **LOCKED v3 (pending controller confirmation)**, superseded by v4 bef
 
 v4 record: **LOCKED v4 (pending controller confirmation)**, superseded by v5 before confirmation.
 
-**PLAN_STATUS: LOCKED v5 (pending controller confirmation)**
+v5 record: **LOCKED v5 (pending controller confirmation)**, superseded by v6 before confirmation.
+
+**PLAN_STATUS: LOCKED v6 (pending controller confirmation)**
