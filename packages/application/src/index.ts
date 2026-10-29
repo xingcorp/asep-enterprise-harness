@@ -92,12 +92,14 @@ export {
   upsertPrStep,
   setReviewStep,
   completeToReview,
+  verificationProvenance,
   SandboxIsolationRequiredError,
   // Adoption of a resumed evidence bundle is identity-gated; a bundle describing
   // a different commit is a hard fault, never silently accepted (HIGH-006).
   EvidenceIdentityMismatchError,
   type VerificationCheckSpec,
   type VerificationCheckExecution,
+  type VerificationProvenance,
   type VerifyStepInput,
   type VerifyStepResult,
   type CommitStepInput,

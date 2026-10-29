@@ -265,6 +265,19 @@ export interface CommandSpec {
   readonly outputPolicy: OutputPolicy;
 }
 
+// Where a command actually ran, as the runner that ran it knows it: in a
+// container of this image with these run flags, or on the host. Verification
+// evidence records it, so a reader can check the checks ran in the pinned,
+// isolated sandbox rather than take that on trust.
+export type CommandProvenance =
+  | {
+    readonly where: 'container';
+    readonly image: string;
+    readonly container: string;
+    readonly runFlags: readonly string[];
+  }
+  | { readonly where: 'host' };
+
 export interface CommandResult {
   readonly exitCode: number | null;        // exact; never coerced
   readonly signal: string | null;
@@ -274,6 +287,9 @@ export interface CommandResult {
   readonly stdoutBytes: number;
   readonly stderrBytes: number;
   readonly truncated: boolean;
+  // Absent when the runner cannot say; a reader treats that as unknown, never
+  // as sandboxed.
+  readonly provenance?: CommandProvenance;
 }
 
 export interface SandboxHandle {

@@ -55,6 +55,10 @@ import {
   signAuthorization,
   // @ts-expect-error - .mjs has no type declarations; runtime import is fine under tsx.
 } from '../../../scripts/pilot/human-authorization-crypto.mjs';
+import {
+  verifyManifestAgainstAuthority,
+  // @ts-expect-error - .mjs has no type declarations; runtime import is fine under tsx.
+} from '../../../scripts/pilot/verify-pilot-manifest.mjs';
 
 console.log('SUITE-ID: asep-suite:authority-resolver-sql');
 
@@ -72,6 +76,12 @@ const TASK = 'T'.repeat(26);
 const ATTEMPT = 'A'.repeat(26);
 const PR = 'Q'.repeat(26);
 const RESULT_SHA = 'd'.repeat(40);
+const PINS = {
+  model: 'claude-sonnet-4-20250514', cliVersion: '2.1.185', agentImage: `agent@sha256:${'1'.repeat(64)}`,
+  proxyImage: `node@sha256:${'2'.repeat(64)}`, modelBaseUrl: 'https://api.anthropic.com',
+  verifyImage: `verify@sha256:${'3'.repeat(64)}`,
+};
+const REAL_ID = `claude:${PINS.model}@cli-${PINS.cliVersion}`;
 
 /** Seed the full parent chain the resolver's joins and FKs require. */
 async function seed(client: PgliteClient): Promise<void> {
@@ -120,15 +130,15 @@ const trace = {
   taskId: TASK, attemptId: ATTEMPT, repositoryBindingId: BINDING,
 };
 
-function resolverFor(client: PgliteClient, objectRoot = '/nonexistent-object-root') {
+function resolverFor(
+  client: PgliteClient, objectRoot = '/nonexistent-object-root',
+  forge: { findPullRequest(scope: unknown, q: { headBranch: string }): Promise<unknown> } = { findPullRequest: async () => null },
+) {
   return createSqlAuthorityResolver(client, {
     reviewerPublicKeyPem: REVIEWER_PUB,
     objects: filesystemObjectReader(objectRoot),
-    forge: { findPullRequest: async () => null },
-    agent: {
-      model: 'claude-sonnet-4-20250514', cliVersion: '2.1.185', agentImage: `agent@sha256:${'1'.repeat(64)}`,
-      proxyImage: `node@sha256:${'2'.repeat(64)}`, modelBaseUrl: 'https://api.anthropic.com',
-    },
+    forge,
+    agent: PINS,
   });
 }
 
@@ -353,7 +363,7 @@ test('resolveEvidence re-hashes the bytes the real evidence store wrote, and see
     const ev = await resolver.resolveEvidence(trace, id);
     assert.equal(ev.sha256, ref.sha256);
     assert.equal(ev.bytesSha256, ref.sha256, 'the stored bytes hash to the recorded sha256');
-    assert.deepEqual(ev.bundle, { taskId: TASK, attemptId: ATTEMPT, baseSha: '0'.repeat(40), resultSha: RESULT_SHA });
+    assert.deepEqual(ev.bundle, bundle, 'the whole bundle, not a chosen few fields');
 
     const key = (await client.query('select storage_key from artifacts where id = $1', [id])).rows[0]!['storage_key'] as string;
     await writeFile(join(root, key), JSON.stringify({ ...bundle, resultSha: 'e'.repeat(40) }));
@@ -450,6 +460,175 @@ test('resolveAgentRun reads the artifacts linked to this attempt only, and re-ha
     await writeFile(join(root, key), 'rewritten POST /v1/messages -> 200\n');
     const tampered = await resolver.resolveAgentRun(trace);
     assert.notEqual(tampered.egress[0].bytesSha256, tampered.egress[0].sha256);
+  } finally {
+    await client.close?.();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 6 — the task's state, risk and work order, the attempt's base and context
+//     pack, and the record of where verification ran, all read from the real
+//     schema; and the probe that once passed, refused.
+// ---------------------------------------------------------------------------
+
+test('resolveAttempt reports the task state, risk and work order and the attempt base and context pack', async () => {
+  const client = await PgliteClient.create();
+  const root = await mkdtemp(join(tmpdir(), 'asep-resolver-task-'));
+  try {
+    await migrate(client);
+    await seed(client);
+    const scope: TenantScope = { organizationId: ORG as never, projectId: PROJ as never };
+    const store = new ContentAddressedArtifactStore(client, new FilesystemObjectStore(root));
+    const put = (kind: string, text: string, attemptId?: string) => {
+      const content = new TextEncoder().encode(text);
+      return store.put(scope, {
+        kind, content, contentType: 'application/json', ...(attemptId ? { attemptId: attemptId as never } : {}),
+        sha256: createHash('sha256').update(content).digest('hex'),
+      });
+    };
+    const wo = await put('work-order', '{"objective":"add feature.txt"}');
+    const cp = await put('context-pack', '{"relevantFiles":["feature.txt"]}');
+    await client.query('update tasks set work_order_artifact_id = $1, work_order_sha256 = $2 where id = $3',
+      [wo.artifactId, wo.sha256, TASK]);
+    await client.query('update attempts set context_pack_artifact_id = $1, context_pack_sha256 = $2 where id = $3',
+      [cp.artifactId, cp.sha256, ATTEMPT]);
+
+    const resolver = resolverFor(client, root);
+    const attempt = await resolver.resolveAttempt(trace);
+    assert.equal(attempt.taskStatus, 'WAITING_FOR_HUMAN_REVIEW');
+    assert.equal(attempt.taskRisk, 'R0');
+    assert.equal(attempt.baseSha, '0'.repeat(40));
+    assert.equal(attempt.workOrderArtifactId, wo.artifactId);
+    assert.equal(attempt.workOrderSha256, wo.sha256);
+    assert.equal(attempt.contextPackArtifactId, cp.artifactId);
+    assert.equal(attempt.contextPackSha256, cp.sha256);
+
+    assert.deepEqual(await resolver.resolveArtifact(trace, wo.artifactId),
+      { kind: 'work-order', sha256: wo.sha256, bytesSha256: wo.sha256 });
+    assert.equal(await resolver.resolveArtifact({ ...trace, organizationId: 'Z'.repeat(26) }, wo.artifactId), null,
+      'another tenant does not see the artifact');
+    const key = (await client.query('select storage_key from artifacts where id = $1', [wo.artifactId])).rows[0]!['storage_key'] as string;
+    await writeFile(join(root, key), '{"objective":"something else"}');
+    const edited = await resolver.resolveArtifact(trace, wo.artifactId);
+    assert.notEqual(edited.bytesSha256, edited.sha256, 'rewritten bytes are seen');
+
+    // The attempt's own verification records only, re-hashed and parsed.
+    const OTHER_ATTEMPT = 'W'.repeat(26);
+    await client.query(
+      `insert into attempts (id, organization_id, project_id, task_id, repository_binding_id, status)
+       values ($1, $2, $3, $4, $5, 'VERIFYING')`, [OTHER_ATTEMPT, ORG, PROJ, TASK, BINDING],
+    );
+    await put('verification-provenance', JSON.stringify({ attemptId: ATTEMPT, verdict: 'PASS' }), ATTEMPT);
+    await put('verification-provenance', JSON.stringify({ attemptId: OTHER_ATTEMPT, verdict: 'PASS' }), OTHER_ATTEMPT);
+    const records = await resolver.resolveVerification(trace);
+    assert.equal(records.length, 1);
+    assert.deepEqual(records[0].record, { attemptId: ATTEMPT, verdict: 'PASS' });
+    assert.equal(records[0].bytesSha256, records[0].sha256);
+    assert.deepEqual(await resolver.resolveVerification({ ...trace, projectId: 'Z'.repeat(26) }), []);
+  } finally {
+    await client.close?.();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+// The probe: ten tasks written straight into the database — waiting for human
+// review, but at risk R4, run by the local agent double, with no work order —
+// each with genuine evidence bytes, a genuinely signed human authorization and
+// a PR whose head is the result. The manifest claims the real Claude adapter,
+// invents a work order and a session per task. Nothing about it may pass.
+test('ten tasks seeded at risk R4 with a local double\'s provider and invented work orders and sessions are refused', async () => {
+  const client = await PgliteClient.create();
+  const root = await mkdtemp(join(tmpdir(), 'asep-resolver-probe-'));
+  try {
+    await migrate(client);
+    await seed(client);
+    const scope: TenantScope = { organizationId: ORG as never, projectId: PROJ as never };
+    const evidence = new ContentAddressedEvidenceStore(client, new FilesystemObjectStore(root));
+    const idOf = (p: string, i: number) => `${p}${i}`.padEnd(26, p);
+    const heads = new Map<string, string>();
+    const tasks: Record<string, unknown>[] = [];
+    for (let i = 0; i < 10; i++) {
+      const [task, attempt, pr] = [idOf('K', i), idOf('M', i), idOf('N', i)];
+      const result = (i + 1).toString(16).padStart(40, 'a');
+      await client.query(
+        `insert into tasks (id, organization_id, project_id, run_id, repository_binding_id, status, risk, base_sha)
+         values ($1, $2, $3, $4, $5, 'WAITING_FOR_HUMAN_REVIEW', 'R4', $6)`, [task, ORG, PROJ, RUN, BINDING, '0'.repeat(40)],
+      );
+      await client.query(
+        `insert into attempts (id, organization_id, project_id, task_id, repository_binding_id, status, base_sha, result_sha, agent_provider_id)
+         values ($1, $2, $3, $4, $5, 'PR_OPEN', $6, $7, 'fake-claude')`, [attempt, ORG, PROJ, task, BINDING, '0'.repeat(40), result],
+      );
+      const draft = {
+        taskId: task as never, attemptId: attempt as never, baseSha: '0'.repeat(40), createdAt: '2026-10-29T00:00:00.000Z',
+        environment: { imageDigest: PINS.agentImage, lockfileHash: 'f'.repeat(64) },
+        diff: { artifactId: idOf('D', i) as ArtifactId, sha256: '4'.repeat(64) },
+        checks: [],
+      };
+      const evId = await evidence.reserveEvidence(scope, { repositoryBindingId: BINDING as never, attemptId: attempt as never, draft });
+      const ref = await evidence.putEvidence(scope, evId, evidenceBundleFrom(draft, result));
+      await client.query('update attempts set evidence_artifact_id = $1, evidence_sha256 = $2 where id = $3', [evId, ref.sha256, attempt]);
+      const branch = `asep/probe-${i}`;
+      heads.set(branch, result);
+      await client.query(
+        `insert into pull_requests (id, organization_id, project_id, repository_binding_id, attempt_id, forge, number,
+                                    head_branch, base_branch, url, state)
+         values ($1, $2, $3, $4, $5, 'github', $6, $7, 'main', $8, 'OPEN')`,
+        [pr, ORG, PROJ, BINDING, attempt, 100 + i, branch, `https://github.com/acme/web/pull/${100 + i}`],
+      );
+      const signed = signAuthorization({
+        task_id: task, attempt_id: attempt, pull_request_id: pr, disposition: 'ACCEPTED',
+        reviewed_result_sha: result, signed_by: 'reviewer@acme',
+      }, REVIEWER_PRIV);
+      await client.query(
+        `insert into human_authorizations
+           (id, organization_id, project_id, task_id, attempt_id, pull_request_id, disposition, reviewed_result_sha, signed_by, signature)
+         values ($1, $2, $3, $4, $5, $6, 'ACCEPTED', $7, 'reviewer@acme', $8)`,
+        [idOf('H', i), ORG, PROJ, task, attempt, pr, result, signed.signature],
+      );
+      tasks.push({
+        taskId: task, objective: `probe ${i}`, risk: 'R4', workOrderSha256: (1000 + i).toString(16).padStart(64, 'e'),
+        baseSha: '0'.repeat(40), resultSha: result, providerSessionId: `invented-session-${i}`, providerId: REAL_ID,
+        pullRequestUrl: `https://github.com/acme/web/pull/${100 + i}`, evidenceChecksum: `sha256:${ref.sha256}`,
+        humanDisposition: 'ACCEPTED',
+        trace: {
+          pullRequestId: pr, evidenceArtifactId: evId, attemptId: attempt, taskId: task, runId: RUN,
+          projectId: PROJ, organizationId: ORG, repositoryBindingId: BINDING,
+        },
+      });
+    }
+    const forge = {
+      findPullRequest: async (_scope: unknown, q: { headBranch: string }) => {
+        const n = Number(q.headBranch.replace('asep/probe-', ''));
+        return { number: 100 + n, url: `https://github.com/acme/web/pull/${100 + n}`, headBranch: q.headBranch, baseBranch: 'main', headSha: heads.get(q.headBranch) };
+      },
+    };
+    const manifest = { manifestVersion: '1.0.0', verdict: 'COMPLETE', generatedAt: '2026-10-29T00:00:00.000Z', tasks };
+    const res = await verifyManifestAgainstAuthority(manifest, resolverFor(client, root, forge)) as { ok: boolean; reasons: string[] };
+    assert.equal(res.ok, false);
+    // What the probe got right is not what refuses it: bytes, PR heads and
+    // signatures are genuine.
+    assert.ok(!res.reasons.some((r) => /evidence bytes hash|live PR|signature is not valid|authorization was signed for/.test(r)),
+      res.reasons.join('\n'));
+    for (const t of tasks) {
+      const own = res.reasons.filter((r) => r.startsWith(`task "${t['taskId']}"`));
+      for (const why of [
+        /persisted provider "fake-claude" is not the real Claude adapter/,
+        /the task's risk "R4" is not admissible/,
+        /the task has no work order attached/,
+        /no event stream recorded/,
+        /no verification provenance record recorded/,
+        /the evidence bundle records no verification check/,
+      ]) {
+        assert.ok(own.some((r) => why.test(r)), `${t['taskId']}: ${why} not among:\n${own.join('\n')}`);
+      }
+    }
+
+    // Declared as what it is, it fails before any lookup.
+    const honest = { ...manifest, tasks: tasks.map((t) => ({ ...t, providerId: 'fake-claude' })) };
+    const refused = await verifyManifestAgainstAuthority(honest, resolverFor(client, root, forge)) as { ok: boolean; reasons: string[] };
+    assert.equal(refused.ok, false);
+    assert.ok(refused.reasons.some((r) => /providerId must be a Claude adapter id/.test(r)), refused.reasons.join('\n'));
   } finally {
     await client.close?.();
     await rm(root, { recursive: true, force: true });

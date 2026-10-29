@@ -210,6 +210,11 @@ export class TrustedCommandRunner implements CommandRunner {
       stdoutBytes: out.totalBytes,
       stderrBytes: err.totalBytes,
       truncated: out.truncated || err.truncated,
+      // Where it ran is the provider's record of the handle — the same record
+      // the argv above was built from.
+      provenance: execution.kind === 'container'
+        ? { where: 'container', image: execution.image, container: container as string, runFlags: execution.runFlags }
+        : { where: 'host' },
     };
   }
 }

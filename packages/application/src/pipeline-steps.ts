@@ -46,6 +46,7 @@ import type {
 import type {
   CommandRunner,
   CommandSpec,
+  CommandProvenance,
   SandboxProvider,
   WorkspaceMount,
   WorkspaceCapability,
@@ -105,6 +106,8 @@ export interface VerificationCheckExecution {
   readonly stdoutArtifactId?: ArtifactId;
   readonly stderrArtifactId?: ArtifactId;
   readonly message?: string;
+  // Where the runner ran it; absent when the runner could not say.
+  readonly provenance?: CommandProvenance;
 }
 
 export interface VerifyStepInput {
@@ -236,6 +239,7 @@ export async function verifyStep(input: VerifyStepInput): Promise<VerifyStepResu
         ...(r.stdout.artifactId ? { stdoutArtifactId: r.stdout.artifactId } : {}),
         ...(r.stderr.artifactId ? { stderrArtifactId: r.stderr.artifactId } : {}),
         ...(message ? { message } : {}),
+        ...(r.provenance ? { provenance: r.provenance } : {}),
       });
     }
   } finally {
@@ -270,6 +274,59 @@ export async function verifyStep(input: VerifyStepInput): Promise<VerifyStepResu
     status: verdict === 'PASS' ? 'OK' : 'STOP',
     result,
     executions,
+  };
+}
+
+// What verification ran, where and with what outcome: the harness's record of
+// a verification, kept beside the evidence so a reader (the pilot verifier) can
+// check each evidence check ran in the pinned sandbox and that every check the
+// plan made mandatory passed. The evidence bundle's closed schema has no room
+// for either, so the record is its own artifact of the attempt.
+export interface VerificationProvenance {
+  readonly taskId: TaskId;
+  readonly attemptId: AttemptId;
+  readonly planId: string;
+  readonly risk: RiskLevel;
+  readonly verdict: VerificationResult['verdict'];
+  readonly checks: readonly {
+    readonly id: string;
+    readonly level: AssuranceLevel | null;
+    readonly mandatory: boolean;
+    readonly verdict: VerificationCheckExecution['verdict'];
+    readonly command: string;
+    readonly exitCode: number;
+    readonly stdoutArtifactId: ArtifactId | null;
+    readonly stderrArtifactId: ArtifactId | null;
+    readonly provenance: CommandProvenance | null;
+  }[];
+}
+
+/** The provenance record of a verification, check for check in its order. */
+export function verificationProvenance(input: {
+  readonly taskId: TaskId;
+  readonly attemptId: AttemptId;
+  readonly planId: string;
+  readonly risk: RiskLevel;
+  readonly checks: readonly VerificationCheckSpec[];
+  readonly verify: VerifyStepResult;
+}): VerificationProvenance {
+  return {
+    taskId: input.taskId,
+    attemptId: input.attemptId,
+    planId: input.planId,
+    risk: input.risk,
+    verdict: input.verify.result.verdict,
+    checks: input.verify.executions.map((e) => ({
+      id: e.id,
+      level: input.checks.find((c) => c.id === e.id)?.level ?? null,
+      mandatory: e.mandatory,
+      verdict: e.verdict,
+      command: e.command,
+      exitCode: e.exitCode,
+      stdoutArtifactId: e.stdoutArtifactId ?? null,
+      stderrArtifactId: e.stderrArtifactId ?? null,
+      provenance: e.provenance ?? null,
+    })),
   };
 }
 
@@ -953,6 +1010,10 @@ export interface CompleteToReviewInput {
   readonly expectedRemoteSha?: string;
   // Task to advance on success.
   readonly task: TaskAggregate;
+  // Keeps the record of where a PASSED verification ran (see
+  // VerificationProvenance), before the evidence is reserved: no evidence of
+  // this attempt exists without it. Absent → nothing is recorded.
+  readonly recordVerification?: (record: VerificationProvenance) => Promise<void>;
 
   // --- OBSERVABILITY (disp. P2-FINAL-MED-003, exit J1/J4) --------------------
   //
@@ -1017,6 +1078,16 @@ export async function completeToReview(
   });
   if (verify.status === 'STOP') {
     return { stoppedAt: 'verify', verify };
+  }
+  if (input.recordVerification) {
+    const record = verificationProvenance({
+      taskId: input.taskId, attemptId: input.attemptId, planId: input.planId, risk: input.risk,
+      checks: input.checks, verify,
+    });
+    await observe(
+      { span: 'artifact.put', action: 'artifact.put', detail: { kind: 'verification-provenance' } },
+      () => input.recordVerification!(record),
+    );
   }
 
   // Reserve the non-content-derived evidence id BEFORE the commit so it can be

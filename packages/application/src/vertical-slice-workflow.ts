@@ -268,7 +268,7 @@ function sha256Hex(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex');
 }
 
-function jsonBytes(value: Readonly<Record<string, unknown>>): Uint8Array {
+function jsonBytes(value: object): Uint8Array {
   return new TextEncoder().encode(JSON.stringify(value));
 }
 
@@ -520,6 +520,16 @@ export async function runVerticalSliceWorkflow(
       body: input.prBody,
       leaseId,
       task: { id: task.id, status: 'VERIFYING', version: taskVersion },
+      // Where each check ran and what the plan required, as an artifact of the
+      // attempt, written before the evidence is reserved: the pilot verifier
+      // checks the evidence against it.
+      recordVerification: async (record) => {
+        const bytes = jsonBytes(record);
+        await input.artifacts.put(scope, {
+          kind: 'verification-provenance', content: bytes, sha256: sha256Hex(bytes),
+          contentType: 'application/json', attemptId: attempt.id,
+        });
+      },
     });
     if (result.stoppedAt !== 'complete') {
       throw new Error(`completion stopped early at '${result.stoppedAt}'`);

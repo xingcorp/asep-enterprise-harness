@@ -60,6 +60,7 @@ import {
   completeToReview,
   EvidenceIdentityMismatchError,
   type VerificationCheckSpec,
+  type VerificationProvenance,
 } from './pipeline-steps.js';
 
 // --- shared fixtures --------------------------------------------------------
@@ -186,6 +187,7 @@ function fakeRunner(results: Record<string, Partial<CommandResult>>): CommandRun
         stdoutBytes: r.stdoutBytes ?? 10,
         stderrBytes: r.stderrBytes ?? 0,
         truncated: r.truncated ?? false,
+        ...(r.provenance ? { provenance: r.provenance } : {}),
       };
     },
   };
@@ -951,6 +953,56 @@ test('completeToReview STOPS at verify on a red gate — NO commit, NO push, NO 
   assert.equal(res.pr, undefined);
   assert.equal(forge.pushes, 0, 'a red gate must produce NO push side effect');
   assert.equal(forge.upserts, 0, 'a red gate must produce NO PR side effect');
+});
+
+test('completeToReview records where a passed verification ran before it reserves the evidence', async () => {
+  const where = (n: number) => ({
+    where: 'container' as const, image: `verify@sha256:${'6'.repeat(64)}`, container: `sbx-1-${n}`,
+    runFlags: ['run', '--rm', '--network', 'none'],
+  });
+  const input = driverInput({
+    runner: fakeRunner(Object.fromEntries(r0Checks().map((c, n) => [c.command.executable, { exitCode: 0, provenance: where(n) }]))),
+  });
+  const store = input.store as ReturnType<typeof memoryEvidence>;
+  const recorded: VerificationProvenance[] = [];
+  const res = await completeToReview({
+    ...input,
+    recordVerification: async (record) => { store.calls.push('provenance'); recorded.push(record); },
+  });
+  assert.equal(res.stoppedAt, 'complete');
+  assert.deepEqual(store.calls, ['provenance', 'reserve:ev-reserved-1', 'commit', 'put:ev-reserved-1'],
+    'no evidence is reserved before the record of where it was verified exists');
+  assert.equal(recorded.length, 1);
+  const record = recorded[0]!;
+  assert.equal(record.taskId, taskId);
+  assert.equal(record.attemptId, attemptId);
+  assert.equal(record.risk, 'R0');
+  assert.equal(record.planId, 'plan-1');
+  assert.equal(record.verdict, 'PASS');
+  // Check for check, in the evidence's order, with what the runner said about
+  // where each ran.
+  const checks = res.evidence!.bundle.checks;
+  assert.deepEqual(record.checks.map((c) => c.id), checks.map((c) => c.id));
+  assert.deepEqual(record.checks.map((c) => c.stdoutArtifactId), checks.map((c) => c.stdoutArtifactId));
+  assert.deepEqual(record.checks.map((c) => c.level), r0Checks().map((c) => c.level));
+  assert.deepEqual(record.checks.map((c) => c.provenance), r0Checks().map((_, n) => where(n)));
+  assert.ok(record.checks.every((c) => c.mandatory && c.verdict === 'PASS' && c.exitCode === 0));
+});
+
+test('a runner that cannot say where a check ran leaves that unknown in the record, never sandboxed', async () => {
+  const recorded: VerificationProvenance[] = [];
+  await completeToReview(driverInput({ recordVerification: async (record) => { recorded.push(record); } }));
+  assert.ok(recorded[0]!.checks.every((c) => c.provenance === null));
+});
+
+test('a red verification gate records no verification provenance', async () => {
+  let records = 0;
+  const res = await completeToReview(driverInput({
+    runner: fakeRunner({ 'verify-L2': { exitCode: 1 } }),
+    recordVerification: async () => { records++; },
+  }));
+  assert.equal(res.stoppedAt, 'verify');
+  assert.equal(records, 0);
 });
 
 test('completeToReview is crash-safe: a full re-run adopts the push+PR (single ref, single PR)', async () => {

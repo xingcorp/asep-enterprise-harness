@@ -11,11 +11,19 @@
 // This module is that resolver. It answers each of the verifier's questions
 // from AUTHORITATIVE state:
 //
-//   resolveAttempt            → the `attempts` row (result_sha, provider, scope)
+//   resolveAttempt            → the `attempts` row (base and result sha,
+//                               provider, attached evidence and context pack)
+//                               with its task's state, risk and work order
 //   resolveEvidence           → the `artifacts` row (authoritative sha256) AND
 //                               the stored bytes it points at, fetched from the
-//                               object store and re-hashed here, with the
-//                               bundle identity they carry
+//                               object store and re-hashed here, with the whole
+//                               bundle they hold
+//   resolveArtifact           → any artifact of the tenant by id (the work
+//                               order, the context pack, the diff, raw check
+//                               output): its kind, recorded sha256 and the hash
+//                               of its stored bytes
+//   resolveVerification       → the harness's records of where the attempt's
+//                               verification checks ran, re-hashed and parsed
 //   resolvePullRequest        → the `pull_requests` row (url, owning attempt)
 //   resolveLivePullRequest    → the PR as the FORGE reports it now, through the
 //                               forge port, including the commit its head is at
@@ -66,12 +74,17 @@ export const AGENT_IMAGE_ENV = 'ASEP_AGENT_IMAGE_DIGEST';
 export const PROXY_IMAGE_ENV = 'ASEP_EGRESS_PROXY_IMAGE_DIGEST';
 export const MODEL_BASE_URL_ENV = 'ASEP_ANTHROPIC_BASE_URL';
 export const DEFAULT_MODEL_BASE_URL = 'https://api.anthropic.com';
+// The image the pilot's verification sandbox runs checks in.
+export const VERIFY_IMAGE_ENV = 'ASEP_VERIFY_IMAGE_DIGEST';
 
 // The artifacts the real Claude adapter writes for an attempt that reached the
 // agent container (adapters/agent-claude/src/claude-provider.ts).
 export const AGENT_RUN_KINDS = Object.freeze({
   invocation: 'claude-invocation', events: 'claude-event-stream', egress: 'claude-egress-log',
 });
+// The record the harness writes of where each verification check of an attempt
+// ran (packages/application/src/vertical-slice-workflow.ts).
+export const VERIFICATION_PROVENANCE_KIND = 'verification-provenance';
 const DIGEST_PINNED = /@sha256:[0-9a-f]{64}$/;
 // An egress-proxy log line for a model call it forwarded and the model answered.
 const FORWARDED_MODEL_CALL = /^\S+ POST \/v1\/messages -> 2\d\d$/;
@@ -88,17 +101,20 @@ export function normalizeModelBaseUrl(raw) {
   return url.toString().replace(/\/+$/, '');
 }
 
-/** Validate the pinned Claude configuration a resolver checks agent runs against. */
+/**
+ * Validate the pinned configuration a resolver checks runs against: the Claude
+ * agent's model, CLI, images and model origin, and the verification image.
+ */
 export function pinnedAgentConfig(agent) {
   const out = {};
-  for (const k of ['model', 'cliVersion', 'agentImage', 'proxyImage', 'modelBaseUrl']) {
+  for (const k of ['model', 'cliVersion', 'agentImage', 'proxyImage', 'modelBaseUrl', 'verifyImage']) {
     const v = agent?.[k];
     if (typeof v !== 'string' || v.trim() === '') {
       throw new Error(`the pinned Claude configuration lacks ${k} — refusing to accept an agent run without knowing what the real one is`);
     }
     out[k] = v.trim();
   }
-  for (const k of ['agentImage', 'proxyImage']) {
+  for (const k of ['agentImage', 'proxyImage', 'verifyImage']) {
     if (!DIGEST_PINNED.test(out[k])) throw new Error(`the pinned ${k} '${out[k]}' is not digest-pinned (…@sha256:<64hex>)`);
   }
   out.modelBaseUrl = normalizeModelBaseUrl(out.modelBaseUrl);
@@ -116,7 +132,8 @@ function parseJsonObject(bytes) {
   }
 }
 
-// What the adapter's invocation manifest says it ran.
+// What the adapter's invocation manifest says it ran, and what it handed the
+// agent (by artifact id and checksum; the host paths are not evidence).
 function invocationFacts(bytes) {
   const m = parseJsonObject(bytes);
   if (!m) return null;
@@ -124,6 +141,11 @@ function invocationFacts(bytes) {
     providerId: m.providerId, model: m.model, cliVersion: m.cliVersion,
     image: m.image, proxyImage: m.proxyImage,
     upstream: m.network && typeof m.network === 'object' ? m.network.upstream : undefined,
+    inputs: Array.isArray(m.inputs)
+      ? m.inputs.map((x) => (x && typeof x === 'object'
+        ? { name: x.name, artifactId: x.artifactId, sha256: x.sha256 }
+        : null))
+      : undefined,
   };
 }
 
@@ -225,9 +247,9 @@ export function sqlBindingReader(db) {
  *   objects — reads artifact bytes by storage key, so evidence is re-hashed
  *     rather than taken from its metadata row;
  *   forge — the forge port's PR lookup, so a PR is checked as it is now;
- *   agent — the pilot's pinned Claude configuration { model, cliVersion,
- *     agentImage, proxyImage, modelBaseUrl }, so only a run of the real adapter
- *     under those pins is accepted.
+ *   agent — the pilot's pinned configuration { model, cliVersion, agentImage,
+ *     proxyImage, modelBaseUrl, verifyImage }, so only a run of the real
+ *     adapter under those pins, verified in that image, is accepted.
  *   All REQUIRED: without any one of them a check would silently not run, so
  *   the factory refuses to build.
  */
@@ -318,9 +340,15 @@ export function createSqlAuthorityResolver(db, opts) {
       // The join is INNER and scoped on the composite key, so an attempt whose
       // task lies outside the trace's tenant resolves to zero rows and fails
       // closed exactly as a missing attempt does.
+      //
+      // The task's state, risk and work order come from the same row: they are
+      // the database's, never the manifest's.
       const r = await db.query(
-        `select a.id, a.task_id, t.run_id, a.repository_binding_id, a.result_sha,
-                a.agent_provider_id, a.evidence_artifact_id, a.evidence_sha256
+        `select a.id, a.task_id, t.run_id, a.repository_binding_id, a.base_sha, a.result_sha,
+                a.agent_provider_id, a.evidence_artifact_id, a.evidence_sha256,
+                a.context_pack_artifact_id, a.context_pack_sha256,
+                t.status as task_status, t.risk as task_risk,
+                t.work_order_artifact_id, t.work_order_sha256
          from attempts a
          join tasks t
            on t.id = a.task_id
@@ -336,17 +364,25 @@ export function createSqlAuthorityResolver(db, opts) {
         taskId: row['task_id'],
         runId: row['run_id'],
         repositoryBindingId: row['repository_binding_id'],
+        baseSha: row['base_sha'],
         resultSha: row['result_sha'],
         providerId: row['agent_provider_id'],
         evidenceArtifactId: row['evidence_artifact_id'],
         evidenceSha256: row['evidence_sha256'],
+        contextPackArtifactId: row['context_pack_artifact_id'],
+        contextPackSha256: row['context_pack_sha256'],
+        taskStatus: row['task_status'],
+        taskRisk: row['task_risk'],
+        workOrderArtifactId: row['work_order_artifact_id'],
+        workOrderSha256: row['work_order_sha256'],
       };
     },
 
     // The row says what the evidence should hash to; the bytes are fetched and
-    // hashed here, and the bundle they hold is parsed for its identity. Bytes
-    // that cannot be read report a null hash, and bytes that are not a bundle
-    // a null bundle — the verifier refuses both.
+    // hashed here, and the bundle they hold is parsed whole, so the verifier
+    // checks every field of it, not a chosen few. Bytes that cannot be read
+    // report a null hash, and bytes that are not a JSON object a null bundle —
+    // the verifier refuses both.
     async resolveEvidence(trace, evidenceArtifactId) {
       const r = await db.query(
         `select id, kind, sha256, storage_key
@@ -357,26 +393,51 @@ export function createSqlAuthorityResolver(db, opts) {
       if (r.rowCount === 0) return null;
       const row = r.rows[0];
       const bytes = await bytesOf(row['storage_key']);
-      let bundle = null;
-      if (bytes !== null) {
-        try {
-          const parsed = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
-          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-            bundle = {
-              taskId: parsed.taskId, attemptId: parsed.attemptId,
-              baseSha: parsed.baseSha, resultSha: parsed.resultSha,
-            };
-          }
-        } catch {
-          bundle = null;
-        }
-      }
       return {
         sha256: row['sha256'],
         kind: row['kind'],
         bytesSha256: bytes === null ? null : sha256Hex(bytes),
-        bundle,
+        bundle: bytes === null ? null : parseJsonObject(bytes),
       };
+    },
+
+    // Any artifact of the tenant by id: what kind the row says it is, what it
+    // should hash to, and what its stored bytes hash to (null when they cannot
+    // be read).
+    async resolveArtifact(trace, artifactId) {
+      const r = await db.query(
+        `select id, kind, sha256, storage_key
+         from artifacts
+         where id = $1 and organization_id = $2 and project_id = $3`,
+        [artifactId ?? '', ...scopeOf(trace)],
+      );
+      if (r.rowCount === 0) return null;
+      const row = r.rows[0];
+      const bytes = await bytesOf(row['storage_key']);
+      return { kind: row['kind'], sha256: row['sha256'], bytesSha256: bytes === null ? null : sha256Hex(bytes) };
+    },
+
+    // The harness's records of where this attempt's verification checks ran.
+    // Every one recorded is returned, so the verifier can refuse none or
+    // several.
+    async resolveVerification(trace) {
+      const r = await db.query(
+        `select sha256, storage_key
+         from artifacts
+         where attempt_id = $1 and organization_id = $2 and project_id = $3 and kind = $4
+         order by created_at, id`,
+        [trace?.attemptId ?? '', ...scopeOf(trace), VERIFICATION_PROVENANCE_KIND],
+      );
+      const out = [];
+      for (const row of r.rows) {
+        const bytes = await bytesOf(row['storage_key']);
+        out.push({
+          sha256: row['sha256'],
+          bytesSha256: bytes === null ? null : sha256Hex(bytes),
+          record: bytes === null ? null : parseJsonObject(bytes),
+        });
+      }
+      return out;
     },
 
     async resolvePullRequest(trace, pullRequestId) {
@@ -518,9 +579,9 @@ export async function createResolverFromEnv(env = process.env) {
   }
 }
 
-// The pilot's Claude pins from the same variables the pilot entrypoint reads.
-// The model origin defaults to the public API and, as for the pilot, must be
-// https.
+// The pilot's Claude and verification-image pins from the same variables the
+// pilot entrypoint reads. The model origin defaults to the public API and, as
+// for the pilot, must be https.
 function agentPinsFromEnv(env) {
   const need = (name) => {
     const v = (env[name] ?? '').trim();
@@ -543,6 +604,7 @@ function agentPinsFromEnv(env) {
     agentImage: need(AGENT_IMAGE_ENV),
     proxyImage: need(PROXY_IMAGE_ENV),
     modelBaseUrl,
+    verifyImage: need(VERIFY_IMAGE_ENV),
   });
 }
 

@@ -136,14 +136,23 @@ ASEP_PG_URL=… ASEP_REVIEWER_PUBLIC_KEY=<reviewer public key PEM> \
 ASEP_OBJECT_STORE_DIR=<the pilot's object store> \
 ASEP_GITHUB_APP_ID=… ASEP_GITHUB_PRIVATE_KEY_PATH=… ASEP_GITHUB_INSTALLATION_ID=… \
 ASEP_CLAUDE_MODEL=… ASEP_CLAUDE_CLI_VERSION=… \
-ASEP_AGENT_IMAGE_DIGEST=… ASEP_EGRESS_PROXY_IMAGE_DIGEST=… [ASEP_ANTHROPIC_BASE_URL=…] \
+ASEP_AGENT_IMAGE_DIGEST=… ASEP_EGRESS_PROXY_IMAGE_DIGEST=… ASEP_VERIFY_IMAGE_DIGEST=… \
+[ASEP_ANTHROPIC_BASE_URL=…] \
   node scripts/pilot/verify-pilot-manifest.mjs <manifest.json>
 ```
 
 Every variable is required except `ASEP_ANTHROPIC_BASE_URL` (the public API by
 default, https only); a missing one is a rejection, not a downgrade. The Claude
-variables must hold the values the pilot ran with. For each task the verifier,
-besides matching the manifest against the database rows:
+and image variables must hold the values the pilot ran with. For each task the
+verifier, besides matching the manifest against the database rows:
+
+- reads the task from the database: it must be `WAITING_FOR_HUMAN_REVIEW`, at a
+  risk Phase-2 admission admits (`R0` or `R1`; the manifest's `risk` must be
+  the task's), and the manifest's `baseSha` and `workOrderSha256` must be the
+  attempt's base and the work order the task carries. The work order and the
+  attempt's context pack must be artifacts of their kind whose stored bytes
+  still hash to what is recorded, and the agent's invocation manifest must name
+  exactly those two as its inputs;
 
 - accepts the agent only if the attempt records exactly the provider id the real
   Claude adapter produces for the pinned model and CLI version
@@ -157,8 +166,21 @@ besides matching the manifest against the database rows:
   agent double records none of these and is refused;
 
 - fetches the evidence bytes from the object store, requires them to hash to
-  the sha256 the artifact row records, and requires the bundle they hold to name
-  the task, the attempt, the attempt's result commit and the manifest's base;
+  the sha256 the artifact row records and the attempt to carry that evidence,
+  and checks the bundle they hold against the canonical evidence-bundle shape,
+  closed at every level: it names the task, the attempt, the attempt's result
+  commit and the manifest's base; its environment image is the pinned agent
+  image; its diff is an intact `git-diff` artifact with the recorded checksum;
+  and it has at least one check, each with a known category, an integer exit
+  code and intact `command-stdout` / `command-stderr` artifacts;
+- requires one intact `verification-provenance` artifact of the attempt — the
+  harness's record of where each check ran — for this task, attempt and risk,
+  with a `PASS` verdict, matching the bundle check for check (id, command, exit
+  code, raw output), every check run in a container of the pinned verification
+  image (`ASEP_VERIFY_IMAGE_DIGEST`) with `--network none`, `--read-only`,
+  `--cap-drop ALL` and `--security-opt no-new-privileges` and no other network,
+  `--privileged` or `--cap-add`, and at least one mandatory check, every one of
+  which passed;
 - asks GitHub, through the same GitHub App and forge port the pilot uses, for
   the PR on the attempt's branch, and requires its number and URL to match the
   record and its head to be the attempt's result commit — a PR whose branch has

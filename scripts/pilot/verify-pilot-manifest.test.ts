@@ -46,6 +46,7 @@ const PINS = Object.freeze({
   agentImage: `asep-agent@sha256:${'1'.repeat(64)}`,
   proxyImage: `node@sha256:${'2'.repeat(64)}`,
   modelBaseUrl: 'https://api.anthropic.com',
+  verifyImage: `verify@sha256:${'6'.repeat(64)}`,
 });
 const REAL_ID = 'claude:claude-sonnet@cli-1.2.3';
 
@@ -205,6 +206,62 @@ test('an unknown verdict is rejected by the schema enum', () => {
 // mismatched human authorization) is rejected.
 // ---------------------------------------------------------------------------
 
+// What the harness records for genuine task i: the task's work order (whose
+// sha256 is the manifest's), the attempt's context pack, the result commit, the
+// canonical evidence bundle and the record of where its checks ran.
+const resultOf = (i: number) => (i + 1).toString(16).padStart(40, '0');
+const workOrderShaOf = (i: number) => i.toString(16).padStart(64, '0');
+const contextPackShaOf = (i: number) => i.toString(16).padStart(64, 'c');
+const DIFF_SHA = '7'.repeat(64);
+// The hardened flags the Docker sandbox runs verification with (mounts and
+// labels left out).
+const VERIFY_FLAGS = Object.freeze([
+  'run', '--rm', '--network', 'none', '--read-only', '--tmpfs', '/tmp', '--cap-drop', 'ALL',
+  '--security-opt', 'no-new-privileges', '--pids-limit', '256', '--cpus', '1', '--memory', '512m',
+]);
+
+function genuineBundle(i: number): Record<string, any> {
+  return {
+    taskId: `task-${i}`,
+    attemptId: `att-${i}`,
+    baseSha: '0'.repeat(40),
+    resultSha: resultOf(i),
+    createdAt: '2026-10-29T00:00:00.000Z',
+    environment: { imageDigest: PINS.agentImage, lockfileHash: 'f'.repeat(64), nodeVersion: 'v24.6.0' },
+    diff: { artifactId: `diff-${i}`, sha256: DIFF_SHA },
+    checks: ['L0-workspace', 'L1-static'].map((id, k) => ({
+      id, category: k === 0 ? 'workspace' : 'static', command: 'git status --porcelain', exitCode: 0, durationMs: 0,
+      stdoutArtifactId: `out-${i}-${k}`, stderrArtifactId: `err-${i}-${k}`,
+    })),
+  };
+}
+
+function genuineProvenance(i: number): Record<string, any> {
+  return {
+    taskId: `task-${i}`,
+    attemptId: `att-${i}`,
+    planId: 'plan-R1',
+    risk: 'R1',
+    verdict: 'PASS',
+    checks: genuineBundle(i).checks.map((c: Record<string, unknown>, k: number) => ({
+      id: c.id, level: `L${k}`, mandatory: true, verdict: 'PASS', command: c.command, exitCode: c.exitCode,
+      stdoutArtifactId: c.stdoutArtifactId, stderrArtifactId: c.stderrArtifactId,
+      provenance: { where: 'container', image: PINS.verifyImage, container: `sb-${i}-${k + 1}`, runFlags: VERIFY_FLAGS },
+    })),
+  };
+}
+
+// The artifacts of genuine task i by id, each intact.
+function genuineArtifact(i: number, id: string): Record<string, unknown> | null {
+  const intact = (kind: string, sha256: string) => ({ kind, sha256, bytesSha256: sha256 });
+  if (id === `wo-${i}`) return intact('work-order', workOrderShaOf(i));
+  if (id === `cp-${i}`) return intact('context-pack', contextPackShaOf(i));
+  if (id === `diff-${i}`) return intact('git-diff', DIFF_SHA);
+  if (id.startsWith(`out-${i}-`)) return intact('command-stdout', '8'.repeat(64));
+  if (id.startsWith(`err-${i}-`)) return intact('command-stderr', '9'.repeat(64));
+  return null;
+}
+
 // A resolver that reflects the GENUINE defaults of makeTask/makeManifest, so a
 // pristine manifest cross-checks cleanly. Tests perturb either the manifest or
 // this authority to drive a specific mismatch.
@@ -212,14 +269,15 @@ function genuineAuthority(over: {
   pins?: () => unknown;
   agentRun?: (i: number, base: Record<string, any>) => unknown;
   attempt?: (i: number, base: Record<string, unknown>) => Record<string, unknown> | null;
-  evidence?: (i: number, base: Record<string, unknown>) => Record<string, unknown> | null;
+  evidence?: (i: number, base: Record<string, any>) => Record<string, unknown> | null;
+  artifact?: (i: number, id: string, base: Record<string, unknown> | null) => Record<string, unknown> | null;
+  verification?: (i: number, base: Array<Record<string, any>>) => unknown;
   pr?: (i: number, base: Record<string, unknown>) => Record<string, unknown> | null;
   livePr?: (i: number, base: Record<string, unknown>) => Record<string, unknown> | null;
   auth?: (i: number, base: Record<string, unknown>) => Record<string, unknown> | null;
 } = {}) {
   const idxOf = (s: string) => Number(String(s).replace(/[^0-9]/g, ''));
   const SHA64local = 'a'.repeat(64);
-  const resultOf = (i: number) => (i + 1).toString(16).padStart(40, '0');
   return {
     pinnedAgent() {
       return over.pins ? over.pins() : PINS;
@@ -235,6 +293,10 @@ function genuineAuthority(over: {
           manifest: {
             providerId: REAL_ID, model: PINS.model, cliVersion: PINS.cliVersion,
             image: PINS.agentImage, proxyImage: PINS.proxyImage, upstream: PINS.modelBaseUrl,
+            inputs: [
+              { name: 'work-order', artifactId: `wo-${i}`, sha256: workOrderShaOf(i) },
+              { name: 'context-pack', artifactId: `cp-${i}`, sha256: contextPackShaOf(i) },
+            ],
           },
         }],
         events: [{
@@ -253,24 +315,42 @@ function genuineAuthority(over: {
         taskId: `task-${i}`,
         runId: `run-${i}`,
         repositoryBindingId: 'rb-1',
+        baseSha: '0'.repeat(40),
         resultSha: resultOf(i),
         evidenceArtifactId: `ev-${i}`,
         evidenceSha256: SHA64local,
         providerId: REAL_ID,
+        taskStatus: 'WAITING_FOR_HUMAN_REVIEW',
+        taskRisk: 'R1',
+        workOrderArtifactId: `wo-${i}`,
+        workOrderSha256: workOrderShaOf(i),
+        contextPackArtifactId: `cp-${i}`,
+        contextPackSha256: contextPackShaOf(i),
       };
       return over.attempt ? over.attempt(i, base) : base;
     },
-    // The stored bytes hash to the recorded sha256 and parse as the bundle of
-    // this very attempt.
+    // The stored bytes hash to the recorded sha256 and parse as the canonical
+    // bundle of this very attempt.
     async resolveEvidence(trace: Record<string, unknown>, _id: string) {
       const i = idxOf(trace.taskId as string);
       const base = {
         sha256: SHA64local,
         kind: 'evidence-bundle',
         bytesSha256: SHA64local,
-        bundle: { taskId: `task-${i}`, attemptId: `att-${i}`, baseSha: '0'.repeat(40), resultSha: resultOf(i) },
+        bundle: genuineBundle(i),
       };
       return over.evidence ? over.evidence(i, base) : base;
+    },
+    async resolveArtifact(trace: Record<string, unknown>, id: string) {
+      const i = idxOf(trace.taskId as string);
+      const base = genuineArtifact(i, id);
+      return over.artifact ? over.artifact(i, id, base) : base;
+    },
+    // The one record of where the attempt's verification checks ran, intact.
+    async resolveVerification(trace: Record<string, unknown>) {
+      const i = idxOf(trace.taskId as string);
+      const base = [{ sha256: 'e'.repeat(64), bytesSha256: 'e'.repeat(64), record: genuineProvenance(i) }];
+      return over.verification ? over.verification(i, base) : base;
     },
     async resolvePullRequest(trace: Record<string, unknown>, _id: string) {
       const i = idxOf(trace.taskId as string);
@@ -556,12 +636,275 @@ test('the verifier refuses to judge agent runs without usable pins', async () =>
   await rejectsWith(genuineAuthority({ pins: () => ({ ...PINS, cliVersion: '' }) }), /pinned Claude configuration is unusable: missing cliVersion/);
   await rejectsWith(genuineAuthority({ pins: () => null }), /pinned Claude configuration is unusable/);
   await rejectsWith(genuineAuthority({ pins: () => { throw new Error('no pins here'); } }), /cannot report the pinned Claude configuration/);
-  for (const drop of ['pinnedAgent', 'resolveAgentRun'] as const) {
+  await rejectsWith(genuineAuthority({ pins: () => ({ ...PINS, verifyImage: undefined }) }), /pinned Claude configuration is unusable: missing verifyImage/);
+  for (const drop of ['pinnedAgent', 'resolveAgentRun', 'resolveArtifact', 'resolveVerification'] as const) {
     const { [drop]: _gone, ...partial } = genuineAuthority();
     const res = await verifyManifestAgainstAuthority(makeManifest(MIN_PILOT_TASKS), partial);
     assert.equal(res.ok, false);
     assert.ok(res.reasons.some((r: string) => new RegExp(`lacks ${drop}`).test(r)), res.reasons.join('; '));
   }
+});
+
+// --- the task, its work order, its evidence and where its checks ran -------------
+
+// The probe that once passed: tasks seeded straight into the database with a
+// local double's provider, risk R4, and a work order and agent session the
+// manifest invents. Every one is refused, for every one of those reasons.
+test('ten tasks run by a local double at risk R4, with invented work orders and sessions, are refused', async () => {
+  const forged = genuineAuthority({
+    attempt: (i, b) => ({ ...b, providerId: 'fake-claude', taskRisk: 'R4' }),
+    agentRun: () => ({ invocation: [], events: [], egress: [] }),
+  });
+  for (const providerId of ['fake-claude', REAL_ID]) {
+    const m = makeManifest(MIN_PILOT_TASKS);
+    (m.tasks as Record<string, unknown>[]).forEach((t, i) => Object.assign(t, {
+      providerId, risk: 'R4', workOrderSha256: (1000 + i).toString(16).padStart(64, 'f'), providerSessionId: `invented-${i}`,
+    }));
+    const res = await verifyManifestAgainstAuthority(m, forged);
+    assert.equal(res.ok, false, `claimed provider ${providerId}`);
+    if (providerId === 'fake-claude') {
+      assert.ok(res.reasons.some((r: string) => /providerId must be a Claude adapter id/.test(r)), res.reasons.join('; '));
+      continue;
+    }
+    for (let i = 0; i < MIN_PILOT_TASKS; i++) {
+      const own = res.reasons.filter((r: string) => r.startsWith(`task "task-${i}"`));
+      for (const why of [
+        /persisted provider "fake-claude" is not the real Claude adapter/,
+        /risk "R4" is not admissible/,
+        /manifest workOrderSha256 .* != the task's work order/,
+        /no event stream recorded/,
+      ]) {
+        assert.ok(own.some((r: string) => why.test(r)), `task-${i}: ${why} not among: ${own.join('; ')}`);
+      }
+    }
+  }
+});
+
+test('a task that is not waiting for human review is refused', async () => {
+  for (const status of ['PENDING', 'READY', 'EXECUTING', 'VERIFYING', 'FAILED', 'BLOCKED', 'CANCELLED', null]) {
+    await rejectsWith(genuineAuthority({ attempt: (i, b) => ({ ...b, taskStatus: status }) }),
+      /is not waiting for human review/);
+  }
+});
+
+test('a risk the manifest claims but the task does not have, or one Phase-2 automation may not run, is refused', async () => {
+  await rejectsWith(genuineAuthority({ attempt: (i, b) => ({ ...b, taskRisk: 'R0' }) }),
+    /manifest risk "R1" != the task's risk "R0"/);
+  for (const risk of ['R2', 'R3', 'R4']) {
+    const m = makeManifest(MIN_PILOT_TASKS);
+    for (const t of m.tasks as Record<string, unknown>[]) t.risk = risk;
+    const res = await verifyManifestAgainstAuthority(m, genuineAuthority({ attempt: (i, b) => ({ ...b, taskRisk: risk }) }));
+    assert.equal(res.ok, false);
+    assert.ok(res.reasons.some((r: string) => new RegExp(`risk "${risk}" is not admissible`).test(r)), res.reasons.join('; '));
+  }
+  await rejectsWith(genuineAuthority({ attempt: (i, b) => ({ ...b, taskRisk: undefined }) }),
+    /manifest risk "R1" != the task's risk/);
+});
+
+test('a base the attempt did not start from is refused', async () => {
+  await rejectsWith(genuineAuthority({ attempt: (i, b) => ({ ...b, baseSha: 'e'.repeat(40) }) }),
+    /manifest baseSha .* != the attempt's base/);
+});
+
+test('a work order the task does not carry, or whose artifact is missing, foreign or altered, is refused', async () => {
+  const m = makeManifest(MIN_PILOT_TASKS);
+  (m.tasks as Record<string, unknown>[])[0]!.workOrderSha256 = 'f'.repeat(64);
+  const res = await verifyManifestAgainstAuthority(m, genuineAuthority());
+  assert.equal(res.ok, false);
+  assert.ok(res.reasons.some((r: string) => /manifest workOrderSha256 "f+" != the task's work order/.test(r)), res.reasons.join('; '));
+
+  await rejectsWith(genuineAuthority({ attempt: (i, b) => ({ ...b, workOrderArtifactId: null, workOrderSha256: null }) }),
+    /the task has no work order attached/);
+  await rejectsWith(genuineAuthority({ artifact: (i, id, b) => (id.startsWith('wo-') ? null : b) }),
+    /the work order wo-0 is not an artifact of this tenant/);
+  await rejectsWith(genuineAuthority({ artifact: (i, id, b) => (id.startsWith('wo-') ? { ...b, kind: 'context-pack' } : b) }),
+    /the work order wo-0 is a "context-pack" artifact, not "work-order"/);
+  await rejectsWith(genuineAuthority({ artifact: (i, id, b) => (id.startsWith('wo-') ? { ...b, bytesSha256: 'd'.repeat(64) } : b) }),
+    /stored work order bytes hash to/);
+  await rejectsWith(genuineAuthority({ artifact: (i, id, b) => (id.startsWith('wo-') ? { ...b, sha256: 'd'.repeat(64), bytesSha256: 'd'.repeat(64) } : b) }),
+    /the work order wo-0 records sha256 "d+", not/);
+});
+
+test('a context pack the attempt does not carry, or whose artifact is missing or altered, is refused', async () => {
+  await rejectsWith(genuineAuthority({ attempt: (i, b) => ({ ...b, contextPackArtifactId: null, contextPackSha256: null }) }),
+    /the attempt has no context pack attached/);
+  await rejectsWith(genuineAuthority({ artifact: (i, id, b) => (id.startsWith('cp-') ? null : b) }),
+    /the context pack cp-0 is not an artifact of this tenant/);
+  await rejectsWith(genuineAuthority({ artifact: (i, id, b) => (id.startsWith('cp-') ? { ...b, bytesSha256: null } : b) }),
+    /stored context pack bytes hash to nothing/);
+});
+
+test('an agent that was not handed the task\'s work order and the attempt\'s context pack is refused', async () => {
+  const withInputs = (inputs: unknown) => genuineAuthority({
+    agentRun: (i, b) => ({ ...b, invocation: [{ ...b.invocation[0], manifest: { ...b.invocation[0].manifest, inputs } }] }),
+  });
+  await rejectsWith(withInputs(undefined), /the agent was not handed the work order the task carries/);
+  await rejectsWith(withInputs([{ name: 'work-order', artifactId: 'wo-other', sha256: workOrderShaOf(0) },
+    { name: 'context-pack', artifactId: 'cp-0', sha256: contextPackShaOf(0) }]),
+  /the agent was not handed the work order the task carries/);
+  await rejectsWith(withInputs([{ name: 'work-order', artifactId: 'wo-0', sha256: workOrderShaOf(0) },
+    { name: 'context-pack', artifactId: 'cp-0', sha256: 'd'.repeat(64) }]),
+  /the agent was not handed the context pack the attempt carries/);
+  await rejectsWith(withInputs([{ name: 'work-order', artifactId: 'wo-0', sha256: workOrderShaOf(0) },
+    { name: 'context-pack', artifactId: 'cp-0', sha256: contextPackShaOf(0) },
+    { name: 'work-order', artifactId: 'wo-9', sha256: workOrderShaOf(9) }]),
+  /the agent was not handed the work order the task carries/);
+  await rejectsWith(withInputs([{ name: 'work-order', artifactId: 'wo-0', sha256: workOrderShaOf(0) },
+    { name: 'context-pack', artifactId: 'cp-0', sha256: contextPackShaOf(0) },
+    { name: 'notes', artifactId: 'n-0', sha256: 'd'.repeat(64) }]),
+  /the agent was handed inputs the harness does not give/);
+});
+
+test('an attempt with no evidence attached, or with other evidence than the trace, is refused', async () => {
+  await rejectsWith(genuineAuthority({ attempt: (i, b) => ({ ...b, evidenceArtifactId: null, evidenceSha256: null }) }),
+    /attempt.evidence_artifact_id "null" != trace.evidenceArtifactId/);
+  await rejectsWith(genuineAuthority({ attempt: (i, b) => ({ ...b, evidenceSha256: null }) }),
+    /attempt.evidence_sha256 "null" != authoritative artifact sha256/);
+});
+
+// The bundle is checked against the canonical evidence-bundle shape, field by
+// field, not for four identity fields.
+const withBundle = (edit: (b: Record<string, any>) => void) => genuineAuthority({
+  evidence: (i, base) => {
+    const bundle = JSON.parse(JSON.stringify(base.bundle));
+    edit(bundle);
+    return { ...base, bundle };
+  },
+});
+
+test('an evidence bundle that is not the canonical shape is refused', async () => {
+  for (const key of ['createdAt', 'environment', 'diff', 'checks', 'baseSha', 'resultSha']) {
+    await rejectsWith(withBundle((b) => { delete b[key]; }), new RegExp(`the evidence bundle lacks ${key}`));
+  }
+  await rejectsWith(withBundle((b) => { b.verdict = 'PASS'; }), /the evidence bundle carries "verdict"/);
+  await rejectsWith(withBundle((b) => { b.createdAt = 'yesterday'; }), /createdAt "yesterday" is not an ISO-8601 time/);
+  await rejectsWith(withBundle((b) => { b.environment = 'docker'; }), /the evidence bundle environment is not an object/);
+  await rejectsWith(withBundle((b) => { delete b.environment.lockfileHash; }), /environment lacks lockfileHash/);
+  await rejectsWith(withBundle((b) => { b.environment.lockfileHash = ''; }), /environment lockfileHash is empty/);
+  await rejectsWith(withBundle((b) => { b.environment.shell = 'bash'; }), /environment carries "shell"/);
+  await rejectsWith(withBundle((b) => { b.environment.imageDigest = `asep-agent@sha256:${'9'.repeat(64)}`; }),
+    /records environment image .* not the pinned agent image/);
+  await rejectsWith(withBundle((b) => { delete b.diff.sha256; }), /the evidence bundle diff lacks sha256/);
+  await rejectsWith(withBundle((b) => { b.diff.lines = 3; }), /diff carries "lines"/);
+});
+
+test('an evidence bundle whose checks are missing, malformed or not linked to their raw output is refused', async () => {
+  await rejectsWith(withBundle((b) => { b.checks = []; }), /records no verification check/);
+  await rejectsWith(withBundle((b) => { b.checks = 'all green'; }), /records no verification check/);
+  await rejectsWith(withBundle((b) => { b.checks[0].note = 'fine'; }), /check "L0-workspace" carries "note"/);
+  await rejectsWith(withBundle((b) => { b.checks[0].category = 'vibes'; }), /check "L0-workspace" has category "vibes"/);
+  await rejectsWith(withBundle((b) => { b.checks[0].exitCode = '0'; }), /check "L0-workspace" has exit code "0"/);
+  await rejectsWith(withBundle((b) => { b.checks[0].durationMs = -1; }), /check "L0-workspace" has duration -1/);
+  await rejectsWith(withBundle((b) => { b.checks[0].command = ''; }), /check "L0-workspace" has no command/);
+  await rejectsWith(withBundle((b) => { b.checks[1].id = 'L0-workspace'; }), /check id "L0-workspace" appears twice/);
+  await rejectsWith(withBundle((b) => { delete b.checks[0].stdoutArtifactId; }), /check "L0-workspace" lacks stdoutArtifactId/);
+  await rejectsWith(withBundle((b) => { delete b.checks[1].stderrArtifactId; }), /check "L1-static" lacks stderrArtifactId/);
+});
+
+test('evidence whose diff or raw check output is missing, of another kind or altered is refused', async () => {
+  await rejectsWith(genuineAuthority({ artifact: (i, id, b) => (id.startsWith('diff-') ? null : b) }),
+    /the diff diff-0 is not an artifact of this tenant/);
+  await rejectsWith(genuineAuthority({ artifact: (i, id, b) => (id.startsWith('diff-') ? { ...b, kind: 'command-stdout' } : b) }),
+    /the diff diff-0 is a "command-stdout" artifact, not "git-diff"/);
+  await rejectsWith(withBundle((b) => { b.diff.sha256 = 'd'.repeat(64); }), /the diff diff-0 records sha256 "7+", not "d+"/);
+  await rejectsWith(genuineAuthority({ artifact: (i, id, b) => (id.startsWith('out-') ? { ...b, bytesSha256: 'd'.repeat(64) } : b) }),
+    /stored stdout of check "L0-workspace" bytes hash to/);
+  await rejectsWith(genuineAuthority({ artifact: (i, id, b) => (id.startsWith('err-') ? { ...b, kind: 'command-stdout' } : b) }),
+    /the stderr of check "L0-workspace" err-0-0 is a "command-stdout" artifact, not "command-stderr"/);
+});
+
+const withRecord = (edit: (r: Record<string, any>) => void) => genuineAuthority({
+  verification: (i, base) => {
+    const record = JSON.parse(JSON.stringify(base[0]!.record));
+    edit(record);
+    return [{ ...base[0], record }];
+  },
+});
+
+test('an attempt with no single intact record of where its checks ran is refused', async () => {
+  await rejectsWith(genuineAuthority({ verification: () => [] }), /no verification provenance record recorded for the attempt/);
+  await rejectsWith(genuineAuthority({ verification: () => null }), /no verification provenance record recorded for the attempt/);
+  await rejectsWith(genuineAuthority({ verification: (i, b) => [b[0], b[0]] }), /2 verification provenance record artifacts recorded/);
+  await rejectsWith(genuineAuthority({ verification: (i, b) => [{ ...b[0], bytesSha256: 'd'.repeat(64) }] }),
+    /stored verification provenance record bytes hash to/);
+  await rejectsWith(genuineAuthority({ verification: (i, b) => [{ ...b[0], record: null }] }),
+    /the verification provenance record is not one the harness writes/);
+});
+
+test('a provenance record of another task, attempt or risk, or of a verification that did not pass, is refused', async () => {
+  await rejectsWith(withRecord((r) => { r.attemptId = 'att-other'; }), /provenance record names attempt "att-other"/);
+  await rejectsWith(withRecord((r) => { r.taskId = 'task-other'; }), /provenance record names task "task-other"/);
+  await rejectsWith(withRecord((r) => { r.risk = 'R0'; }), /verified at risk "R0", not the task's "R1"/);
+  await rejectsWith(withRecord((r) => { r.verdict = 'FAIL'; }), /the verification verdict was "FAIL", not PASS/);
+});
+
+test('a provenance record that does not match the evidence check for check is refused', async () => {
+  await rejectsWith(withRecord((r) => { r.checks.pop(); }), /records 1 checks, the evidence bundle 2/);
+  await rejectsWith(withRecord((r) => { r.checks = 'ran'; }), /records no checks/);
+  for (const field of ['id', 'command', 'exitCode', 'stdoutArtifactId', 'stderrArtifactId']) {
+    await rejectsWith(withRecord((r) => { r.checks[1][field] = field === 'exitCode' ? 7 : 'other'; }),
+      new RegExp(`provenance check 1 records ${field} .* the evidence check`));
+  }
+});
+
+test('a check that did not run in the pinned, hardened verification sandbox is refused', async () => {
+  await rejectsWith(withRecord((r) => { r.checks[0].provenance = { where: 'host' }; }),
+    /check "L0-workspace" ran on the host, not in the verification sandbox/);
+  await rejectsWith(withRecord((r) => { delete r.checks[0].provenance; }),
+    /check "L0-workspace" has no record of where it ran/);
+  await rejectsWith(withRecord((r) => { r.checks[0].provenance.image = `verify@sha256:${'9'.repeat(64)}`; }),
+    /check "L0-workspace" ran in image .* not the pinned verification image/);
+  const flags = (edit: (f: string[]) => string[]) => withRecord((r) => { r.checks[0].provenance.runFlags = edit([...VERIFY_FLAGS]); });
+  for (const [drop, why] of [
+    [['--network', 'none'], /without --network none/],
+    [['--read-only'], /without --read-only/],
+    [['--cap-drop', 'ALL'], /without --cap-drop ALL/],
+    [['--security-opt', 'no-new-privileges'], /without --security-opt no-new-privileges/],
+  ] as Array<[string[], RegExp]>) {
+    await rejectsWith(flags((f) => {
+      const at = f.findIndex((x, k) => drop.every((d, j) => f[k + j] === d));
+      f.splice(at, drop.length);
+      return f;
+    }), why);
+  }
+  await rejectsWith(flags((f) => [...f, '--network', 'host']), /with --network host/);
+  await rejectsWith(flags((f) => [...f, '--network=bridge']), /with --network=bridge/);
+  await rejectsWith(flags((f) => [...f, '--privileged']), /with --privileged/);
+  await rejectsWith(flags((f) => [...f, '--cap-add', 'NET_ADMIN']), /with --cap-add/);
+  await rejectsWith(withRecord((r) => { r.checks[0].provenance.runFlags = 'run --rm'; }), /without --network none/);
+});
+
+test('a verification with no mandatory check, or with a mandatory check that did not pass, is refused', async () => {
+  await rejectsWith(withRecord((r) => { for (const c of r.checks) c.mandatory = false; }), /records no mandatory check/);
+  await rejectsWith(withRecord((r) => { r.checks[0].verdict = 'FAIL'; }), /mandatory check "L0-workspace" did not pass/);
+  const failed = genuineAuthority({
+    evidence: (i, base) => {
+      const bundle = JSON.parse(JSON.stringify(base.bundle));
+      bundle.checks[0].exitCode = 1;
+      return { ...base, bundle };
+    },
+    verification: (i, base) => {
+      const record = JSON.parse(JSON.stringify(base[0]!.record));
+      record.checks[0].exitCode = 1;
+      return [{ ...base[0], record }];
+    },
+  });
+  await rejectsWith(failed, /mandatory check "L0-workspace" did not pass/);
+  // A check the plan does not require may fail without refusing the task.
+  const advisory = genuineAuthority({
+    evidence: (i, base) => {
+      const bundle = JSON.parse(JSON.stringify(base.bundle));
+      bundle.checks[1].exitCode = 1;
+      return { ...base, bundle };
+    },
+    verification: (i, base) => {
+      const record = JSON.parse(JSON.stringify(base[0]!.record));
+      Object.assign(record.checks[1], { exitCode: 1, mandatory: false, verdict: 'FAIL' });
+      return [{ ...base[0], record }];
+    },
+  });
+  const res = await verifyManifestAgainstAuthority(makeManifest(MIN_PILOT_TASKS), advisory);
+  assert.equal(res.ok, true, res.reasons.join('; '));
 });
 
 test('HIGH-009: a structurally malformed manifest never reaches the resolver', async () => {
@@ -738,8 +1081,10 @@ test('HIGH-009 (resolver): every lookup is tenant-scoped and fully parameter-bou
   await resolver.resolvePullRequest(trace, 'pr-1');
   await resolver.resolveHumanAuthorization('task-1', trace);
   await resolver.resolveAgentRun(trace);
+  await resolver.resolveArtifact(trace, 'wo-1');
+  await resolver.resolveVerification(trace);
 
-  assert.equal(db.calls.length, 5);
+  assert.equal(db.calls.length, 7);
   for (const call of db.calls) {
     assert.match(call.text, /organization_id = \$\d/, `scoped by org: ${call.text}`);
     assert.match(call.text, /project_id = \$\d/, `scoped by project: ${call.text}`);
@@ -774,6 +1119,8 @@ test('a resolver cannot be built without usable Claude pins', () => {
     /agentImage .* is not digest-pinned/);
   assert.throws(() => createSqlAuthorityResolver(db, resolverOpts({ agent: { ...PINS, proxyImage: 'node:20' } })),
     /proxyImage .* is not digest-pinned/);
+  assert.throws(() => createSqlAuthorityResolver(db, resolverOpts({ agent: { ...PINS, verifyImage: 'alpine:3' } })),
+    /verifyImage .* is not digest-pinned/);
   assert.throws(() => createSqlAuthorityResolver(db, resolverOpts({ agent: { ...PINS, modelBaseUrl: 'ftp://x' } })), /http\(s\)/);
   // The origin is compared the way the adapter records it.
   const pinned = createSqlAuthorityResolver(db, resolverOpts({ agent: { ...PINS, modelBaseUrl: 'https://api.anthropic.com/' } }))
@@ -787,6 +1134,10 @@ function agentArtifacts() {
   const invocation = Buffer.from(JSON.stringify({
     providerId: REAL_ID, model: PINS.model, cliVersion: PINS.cliVersion, image: PINS.agentImage,
     proxyImage: PINS.proxyImage, network: { internal: 'asep-agent-net-x', egress: 'bridge', upstream: PINS.modelBaseUrl },
+    inputs: [
+      { name: 'work-order', artifactId: 'wo-1', sha256: '1'.repeat(64), path: '/in/work-order.json' },
+      { name: 'context-pack', artifactId: 'cp-1', sha256: '2'.repeat(64), path: '/in/context-pack.json' },
+    ],
     teardown: [],
   }));
   const events = Buffer.from([
@@ -823,9 +1174,15 @@ test('the resolver reads the agent artifacts linked to the attempt, re-hashes th
   assert.deepEqual([...db.calls[0]!.params], ['att-1', 'org-1', 'proj-1', 'claude-invocation', 'claude-event-stream', 'claude-egress-log']);
   assert.equal(run.invocation.length, 1);
   assert.equal(run.invocation[0].bytesSha256, run.invocation[0].sha256);
+  // What the agent was handed, by artifact id and checksum; where the files lay
+  // on the host is not evidence of anything.
   assert.deepEqual(run.invocation[0].manifest, {
     providerId: REAL_ID, model: PINS.model, cliVersion: PINS.cliVersion,
     image: PINS.agentImage, proxyImage: PINS.proxyImage, upstream: PINS.modelBaseUrl,
+    inputs: [
+      { name: 'work-order', artifactId: 'wo-1', sha256: '1'.repeat(64) },
+      { name: 'context-pack', artifactId: 'cp-1', sha256: '2'.repeat(64) },
+    ],
   });
   assert.deepEqual(run.events[0].init, { sessionId, model: PINS.model, cliVersion: PINS.cliVersion });
   assert.deepEqual(run.events[0].result, { sessionId, subtype: 'success', isError: false });
@@ -856,8 +1213,8 @@ function evidenceRow(bytes: Buffer, over: Record<string, unknown> = {}) {
   };
 }
 
-test('the resolver fetches the evidence bytes, re-hashes them and parses the bundle they hold', async () => {
-  const bundle = { taskId: 'task-1', attemptId: 'att-1', baseSha: '0'.repeat(40), resultSha: 'b'.repeat(40), checks: [] };
+test('the resolver fetches the evidence bytes, re-hashes them and parses the whole bundle they hold', async () => {
+  const bundle = { ...genuineBundle(1), extra: 'kept, so the verifier can refuse it' };
   const bytes = Buffer.from(JSON.stringify(bundle));
   const asked: string[] = [];
   const objects = { get: async (key: string) => { asked.push(key); return new Uint8Array(bytes); } };
@@ -865,7 +1222,38 @@ test('the resolver fetches the evidence bytes, re-hashes them and parses the bun
   const ev = await resolver.resolveEvidence({ organizationId: 'org-1', projectId: 'proj-1' }, 'ev-1');
   assert.deepEqual(asked, ['org-1/proj-1/evidence/ev-1'], 'the bytes come from the storage key the row records');
   assert.equal(ev.bytesSha256, ev.sha256);
-  assert.deepEqual(ev.bundle, { taskId: 'task-1', attemptId: 'att-1', baseSha: '0'.repeat(40), resultSha: 'b'.repeat(40) });
+  assert.deepEqual(ev.bundle, bundle);
+});
+
+test('the resolver re-hashes any artifact of the tenant by id, and reports one it cannot read', async () => {
+  const bytes = Buffer.from('{"objective":"x"}');
+  const row = { id: 'wo-1', kind: 'work-order', sha256: createHash('sha256').update(bytes).digest('hex'), storage_key: 'k/wo' };
+  const db = fakeDb(() => [row]);
+  const art = await createSqlAuthorityResolver(db, resolverOpts({ objects: { get: async () => new Uint8Array(bytes) } }))
+    .resolveArtifact({ organizationId: 'org-1', projectId: 'proj-1' }, 'wo-1');
+  assert.deepEqual(art, { kind: 'work-order', sha256: row.sha256, bytesSha256: row.sha256 });
+  assert.deepEqual([...db.calls[0]!.params], ['wo-1', 'org-1', 'proj-1']);
+  const unread = await createSqlAuthorityResolver(fakeDb(() => [row]), resolverOpts())
+    .resolveArtifact({ organizationId: 'org-1', projectId: 'proj-1' }, 'wo-1');
+  assert.equal(unread.bytesSha256, null);
+  assert.equal(await createSqlAuthorityResolver(fakeDb(() => []), resolverOpts())
+    .resolveArtifact({ organizationId: 'org-1', projectId: 'proj-1' }, 'wo-1'), null);
+});
+
+test('the resolver reads the attempt\'s verification provenance records, re-hashes and parses them', async () => {
+  const record = genuineProvenance(1);
+  const bytes = Buffer.from(JSON.stringify(record));
+  const sha = createHash('sha256').update(bytes).digest('hex');
+  const rows = [{ sha256: sha, storage_key: 'k/vp' }, { sha256: sha, storage_key: 'k/junk' }];
+  const db = fakeDb(() => rows);
+  const objects = { get: async (key: string) => new Uint8Array(key === 'k/vp' ? bytes : Buffer.from('not json')) };
+  const list = await createSqlAuthorityResolver(db, resolverOpts({ objects }))
+    .resolveVerification({ organizationId: 'org-1', projectId: 'proj-1', attemptId: 'att-1' });
+  assert.match(db.calls[0]!.text, /attempt_id = \$1/);
+  assert.deepEqual([...db.calls[0]!.params], ['att-1', 'org-1', 'proj-1', 'verification-provenance']);
+  assert.deepEqual(list[0], { sha256: sha, bytesSha256: sha, record });
+  assert.equal(list[1].record, null, 'bytes that are not a record parse to null');
+  assert.notEqual(list[1].bytesSha256, list[1].sha256);
 });
 
 test('evidence bytes that changed, vanished or are not a bundle are reported as such', async () => {
@@ -976,6 +1364,7 @@ test('HIGH-009 (resolver): createResolverFromEnv fails closed on missing env', a
   const pins = {
     ASEP_CLAUDE_MODEL: PINS.model, ASEP_CLAUDE_CLI_VERSION: PINS.cliVersion,
     ASEP_AGENT_IMAGE_DIGEST: PINS.agentImage, ASEP_EGRESS_PROXY_IMAGE_DIGEST: PINS.proxyImage,
+    ASEP_VERIFY_IMAGE_DIGEST: PINS.verifyImage,
   };
   for (const name of Object.keys(pins)) {
     const { [name as keyof typeof pins]: _gone, ...rest } = pins;
@@ -988,6 +1377,10 @@ test('HIGH-009 (resolver): createResolverFromEnv fails closed on missing env', a
   await assert.rejects(
     () => createResolverFromEnv({ ...withApp, ...pins, ASEP_AGENT_IMAGE_DIGEST: 'asep-agent:latest' }),
     /not digest-pinned/,
+  );
+  await assert.rejects(
+    () => createResolverFromEnv({ ...withApp, ...pins, ASEP_VERIFY_IMAGE_DIGEST: 'alpine:3' }),
+    /verifyImage .* not digest-pinned/,
   );
 });
 
@@ -1044,11 +1437,12 @@ test('createResolverFromEnv builds the resolver over the real GitHub App forge p
     ASEP_CLAUDE_CLI_VERSION: PINS.cliVersion,
     ASEP_AGENT_IMAGE_DIGEST: PINS.agentImage,
     ASEP_EGRESS_PROXY_IMAGE_DIGEST: PINS.proxyImage,
+    ASEP_VERIFY_IMAGE_DIGEST: PINS.verifyImage,
   });
   try {
     for (const m of [
       'resolveAttempt', 'resolveEvidence', 'resolvePullRequest', 'resolveLivePullRequest', 'resolveHumanAuthorization',
-      'pinnedAgent', 'resolveAgentRun',
+      'pinnedAgent', 'resolveAgentRun', 'resolveArtifact', 'resolveVerification',
     ]) {
       assert.equal(typeof handle.resolver[m], 'function', m);
     }
@@ -1066,4 +1460,6 @@ test('HIGH-009 (resolver): an absent authoritative row resolves to null (verifie
   assert.equal(await resolver.resolveEvidence({ organizationId: 'o', projectId: 'p' }, 'ev'), null);
   assert.equal(await resolver.resolvePullRequest({ organizationId: 'o', projectId: 'p' }, 'pr'), null);
   assert.equal(await resolver.resolveHumanAuthorization('t', { organizationId: 'o', projectId: 'p' }), null);
+  assert.equal(await resolver.resolveArtifact({ organizationId: 'o', projectId: 'p' }, 'x'), null);
+  assert.deepEqual(await resolver.resolveVerification({ organizationId: 'o', projectId: 'p', attemptId: 'a' }), []);
 });

@@ -29,9 +29,21 @@
 //      DEFAULT (disp. P2-FINAL-HIGH-009): the previous entrypoint called only
 //      layers 1-2, so a manifest of ten entirely invented tasks exited 0.
 //      Rows alone are not enough, so this layer also:
+//        - reads the task's state, risk, base and work order from the database:
+//          the task must be WAITING_FOR_HUMAN_REVIEW at a risk Phase-2
+//          automation admits (R0, R1), and the manifest's risk, base and work
+//          order must be the task's; the work order and the attempt's context
+//          pack must be intact artifacts of their kind, and the very ones the
+//          agent was handed;
 //        - fetches the evidence BYTES, re-hashes them against the recorded
-//          sha256, and checks the bundle they hold names this task, this
-//          attempt, the attempt's result commit and the manifest's base;
+//          sha256, and checks the bundle they hold field by field against the
+//          canonical evidence-bundle shape: this task, this attempt, the
+//          attempt's result commit and base, the pinned agent image, an intact
+//          diff, and checks that link intact raw output;
+//        - requires the harness's record of where each check ran to match the
+//          evidence check for check: in a container of the pinned verification
+//          image with no network, a read-only root and no capabilities, and
+//          every mandatory check passed;
 //        - asks the FORGE, through the forge port, which commit the PR's head
 //          points at now, and requires it to be the attempt's result commit;
 //        - accepts only the provider id the real Claude adapter produces for the
@@ -90,8 +102,15 @@ const DISPOSITIONS = new Set(['ACCEPTED', 'REJECTED', 'CHANGES_REQUESTED', 'PEND
 const EVIDENCE_KIND = 'evidence-bundle';
 const RESOLVER_METHODS = [
   'resolveAttempt', 'resolveEvidence', 'resolvePullRequest', 'resolveLivePullRequest', 'resolveHumanAuthorization',
-  'pinnedAgent', 'resolveAgentRun',
+  'pinnedAgent', 'resolveAgentRun', 'resolveArtifact', 'resolveVerification',
 ];
+// A pilot task reaches the human-review handoff and stops there: the harness
+// never moves a task past it.
+const HANDOFF_STATUS = 'WAITING_FOR_HUMAN_REVIEW';
+// The risks Phase-2 automation admits (packages/application/src/
+// risk-admission.ts: R0 automated, R1 with a recorded human review; R2-R4
+// deferred). A task at any other risk cannot have run, so it is no pilot task.
+export const ADMISSIBLE_RISKS = Object.freeze(['R0', 'R1']);
 const TRACE_IDS = [
   'pullRequestId', 'evidenceArtifactId', 'attemptId', 'taskId',
   'runId', 'projectId', 'organizationId', 'repositoryBindingId',
@@ -238,26 +257,34 @@ export function verifyManifest(manifest) {
 //
 // The resolver contract (all methods async except pinnedAgent, all return null
 // when not found):
-//   pinnedAgent() -> { model, cliVersion, agentImage, proxyImage, modelBaseUrl }
-//     the pilot's pinned Claude configuration (the pilot entrypoint's own
-//     settings), against which every attempt's agent run is checked;
+//   pinnedAgent() -> { model, cliVersion, agentImage, proxyImage, modelBaseUrl, verifyImage }
+//     the pilot's pinned Claude and verification configuration (the pilot
+//     entrypoint's own settings), against which every attempt's agent run and
+//     verification are checked;
 //   resolveAttempt(trace) -> {
 //     attemptId, taskId, runId, repositoryBindingId,
-//     resultSha, evidenceArtifactId, evidenceSha256, providerId
+//     baseSha, resultSha, evidenceArtifactId, evidenceSha256, providerId,
+//     contextPackArtifactId, contextPackSha256,
+//     taskStatus, taskRisk, workOrderArtifactId, workOrderSha256
 //   } | null
 //   resolveEvidence(scopeTrace, evidenceArtifactId) -> {
 //     sha256,          the recorded sha256 of the artifact row
 //     kind,
 //     bytesSha256,     sha256 of the bytes actually fetched (null if unreadable)
-//     bundle,          { taskId, attemptId, baseSha, resultSha } parsed from
-//                      those bytes, or null when they are not a bundle
+//     bundle,          the JSON object those bytes hold, whole, or null when
+//                      they hold none
 //   } | null
+//   resolveArtifact(scopeTrace, artifactId) -> { kind, sha256, bytesSha256 } | null
+//   resolveVerification(scopeTrace) -> [{ sha256, bytesSha256, record }]
+//     every record the harness wrote of where the attempt's checks ran
+//     (record: the parsed JSON object, or null);
 //   resolvePullRequest(scopeTrace, pullRequestId) -> { number, url, headBranch, attemptId } | null
 //   resolveLivePullRequest(scopeTrace, { repositoryBindingId, headBranch }) ->
 //     { number, url, headBranch, headSha } | null      (from the forge, now)
 //   resolveAgentRun(scopeTrace) -> {     the attempt's agent artifacts, by kind
 //     invocation: [{ sha256, bytesSha256, manifest: { providerId, model, cliVersion,
-//                    image, proxyImage, upstream } | null }],
+//                    image, proxyImage, upstream,
+//                    inputs: [{ name, artifactId, sha256 }] } | null }],
 //     events:     [{ sha256, bytesSha256, init: { sessionId, model, cliVersion } | null,
 //                    result: { sessionId, subtype, isError } | null }],
 //     egress:     [{ sha256, bytesSha256, modelCalls }],   forwarded 2xx model calls
@@ -348,6 +375,18 @@ export async function verifyManifestAgainstAuthority(manifest, resolver) {
       reasons.push(`${label}: persisted attempt.repositoryBindingId "${attempt.repositoryBindingId}" != trace.repositoryBindingId "${trace.repositoryBindingId}"`);
     }
 
+    // The task: what state it reached, at what risk, from which base and for
+    // which work order are the database's to say. The manifest only claims.
+    reasons.push(...taskReasons(label, t, attempt));
+    if (attempt.workOrderArtifactId) {
+      reasons.push(...await artifactReasons(resolver, label, trace,
+        'work order', attempt.workOrderArtifactId, 'work-order', attempt.workOrderSha256));
+    }
+    if (attempt.contextPackArtifactId) {
+      reasons.push(...await artifactReasons(resolver, label, trace,
+        'context pack', attempt.contextPackArtifactId, 'context-pack', attempt.contextPackSha256));
+    }
+
     // resultSha is harness-owned truth; the manifest cannot claim a different one.
     if (attempt.resultSha !== t.resultSha) {
       reasons.push(`${label}: manifest resultSha "${t.resultSha}" != persisted attempt.result_sha "${attempt.resultSha}" — forged result (HIGH-009)`);
@@ -372,7 +411,7 @@ export async function verifyManifestAgainstAuthority(manifest, resolver) {
       run = undefined;
       reasons.push(`${label}: resolver failed to resolve the agent run — fail closed (${e && e.message ? e.message : e})`);
     }
-    if (run !== undefined) reasons.push(...agentRunReasons(label, t, pins, realProviderId, run));
+    if (run !== undefined) reasons.push(...agentRunReasons(label, t, pins, realProviderId, run, attempt));
 
     // Evidence: the artifact named in the trace must EXIST in the store and its
     // authoritative sha256 must match the manifest's declared evidenceChecksum
@@ -400,9 +439,10 @@ export async function verifyManifestAgainstAuthority(manifest, resolver) {
         const got = evidence.bytesSha256 ? `"${evidence.bytesSha256}"` : 'nothing (they could not be read)';
         reasons.push(`${label}: stored evidence bytes hash to ${got}, not the recorded sha256 "${evidence.sha256}" — tampered or missing evidence`);
       }
-      // …and the bundle they hold must be the one for THIS attempt's commit.
+      // …and the bundle they hold must be the one for THIS attempt's commit,
+      // in the canonical shape, with every artifact it names intact.
       const bundle = evidence.bundle;
-      if (!bundle || typeof bundle !== 'object') {
+      if (!isObject(bundle)) {
         reasons.push(`${label}: the stored evidence bytes are not an evidence bundle`);
       } else {
         if (bundle.taskId !== trace.taskId) {
@@ -417,14 +457,22 @@ export async function verifyManifestAgainstAuthority(manifest, resolver) {
         if (bundle.baseSha !== t.baseSha) {
           reasons.push(`${label}: the evidence bundle records base "${bundle.baseSha}", not the manifest base "${t.baseSha}"`);
         }
+        reasons.push(...bundleShapeReasons(label, bundle, pins));
+        reasons.push(...await bundleArtifactReasons(resolver, label, trace, bundle));
       }
-      if (attempt.evidenceSha256 && attempt.evidenceSha256 !== evidence.sha256) {
+      // The attempt must carry this very evidence: a genuine run always
+      // attaches it, so an attempt with none attached is not one.
+      if (attempt.evidenceSha256 !== evidence.sha256) {
         reasons.push(`${label}: attempt.evidence_sha256 "${attempt.evidenceSha256}" != authoritative artifact sha256 "${evidence.sha256}"`);
       }
-      if (attempt.evidenceArtifactId && attempt.evidenceArtifactId !== trace.evidenceArtifactId) {
+      if (attempt.evidenceArtifactId !== trace.evidenceArtifactId) {
         reasons.push(`${label}: attempt.evidence_artifact_id "${attempt.evidenceArtifactId}" != trace.evidenceArtifactId "${trace.evidenceArtifactId}"`);
       }
     }
+
+    // Where the checks ran: the harness's own record, which must match the
+    // evidence check for check.
+    reasons.push(...await provenanceReasons(resolver, label, trace, attempt, pins, evidence ? evidence.bundle : null));
 
     // Pull request: the PR named in the trace must EXIST, point at the SAME
     // attempt, and carry the SAME url the manifest declares.
@@ -512,7 +560,7 @@ export async function verifyManifestAgainstAuthority(manifest, resolver) {
   return { ok: reasons.length === 0, reasons };
 }
 
-const PIN_FIELDS = ['model', 'cliVersion', 'agentImage', 'proxyImage', 'modelBaseUrl'];
+const PIN_FIELDS = ['model', 'cliVersion', 'agentImage', 'proxyImage', 'modelBaseUrl', 'verifyImage'];
 
 function pinsProblem(pins) {
   if (!isObject(pins)) return 'no pins';
@@ -522,22 +570,286 @@ function pinsProblem(pins) {
 
 // One artifact of each kind, whose stored bytes still hash to what was
 // recorded. Returns the artifact, or undefined after recording why not.
-function soleIntact(label, what, list, reasons) {
+function soleIntact(label, what, list, reasons, absent = 'not a run of the real Claude adapter', evidence = 'agent evidence') {
   if (!Array.isArray(list) || list.length === 0) {
-    reasons.push(`${label}: no ${what} recorded for the attempt — not a run of the real Claude adapter`);
+    reasons.push(`${label}: no ${what} recorded for the attempt — ${absent}`);
     return undefined;
   }
   if (list.length > 1) {
-    reasons.push(`${label}: ${list.length} ${what} artifacts recorded for one attempt — ambiguous agent evidence`);
+    reasons.push(`${label}: ${list.length} ${what} artifacts recorded for one attempt — ambiguous ${evidence}`);
     return undefined;
   }
   const a = list[0];
   if (!isObject(a) || a.bytesSha256 !== a.sha256) {
     const got = isObject(a) && a.bytesSha256 ? `"${a.bytesSha256}"` : 'nothing (they could not be read)';
-    reasons.push(`${label}: the stored ${what} bytes hash to ${got}, not the recorded sha256 — tampered or missing agent evidence`);
+    reasons.push(`${label}: the stored ${what} bytes hash to ${got}, not the recorded sha256 — tampered or missing ${evidence}`);
     return undefined;
   }
   return a;
+}
+
+const errText = (e) => (e && e.message ? e.message : String(e));
+const nonEmpty = (v) => typeof v === 'string' && v.length > 0;
+
+/**
+ * The task as the database records it: it reached the human-review handoff, at
+ * a risk Phase-2 automation admits, and the manifest's risk, base and work
+ * order are the task's own.
+ */
+function taskReasons(label, t, attempt) {
+  const reasons = [];
+  if (attempt.taskStatus !== HANDOFF_STATUS) {
+    reasons.push(`${label}: the task is ${JSON.stringify(attempt.taskStatus ?? null)}, which is not waiting for human review — it never reached the handoff a pilot task reaches`);
+  }
+  if (attempt.taskRisk !== t.risk) {
+    reasons.push(`${label}: manifest risk "${t.risk}" != the task's risk "${attempt.taskRisk}" — self-declared risk`);
+  }
+  if (!ADMISSIBLE_RISKS.includes(attempt.taskRisk)) {
+    reasons.push(`${label}: the task's risk "${attempt.taskRisk}" is not admissible to Phase-2 automation (only ${ADMISSIBLE_RISKS.join(', ')}) — no genuine pilot task runs at it`);
+  }
+  if (attempt.baseSha !== t.baseSha) {
+    reasons.push(`${label}: manifest baseSha "${t.baseSha}" != the attempt's base "${attempt.baseSha}"`);
+  }
+  if (!nonEmpty(attempt.workOrderArtifactId) || !nonEmpty(attempt.workOrderSha256)) {
+    reasons.push(`${label}: the task has no work order attached — nothing records what the agent was asked to do`);
+  } else if (attempt.workOrderSha256 !== t.workOrderSha256) {
+    reasons.push(`${label}: manifest workOrderSha256 "${t.workOrderSha256}" != the task's work order "${attempt.workOrderSha256}" — self-declared work order`);
+  }
+  if (!nonEmpty(attempt.contextPackArtifactId) || !nonEmpty(attempt.contextPackSha256)) {
+    reasons.push(`${label}: the attempt has no context pack attached — nothing records what the agent was given`);
+  }
+  return reasons;
+}
+
+/**
+ * One artifact a task, attempt or bundle names: it is an artifact of this
+ * tenant, of the expected kind, with the expected checksum (when one is
+ * expected), and its stored bytes still hash to what its row records.
+ */
+async function artifactReasons(resolver, label, trace, what, id, kind, sha256) {
+  let a;
+  try {
+    a = await resolver.resolveArtifact(trace, id);
+  } catch (e) {
+    return [`${label}: resolver failed to resolve the ${what} ${id} — fail closed (${errText(e)})`];
+  }
+  if (!isObject(a)) return [`${label}: the ${what} ${id} is not an artifact of this tenant`];
+  const reasons = [];
+  if (a.kind !== kind) reasons.push(`${label}: the ${what} ${id} is a "${a.kind}" artifact, not "${kind}"`);
+  if (sha256 !== undefined && a.sha256 !== sha256) {
+    reasons.push(`${label}: the ${what} ${id} records sha256 "${a.sha256}", not "${sha256}"`);
+  }
+  if (a.bytesSha256 !== a.sha256) {
+    const got = a.bytesSha256 ? `"${a.bytesSha256}"` : 'nothing (they could not be read)';
+    reasons.push(`${label}: the stored ${what} bytes hash to ${got}, not the recorded sha256 "${a.sha256}" — tampered or missing`);
+  }
+  return reasons;
+}
+
+// The canonical evidence bundle (packages/contracts/schema/evidence-bundle.
+// schema.json), closed at every level. A pilot check must link its raw output,
+// which the schema leaves optional.
+const BUNDLE_FIELDS = Object.freeze({
+  required: ['taskId', 'attemptId', 'baseSha', 'resultSha', 'createdAt', 'environment', 'diff', 'checks'], optional: [],
+});
+const ENVIRONMENT_FIELDS = Object.freeze({ required: ['imageDigest', 'lockfileHash'], optional: ['nodeVersion'] });
+const DIFF_FIELDS = Object.freeze({ required: ['artifactId', 'sha256'], optional: [] });
+const CHECK_FIELDS = Object.freeze({
+  required: ['id', 'category', 'command', 'exitCode', 'durationMs', 'stdoutArtifactId', 'stderrArtifactId'], optional: [],
+});
+const CHECK_CATEGORIES = new Set([
+  'workspace', 'static', 'unit', 'integration', 'architecture', 'security', 'acceptance', 'nonfunctional', 'review', 'release',
+]);
+
+function closedReasons(label, what, obj, fields) {
+  const reasons = [];
+  for (const k of fields.required) {
+    if (!Object.hasOwn(obj, k) || obj[k] === undefined) reasons.push(`${label}: ${what} lacks ${k}`);
+  }
+  for (const k of Object.keys(obj)) {
+    if (!fields.required.includes(k) && !fields.optional.includes(k)) {
+      reasons.push(`${label}: ${what} carries "${k}", which the canonical evidence bundle does not have`);
+    }
+  }
+  return reasons;
+}
+
+/** The bundle against the canonical shape, and its environment against the pins. */
+function bundleShapeReasons(label, bundle, pins) {
+  const reasons = closedReasons(label, 'the evidence bundle', bundle, BUNDLE_FIELDS);
+  if (Object.hasOwn(bundle, 'createdAt') && (typeof bundle.createdAt !== 'string' || !ISO_DATETIME.test(bundle.createdAt))) {
+    reasons.push(`${label}: the evidence bundle createdAt ${JSON.stringify(bundle.createdAt)} is not an ISO-8601 time`);
+  }
+  const env = bundle.environment;
+  if (Object.hasOwn(bundle, 'environment')) {
+    if (!isObject(env)) {
+      reasons.push(`${label}: the evidence bundle environment is not an object`);
+    } else {
+      reasons.push(...closedReasons(label, 'the evidence bundle environment', env, ENVIRONMENT_FIELDS));
+      if (Object.hasOwn(env, 'lockfileHash') && !nonEmpty(env.lockfileHash)) {
+        reasons.push(`${label}: the evidence bundle environment lockfileHash is empty`);
+      }
+      if (Object.hasOwn(env, 'nodeVersion') && typeof env.nodeVersion !== 'string') {
+        reasons.push(`${label}: the evidence bundle environment nodeVersion is not a string`);
+      }
+      // The change was produced in the pinned agent image (the pilot records
+      // that image as the bundle's environment).
+      if (env.imageDigest !== pins.agentImage) {
+        reasons.push(`${label}: the evidence bundle records environment image ${JSON.stringify(env.imageDigest)}, not the pinned agent image "${pins.agentImage}"`);
+      }
+    }
+  }
+  if (Object.hasOwn(bundle, 'diff')) {
+    if (!isObject(bundle.diff)) {
+      reasons.push(`${label}: the evidence bundle diff is not an object`);
+    } else {
+      reasons.push(...closedReasons(label, 'the evidence bundle diff', bundle.diff, DIFF_FIELDS));
+      for (const k of DIFF_FIELDS.required) {
+        if (Object.hasOwn(bundle.diff, k) && !nonEmpty(bundle.diff[k])) reasons.push(`${label}: the evidence bundle diff ${k} is empty`);
+      }
+    }
+  }
+  if (!Array.isArray(bundle.checks) || bundle.checks.length === 0) {
+    reasons.push(`${label}: the evidence bundle records no verification check`);
+    return reasons;
+  }
+  const seen = new Set();
+  bundle.checks.forEach((c, k) => {
+    if (!isObject(c)) {
+      reasons.push(`${label}: evidence check ${k} is not a check`);
+      return;
+    }
+    const name = `the evidence bundle check ${nonEmpty(c.id) ? `"${c.id}"` : k}`;
+    reasons.push(...closedReasons(label, name, c, CHECK_FIELDS));
+    if (!nonEmpty(c.id)) reasons.push(`${label}: ${name} has no id`);
+    else if (seen.has(c.id)) reasons.push(`${label}: the evidence bundle check id "${c.id}" appears twice`);
+    seen.add(c.id);
+    if (!CHECK_CATEGORIES.has(c.category)) reasons.push(`${label}: ${name} has category ${JSON.stringify(c.category)}`);
+    if (!nonEmpty(c.command)) reasons.push(`${label}: ${name} has no command`);
+    if (!Number.isInteger(c.exitCode)) reasons.push(`${label}: ${name} has exit code ${JSON.stringify(c.exitCode)}, not an integer`);
+    if (typeof c.durationMs !== 'number' || !Number.isFinite(c.durationMs) || c.durationMs < 0) {
+      reasons.push(`${label}: ${name} has duration ${JSON.stringify(c.durationMs)}, not a non-negative number`);
+    }
+  });
+  return reasons;
+}
+
+/** The diff and every check's raw output, as intact artifacts of their kind. */
+async function bundleArtifactReasons(resolver, label, trace, bundle) {
+  const reasons = [];
+  if (isObject(bundle.diff) && nonEmpty(bundle.diff.artifactId)) {
+    reasons.push(...await artifactReasons(resolver, label, trace, 'diff', bundle.diff.artifactId, 'git-diff', bundle.diff.sha256));
+  }
+  for (const c of Array.isArray(bundle.checks) ? bundle.checks : []) {
+    if (!isObject(c)) continue;
+    for (const [field, stream, kind] of [
+      ['stdoutArtifactId', 'stdout', 'command-stdout'], ['stderrArtifactId', 'stderr', 'command-stderr'],
+    ]) {
+      if (nonEmpty(c[field])) {
+        reasons.push(...await artifactReasons(resolver, label, trace, `${stream} of check "${c.id}"`, c[field], kind, undefined));
+      }
+    }
+  }
+  return reasons;
+}
+
+// The isolation every verification container runs under (the Docker sandbox's
+// own flags, adapters/command-runner/src/sandbox.ts).
+const REQUIRED_SANDBOX_FLAGS = Object.freeze([
+  ['--network', 'none'], ['--read-only'], ['--cap-drop', 'ALL'], ['--security-opt', 'no-new-privileges'],
+]);
+
+function sandboxFlagReasons(label, name, runFlags) {
+  const flags = Array.isArray(runFlags) && runFlags.every((x) => typeof x === 'string') ? runFlags : [];
+  const has = (seq) => flags.some((_, k) => seq.every((s, j) => flags[k + j] === s));
+  const reasons = [];
+  for (const seq of REQUIRED_SANDBOX_FLAGS) {
+    if (!has(seq)) reasons.push(`${label}: ${name} ran without ${seq.join(' ')}`);
+  }
+  flags.forEach((x, k) => {
+    if ((x === '--network' || x === '--net') && flags[k + 1] !== 'none') {
+      reasons.push(`${label}: ${name} ran with ${x} ${flags[k + 1]}`);
+    } else if (/^--net(work)?=/.test(x) && x.slice(x.indexOf('=') + 1) !== 'none') {
+      reasons.push(`${label}: ${name} ran with ${x}`);
+    } else if (/^--(privileged|cap-add)(=|$)/.test(x)) {
+      reasons.push(`${label}: ${name} ran with ${x}`);
+    }
+  });
+  return reasons;
+}
+
+/**
+ * The harness's record of where the attempt's checks ran: one, intact, for
+ * this task, attempt and risk, of a verification that passed, matching the
+ * evidence check for check; every check in a container of the pinned
+ * verification image under the sandbox's isolation; and at least one
+ * mandatory check, every one of which passed.
+ */
+async function provenanceReasons(resolver, label, trace, attempt, pins, bundle) {
+  let list;
+  try {
+    list = await resolver.resolveVerification(trace);
+  } catch (e) {
+    return [`${label}: resolver failed to resolve the verification provenance — fail closed (${errText(e)})`];
+  }
+  const reasons = [];
+  const p = soleIntact(label, 'verification provenance record', list, reasons,
+    'nothing shows where its checks ran', 'verification evidence');
+  if (!p) return reasons;
+  const r = p.record;
+  if (!isObject(r)) {
+    reasons.push(`${label}: the verification provenance record is not one the harness writes`);
+    return reasons;
+  }
+  if (r.taskId !== trace.taskId) reasons.push(`${label}: the verification provenance record names task "${r.taskId}", not "${trace.taskId}"`);
+  if (r.attemptId !== trace.attemptId) reasons.push(`${label}: the verification provenance record names attempt "${r.attemptId}", not "${trace.attemptId}"`);
+  if (r.risk !== attempt.taskRisk) reasons.push(`${label}: the checks were verified at risk "${r.risk}", not the task's "${attempt.taskRisk}"`);
+  if (r.verdict !== 'PASS') reasons.push(`${label}: the verification verdict was "${r.verdict}", not PASS`);
+  if (!Array.isArray(r.checks) || r.checks.length === 0) {
+    reasons.push(`${label}: the verification provenance record records no checks`);
+    return reasons;
+  }
+  const evidenceChecks = isObject(bundle) && Array.isArray(bundle.checks) ? bundle.checks : null;
+  if (evidenceChecks && evidenceChecks.length !== r.checks.length) {
+    reasons.push(`${label}: the verification provenance record records ${r.checks.length} checks, the evidence bundle ${evidenceChecks.length}`);
+  }
+  let mandatory = 0;
+  r.checks.forEach((c, k) => {
+    if (!isObject(c)) {
+      reasons.push(`${label}: provenance check ${k} is not a check record`);
+      return;
+    }
+    const e = evidenceChecks ? evidenceChecks[k] : undefined;
+    if (isObject(e)) {
+      for (const f of ['id', 'command', 'exitCode', 'stdoutArtifactId', 'stderrArtifactId']) {
+        if (c[f] !== e[f]) {
+          reasons.push(`${label}: provenance check ${k} records ${f} ${JSON.stringify(c[f])}, not the evidence check's ${JSON.stringify(e[f])}`);
+        }
+      }
+    }
+    const name = `check "${c.id}"`;
+    const where = c.provenance;
+    if (!isObject(where)) {
+      reasons.push(`${label}: ${name} has no record of where it ran`);
+    } else if (where.where !== 'container') {
+      reasons.push(`${label}: ${name} ran on the ${where.where === 'host' ? 'host' : JSON.stringify(where.where)}, not in the verification sandbox`);
+    } else {
+      if (where.image !== pins.verifyImage) {
+        reasons.push(`${label}: ${name} ran in image ${JSON.stringify(where.image)}, not the pinned verification image "${pins.verifyImage}"`);
+      }
+      reasons.push(...sandboxFlagReasons(label, name, where.runFlags));
+    }
+    if (c.mandatory === true) {
+      mandatory += 1;
+      if (c.verdict !== 'PASS' || c.exitCode !== 0) {
+        reasons.push(`${label}: mandatory ${name} did not pass (verdict ${JSON.stringify(c.verdict)}, exit code ${JSON.stringify(c.exitCode)})`);
+      }
+    }
+  });
+  if (mandatory === 0) {
+    reasons.push(`${label}: the verification provenance record records no mandatory check — nothing the plan required was verified`);
+  }
+  return reasons;
 }
 
 /**
@@ -550,7 +862,7 @@ function soleIntact(label, what, list, reasons) {
  * A local double writes none of these; a run through the real adapter against
  * another model origin, image or CLI version fails the comparison.
  */
-function agentRunReasons(label, t, pins, realProviderId, run) {
+function agentRunReasons(label, t, pins, realProviderId, run, attempt) {
   const reasons = [];
   if (!isObject(run)) {
     reasons.push(`${label}: no agent artifacts recorded for the attempt — not a run of the real Claude adapter`);
@@ -568,6 +880,23 @@ function agentRunReasons(label, t, pins, realProviderId, run) {
       ];
       for (const [k, want] of expect) {
         if (m[k] !== want) reasons.push(`${label}: the invocation manifest records ${k} "${m[k]}", not the pinned "${want}"`);
+      }
+      // What the agent was handed must be the task's work order and the
+      // attempt's context pack, by artifact id and checksum, and nothing else.
+      const inputs = Array.isArray(m.inputs) ? m.inputs : [];
+      for (const [name, what, owner, id, sha] of [
+        ['work-order', 'work order', 'the task', attempt.workOrderArtifactId, attempt.workOrderSha256],
+        ['context-pack', 'context pack', 'the attempt', attempt.contextPackArtifactId, attempt.contextPackSha256],
+      ]) {
+        const given = inputs.filter((x) => isObject(x) && x.name === name);
+        if (given.length !== 1 || given[0].artifactId !== id || given[0].sha256 !== sha) {
+          const named = given.length === 0 ? 'none' : given.map((x) => `${x.artifactId} (${x.sha256})`).join(', ');
+          reasons.push(`${label}: the agent was not handed the ${what} ${owner} carries — the invocation manifest names ${named}, not ${id} (${sha})`);
+        }
+      }
+      const others = inputs.filter((x) => !isObject(x) || (x.name !== 'work-order' && x.name !== 'context-pack'));
+      if (others.length > 0) {
+        reasons.push(`${label}: the agent was handed inputs the harness does not give: ${others.map((x) => JSON.stringify(isObject(x) ? x.name : x)).join(', ')}`);
       }
     }
   }
@@ -669,7 +998,8 @@ const USAGE =
   `  ${REVIEWER_KEY_ENV}  path to the reviewer ed25519 public-key PEM (required)\n` +
   '  ASEP_OBJECT_STORE_DIR, the GitHub App settings and the Claude pins the pilot\n' +
   '  ran with (ASEP_CLAUDE_MODEL, ASEP_CLAUDE_CLI_VERSION, ASEP_AGENT_IMAGE_DIGEST,\n' +
-  '  ASEP_EGRESS_PROXY_IMAGE_DIGEST, optional ASEP_ANTHROPIC_BASE_URL) — see the runbook\n' +
+  '  ASEP_EGRESS_PROXY_IMAGE_DIGEST, ASEP_VERIFY_IMAGE_DIGEST, optional\n' +
+  '  ASEP_ANTHROPIC_BASE_URL) — see the runbook\n' +
   '\n' +
   '--self-check-only skips that cross-check and validates ONLY self-declared\n' +
   'fields. A COMPLETE verdict is REJECTED in that mode by design.\n';

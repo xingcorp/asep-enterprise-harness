@@ -683,12 +683,26 @@ test('a genuine handle still runs where its provider put it', async () => {
     const d = await fakeDaemon(dir);
     const runner = new TrustedCommandRunner(scope, store);
     const onHost = join(dir, 'on-host');
-    assert.equal((await runner.run(spec({ ...canary(onHost), cwd: d.wt }), await hostHandle())).exitCode, 0);
+    const hosted = await runner.run(spec({ ...canary(onHost), cwd: d.wt }), await hostHandle());
+    assert.equal(hosted.exitCode, 0);
     assert.equal(existsSync(onHost), true, 'the local handle runs on the host');
     assert.deepEqual(d.invocations().filter((a) => a[0] === 'run'), []);
+    assert.deepEqual(hosted.provenance, { where: 'host' }, 'the result says it ran on the host');
     const inContainer = join(dir, 'in-container');
-    assert.equal((await runner.run(spec({ ...canary(inContainer), cwd: d.wt }), await dockerHandle(d))).exitCode, 0);
-    assert.equal(d.invocations().filter((a) => a[0] === 'run').length, 1, 'the Docker handle runs through docker');
+    const handle = await dockerHandle(d);
+    const contained = await runner.run(spec({ ...canary(inContainer), cwd: d.wt }), handle);
+    assert.equal(contained.exitCode, 0);
+    const runs = d.invocations().filter((a) => a[0] === 'run');
+    assert.equal(runs.length, 1, 'the Docker handle runs through docker');
+    // The result says where it ran: the provider's image and flags, and the
+    // container the runner named — exactly what the docker client was given.
+    const where = contained.provenance;
+    assert.equal(where?.where, 'container');
+    if (where?.where !== 'container') return;
+    assert.equal(where.image, (handle as SandboxHandleEx).image);
+    assert.deepEqual(where.runFlags, (handle as SandboxHandleEx).runFlags);
+    assert.equal(runs[0]![runs[0]!.indexOf('--name') + 1], where.container);
+    assert.ok(runs[0]!.includes(where.image));
   } finally {
     await client.close();
     await rm(dir, { recursive: true, force: true });

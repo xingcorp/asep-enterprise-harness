@@ -11,8 +11,12 @@
 // a fake model API with the credential it received on stdin, and the strict
 // fake CLI plays the pinned `claude` binary. The verifier, with the production
 // resolver reading the same database, the same object root and the same forge,
-// must accept that run under its pins; and must refuse it once the PR head
-// moves off the reviewed commit, the stored evidence or agent evidence bytes
+// must accept that run under its pins — its task state and risk, the work order
+// the task carries and the agent was handed, the canonical evidence and the
+// record of where each check ran all read back from what the harness wrote —
+// and must refuse it once the task leaves human review, the manifest claims
+// another risk or work order, the PR head moves off the reviewed commit, the
+// stored evidence, work order, agent evidence or verification record bytes
 // change, the signature binds another commit, or the pins are not the ones the
 // run used. A run through the local agent double is refused, whatever the
 // manifest claims about it.
@@ -36,9 +40,10 @@ import { ClaudeCodingProvider, FileModelCredentialProvider } from '@asep/agent-c
 import { runGit } from '@asep/git-worktree';
 import { createBareRemote, LocalBareForgeProvider } from '@asep/local-doubles';
 import type { CommandSpec, ForgeProvider, PullRequestRef, ToolPolicyProfile } from '@asep/ports';
+import { admitRisk } from '@asep/application';
 import { runVerticalSlice, type VerticalSliceResult } from './vertical-slice.js';
 import {
-  verifyManifestAgainstAuthority, realClaudeProviderId,
+  verifyManifestAgainstAuthority, realClaudeProviderId, ADMISSIBLE_RISKS,
   // @ts-expect-error - .mjs has no type declarations; runtime import is fine under tsx.
 } from '../../../scripts/pilot/verify-pilot-manifest.mjs';
 import {
@@ -63,6 +68,8 @@ const MODEL = 'claude-test-model';
 const CLI_VERSION = '2.1.286';
 const AGENT_IMAGE = `asep-agent@sha256:${'a'.repeat(64)}`;
 const PROXY_IMAGE = `node@sha256:${'b'.repeat(64)}`;
+// The image the verification sandbox runs checks in.
+const VERIFY_IMAGE = `alpine@sha256:${'c'.repeat(64)}`;
 // The pilot's tool policy: the Claude provider runs only under restricted egress.
 const PILOT_POLICY: ToolPolicyProfile = {
   allowedTools: ['read', 'write'], disallowedTools: ['bash', 'network'], networkProfile: 'restricted-egress',
@@ -149,7 +156,7 @@ function githubShaped(inner: LocalBareForgeProvider): ForgeProvider {
 // Run one governed slice; `realAgent` selects the real Claude adapter over the
 // local agent double.
 async function slice(client: PgliteClient, r: Rig, realAgent: boolean): Promise<VerticalSliceResult> {
-  const sandbox = new DockerSandboxProvider({ imageDigest: `alpine@sha256:${'c'.repeat(64)}`, dockerBinary: r.docker });
+  const sandbox = new DockerSandboxProvider({ imageDigest: VERIFY_IMAGE, dockerBinary: r.docker });
   const result = await runVerticalSlice({
     client,
     sandbox,
@@ -161,6 +168,8 @@ async function slice(client: PgliteClient, r: Rig, realAgent: boolean): Promise<
     ...(realAgent
       ? {
           toolPolicy: PILOT_POLICY,
+          // As the pilot records it: the agent image produced the change.
+          environment: { imageDigest: AGENT_IMAGE, lockfileHash: 'f'.repeat(64), nodeVersion: process.version },
           agentFor: ({ scope, artifacts, worktreePathOf }) => new ClaudeCodingProvider(
             {
               executable: r.cli, model: MODEL, cliVersion: CLI_VERSION, maxTurns: 5,
@@ -204,7 +213,9 @@ async function authorize(client: PgliteClient, result: VerticalSliceResult, prId
   );
 }
 
-function manifestFor(result: VerticalSliceResult, prId: string, providerId: string, providerSessionId: string) {
+function manifestFor(
+  result: VerticalSliceResult, prId: string, providerId: string, providerSessionId: string, workOrderSha256: string,
+) {
   return {
     manifestVersion: '1.0.0',
     verdict: 'IMPLEMENTATION_COMPLETE_PILOT_PENDING',
@@ -213,7 +224,7 @@ function manifestFor(result: VerticalSliceResult, prId: string, providerId: stri
       taskId: result.taskId,
       objective: `add ${CHANGED_FILE}`,
       risk: 'R0',
-      workOrderSha256: '1'.repeat(64),
+      workOrderSha256,
       baseSha: result.baseSha,
       resultSha: result.commitSha,
       providerSessionId,
@@ -239,6 +250,22 @@ async function storageKey(client: PgliteClient, sql: string, params: string[]): 
   return (await client.query(sql, params)).rows[0]!['storage_key'] as string;
 }
 
+// The work order the task carries, as the database records it.
+async function workOrderOf(client: PgliteClient, taskId: string): Promise<{ sha256: string; key: string }> {
+  const row = (await client.query(
+    `select t.work_order_sha256, a.storage_key
+     from tasks t join artifacts a on a.id = t.work_order_artifact_id
+     where t.id = $1`, [taskId],
+  )).rows[0]!;
+  return { sha256: row['work_order_sha256'] as string, key: row['storage_key'] as string };
+}
+
+test('the verifier admits exactly the risks Phase-2 admission admits', () => {
+  for (const risk of ['R0', 'R1', 'R2', 'R3', 'R4'] as const) {
+    assert.equal((ADMISSIBLE_RISKS as readonly string[]).includes(risk), admitRisk(risk).admitted, risk);
+  }
+});
+
 test('the verifier accepts a run of the real Claude adapter under its pins, and refuses a moved head, edited evidence, a signature for another commit, or other pins', async () => {
   const r = await rig();
   const client = await PgliteClient.create();
@@ -247,6 +274,7 @@ test('the verifier accepts a run of the real Claude adapter under its pins, and 
     const result = await slice(client, r, true);
     const pins = {
       model: MODEL, cliVersion: CLI_VERSION, agentImage: AGENT_IMAGE, proxyImage: PROXY_IMAGE, modelBaseUrl: r.modelUrl,
+      verifyImage: VERIFY_IMAGE,
     };
     const realId = realClaudeProviderId(pins) as string;
     const attempt = (await client.query('select agent_provider_id from attempts where id = $1', [result.attemptId])).rows[0]!;
@@ -259,26 +287,66 @@ test('the verifier accepts a run of the real Claude adapter under its pins, and 
       `select storage_key from artifacts where attempt_id = $1 and kind = 'claude-event-stream'`, [result.attemptId]);
     const egressKey = await storageKey(client,
       `select storage_key from artifacts where attempt_id = $1 and kind = 'claude-egress-log'`, [result.attemptId]);
+    const provenanceKey = await storageKey(client,
+      `select storage_key from artifacts where attempt_id = $1 and kind = 'verification-provenance'`, [result.attemptId]);
+    const workOrder = await workOrderOf(client, result.taskId);
     // The session is the CLI's own, read from the event stream it emitted.
     const init = (await readFile(join(r.objectRoot, eventsKey), 'utf8')).split('\n')
       .map((l) => (l.trim() === '' ? undefined : JSON.parse(l) as Record<string, unknown>))
       .find((e) => e?.['type'] === 'system' && e['subtype'] === 'init')!;
     await authorize(client, result, prId, result.commitSha);
 
-    const manifest = manifestFor(result, prId, realId, init['session_id'] as string);
+    const manifest = manifestFor(result, prId, realId, init['session_id'] as string, workOrder.sha256);
     const resolverWith = (p: typeof pins) => createSqlAuthorityResolver(client, {
       reviewerPublicKeyPem: REVIEWER_PUB, objects: filesystemObjectReader(r.objectRoot), forge: r.forge, agent: p,
     });
-    const verify = async (p = pins) =>
-      verifyManifestAgainstAuthority(manifest, resolverWith(p)) as Promise<{ ok: boolean; reasons: string[] }>;
-    const refused = async (why: RegExp, p = pins) => {
-      const res = await verify(p);
+    const verify = async (p = pins, m: Record<string, unknown> = manifest) =>
+      verifyManifestAgainstAuthority(m, resolverWith(p)) as Promise<{ ok: boolean; reasons: string[] }>;
+    const refused = async (why: RegExp, p = pins, m: Record<string, unknown> = manifest) => {
+      const res = await verify(p, m);
       assert.equal(res.ok, false, `expected a refusal matching ${why}`);
       assert.ok(res.reasons.some((x) => why.test(x)), `${why} not among:\n${res.reasons.join('\n')}`);
     };
+    const claiming = (over: Record<string, unknown>) => ({ ...manifest, tasks: [{ ...manifest.tasks[0]!, ...over }] });
 
     const genuine = await verify();
     assert.equal(genuine.ok, true, genuine.reasons.join('\n'));
+
+    // What the harness recorded of where the checks ran: the pinned sandbox.
+    const provenance = JSON.parse(await readFile(join(r.objectRoot, provenanceKey), 'utf8')) as {
+      verdict: string; checks: Array<{ provenance: { where: string; image: string; runFlags: string[] } }>;
+    };
+    assert.equal(provenance.verdict, 'PASS');
+    for (const c of provenance.checks) {
+      assert.equal(c.provenance.where, 'container');
+      assert.equal(c.provenance.image, VERIFY_IMAGE);
+      assert.ok(c.provenance.runFlags.join(' ').includes('--network none'), c.provenance.runFlags.join(' '));
+    }
+
+    // The task leaves human review.
+    await client.query(`update tasks set status = 'FAILED' where id = $1`, [result.taskId]);
+    await refused(/the task is "FAILED", which is not waiting for human review/);
+    await client.query(`update tasks set status = 'WAITING_FOR_HUMAN_REVIEW' where id = $1`, [result.taskId]);
+
+    // The manifest claims another risk or another work order than the task's.
+    await refused(/manifest risk "R1" != the task's risk "R0"/, pins, claiming({ risk: 'R1' }));
+    await refused(/manifest workOrderSha256 .* != the task's work order/, pins, claiming({ workOrderSha256: 'f'.repeat(64) }));
+
+    // The stored work order is rewritten after the run.
+    const workOrderBytes = await readFile(join(r.objectRoot, workOrder.key));
+    await writeFile(join(r.objectRoot, workOrder.key), Buffer.from('{"objective":"something else"}'));
+    await refused(/stored work order bytes hash to/);
+    await writeFile(join(r.objectRoot, workOrder.key), workOrderBytes);
+
+    // The record of where the checks ran is rewritten to claim another image.
+    const provenanceBytes = await readFile(join(r.objectRoot, provenanceKey));
+    await writeFile(join(r.objectRoot, provenanceKey),
+      provenanceBytes.toString('utf8').replaceAll(VERIFY_IMAGE, `alpine@sha256:${'d'.repeat(64)}`));
+    await refused(/stored verification provenance record bytes hash to/);
+    await writeFile(join(r.objectRoot, provenanceKey), provenanceBytes);
+
+    // The same run, judged against a verification image it did not use.
+    await refused(/ran in image .* not the pinned verification image/, { ...pins, verifyImage: `alpine@sha256:${'d'.repeat(64)}` });
 
     // The PR branch moves off the reviewed commit on the remote.
     await runGit(['-C', r.remote, 'update-ref', `refs/heads/${result.branch}`, result.baseSha]);
@@ -326,8 +394,10 @@ test('a run through the local agent double is refused, whatever the manifest cla
     const result = await slice(client, r, false);
     const pins = {
       model: MODEL, cliVersion: CLI_VERSION, agentImage: AGENT_IMAGE, proxyImage: PROXY_IMAGE, modelBaseUrl: r.modelUrl,
+      verifyImage: VERIFY_IMAGE,
     };
     const attempt = (await client.query('select agent_provider_id from attempts where id = $1', [result.attemptId])).rows[0]!;
+    const workOrder = await workOrderOf(client, result.taskId);
     assert.equal(attempt['agent_provider_id'], 'fake-claude', 'the local double ran');
     const prId = (await client.query('select id from pull_requests where attempt_id = $1', [result.attemptId]))
       .rows[0]!['id'] as string;
@@ -339,7 +409,7 @@ test('a run through the local agent double is refused, whatever the manifest cla
     // Claimed as the real adapter: everything else about the run checks out,
     // but the persisted provider and the missing agent evidence refuse it.
     const claimed = await verifyManifestAgainstAuthority(
-      manifestFor(result, prId, realClaudeProviderId(pins), `fake-session-${result.attemptId}`), resolver,
+      manifestFor(result, prId, realClaudeProviderId(pins), `fake-session-${result.attemptId}`, workOrder.sha256), resolver,
     ) as { ok: boolean; reasons: string[] };
     assert.equal(claimed.ok, false);
     for (const why of [
@@ -355,7 +425,7 @@ test('a run through the local agent double is refused, whatever the manifest cla
 
     // Declared honestly, it is not even a well-formed pilot task.
     const honest = await verifyManifestAgainstAuthority(
-      manifestFor(result, prId, 'fake-claude', `fake-session-${result.attemptId}`), resolver,
+      manifestFor(result, prId, 'fake-claude', `fake-session-${result.attemptId}`, workOrder.sha256), resolver,
     ) as { ok: boolean; reasons: string[] };
     assert.equal(honest.ok, false);
     assert.ok(honest.reasons.some((x) => /providerId must be a Claude adapter id/.test(x)), honest.reasons.join('\n'));
