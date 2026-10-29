@@ -309,6 +309,7 @@ function markIssued(s: Draft, request: TaskRequest): void {
         attemptId: null,
         branch: null,
         registered: false,
+        stateUnknown: false,
         leaseRequested: false,
         leaseReleased: false,
         workspaceRequested: false,
@@ -695,9 +696,8 @@ function onActivityFailed(
       issue(step, { kind: 'findAttempt', attemptNumber: request.attemptNumber });
       return;
     case 'findAttempt':
-      // Whether the attempt exists stays unknown: no attempt-bound effect, and a human reconciles it.
-      audit(step, 'attempt.registration-unreconciled', { attemptNumber: request.attemptNumber });
-      close(step, 'FAILED', 'attempt-registration-failed');
+      // Whether the attempt exists stays unknown: no attempt-bound effect, and an operator reconciles it.
+      attemptStateUnknown(step, attempt(s, request.attemptNumber), 'findAttempt');
       return;
     case 'acquireLease':
     case 'prepareWorkspace':
@@ -737,6 +737,29 @@ function onActivityFailed(
       publicationIncomplete(step, 'remote-unreadable', null);
       return;
   }
+}
+
+/** The attempt's natural key (task id, attempt number), rendered for audits and the task result. */
+function attemptIdempotencyKey(s: Draft, attemptNumber: number): string {
+  return `${s.input.taskId}:attempt:${attemptNumber}`;
+}
+
+/**
+ * A lookup of the attempt's state failed after its retries: the store cannot be read, so whether the attempt
+ * exists, or holds a lease, is unknown. Its terminal is not recorded, the one exception to every terminal being
+ * recorded; the task fails, also over a pending cancel, and the audit and the task result name the attempt by its
+ * idempotency key, so telemetry reports the gap.
+ */
+function attemptStateUnknown(step: Step, a: MutableAttempt, lookup: TaskRequestKind): void {
+  const s = step.s;
+  a.stateUnknown = true;
+  audit(step, 'attempt.state-unknown', {
+    attemptNumber: a.attemptNumber,
+    idempotencyKey: attemptIdempotencyKey(s, a.attemptNumber),
+    lookup,
+    cancelRequested: s.cancelPending,
+  });
+  close(step, 'FAILED', 'attempt-state-unknown', 'failed', true);
 }
 
 function publication(s: Draft) {
@@ -1240,9 +1263,11 @@ function acceptControl(
 
 /**
  * Close the task. An accepted cancel wins over any other outcome, except an
- * incomplete publication (`overridesCancel`), which must stay visible. Every
- * registered attempt ends with one usage entry and one outcome record, recorded
- * before its lease is released; an attempt not known to exist gets none.
+ * incomplete publication or an attempt whose state is unknown
+ * (`overridesCancel`), which must stay visible. Every registered attempt ends
+ * with one usage entry and one outcome record, recorded before its lease is
+ * released; an attempt not known to exist, or whose state could not be read,
+ * gets none.
  */
 function close(
   step: Step,
@@ -1259,7 +1284,7 @@ function close(
   }
   const handedOff = outcome === 'WAITING_FOR_HUMAN_REVIEW';
   const attemptTerminal: AttemptTerminal = terminal ?? (outcome === 'CANCELLED' ? 'cancelled' : 'failed');
-  for (const a of s.attempts.filter((x) => x.registered)) {
+  for (const a of s.attempts.filter((x) => x.registered && !x.stateUnknown)) {
     finishAttempt(step, a, attemptTerminal, handedOff ? 'cleanup' : 'quarantine', reason);
   }
   if (outcome === 'CANCELLED' && s.prNumber !== null) {
@@ -1287,6 +1312,9 @@ function close(
       attempts: s.attempts.filter((a) => a.registered).length,
       chargedCostUsd: fromMicroUsd(s.spentMicroUsd),
       prNumber: s.prNumber,
+      unrecordedAttempts: s.attempts
+        .filter((a) => a.stateUnknown)
+        .map((a) => ({ attemptNumber: a.attemptNumber, idempotencyKey: attemptIdempotencyKey(s, a.attemptNumber) })),
     },
   });
 }

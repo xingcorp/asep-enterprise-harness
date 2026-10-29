@@ -454,7 +454,9 @@ function checkTrace(input: TaskCoreInput, trace: TaskTrace, label: string): void
   }
 
   // Exactly one attempt outcome and one usage entry per registered attempt, and none for an attempt not known to
-  // exist: registered means its ensureAttempt returned, or the lookup after a failed one found it.
+  // exist: registered means its ensureAttempt returned, or the lookup after a failed one found it. An attempt whose
+  // state a lookup could not read gets neither; the task then ends FAILED / attempt-state-unknown over any pending
+  // cancel, and reports the attempt as a gap by its idempotency key, with an audit row carrying the key.
   const registered = trace.events.flatMap((e) => {
     const request = e.type === 'result' ? seqRequests.get(e.seq) : undefined;
     if (e.type !== 'result' || request === undefined) return [];
@@ -462,11 +464,24 @@ function checkTrace(input: TaskCoreInput, trace: TaskTrace, label: string): void
     if (e.result.kind === 'findAttempt' && request.kind === 'findAttempt' && e.result.attemptId !== null) return [request.attemptNumber];
     return [];
   }).sort();
+  const stateUnknown = trace.events.flatMap((e) => {
+    const request = e.type === 'activityFailed' ? seqRequests.get(e.seq) : undefined;
+    return request?.kind === 'findAttempt' ? [request.attemptNumber] : [];
+  }).sort();
+  const key = (n: number) => `${input.taskId}:attempt:${n}`;
+  assert.deepEqual(trace.summary.unrecordedAttempts, stateUnknown.map((n) => ({ attemptNumber: n, idempotencyKey: key(n) })),
+    `${label}: every attempt whose state could not be read is reported, and only those`);
+  if (stateUnknown.length > 0) {
+    assert.deepEqual([trace.summary.outcome, trace.summary.reason], ['FAILED', 'attempt-state-unknown'], `${label}: a failed lookup ends the task`);
+    assert.deepEqual(effectsOf(commands, 'audit').filter((a) => a.action === 'attempt.state-unknown').map((a) => a.detail['idempotencyKey']),
+      stateUnknown.map(key), `${label}: the audit carries the idempotency key`);
+  }
+  const recorded = registered.filter((n) => !stateUnknown.includes(n));
   const outcomes = effectsOf(commands, 'recordAttemptOutcome');
-  assert.deepEqual(outcomes.map((o) => o.attemptNumber).sort(), registered, `${label}: one outcome per registered attempt`);
+  assert.deepEqual(outcomes.map((o) => o.attemptNumber).sort(), recorded, `${label}: one outcome per registered attempt`);
   assert.deepEqual(
     effectsOf(commands, 'recordUsage').map((u) => u.attemptNumber).sort(),
-    registered,
+    recorded,
     `${label}: one usage entry per registered attempt`,
   );
   assert.equal(trace.summary.attempts, registered.length, `${label}: the summary counts registered attempts`);
@@ -654,10 +669,10 @@ function checkTrace(input: TaskCoreInput, trace: TaskTrace, label: string): void
   ]);
   for (const id of started) assert.ok(ended.has(id), `${label}: timer ${id} left running`);
 
-  // An accepted cancel ends the task CANCELLED, unless the publication could not reconcile: then it ends
-  // FAILED / publication-incomplete, and nothing else.
+  // An accepted cancel ends the task CANCELLED, unless the publication could not reconcile or an attempt's state could
+  // not be read: then it ends FAILED / publication-incomplete or FAILED / attempt-state-unknown, and nothing else.
   const cancelled = trace.messages.some((m) => m.message.type === 'cancelRequested' && m.receipt.accepted && !m.receipt.duplicate);
-  if (cancelled && trace.summary.reason !== 'publication-incomplete') {
+  if (cancelled && trace.summary.reason !== 'publication-incomplete' && trace.summary.reason !== 'attempt-state-unknown') {
     assert.equal(trace.summary.outcome, 'CANCELLED', `${label}: accepted cancel ends CANCELLED`);
   }
 

@@ -342,6 +342,14 @@ export interface TaskSummary {
   readonly attempts: number;
   readonly chargedCostUsd: number;
   readonly prNumber: number | null;
+  /** Attempts whose terminal was not recorded because their state could not be read; telemetry reports each as a gap. */
+  readonly unrecordedAttempts: readonly UnrecordedAttempt[];
+}
+
+export interface UnrecordedAttempt {
+  readonly attemptNumber: number;
+  /** The attempt's natural key (task id, attempt number), rendered `<taskId>:attempt:<n>`, for an operator to reconcile. */
+  readonly idempotencyKey: string;
 }
 
 export type TaskCommand =
@@ -519,6 +527,11 @@ export interface AttemptState {
    * and outcome records.
    */
   readonly registered: boolean;
+  /**
+   * A lookup of the attempt's state failed: whether it exists, or whether it holds a lease, is unknown, so it gets
+   * no usage, outcome or release.
+   */
+  readonly stateUnknown: boolean;
   readonly leaseRequested: boolean;
   readonly leaseReleased: boolean;
   readonly workspaceRequested: boolean;

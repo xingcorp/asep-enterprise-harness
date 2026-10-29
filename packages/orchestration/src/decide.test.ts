@@ -613,13 +613,44 @@ test('registration: ensureAttempt fails before the insert: no usage and no outco
   assert.equal(trace.summary.attempts, 0);
 });
 
-test('registration: when the lookup fails too, no attempt effect is emitted and the unknown registration is audited', () => {
+/** The attempt's idempotency key: its natural key (task id, attempt number), rendered. */
+const attemptKey = (n: number) => `task-1:attempt:${n}`;
+
+/**
+ * The store could not tell the attempt's state: the task ends FAILED / attempt-state-unknown whatever cancel is
+ * pending, the attempt gets no usage, outcome or release, and the audit and the task result name it by its key.
+ */
+function assertAttemptStateUnknown(trace: TaskTrace, attemptNumber: number, lookup: string, cancelRequested: boolean): void {
+  assert.deepEqual([trace.summary.outcome, trace.summary.reason], ['FAILED', 'attempt-state-unknown'], 'never CANCELLED');
+  assert.deepEqual(trace.summary.unrecordedAttempts, [{ attemptNumber, idempotencyKey: attemptKey(attemptNumber) }], 'reported as a gap');
+  for (const kind of ['recordAttemptOutcome', 'recordUsage', 'releaseLease'] as const) {
+    assert.ok(!effectsOf(trace.commands, kind).some((e) => e.attemptNumber === attemptNumber), `no ${kind} for attempt ${attemptNumber}`);
+  }
+  assert.deepEqual(effectsOf(trace.commands, 'audit').filter((a) => a.action === 'attempt.state-unknown').map((a) => a.detail), [{
+    workflowId: 'asep-task-task-1', attemptNumber, idempotencyKey: attemptKey(attemptNumber), lookup, cancelRequested,
+  }], 'the audit carries the idempotency key for an operator');
+  assertLegalProjections(trace);
+}
+
+test('registration: when the lookup fails too, the task ends FAILED / attempt-state-unknown with the attempt\'s key (the reviewer\'s R29_lookup-failure)', () => {
   const trace = runTaskSequentially(baseInput(), scripted({ ensureAttempt: registrationFails, findAttempt: registrationFails }));
-  assertRegistrationFailed(trace);
-  assert.deepEqual(effectsOf(trace.commands, 'recordAttemptOutcome'), []);
-  assert.deepEqual(effectsOf(trace.commands, 'recordUsage'), []);
-  const audit = effectsOf(trace.commands, 'audit').find((a) => a.action === 'attempt.registration-unreconciled');
-  assert.equal(audit?.detail['attemptNumber'], 1, 'the attempt number is named for a human');
+  assert.deepEqual(requestKinds(trace.commands), ['admitTask', 'ensureAttempt', 'findAttempt'], 'never replaced');
+  assertAttemptStateUnknown(trace, 1, 'findAttempt', false);
+  assert.equal(trace.summary.attempts, 0, 'not known to exist');
+});
+
+test('registration: a failed lookup wins over a pending cancel (the reviewer\'s R29_lookup-failure-cancel)', () => {
+  const trace = runTaskSequentially(baseInput(), scripted({ ensureAttempt: registrationFails, findAttempt: registrationFails }, {
+    eventsDuring: (request) => (request.kind === 'findAttempt' ? [cancel()] : []),
+  }));
+  assert.equal(trace.aborts, 0, 'the lookup is not interrupted');
+  assertAttemptStateUnknown(trace, 1, 'findAttempt', true);
+});
+
+test('registration: a finished task with every terminal recorded reports no unrecorded attempt', () => {
+  for (const environment of [scripted(), scripted({ ensureAttempt: registrationFails }), scripted({ inspectWorkspace: () => ({ kind: 'inspectWorkspace', overstep: true }) })]) {
+    assert.deepEqual(runTaskSequentially(baseInput(), environment).summary.unrecordedAttempts, []);
+  }
 });
 
 test('registration: a cancel during ensureAttempt waits for it, then cancels the registered attempt', () => {
