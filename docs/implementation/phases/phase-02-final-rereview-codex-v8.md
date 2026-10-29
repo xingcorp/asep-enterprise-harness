@@ -11,7 +11,9 @@ on a clean detached worktree, observed `pnpm verify:all` exit 0 (762 pass, 0
 fail, 0 skipped; 57 files, 35 required suites) and `pnpm test:integration` exit
 0 (34 pass; 7 itest files, 7 required suites). Dispositions for every finding
 are recorded in `phase-02-review-log.md` ("Final review cycle 8
-dispositions").
+dispositions"). One edit to the verbatim text: the absolute path of the
+controller's gate log, which lies outside the repository, is shortened to
+`<controller lane directory>/…`, as the publication gate's path scan requires.
 -->
 
 VERDICT: REQUEST_CHANGES  confidence 0.99
@@ -325,7 +327,7 @@ Tuy nhiên, claim mọi reference đã được bảo vệ vẫn sai tại `phas
 
 Đã đọc log controller:
 
-`/Users/doanbh/.openclaw/lanes/phase-02-repair/controller-verify-d1d9e7a.log:1`
+`<controller lane directory>/controller-verify-d1d9e7a.log:1`
 
 Log bind đúng HEAD `d1d9e7a694dfa744e128172bf99ace53f406bb20`.
 
