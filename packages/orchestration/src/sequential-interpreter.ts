@@ -27,6 +27,8 @@ export type ActivityFailure = {
   readonly failureClass: FailureClass;
   /** True when the engine gave up because heartbeats stopped (worker death). */
   readonly timedOut: boolean;
+  /** True for a non-retryable error; absent or false means retries or time ran out. */
+  readonly nonRetryable?: boolean;
 };
 
 export type Answer = TaskResult | ActivityFailure;
@@ -108,7 +110,14 @@ export function runTaskSequentially(input: TaskCoreInput, env: TaskEnvironment, 
     if (summary !== null || state!.pending?.seq !== pending.seq) continue;
     const answer = env.respond(pending.request);
     feed(answer.kind === 'activityFailed'
-      ? { type: 'activityFailed', seq: pending.seq, activity: pending.request.kind, failureClass: answer.failureClass, timedOut: answer.timedOut }
+      ? {
+          type: 'activityFailed',
+          seq: pending.seq,
+          activity: pending.request.kind,
+          failureClass: answer.failureClass,
+          timedOut: answer.timedOut,
+          nonRetryable: answer.nonRetryable ?? false,
+        }
       : { type: 'result', seq: pending.seq, result: answer });
   }
   return { commands, events, receipts, messages, aborts, summary, state: state! };

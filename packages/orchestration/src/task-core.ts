@@ -119,6 +119,7 @@ export function startTask(input: TaskCoreInput): TaskDecision {
     softThresholdCrossed: false,
     overrun: false,
     pushRequested: false,
+    pushConfirmed: false,
     approval: null,
     gateSeq: 0,
     decisionIds: [],
@@ -155,7 +156,7 @@ export function decideTask(state: TaskState, event: TaskEvent): TaskDecision {
         }
         onResult(step, event.result);
       } else {
-        onActivityFailed(step, request, event.failureClass, event.timedOut);
+        onActivityFailed(step, request, event.failureClass, event.timedOut, event.nonRetryable);
       }
       return finish(step);
     }
@@ -294,6 +295,7 @@ function markIssued(s: Draft, request: TaskRequest): void {
         kind: plan.kind,
         lineage: plan.lineage,
         attemptId: null,
+        branch: null,
         leaseRequested: false,
         leaseReleased: false,
         workspaceRequested: false,
@@ -492,6 +494,7 @@ function onResult(step: Step, result: TaskResult): void {
     case 'ensureAttempt': {
       const a = current(s);
       a.attemptId = result.attemptId;
+      a.branch = result.branch;
       emit(step, 'attempt.started', a.attemptNumber);
       if (a.kind === 'repair' && a.lineage !== null) emit(step, 'repair.started', a.attemptNumber, { repairRound: a.lineage.round });
       issue(step, { kind: 'acquireLease', attemptNumber: a.attemptNumber });
@@ -595,16 +598,10 @@ function onResult(step: Step, result: TaskResult): void {
     case 'verifyApprovalDecision':
       approvalVerified(step, result);
       return;
-    case 'publishBranch': {
-      const plan = publication(s);
-      issue(step, {
-        kind: 'upsertPullRequest',
-        attemptNumber: plan.attemptNumber,
-        flagged: plan.flagged,
-        prBodySectionRef: plan.prBodySectionRef,
-      });
+    case 'publishBranch':
+      s.pushConfirmed = true;
+      upsertPullRequest(step);
       return;
-    }
     case 'upsertPullRequest':
       s.prNumber = result.prNumber;
       handoff(step);
@@ -612,7 +609,13 @@ function onResult(step: Step, result: TaskResult): void {
   }
 }
 
-function onActivityFailed(step: Step, request: TaskRequest, failureClass: FailureClass, timedOut: boolean): void {
+function onActivityFailed(
+  step: Step,
+  request: TaskRequest,
+  failureClass: FailureClass,
+  timedOut: boolean,
+  nonRetryable: boolean,
+): void {
   const s = step.s;
   switch (request.kind) {
     case 'admitTask':
@@ -646,8 +649,13 @@ function onActivityFailed(step: Step, request: TaskRequest, failureClass: Failur
       return;
     }
     case 'publishBranch':
+      // A non-retryable failure is definite: nothing was pushed. Any other may
+      // have pushed, so the PR upsert runs as for a completed push.
+      if (nonRetryable) close(step, 'FAILED', 'publication-failed');
+      else upsertPullRequest(step);
+      return;
     case 'upsertPullRequest':
-      close(step, 'FAILED', 'publication-failed');
+      publicationIncomplete(step);
       return;
   }
 }
@@ -655,6 +663,33 @@ function onActivityFailed(step: Step, request: TaskRequest, failureClass: Failur
 function publication(s: Draft) {
   if (s.publication === null) throw new Error('no publication plan');
   return s.publication;
+}
+
+function upsertPullRequest(step: Step): void {
+  const plan = publication(step.s);
+  issue(step, {
+    kind: 'upsertPullRequest',
+    attemptNumber: plan.attemptNumber,
+    flagged: plan.flagged,
+    prBodySectionRef: plan.prBodySectionRef,
+  });
+}
+
+/**
+ * The PR upsert failed after its retry policy while the branch may be on the
+ * remote. The publication cannot reconcile, so the task fails, also over a
+ * pending cancel, and the audit names the branch left without a PR for a human.
+ */
+function publicationIncomplete(step: Step): void {
+  const s = step.s;
+  const a = attempt(s, publication(s).attemptNumber);
+  audit(step, 'publication.incomplete', {
+    attemptNumber: a.attemptNumber,
+    remoteBranch: a.branch ?? '',
+    pushConfirmed: s.pushConfirmed,
+    cancelRequested: s.cancelPending,
+  });
+  close(step, 'FAILED', 'publication-incomplete', 'failed', true);
 }
 
 // ---------------------------------------------------------------------------
@@ -1036,12 +1071,19 @@ function acceptControl(
 // ---------------------------------------------------------------------------
 
 /**
- * Close the task. An accepted cancel wins over any other outcome. Every attempt
- * ends with its resources released, one usage entry and one outcome record.
+ * Close the task. An accepted cancel wins over any other outcome, except an
+ * incomplete publication (`overridesCancel`), which must stay visible. Every
+ * attempt ends with its resources released, one usage entry and one outcome record.
  */
-function close(step: Step, outcome: TaskOutcome, reason: string, terminal?: AttemptTerminal): void {
+function close(
+  step: Step,
+  outcome: TaskOutcome,
+  reason: string,
+  terminal?: AttemptTerminal,
+  overridesCancel = false,
+): void {
   const s = step.s;
-  if (s.cancelPending && outcome !== 'CANCELLED') {
+  if (s.cancelPending && outcome !== 'CANCELLED' && !overridesCancel) {
     outcome = 'CANCELLED';
     reason = 'cancelled';
     terminal = 'cancelled';

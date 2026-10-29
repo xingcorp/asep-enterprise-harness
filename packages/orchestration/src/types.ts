@@ -322,7 +322,12 @@ export type TaskCommand =
 
 export type TaskResult =
   | { readonly kind: 'admitTask'; readonly admitted: boolean; readonly reason: string }
-  | { readonly kind: 'ensureAttempt'; readonly attemptId: AttemptId }
+  | {
+      readonly kind: 'ensureAttempt';
+      readonly attemptId: AttemptId;
+      /** The attempt's remote branch, named by the Git adapter's attempt branch rule. */
+      readonly branch: string;
+    }
   | { readonly kind: 'acquireLease' }
   | { readonly kind: 'prepareWorkspace' }
   | { readonly kind: 'storeAttemptInputs' }
@@ -374,6 +379,8 @@ export type TaskEvent =
       readonly failureClass: FailureClass;
       /** True when the engine gave up because heartbeats stopped (worker death). */
       readonly timedOut: boolean;
+      /** True when the engine stopped on a non-retryable error, not because retries or time ran out. */
+      readonly nonRetryable: boolean;
     }
   | { readonly type: 'timerFired'; readonly timerId: string }
   | TaskMessage;
@@ -428,6 +435,7 @@ export interface AttemptState {
   readonly kind: AttemptKind;
   readonly lineage: RepairLineage | null;
   readonly attemptId: AttemptId | null;
+  readonly branch: string | null;
   readonly leaseRequested: boolean;
   readonly leaseReleased: boolean;
   readonly workspaceRequested: boolean;
@@ -498,6 +506,8 @@ export interface TaskState {
   readonly softThresholdCrossed: boolean;
   readonly overrun: boolean;
   readonly pushRequested: boolean;
+  /** The push activity completed; false after an ambiguous push failure. */
+  readonly pushConfirmed: boolean;
   readonly approval: OpenApproval | null;
   readonly gateSeq: number;
   readonly decisionIds: readonly string[];

@@ -16,7 +16,7 @@ import type { RunCommand, RunCoreInput, RunEvent } from './run-core.js';
 import { runTaskSequentially } from './sequential-interpreter.js';
 import type { Answer, TaskEnvironment, TaskTrace } from './sequential-interpreter.js';
 import { decideTask, startTask } from './task-core.js';
-import { TASK_BASE, attemptOf, effectsOf, happyAnswer, proceed, ref, requests, shaFor } from './test-support/fixtures.js';
+import { TASK_BASE, attemptOf, branchFor, effectsOf, happyAnswer, proceed, ref, requests, shaFor } from './test-support/fixtures.js';
 import { DEFAULT_ORCHESTRATION_POLICY, NEVER_REPLACEABLE_FAILURE_CLASSES } from './defaults.js';
 import type {
   FailureClass,
@@ -113,7 +113,8 @@ function randomInput(rng: Rng): TaskCoreInput {
 }
 
 function failure(rng: Rng): Answer {
-  return { kind: 'activityFailed', failureClass: rng.pick(CLASSES), timedOut: rng.chance(0.4) };
+  const timedOut = rng.chance(0.4);
+  return { kind: 'activityFailed', failureClass: rng.pick(CLASSES), timedOut, nonRetryable: !timedOut && rng.chance(0.4) };
 }
 
 function randomEnvironment(rng: Rng, input: TaskCoreInput): TaskEnvironment {
@@ -481,9 +482,27 @@ function checkTrace(input: TaskCoreInput, trace: TaskTrace, label: string): void
   ]);
   for (const id of started) assert.ok(ended.has(id), `${label}: timer ${id} left running`);
 
-  // An accepted cancel ends the task CANCELLED.
+  // An accepted cancel ends the task CANCELLED, unless the publication could not reconcile: then it ends
+  // FAILED / publication-incomplete, and nothing else.
   const cancelled = trace.messages.some((m) => m.message.type === 'cancelRequested' && m.receipt.accepted && !m.receipt.duplicate);
-  if (cancelled) assert.equal(trace.summary.outcome, 'CANCELLED', `${label}: accepted cancel ends CANCELLED`);
+  if (cancelled && trace.summary.reason !== 'publication-incomplete') {
+    assert.equal(trace.summary.outcome, 'CANCELLED', `${label}: accepted cancel ends CANCELLED`);
+  }
+
+  // Once a push may have happened, the task never ends without a PR unless it says so: CANCELLED, review handoff and
+  // every other outcome after a push request have the PR, or the push failed definitely (non-retryable), or the
+  // task ends FAILED / publication-incomplete with an audit naming the attempt's branch.
+  const pushAt = requestIndex(commands, (r) => r.kind === 'publishBranch')[0];
+  if (pushAt !== undefined && trace.summary.prNumber === null) {
+    const push = commands[pushAt]!;
+    assert.ok(push.type === 'request' && push.request.kind === 'publishBranch', `${label}: push request`);
+    const definite = trace.events.some((e) => e.type === 'activityFailed' && e.seq === push.seq && e.nonRetryable);
+    if (!definite) {
+      assert.deepEqual([trace.summary.outcome, trace.summary.reason], ['FAILED', 'publication-incomplete'], `${label}: branch left without a PR is reported`);
+      const incident = effectsOf(commands, 'audit').find((a) => a.action === 'publication.incomplete');
+      assert.equal(incident?.detail['remoteBranch'], branchFor(push.request.attemptNumber), `${label}: the audit names the branch`);
+    }
+  }
 
   // A verification stop is final: no assurance, approval or publication afterwards.
   const stop = commands.findIndex((c) => c.type === 'effect' && c.effect.kind === 'recordAttemptOutcome' && c.effect.terminal === 'verification-failed');
@@ -552,6 +571,7 @@ test('the generator covers repair, replacement, approvals, pause and cancel path
     if (effectsOf(trace.commands, 'recordOverrun').length > 0) seen.add('overrun');
     if (effectsOf(trace.commands, 'recordOverrun').some((o) => o.overrunWallClockMs > 0)) seen.add('wall-clock-overrun');
     if (effectsOf(trace.commands, 'recordOverrun').some((o) => o.overrunUsd === 0.000001)) seen.add('micro-overrun');
+    if (trace.summary.reason === 'publication-incomplete') seen.add('publication-incomplete');
     const toleratedMs = input.attemptBudget.maxWallClockMinutes * 60_000 + input.policy.agentKillGraceSeconds * 1000;
     if (input.policy.agentKillGraceSeconds > 0 && trace.events.some((e) => e.type === 'result' && e.result.kind === 'runAgent'
       && e.result.status === 'AGENT_DONE' && e.result.wallClockMs === toleratedMs) && reqs.some((r) => r.kind === 'runVerification')) {
@@ -566,7 +586,8 @@ test('the generator covers repair, replacement, approvals, pause and cancel path
   }
   assert.deepEqual([...seen].sort(), [
     'abort', 'approval-expired', 'assurance-unavailable', 'budget-approval', 'exhausted', 'extension-granted',
-    'hostile-policy-failure', 'lineage-retry', 'micro-overrun', 'overrun', 'pause-timeout', 'paused', 'publish-approval', 'recovered',
+    'hostile-policy-failure', 'lineage-retry', 'micro-overrun', 'overrun', 'pause-timeout', 'paused', 'publication-incomplete',
+    'publish-approval', 'recovered',
     'repair', 'retry', 'verification-stop', 'verified-within-grace', 'violation', 'wall-clock-overrun',
   ]);
 });

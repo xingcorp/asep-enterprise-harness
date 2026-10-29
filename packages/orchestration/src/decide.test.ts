@@ -41,6 +41,7 @@ import {
   policy,
   proceed,
   ref,
+  branchFor,
   repair,
   requestKinds,
   requests,
@@ -1240,6 +1241,68 @@ test('cancel during evidence binding lets the unit reconcile, then cancels befor
   assert.equal(kinds.filter((k) => k === 'persistEvidence').length, 1);
   assert.ok(!kinds.includes('assuranceRound') && !kinds.includes('publishBranch'), 'no assurance and no push after the cancel');
   assert.equal(trace.summary.outcome, 'CANCELLED');
+});
+
+// ---------------------------------------------------------------------------
+// Publication that does not reconcile
+// ---------------------------------------------------------------------------
+
+const upsertFails = (nonRetryable: boolean) => () => ({ kind: 'activityFailed' as const, failureClass: 'provider' as const, timedOut: false, nonRetryable });
+const pushFails = (nonRetryable: boolean) => () => ({ kind: 'activityFailed' as const, failureClass: 'provider' as const, timedOut: false, nonRetryable });
+
+function assertPublicationIncomplete(trace: TaskTrace, pushConfirmed: boolean, cancelRequested: boolean): void {
+  assert.equal(trace.summary.outcome, 'FAILED', 'an unreconciled publication is never CANCELLED');
+  assert.equal(trace.summary.reason, 'publication-incomplete');
+  assert.equal(trace.summary.prNumber, null);
+  const audit = effectsOf(trace.commands, 'audit').find((a) => a.action === 'publication.incomplete');
+  assert.deepEqual(audit?.detail, {
+    workflowId: 'asep-task-task-1', attemptNumber: 1, remoteBranch: branchFor(1), pushConfirmed, cancelRequested,
+  }, 'the audit names the remote branch left without a PR');
+  assert.ok(!effectsOf(trace.commands, 'audit').some((a) => a.action === 'workflow.cancel.after-publication'), 'no PR to leave open');
+  assert.deepEqual(outcomes(trace), [[1, 'failed']]);
+  assertLegalProjections(trace);
+}
+
+for (const nonRetryable of [false, true]) {
+  test(`publication: a cancel during a successful push, then a PR upsert that fails ${nonRetryable ? 'non-retryably' : 'after its retries'}, ends FAILED / publication-incomplete, never CANCELLED`, () => {
+    const trace = runTaskSequentially(baseInput(), scripted({ upsertPullRequest: upsertFails(nonRetryable) }, {
+      messagesDuring: (request) => (request.kind === 'publishBranch' ? [cancel()] : []),
+    }));
+    assert.equal(trace.aborts, 0);
+    assertPublicationIncomplete(trace, true, true);
+  });
+}
+
+test('publication: a PR upsert that fails after a confirmed push ends FAILED / publication-incomplete without a cancel too', () => {
+  const trace = runTaskSequentially(baseInput(), scripted({ upsertPullRequest: upsertFails(false) }));
+  assertPublicationIncomplete(trace, true, false);
+});
+
+test('publication: an ambiguous push failure still runs the PR upsert; a non-retryable push failure does not', () => {
+  // Ambiguous (retries exhausted): the branch may exist, so the PR upsert runs and here succeeds; the cancel then ends
+  // the task CANCELLED with the PR left open and audited.
+  const ambiguous = runTaskSequentially(baseInput(), scripted({ publishBranch: pushFails(false) }, {
+    messagesDuring: (request) => (request.kind === 'publishBranch' ? [cancel()] : []),
+  }));
+  assert.equal(requestKinds(ambiguous.commands).filter((k) => k === 'upsertPullRequest').length, 1, 'the PR upsert runs');
+  assert.equal(ambiguous.summary.outcome, 'CANCELLED');
+  assert.equal(ambiguous.summary.prNumber, 7);
+  assert.ok(effectsOf(ambiguous.commands, 'audit').some((a) => a.action === 'workflow.cancel.after-publication'), 'PR left open, audited');
+
+  // Ambiguous push, then the PR upsert fails too: the branch may exist without a PR, so it is reported.
+  const unconfirmed = runTaskSequentially(baseInput(), scripted({ publishBranch: pushFails(false), upsertPullRequest: upsertFails(true) }));
+  assertPublicationIncomplete(unconfirmed, false, false);
+
+  // Non-retryable: definite, nothing was pushed; no PR upsert, and a pending cancel may finalize.
+  const definite = runTaskSequentially(baseInput(), scripted({ publishBranch: pushFails(true) }));
+  assert.ok(!requestKinds(definite.commands).includes('upsertPullRequest'), 'no PR upsert after a definite push failure');
+  assert.equal(definite.summary.outcome, 'FAILED');
+  assert.equal(definite.summary.reason, 'publication-failed');
+  const definiteCancelled = runTaskSequentially(baseInput(), scripted({ publishBranch: pushFails(true) }, {
+    messagesDuring: (request) => (request.kind === 'publishBranch' ? [cancel()] : []),
+  }));
+  assert.ok(!requestKinds(definiteCancelled.commands).includes('upsertPullRequest'), 'no PR upsert after a definite push failure');
+  assert.equal(definiteCancelled.summary.outcome, 'CANCELLED');
 });
 
 test('cancel during the PR upsert lets it complete; the PR stays open and the cancel is audited', () => {

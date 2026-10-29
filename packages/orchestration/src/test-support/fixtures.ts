@@ -26,6 +26,11 @@ export function shaFor(attemptNumber: number): string {
   return attemptNumber.toString(16).padStart(40, 'c');
 }
 
+/** The remote branch the attempt registration reports for attempt n (the Git adapter's naming rule). */
+export function branchFor(attemptNumber: number): string {
+  return `asep/run-1/task-1/att-${attemptNumber}`;
+}
+
 export function ref(name: string): ArtifactRef {
   const hex = Array.from(name, (c) => c.charCodeAt(0).toString(16)).join('');
   return { artifactId: `art-${name}` as ArtifactId, sha256: hex.padEnd(64, '0').slice(0, 64), kind: 'test' };
@@ -85,7 +90,7 @@ export function happyAnswer(request: TaskRequest): Answer {
     case 'admitTask':
       return { kind: 'admitTask', admitted: true, reason: 'admitted' };
     case 'ensureAttempt':
-      return { kind: 'ensureAttempt', attemptId: `att-${request.attemptNumber}` as AttemptId };
+      return { kind: 'ensureAttempt', attemptId: `att-${request.attemptNumber}` as AttemptId, branch: branchFor(request.attemptNumber) };
     case 'acquireLease':
       return { kind: 'acquireLease' };
     case 'prepareWorkspace':
