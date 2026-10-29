@@ -202,10 +202,12 @@ besides matching the manifest against the database rows:
   for the task's own risk: every mandatory level must have a check recorded as
   mandatory (a check at a mandatory level recorded advisory is refused), and
   every mandatory check must have passed;
-- asks GitHub, through the same GitHub App and forge port the pilot uses, for
-  the PR on the attempt's branch, and requires its number and URL to match the
-  record and its head to be the attempt's result commit — a PR whose branch has
-  moved since review is refused;
+- requires the attempt's PR row to be recorded `OPEN`, then asks GitHub,
+  through the same GitHub App and forge port the pilot uses, for the PR on the
+  attempt's branch, and requires its number and URL to match the record, its
+  base to be the recorded base, GitHub to report it open and not merged, and
+  its head to be the attempt's result commit — a PR closed, merged or moved to
+  another base, or whose branch has moved since review, is refused;
 - requires a human authorization whose ed25519 signature verifies against the
   reviewer key and which was signed for this attempt, this result commit and
   this PR.
@@ -369,13 +371,24 @@ merged code is possible because nothing is auto-merged.
 - **After a takeover:** the forge is not fenced. An executor that was inside a
   forge call when its lease lapsed may still have pushed or written the PR
   after the successor took over (GitHub has no compare-and-set for a PR
-  update). Its push can only be the attempt's own commit (anything else is
-  refused by the push's lease) and its PR text is the same function of the
-  attempt's facts, and the resume reconciles the branch and the PR with those
-  facts before the task reaches review. Each repair is an `audit_events` row
-  with action `forge.reconcile` naming what it found; review them for the
-  attempt before the human review. A PR edited by hand afterwards is repaired
-  only by another resume.
+  update). The push's lease conditions only on the branch's current value, not
+  on what is pushed. What makes the push the attempt's own commit is that the
+  harness only ever pushes the attempt's pinned commit; once the branch
+  exists, the lease refuses a stale push that still expects it absent,
+  whatever that push carries. Its PR text is the same function of the
+  attempt's facts. The resume reconciles the branch and an open PR on the
+  attempt's base with those facts before the task reaches review. Each repair
+  is an `audit_events` row with action `forge.reconcile` naming what it found;
+  review them for the attempt before the human review. An open PR edited by
+  hand afterwards is repaired only by another resume.
+- **A PR closed, merged or retargeted by a human:** the harness never reopens,
+  retargets or edits it. A run or resume that finds it fails the task: an
+  `audit_events` row with action `task.status.transition` whose detail has
+  `to: FAILED`, `outcome: publication-incomplete`, the reason and the PR found
+  (number, url, head, base, state, merged), and no `pull_requests` row.
+  FAILED is terminal: to publish the change again, run its work order as a new
+  task. A PR closed after its task reached review leaves the task there; the
+  pilot verifier rejects it.
 - **Worktree hygiene:** cleanup is idempotent and a failed worktree is
   **quarantined, not reused** (exit E7). Do not manually re-point a quarantined
   worktree at a new attempt.
