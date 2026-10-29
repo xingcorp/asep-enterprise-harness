@@ -69,12 +69,10 @@ step "format:check"        pnpm format:check
 # cold compile emits is reused by the later test steps, so this costs one cold
 # compile rather than an extra pass. `scripts/project-references.test.ts` is the
 # companion guard that names the offending project instead of only failing.
-step "cold-cache reset"
-find . -path ./node_modules -prune -o -name dist -type d -print 2>/dev/null \
-  | grep -v node_modules | xargs rm -rf 2>/dev/null || true
-find . -path ./node_modules -prune -o -name '*.tsbuildinfo' -print 2>/dev/null \
-  | grep -v node_modules | xargs rm -f 2>/dev/null || true
-echo "cold-cache reset: PASS (dist/ + *.tsbuildinfo removed; next step is a cold tsc -b)"
+#
+# The reset fails closed: a removal error or any surviving artifact fails the
+# step (scripts/cold-cache-reset.test.ts proves both paths).
+step "cold-cache reset"    bash scripts/cold-cache-reset.sh
 
 step "typecheck"           pnpm typecheck
 step "test"                pnpm test

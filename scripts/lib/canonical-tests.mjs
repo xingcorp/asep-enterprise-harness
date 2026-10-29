@@ -96,6 +96,10 @@ export const REQUIRED_SUITES = Object.freeze({
   // declaring the matching `references` entry passes on a warm tree and fails on
   // a clean checkout. Registered so the guard cannot be dropped silently.
   'asep-suite:project-references': 'scripts/project-references.test.ts',
+  // The cold-cache reset that runs before typecheck must fail closed: a removal
+  // error or a surviving dist/ / *.tsbuildinfo fails the step instead of
+  // printing PASS over a warm tree.
+  'asep-suite:cold-cache-reset': 'scripts/cold-cache-reset.test.ts',
   'asep-suite:eval-network-guard': 'evals/runner/env.test.ts',
   'asep-suite:trusted-bootstrap': 'evals/runner/launcher.test.ts',
   'asep-suite:compat-gate': 'packages/contracts/src/compat-gate.test.ts',
