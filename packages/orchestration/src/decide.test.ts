@@ -37,6 +37,7 @@ import {
   TASK_BASE,
   TASK_BASE_BRANCH,
   TASK_REPOSITORY,
+  OTHER_BINDINGS,
   baseInput,
   effectsOf,
   fenceFor,
@@ -1933,8 +1934,9 @@ for (const cancelled of [false, true]) {
 // The full observation: a candidate that matches the attempt's branch, head SHA and base is still not the attempt's
 // when it comes from a fork, is closed or merged, or is one of several, or when the branch or the PR's base lies in
 // another repository. A repository is its forge id, so another repository that took over the binding's owner and
-// name after a rename is another repository too. The first four rows are the reviewer's IDENTITY_MATRIX; the last
-// three are its RENAME_SLUG_REUSE.
+// name after a rename is another repository too, and a branch name compares exactly, case included. The first four
+// rows are the reviewer's IDENTITY_MATRIX, the three after the branch row its RENAME_SLUG_REUSE, and the last its
+// M_HEAD_CASE_COUNTEREXAMPLE.
 const FORK: ForgeRepository = { id: 9001, owner: 'attacker', name: 'fork' };
 const REUSED_PATHNAME: ForgeRepository = { id: 202, owner: TASK_REPOSITORY.owner, name: TASK_REPOSITORY.name };
 const NOT_THIS_ATTEMPTS_PR: readonly (readonly [string, readonly ObservedPullRequest[], string, ForgeRepository])[] = [
@@ -1948,6 +1950,7 @@ const NOT_THIS_ATTEMPTS_PR: readonly (readonly [string, readonly ObservedPullReq
   ['the branch in another repository at the binding\'s owner and name', [prOfAttempt(9)], 'branch-other-repository', REUSED_PATHNAME],
   ['a PR from another repository at the binding\'s owner and name', [prOfAttempt(9, { headRepository: REUSED_PATHNAME })], 'pull-request-fork-head', TASK_REPOSITORY],
   ['a PR into another repository at the binding\'s owner and name', [prOfAttempt(9, { baseRepository: REUSED_PATHNAME })], 'pull-request-other-base', TASK_REPOSITORY],
+  ['a PR whose head branch differs from the attempt branch only in case', [prOfAttempt(9, { headBranch: branchFor(1).toUpperCase() })], 'pull-request-other-head', TASK_REPOSITORY],
 ];
 
 for (const cancelled of [false, true]) {
@@ -2077,15 +2080,16 @@ test('publication: a task based on another branch publishes and reconciles again
 test('publication: every publication request names the input\'s repository, never a default', () => {
   // The reviewer's NONDEFAULT_REPOSITORY: the PR upsert and both reconciliation reads take the repository from the
   // task input; a request that named another repository would read or write somewhere else.
-  const repository: ForgeRepository = { id: 31337, owner: 'different-org', name: 'different-repo' };
-  for (const [failing, order] of [
-    ['publishBranch', ['reconcilePublication', 'upsertPullRequest']],
-    ['upsertPullRequest', ['upsertPullRequest', 'reconcilePublication']],
-  ] as const) {
-    const trace = runTaskSequentially(baseInput({ repository }), scripted({ [failing]: publicationFails('unknown') }));
-    const named = requests(trace.commands).flatMap((r) => (r.kind === 'upsertPullRequest' || r.kind === 'reconcilePublication' ? [[r.kind, r.repository]] : []));
-    assert.deepEqual(named, order.map((kind) => [kind, repository]), `after a failing ${failing}`);
-    assertPublished(trace, 7, false);
+  for (const repository of OTHER_BINDINGS) {
+    for (const [failing, order] of [
+      ['publishBranch', ['reconcilePublication', 'upsertPullRequest']],
+      ['upsertPullRequest', ['upsertPullRequest', 'reconcilePublication']],
+    ] as const) {
+      const trace = runTaskSequentially(baseInput({ repository }), scripted({ [failing]: publicationFails('unknown') }));
+      const named = requests(trace.commands).flatMap((r) => (r.kind === 'upsertPullRequest' || r.kind === 'reconcilePublication' ? [[r.kind, r.repository]] : []));
+      assert.deepEqual(named, order.map((kind) => [kind, repository]), `${JSON.stringify(repository)} after a failing ${failing}`);
+      assertPublished(trace, 7, false);
+    }
   }
 });
 

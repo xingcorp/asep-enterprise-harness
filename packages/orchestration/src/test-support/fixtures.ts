@@ -26,6 +26,12 @@ export const TASK_BASE = 'b'.repeat(40);
 export const TASK_BASE_BRANCH = 'release/2026.10';
 /** The repository binding's repository: the forge's numeric id, with the owner and name the binding records. */
 export const TASK_REPOSITORY: ForgeRepository = { id: 4242, owner: 'acme', name: 'widgets' };
+/** Other bindings: id, owner, name and case all differ from TASK_REPOSITORY's, so a default shows up wherever it leaks. */
+export const OTHER_BINDINGS: readonly ForgeRepository[] = [
+  { id: 31337, owner: 'different-org', name: 'different-repo' },
+  { id: 7, owner: 'Acme', name: 'Widgets' },
+  { id: 900_719_925_474, owner: 'x', name: 'y.z' },
+];
 
 export function shaFor(attemptNumber: number): string {
   return attemptNumber.toString(16).padStart(40, 'c');

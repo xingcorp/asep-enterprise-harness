@@ -92,21 +92,32 @@ function cents(rng: Rng, lo: number, hi: number): number {
 // shows up.
 const BASE_BRANCHES = ['main', 'release/2026.10', 'develop', 'hotfix/x-1.2'] as const;
 
-// The bound choices draw from their own stream (`side`), and the base branch from another (`bases`), so adding them
-// left every other draw of a seed unchanged.
+// Repositories the generator binds a task to. Ids, owners, names and case differ, so a request that names a
+// repository taken from anywhere but the input shows up.
+const REPOSITORIES: readonly ForgeRepository[] = [
+  { id: 4242, owner: 'acme', name: 'widgets' },
+  { id: 31337, owner: 'Different-Org', name: 'Service.API' },
+  { id: 7, owner: 'x', name: 'y' },
+  { id: 900_719_925_474, owner: 'acme', name: 'widgets-2' },
+];
+
+// The bound choices draw from their own stream (`side`), and the base branch and then the repository from another
+// (`bases`), so adding them left every other draw of a seed unchanged.
 function randomInput(rng: Rng, side: Rng, bases: Rng): TaskCoreInput {
   // Sometimes every money cap sits at or next to the input bound, with no verification reserve, so the reservation
   // still fits and usage around the bound reaches the overrun check.
   const nearBound = side.chance(0.12);
   const attemptCost = nearBound ? side.pick([MAX_USD, MAX_USD - 0.000001]) : cents(rng, 1, 6);
   const taskCap = nearBound ? MAX_USD : cents(rng, 2, 20);
+  const baseBranch = bases.pick(BASE_BRANCHES);
+  const repository = bases.pick(REPOSITORIES);
   return {
     taskId: 'task-p' as TaskId,
     runId: 'run-p' as RunId,
     risk: 'R0',
     baseSha: TASK_BASE,
-    repository: { id: 4242, owner: 'acme', name: 'widgets' },
-    baseBranch: bases.pick(BASE_BRANCHES),
+    repository,
+    baseBranch,
     attemptBudget: { maxTurns: 10, maxToolCalls: 50, maxCostUsd: attemptCost, maxWallClockMinutes: rng.int(10, 60) },
     taskBudget: {
       maxAttempts: rng.int(1, 4),
@@ -141,18 +152,36 @@ function failure(rng: Rng): Answer {
 const OTHER_REPOSITORY: ForgeRepository = { id: 9001, owner: 'attacker', name: 'fork' };
 
 /**
+ * The binding repository as a read reports it: mostly as bound; sometimes renamed, transferred or re-cased, which
+ * keeps its id; and sometimes another repository that took over its owner and name, which has another id.
+ */
+function asObserved(remote: Rng, repository: ForgeRepository): ForgeRepository {
+  switch (remote.pick(['bound', 'bound', 'bound', 'bound', 'bound', 'renamed', 'recased', 'reused'] as const)) {
+    case 'bound':
+      return repository;
+    case 'renamed':
+      return { ...repository, owner: `${repository.owner}-moved`, name: `${repository.name}-renamed` };
+    case 'recased':
+      return { ...repository, owner: repository.owner.toUpperCase(), name: repository.name.toUpperCase() };
+    case 'reused':
+      return { ...repository, id: repository.id + 1 };
+  }
+}
+
+/**
  * The PRs a reconciliation read reports for the branch: mostly one, the attempt's own or one that differs in a single
  * respect (head SHA, head branch, base branch, base repository, a fork head, closed, merged), and sometimes a second
- * candidate beside it. The read sometimes repaired a PR's content; that draw comes from its own stream (`remote`),
- * so every other draw of a seed is unchanged.
+ * candidate beside it. From a stream of its own (`remote`), so every other draw of a seed is unchanged: the head and
+ * base repositories as the read reports them (see asObserved), a head branch that differs from the attempt's only in
+ * case, and a PR whose content the read repaired.
  */
 function observedPrs(side: Rng, remote: Rng, request: Extract<TaskRequest, { kind: 'reconcilePublication' }>, head: string | null): ObservedPullRequest[] {
   const own: ObservedPullRequest = {
     number: 11,
-    headRepository: request.repository,
+    headRepository: asObserved(remote, request.repository),
     headBranch: request.remoteBranch,
     headSha: head ?? request.expectedHeadSha,
-    baseRepository: request.repository,
+    baseRepository: asObserved(remote, request.repository),
     baseBranch: request.expectedBaseBranch,
     state: 'open',
     merged: false,
@@ -180,7 +209,11 @@ function observedPrs(side: Rng, remote: Rng, request: Extract<TaskRequest, { kin
   };
   const first = variant();
   const prs = side.chance(0.12) ? [first, { ...variant(), number: 12 }] : [first];
-  return prs.map((pr) => (remote.chance(0.15) ? { ...pr, contentRepaired: true } : pr));
+  return prs.map((pr) => ({
+    ...pr,
+    ...(remote.chance(0.2) ? { headBranch: pr.headBranch.toUpperCase() } : {}),
+    ...(remote.chance(0.15) ? { contentRepaired: true } : {}),
+  }));
 }
 
 /** A publication failure: it reports the push or PR as applied, absent or unknown, or reports nothing (unknown). */
@@ -358,7 +391,8 @@ function randomEnvironment(rng: Rng, side: Rng, remote: Rng, input: TaskCoreInpu
           if (rng.chance(0.15)) return failure(rng);
           const head = rng.pick([request.expectedHeadSha, null, 'f'.repeat(40)]);
           const hasPr = head !== null ? rng.chance(0.5) : side.chance(0.15);
-          const branch = head === null ? null : { repository: side.chance(0.08) ? OTHER_REPOSITORY : request.repository, headSha: head };
+          const branch = head === null ? null
+            : { repository: side.chance(0.08) ? OTHER_REPOSITORY : asObserved(remote, request.repository), headSha: head };
           return { kind: 'reconcilePublication', branch, pullRequests: hasPr ? observedPrs(side, remote, request, head) : [] };
         }
         case 'verifyApprovalDecision': {
@@ -1058,7 +1092,7 @@ function generate(seed: number): { input: TaskCoreInput; trace: TaskTrace; grant
   return { input, trace: runTaskSequentially(input, environment), grants: environment.grants };
 }
 
-const PUBLICATION_SEEDS = 3000;
+const PUBLICATION_SEEDS = 6000;
 
 const PUBLICATION_REQUESTS: readonly TaskRequestKind[] = ['publishBranch', 'upsertPullRequest', 'reconcilePublication'];
 
@@ -1210,8 +1244,19 @@ test('generated publication traces satisfy the invariants and meet every kind of
       const read = e.result;
       const branch = read.branch === null ? 'absent' : !sameRepository(read.branch.repository, identity.repository) ? 'other-repository'
         : read.branch.headSha === identity.head ? 'own' : 'moved';
-      const differs = read.pullRequests.length === 0 ? 'none' : read.pullRequests.length > 1 ? 'multiple' : prDifference(identity, read.pullRequests[0]!);
-      seen.add(`${e.seq < upsertSeq ? 'push' : 'pr'}:branch-${branch}:pr-${differs}`);
+      const [pr] = read.pullRequests;
+      const differs = pr === undefined ? 'none' : read.pullRequests.length > 1 ? 'multiple' : prDifference(identity, pr);
+      const path = e.seq < upsertSeq ? 'push' : 'pr';
+      seen.add(`${path}:branch-${branch}:pr-${differs}`);
+      // The head branch differs from the attempt's only in case; the binding repository renamed, transferred or
+      // re-cased (same id) and still the attempt's; another repository at the binding's owner and name (another id).
+      if (branch === 'own' && read.pullRequests.length === 1 && pr !== undefined && pr.headBranch !== identity.branch
+        && prDifference(identity, { ...pr, headBranch: pr.headBranch.toLowerCase() }) === 'own') seen.add(`${path}:head-branch-case`);
+      const moved = read.branch !== null && read.branch.repository.id === identity.repository.id
+        && (read.branch.repository.owner !== identity.repository.owner || read.branch.repository.name !== identity.repository.name);
+      if (moved && isThisAttempts(identity, read)) seen.add(`${path}:moved-reconciled`);
+      if (read.branch !== null && read.branch.repository.id !== identity.repository.id
+        && read.branch.repository.owner === identity.repository.owner && read.branch.repository.name === identity.repository.name) seen.add(`${path}:pathname-reused`);
     }
   }
   assert.ok(published >= PUBLICATION_SEEDS / 4, `only ${published} of ${PUBLICATION_SEEDS} traces published`);
@@ -1224,6 +1269,9 @@ test('generated publication traces satisfy the invariants and meet every kind of
     }
     for (const branch of ['absent', 'moved', 'other-repository']) {
       assert.ok(seen.has(`${path}:branch-${branch}:pr-none`), `no ${path} reconciliation read a ${branch} branch: ${[...seen].sort().join(' ')}`);
+    }
+    for (const kind of ['head-branch-case', 'moved-reconciled', 'pathname-reused']) {
+      assert.ok(seen.has(`${path}:${kind}`), `no ${path} reconciliation read a ${kind} remote: ${[...seen].sort().join(' ')}`);
     }
   }
 });
