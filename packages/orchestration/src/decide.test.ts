@@ -7,6 +7,7 @@
 // effects executed in order, messages delivered between results.
 
 import test from 'node:test';
+import type { TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
@@ -305,23 +306,40 @@ test('input rules: the base branch rule gives git check-ref-format --branch\'s a
   }
 });
 
-test('input rules: git still answers the committed branch-name table as recorded', (t) => {
-  // Outside any repository, so `--branch` cannot expand `@{-N}` to a previous branch of the checkout.
+/**
+ * Asks the git at `gitBinary` about every name of the committed branch-name table and expects the recorded answer. It
+ * runs outside any repository, so `--branch` cannot expand `@{-N}` to a previous branch of the checkout. Without that
+ * git it compares nothing and reports itself skipped with the reason; the committed table stays the oracle either way.
+ */
+function recheckBranchNamesWithGit(t: Pick<TestContext, 'skip'>, gitBinary: string): void {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'asep-git-ref-')));
   try {
     const env = { ...process.env, GIT_CEILING_DIRECTORIES: dirname(dir) };
-    const probe = spawnSync('git', ['--version'], { cwd: dir, env });
+    const probe = spawnSync(gitBinary, ['--version'], { cwd: dir, env });
     if (probe.error !== undefined || probe.status !== 0) {
-      t.diagnostic('git is not available here; the committed table stands as the oracle');
+      t.skip('git is not available here, so git\'s answers were not re-checked; the committed table stands as the oracle');
       return;
     }
     for (const { name, git } of GIT_BRANCH_NAMES) {
-      const answer = spawnSync('git', ['check-ref-format', '--branch', name], { cwd: dir, env });
+      const answer = spawnSync(gitBinary, ['check-ref-format', '--branch', name], { cwd: dir, env });
       assert.equal(answer.status === 0 ? 'valid' : 'invalid', git, JSON.stringify(name));
     }
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+test('input rules: git still answers the committed branch-name table as recorded', (t) => {
+  recheckBranchNamesWithGit(t, 'git');
+});
+
+test('input rules: without git, the git re-check of the branch-name table reports itself skipped, with the reason', () => {
+  const skipped: (string | undefined)[] = [];
+  const diagnostics: string[] = [];
+  const context = { skip: (message?: string) => { skipped.push(message); }, diagnostic: (message: string) => { diagnostics.push(message); } };
+  recheckBranchNamesWithGit(context, join(tmpdir(), 'asep-no-such-git', 'git'));
+  assert.deepEqual(skipped, ['git is not available here, so git\'s answers were not re-checked; the committed table stands as the oracle']);
+  assert.deepEqual(diagnostics, []);
 });
 
 // The repository is the binding's: the forge's numeric id, with an owner and name in the forge's name rules.
