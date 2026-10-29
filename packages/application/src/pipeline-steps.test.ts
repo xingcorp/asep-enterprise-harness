@@ -47,6 +47,7 @@ import type {
   SideEffectBeginInput,
   SideEffectCompleteInput,
 } from '@asep/ports';
+import { SideEffectFencingError } from '@asep/ports';
 import type { TaskAggregate } from '@asep/domain';
 import {
   verifyStep,
@@ -614,6 +615,20 @@ class MemorySideEffectLog implements SideEffectLog {
     };
   }
 
+  // Every confirmation, in order; `epoch` is what the owner holds, and
+  // `takenOver` simulates a successor having taken the records over.
+  readonly confirmed: string[] = [];
+  epoch = 3;
+  takenOver = false;
+
+  async confirmOwner(_scope: TenantScope, input: SideEffectKey & { ownerToken: string }): Promise<{ fencingEpoch: number }> {
+    const row = this.rows.get(this.key(input.operation, input.repositoryBindingId, input.attemptId));
+    if (!row || row.state !== 'PENDING') throw new SideEffectFencingError('nothing PENDING to act for');
+    if (this.takenOver || row.owner !== input.ownerToken) throw new SideEffectFencingError('stale owner');
+    this.confirmed.push(input.operation);
+    return { fencingEpoch: this.epoch };
+  }
+
   async fail(_scope: TenantScope, input: { operation: 'commit' | 'push' | 'pr-upsert'; repositoryBindingId: RepositoryBindingId; attemptId: AttemptId; ownerToken: string }): Promise<SideEffectRecord> {
     const k = this.key(input.operation, input.repositoryBindingId, input.attemptId);
     const row = this.rows.get(k)!;
@@ -649,17 +664,19 @@ class MemorySideEffectLog implements SideEffectLog {
 function fakeForge(
   pr: PullRequestRef,
   remote: { ref?: string | null; pr?: PullRequestRef | null } = {},
-): ForgeProvider & { pushes: number; upserts: number } {
+): ForgeProvider & { pushes: number; upserts: number; epochs: number[] } {
   let pushes = 0;
   let upserts = 0;
+  const epochs: number[] = [];
   return {
     get pushes() { return pushes; },
     get upserts() { return upserts; },
-    async pushBranch() { pushes += 1; },
-    async upsertPullRequest() { upserts += 1; return pr; },
+    epochs,
+    async pushBranch(_s: TenantScope, i: { fencingEpoch: number }) { pushes += 1; epochs.push(i.fencingEpoch); },
+    async upsertPullRequest(_s: TenantScope, i: { fencingEpoch: number }) { upserts += 1; epochs.push(i.fencingEpoch); return pr; },
     async resolveRef() { return remote.ref ?? null; },
     async findPullRequest() { return remote.pr ?? null; },
-  } as ForgeProvider & { pushes: number; upserts: number };
+  } as ForgeProvider & { pushes: number; upserts: number; epochs: number[] };
 }
 
 const prRef: PullRequestRef = {
@@ -688,6 +705,37 @@ test('pushStep wraps the push in the two-phase protocol (begin → push → comp
   // The record is COMPLETED after the push.
   const row = [...log.rows.values()][0]!;
   assert.equal(row.state, 'COMPLETED');
+});
+
+test('push and PR are confirmed at the call and carry the owner\'s fencing epoch', async () => {
+  const log = new MemorySideEffectLog();
+  const forge = fakeForge(prRef);
+  const common = { forge, log, scope, repositoryBindingId: bindingId, attemptId, leaseId: 'lease-1' };
+  await pushStep({ ...common, branch: 'asep/attempt-1', commitSha: 'd'.repeat(40) });
+  await upsertPrStep({ ...common, headBranch: 'asep/attempt-1', base: 'main', title: 't', body: 'b' });
+  assert.deepEqual(log.confirmed, ['push', 'pr-upsert']);
+  assert.deepEqual(forge.epochs, [3, 3], 'each forge call carries the confirmed epoch');
+});
+
+test('an executor whose records were taken over never reaches the forge or commits', async () => {
+  const log = new MemorySideEffectLog();
+  log.takenOver = true;
+  const forge = fakeForge(prRef);
+  const common = { forge, log, scope, repositoryBindingId: bindingId, attemptId, leaseId: 'lease-1' };
+  await assert.rejects(() => pushStep({ ...common, branch: 'asep/attempt-1', commitSha: 'd'.repeat(40) }),
+    SideEffectFencingError);
+  await assert.rejects(
+    () => upsertPrStep({ ...common, headBranch: 'asep/attempt-1', base: 'main', title: 't', body: 'b' }),
+    SideEffectFencingError);
+  assert.equal(forge.pushes + forge.upserts, 0, 'nothing reached the forge');
+  let commits = 0;
+  await assert.rejects(() => commitStep({
+    committer: { async commit() { commits += 1; return { commitSha: 'd'.repeat(40) }; }, async reconcile() { return null; } },
+    scope, workspace, allowedPaths: ['src/'], attemptId, baseSha: '0'.repeat(40),
+    evidenceId: 'ev-1' as ArtifactId, identity: { name: 'ASEP Bot', email: 'bot@asep.invalid' },
+    log, repositoryBindingId: bindingId, leaseId: 'lease-1',
+  }), SideEffectFencingError);
+  assert.equal(commits, 0, 'nothing was committed');
 });
 
 test('pushStep ADOPTS a COMPLETED record instead of replaying the push (C7 idempotency)', async () => {

@@ -63,10 +63,13 @@ export class GitHubAppForgePort implements ForgeProvider {
     private readonly resolver: ForgeBindingResolver,
   ) {}
 
+  // The fencing epoch is not forwarded: a git ref has no place to record it
+  // (see the port). The push was confirmed by the side-effect log just before.
   async pushBranch(scope: TenantScope, input: {
     repositoryBindingId: RepositoryBindingId;
     branch: string;
     commitSha: string;
+    fencingEpoch: number;
     expectedRemoteSha?: string;
   }): Promise<void> {
     const { repository, localRepoPath } = await this.resolver.resolve(
@@ -93,6 +96,7 @@ export class GitHubAppForgePort implements ForgeProvider {
     base: string;
     title: string;
     body: string;
+    fencingEpoch: number;
   }): Promise<PullRequestRef> {
     const { repository } = await this.resolver.resolve(scope, input.repositoryBindingId);
     const pr = await this.inner.upsertPullRequest({
@@ -101,6 +105,7 @@ export class GitHubAppForgePort implements ForgeProvider {
       base: input.base,
       title: input.title,
       body: input.body,
+      fencingEpoch: input.fencingEpoch,
     });
     // Narrow the adapter's result to the port's canonical ref shape.
     return {

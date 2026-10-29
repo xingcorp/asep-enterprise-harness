@@ -335,11 +335,44 @@ export interface PullRequestRef {
   readonly headSha?: string;
 }
 
+// FENCING THE FORGE CALLS. Each publishing call carries the fencing epoch of
+// the side-effect owner that confirmed itself (SideEffectLog.confirmOwner)
+// immediately before it, so an executor paused between begin() and the call —
+// a zombie whose record a successor has since taken over — is refused:
+//   - upsertPullRequest records the epoch it writes under in the PR and refuses
+//     (StaleFencingEpochError) to update a PR last written under a NEWER epoch;
+//   - pushBranch has no field on a git ref to record an epoch in. It is fenced
+//     by the confirmation just before it, and a late push is harmless by
+//     construction: an attempt has exactly one commit and the push is
+//     non-force, so it can only write that same commit to the attempt's own
+//     branch.
+export class StaleFencingEpochError extends Error {
+  constructor(what: string, current: number, offered: number) {
+    super(`${what} was last written under fencing epoch ${current}; refusing epoch ${offered} (stale owner, fail closed)`);
+    this.name = 'StaleFencingEpochError';
+  }
+}
+
+// The marker a forge keeps in a PR body: the epoch the body was written under.
+const FENCING_MARKER = /<!-- asep-fencing-epoch: (\d+) -->/;
+
+export function withFencingMarker(body: string, epoch: number): string {
+  if (!Number.isSafeInteger(epoch) || epoch < 1) throw new RangeError(`invalid fencing epoch ${epoch}`);
+  return `${body.replace(FENCING_MARKER, '').trimEnd()}\n\n<!-- asep-fencing-epoch: ${epoch} -->\n`;
+}
+
+/** The epoch a PR body was last written under, or null when it carries none. */
+export function fencingEpochOf(body: string | null | undefined): number | null {
+  const m = FENCING_MARKER.exec(body ?? '');
+  return m ? Number(m[1]) : null;
+}
+
 export interface ForgeProvider {
   pushBranch(scope: TenantScope, input: {
     repositoryBindingId: RepositoryBindingId;
     branch: string;
     commitSha: string;
+    fencingEpoch: number;
     expectedRemoteSha?: string;
   }): Promise<void>;
   upsertPullRequest(scope: TenantScope, input: {
@@ -348,6 +381,7 @@ export interface ForgeProvider {
     base: string;
     title: string;
     body: string;
+    fencingEpoch: number;
   }): Promise<PullRequestRef>;
   // --- crash-recovery reconciliation (disp. P2-FINAL-HIGH-006, exit C7) ------
   //
@@ -634,9 +668,15 @@ export class SideEffectFencingError extends Error {}
 //     newer; otherwise begin() fails closed with SideEffectFencingError.
 //   - complete()/fail() succeed only for the current owner while its lease is
 //     still live, and never rewrite a COMPLETED record.
+//   - confirmOwner() is called immediately before the external call: it
+//     succeeds only for the current owner of a PENDING record while its lease
+//     is live, renews that lease, and returns the epoch the call is made under.
+//     An executor whose record was taken over while it was paused is refused
+//     here (SideEffectFencingError) and never reaches the outside world.
 //   - find() reads a record without claiming it.
 export interface SideEffectLog {
   begin(scope: TenantScope, input: SideEffectBeginInput): Promise<SideEffectRecord>;
+  confirmOwner(scope: TenantScope, input: SideEffectKey & { readonly ownerToken: string }): Promise<{ readonly fencingEpoch: number }>;
   complete(scope: TenantScope, input: SideEffectCompleteInput): Promise<SideEffectRecord>;
   fail(scope: TenantScope, input: { operation: SideEffectOperation; repositoryBindingId: RepositoryBindingId; attemptId: AttemptId; ownerToken: string }): Promise<SideEffectRecord>;
   find(scope: TenantScope, key: SideEffectKey): Promise<SideEffectRecord | null>;

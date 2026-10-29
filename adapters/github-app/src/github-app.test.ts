@@ -19,6 +19,7 @@ import type {
   InstallationAuth, OctokitLike, RepositoryForgeConfig, GitRunner,
 } from './index.js';
 import { runGit } from '@asep/git-worktree';
+import { StaleFencingEpochError, fencingEpochOf } from '@asep/ports';
 
 console.log('SUITE-ID: asep-suite:github-app');
 
@@ -183,7 +184,7 @@ test('H7: a host outside the allowlist is rejected before minting or pushing', a
 // H6 — driven at the transport (REST) boundary, not mocked application logic.
 // ---------------------------------------------------------------------------
 
-interface FakePr { number: number; html_url: string; head: { ref: string }; base: { ref: string } }
+interface FakePr { number: number; html_url: string; head: { ref: string }; base: { ref: string }; body?: string }
 
 function fakeOctokit(store: { prs: FakePr[]; nextNumber: number; calls: string[] }): (token: string) => OctokitLike {
   return () => ({
@@ -193,15 +194,16 @@ function fakeOctokit(store: { prs: FakePr[]; nextNumber: number; calls: string[]
         const ref = head.split(':')[1];
         return { data: store.prs.filter((p) => p.head.ref === ref) };
       },
-      create: async ({ head, base }) => {
+      create: async ({ head, base, body }) => {
         store.calls.push('create');
-        const pr: FakePr = { number: store.nextNumber++, html_url: `https://github.com/acme/web/pull/${store.nextNumber - 1}`, head: { ref: head }, base: { ref: base } };
+        const pr: FakePr = { number: store.nextNumber++, html_url: `https://github.com/acme/web/pull/${store.nextNumber - 1}`, head: { ref: head }, base: { ref: base }, body };
         store.prs.push(pr);
         return { data: pr };
       },
-      update: async ({ pull_number }) => {
+      update: async ({ pull_number, body }) => {
         store.calls.push('update');
         const pr = store.prs.find((p) => p.number === pull_number)!;
+        pr.body = body;
         return { data: pr };
       },
     },
@@ -213,14 +215,35 @@ test('H4/H6: PR upsert creates on first call and updates on the second (idempote
   const creds = new GitHubAppCredentialProvider({ appId: 1, privateKey: 'PEM', installationId: 9 }, fakeAuth());
   const forge = new GitHubAppForgeProvider(creds, fakeOctokit(store), ['github.com']);
 
-  const first = await forge.upsertPullRequest({ repository, headBranch: attemptBranchStr, base: 'main', title: 'T1', body: 'B1' });
+  const first = await forge.upsertPullRequest({ repository, headBranch: attemptBranchStr, base: 'main', title: 'T1', body: 'B1', fencingEpoch: 1 });
   assert.equal(first.number, 7);
   assert.equal(first.headBranch, attemptBranchStr);
 
-  const second = await forge.upsertPullRequest({ repository, headBranch: attemptBranchStr, base: 'main', title: 'T2', body: 'B2' });
+  const second = await forge.upsertPullRequest({ repository, headBranch: attemptBranchStr, base: 'main', title: 'T2', body: 'B2', fencingEpoch: 1 });
   assert.equal(second.number, 7, 'same PR — no duplicate created');
   assert.equal(store.prs.length, 1, 'exactly one PR exists');
   assert.deepEqual(store.calls, ['list', 'create', 'list', 'update']);
+});
+
+test('a PR upsert records its fencing epoch, and a stale owner cannot rewrite a newer owner\'s PR', async () => {
+  const store = { prs: [] as FakePr[], nextNumber: 7, calls: [] as string[] };
+  const creds = new GitHubAppCredentialProvider({ appId: 1, privateKey: 'PEM', installationId: 9 }, fakeAuth());
+  const forge = new GitHubAppForgeProvider(creds, fakeOctokit(store), ['github.com']);
+  const upsert = (body: string, fencingEpoch: number) => forge.upsertPullRequest({
+    repository, headBranch: attemptBranchStr, base: 'main', title: 'T', body, fencingEpoch,
+  });
+
+  await upsert('zombie', 1);
+  assert.equal(fencingEpochOf(store.prs[0]!.body), 1);
+  // The successor takes over and writes under epoch 2…
+  await upsert('successor', 2);
+  assert.equal(fencingEpochOf(store.prs[0]!.body), 2);
+  assert.match(store.prs[0]!.body!, /^successor/);
+  // …and the zombie, resuming with epoch 1, is refused without writing.
+  await assert.rejects(() => upsert('zombie again', 1), StaleFencingEpochError);
+  assert.match(store.prs[0]!.body!, /^successor/, 'the newer owner\'s PR is untouched');
+  assert.deepEqual(store.calls, ['list', 'create', 'list', 'update', 'list']);
+  assert.equal(store.prs.length, 1);
 });
 
 // ---------------------------------------------------------------------------
@@ -391,7 +414,7 @@ test('MED-002: PR upsert re-mints on a revoked credential and does NOT open a du
   const creds = new GitHubAppCredentialProvider({ appId: 1, privateKey: 'PEM', installationId: 9 }, auth);
   const forge = new GitHubAppForgeProvider(creds, octokitFor, ['github.com']);
 
-  const pr = await forge.upsertPullRequest({ repository, headBranch: attemptBranchStr, base: 'main', title: 'T', body: 'B' });
+  const pr = await forge.upsertPullRequest({ repository, headBranch: attemptBranchStr, base: 'main', title: 'T', body: 'B', fencingEpoch: 1 });
   assert.equal(pr.number, 5, 'the PR was created after the credential recovery');
   assert.equal(store.prs.length, 1, 'exactly one PR exists — no duplicate from the retry');
   assert.ok(minted.length >= 2, 'a fresh token was minted for the retry');
@@ -534,7 +557,7 @@ test('every forge operation re-mints once on expiry and bypasses the token cache
   }> = [
     { name: 'pushBranch', git: true, run: (f) => f.pushBranch({ repository, localWorktreePath: '/tmp/wt', branch: attemptBranchStr }) },
     { name: 'resolveRef', git: true, run: (f) => f.resolveRef({ repository, branch: attemptBranchStr }) },
-    { name: 'upsertPullRequest', git: false, run: (f) => f.upsertPullRequest({ repository, headBranch: attemptBranchStr, base: 'main', title: 'T', body: 'B' }) },
+    { name: 'upsertPullRequest', git: false, run: (f) => f.upsertPullRequest({ repository, headBranch: attemptBranchStr, base: 'main', title: 'T', body: 'B', fencingEpoch: 1 }) },
     { name: 'findPullRequest', git: false, run: (f) => f.findPullRequest({ repository, headBranch: attemptBranchStr }) },
   ];
   for (const op of ops) {

@@ -24,6 +24,7 @@ import type {
   CodingAgentProvider, AgentExecuteRequest, AgentAttemptObservation,
   ForgeProvider, PullRequestRef,
 } from '@asep/ports';
+import { StaleFencingEpochError, withFencingMarker, fencingEpochOf } from '@asep/ports';
 import type {
   TenantScope, RepositoryBindingId,
 } from '@asep/contracts';
@@ -90,7 +91,15 @@ export class FileWritingAgent implements CodingAgentProvider {
  * object's memory. A forge is outside the harness: a PR it opened survives the
  * harness process dying, and a crash-recovery proof is only honest if the
  * successor process sees what its predecessor really left behind.
+ *
+ * Like the GitHub adapter, an upsert writes the fencing epoch into the PR body
+ * and refuses to update a PR a newer epoch already wrote.
  */
+export interface LocalPullRequest extends PullRequestRef {
+  readonly title: string;
+  readonly body: string;
+}
+
 export class LocalBareForgeProvider implements ForgeProvider {
   pushes = 0;
   private worktreePath: string | null = null;
@@ -101,30 +110,32 @@ export class LocalBareForgeProvider implements ForgeProvider {
     return join(this.remoteBarePath, 'asep-pull-requests.json');
   }
 
-  private async readPrs(): Promise<PullRequestRef[]> {
+  private async readPrs(): Promise<LocalPullRequest[]> {
     try {
-      return JSON.parse(await readFile(this.prFile, 'utf8')) as PullRequestRef[];
+      return JSON.parse(await readFile(this.prFile, 'utf8')) as LocalPullRequest[];
     } catch (err) {
       if ((err as { code?: string }).code === 'ENOENT') return [];
       throw err;
     }
   }
 
-  private async writePrs(prs: readonly PullRequestRef[]): Promise<void> {
+  private async writePrs(prs: readonly LocalPullRequest[]): Promise<void> {
     const tmp = `${this.prFile}.tmp`;
     await writeFile(tmp, JSON.stringify(prs));
     await rename(tmp, this.prFile);
   }
 
   /** Every PR the forge holds, in creation order. */
-  async listPullRequests(): Promise<readonly PullRequestRef[]> {
+  async listPullRequests(): Promise<readonly LocalPullRequest[]> {
     return this.readPrs();
   }
 
+  // The epoch is not recorded: a git ref has no place for it (see the port).
   async pushBranch(_scope: TenantScope, input: {
     repositoryBindingId: RepositoryBindingId;
     branch: string;
     commitSha: string;
+    fencingEpoch: number;
     expectedRemoteSha?: string;
   }): Promise<void> {
     if (this.worktreePath === null) throw new Error('worktree path not wired');
@@ -142,19 +153,34 @@ export class LocalBareForgeProvider implements ForgeProvider {
     base: string;
     title: string;
     body: string;
+    fencingEpoch: number;
   }): Promise<PullRequestRef> {
     const prs = await this.readPrs();
-    const existing = prs.find((p) => p.headBranch === input.headBranch);
-    if (existing) return existing; // idempotent: no duplicate PR
+    const body = withFencingMarker(input.body, input.fencingEpoch);
+    const at = prs.findIndex((p) => p.headBranch === input.headBranch);
+    if (at >= 0) {
+      // Idempotent: the one PR for the head branch is updated, never duplicated —
+      // unless a newer owner wrote it, in which case this caller is stale.
+      const existing = prs[at]!;
+      const current = fencingEpochOf(existing.body);
+      if (current !== null && current > input.fencingEpoch) {
+        throw new StaleFencingEpochError(`PR #${existing.number}`, current, input.fencingEpoch);
+      }
+      const updated: LocalPullRequest = { ...existing, title: input.title, body };
+      await this.writePrs(prs.map((p, i) => (i === at ? updated : p)));
+      return refOf(updated);
+    }
     const number = prs.length + 1;
-    const pr: PullRequestRef = {
+    const pr: LocalPullRequest = {
       number,
       url: `https://local.forge/pr/${number}`,
       headBranch: input.headBranch,
       baseBranch: input.base,
+      title: input.title,
+      body,
     };
     await this.writePrs([...prs, pr]);
-    return pr;
+    return refOf(pr);
   }
 
   // --- crash-recovery reconciliation (HIGH-006) ------------------------------
@@ -185,6 +211,10 @@ export class LocalBareForgeProvider implements ForgeProvider {
     const headSha = await this.resolveRef(scope, {
       repositoryBindingId: input.repositoryBindingId, branch: input.headBranch,
     });
-    return headSha === null ? pr : { ...pr, headSha };
+    return headSha === null ? refOf(pr) : { ...refOf(pr), headSha };
   }
+}
+
+function refOf(pr: LocalPullRequest): PullRequestRef {
+  return { number: pr.number, url: pr.url, headBranch: pr.headBranch, baseBranch: pr.baseBranch };
 }

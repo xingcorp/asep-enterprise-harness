@@ -78,6 +78,7 @@ function world(
       return done;
     },
     fail: async (_s, i) => { calls.push(`log.fail:${i.operation}`); return record(i.operation, true); },
+    confirmOwner: async (_s, i) => { calls.push(`log.confirm:${i.operation}`); return { fencingEpoch: 2 }; },
   };
   const evidence: EvidenceStore = {
     reserveEvidence: async () => { throw new Error('a resume never reserves evidence'); },

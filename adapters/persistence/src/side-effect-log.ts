@@ -26,6 +26,12 @@
 //   - complete()/fail() succeed only for the CURRENT owner while its lease is
 //     still live, and never rewrite a COMPLETED record — so the crashed owner is
 //     rejected for good once its successor took the record over;
+//   - confirmOwner(), called immediately before the external effect, succeeds
+//     only for the current owner of a PENDING record while its lease is live,
+//     and renews that lease — so an executor paused between begin() and the
+//     effect cannot act after its record was taken over, and a successor
+//     cannot take the record over while the confirmed call is in flight (until
+//     the renewed lease lapses);
 //   - the outcome (result_ref) is the operation's CLOSED shape: validated here
 //     before it is written, refused by the database's CHECK if anything else
 //     reaches it, and parsed again on every read, so a consumer never receives
@@ -226,6 +232,46 @@ export class SqlSideEffectLog implements SideEffectLog {
     ownerToken: string;
   }): Promise<SideEffectRecord> {
     return this.finish(scope, input, 'FAILED', input.ownerToken, {});
+  }
+
+  async confirmOwner(
+    scope: TenantScope,
+    input: SideEffectKey & { readonly ownerToken: string },
+  ): Promise<{ readonly fencingEpoch: number }> {
+    const label = `side-effect ${input.operation} for attempt ${input.attemptId}`;
+    return this.client.transaction(async (tx) => {
+      const row = await this.load(tx, scope, input, true);
+      if (!row || (row['state'] as SideEffectState) !== 'PENDING') {
+        throw new SideEffectFencingError(`${label}: no PENDING record to act for — fail closed`);
+      }
+      if ((row['owner_lease_id'] as string) !== input.ownerToken) {
+        throw new SideEffectFencingError(
+          `${label} is owned by another lease — a stale executor must not act (fencing, fail closed)`,
+        );
+      }
+      // Renew the owner lease by the database clock, only while it is live.
+      const renewed = await tx.query(
+        `update workspace_leases
+            set heartbeat_at = clock_timestamp(),
+                expires_at = clock_timestamp() + (ttl_ms * interval '1 millisecond'),
+                version = version + 1
+          where id = $1 and organization_id = $2 and project_id = $3
+            and repository_binding_id = $4 and attempt_id = $5
+            and state = 'ACTIVE' and expires_at > clock_timestamp()
+          returning fencing_epoch`,
+        [input.ownerToken, scope.organizationId, scope.projectId, input.repositoryBindingId, input.attemptId],
+      );
+      if (renewed.rowCount === 0) {
+        throw new SideEffectFencingError(
+          `${label}: owner lease ${input.ownerToken} is no longer live — must not act (fencing, fail closed)`,
+        );
+      }
+      const epoch = Number(renewed.rows[0]!['fencing_epoch']);
+      if (epoch !== Number(row['owner_epoch'])) {
+        throw new SideEffectFencingError(`${label}: owner epoch does not match its lease — fail closed`);
+      }
+      return { fencingEpoch: epoch };
+    });
   }
 
   async find(scope: TenantScope, key: SideEffectKey): Promise<SideEffectRecord | null> {

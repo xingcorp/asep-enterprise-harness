@@ -21,6 +21,13 @@
 //
 // The same file is the child: when ASEP_CRASH_EXECUTOR is set it runs the
 // crashing executor instead of registering tests.
+//
+// It also proves the IN-FLIGHT race on the same PostgreSQL: an executor that is
+// not dead but paused — between begin() and its forge call, or inside the call
+// — while its lease lapses and a successor takes its record over. The paused
+// executor must not act after the takeover: it is refused at its confirmation,
+// its PR update is refused by the epoch the successor wrote, and a late push
+// can only land the attempt's one commit again.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -33,14 +40,17 @@ import { fileURLToPath } from 'node:url';
 import { Pool } from 'pg';
 import {
   PgPoolClient, migrate, SqlSideEffectLog, SqlWorkspaceLeaseRepository,
+  OrganizationRepository, ProjectRepository, RepositoryBindingRepository,
+  RunRepository, TaskRepository, AttemptRepository,
   type SqlClient, type SqlExecutor,
 } from '@asep/persistence';
+import { pushStep, upsertPrStep } from '@asep/application';
 import { DockerSandboxProvider } from '@asep/command-runner';
 import { runGit, attemptBranch } from '@asep/git-worktree';
 import { seedMirror, createBareRemote, LocalBareForgeProvider } from '@asep/local-doubles';
 import {
-  SideEffectFencingError, LeaseLostError,
-  type CommandSpec, type ForgeProvider, type PullRequestRef,
+  SideEffectFencingError, LeaseLostError, StaleFencingEpochError, fencingEpochOf,
+  type CommandSpec, type ForgeProvider, type PullRequestRef, type SideEffectLog, type Lease,
 } from '@asep/ports';
 import type {
   TenantScope, RepositoryBindingId, RunId, TaskId, AttemptId, OrganizationId, ProjectId,
@@ -363,4 +373,158 @@ function registerTests(): void {
       }
     });
   }
+
+  // Bounded: a regression that never reaches a pause point must fail, not hang.
+  test('a paused executor cannot act after a successor took its records over (in-flight race)', { timeout: 120_000 }, async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'asep-inflight-'));
+    const pool = new Pool({ connectionString: requirePgUrl(), max: 6 });
+    const client = PgPoolClient.fromPool(pool);
+    try {
+      await migrate(client);
+      const seeded = await seedMirror(join(dir, 'seed'));
+      const remote = await createBareRemote(join(dir, 'forge.git'));
+      const forge = new LocalBareForgeProvider(remote);
+      forge.setWorktree(seeded.mirror);
+
+      // Attempts as the governed path registers them, one per scenario.
+      const org = await new OrganizationRepository(client).create({ name: `inflight-${randomUUID()}` });
+      const project = await new ProjectRepository(client).create({
+        organizationId: org.id, name: 'web', defaultBranch: 'main',
+      });
+      const scope: TenantScope = { organizationId: org.id, projectId: project.id };
+      const binding = await new RepositoryBindingRepository(client).create(scope, {
+        githubHost: 'github.com', githubOwner: 'acme', githubRepo: 'web', defaultBaseBranch: 'main',
+      });
+      const run = await new RunRepository(client).create(scope, {
+        repositoryBindingId: binding.id, status: 'EXECUTING', risk: 'R0',
+      });
+      const commitSha = seeded.baseSha;
+      const log = new SqlSideEffectLog(client);
+      const leases = new SqlWorkspaceLeaseRepository(client);
+      const TTL = 1_500;
+      const freshAttempt = async () => {
+        const task = await new TaskRepository(client).create(scope, {
+          runId: run.id, repositoryBindingId: binding.id, risk: 'R0',
+        });
+        const attempt = await new AttemptRepository(client).create(scope, {
+          taskId: task.id, repositoryBindingId: binding.id,
+        });
+        const branch = attemptBranch({ runId: run.id, taskId: task.id, attemptId: attempt.id });
+        const lease = async (): Promise<Lease> => {
+          const l = await leases.acquire(scope, {
+            repositoryBindingId: binding.id, branch, attemptId: attempt.id, ttlMs: TTL,
+          });
+          if ('denied' in l) throw new Error(`lease denied: ${l.reason}`);
+          return l;
+        };
+        return { branch, lease, common: { scope, repositoryBindingId: binding.id, attemptId: attempt.id } };
+      };
+      const waitOut = async (leaseId: string) => {
+        for (const deadline = Date.now() + TTL + 10_000; ;) {
+          const r = await client.query(
+            'select expires_at <= clock_timestamp() as expired from workspace_leases where id = $1', [leaseId]);
+          if (r.rows[0]!['expired'] === true) return;
+          assert.ok(Date.now() < deadline, 'the paused executor\'s lease never lapsed');
+          await new Promise((res) => setTimeout(res, 100));
+        }
+      };
+      const gate = () => {
+        let open!: () => void;
+        const opened = new Promise<void>((res) => { open = res; });
+        return { open, opened };
+      };
+      let zombieForgeCalls = 0;
+      const countingForge: ForgeProvider = {
+        pushBranch: async (sc, i) => { zombieForgeCalls += 1; return forge.pushBranch(sc, i); },
+        upsertPullRequest: async (sc, i) => { zombieForgeCalls += 1; return forge.upsertPullRequest(sc, i); },
+        resolveRef: (sc, i) => forge.resolveRef(sc, i),
+        findPullRequest: (sc, i) => forge.findPullRequest(sc, i),
+      };
+
+      // --- 1. paused between begin() and its push: refused at the confirmation.
+      {
+        const a = await freshAttempt();
+        const zombie = await a.lease();
+        const resume = gate();
+        const paused = gate();
+        const pausedLog: SideEffectLog = {
+          begin: (sc, i) => log.begin(sc, i),
+          complete: (sc, i) => log.complete(sc, i),
+          fail: (sc, i) => log.fail(sc, i),
+          find: (sc, k) => log.find(sc, k),
+          confirmOwner: async (sc, i) => { paused.open(); await resume.opened; return log.confirmOwner(sc, i); },
+        };
+        const zombiePush = pushStep({
+          ...a.common, forge: countingForge, log: pausedLog, branch: a.branch, commitSha, leaseId: zombie.leaseId,
+        });
+        await paused.opened;
+        await waitOut(zombie.leaseId);
+        const successor = await a.lease();
+        assert.equal(successor.fencingEpoch, zombie.fencingEpoch + 1);
+        const pushed = await pushStep({ ...a.common, forge, log, branch: a.branch, commitSha, leaseId: successor.leaseId });
+        assert.equal(pushed.pushed, true, 'the successor pushed');
+        resume.open();
+        await assert.rejects(zombiePush, SideEffectFencingError);
+        assert.equal(zombieForgeCalls, 0, 'the paused executor never reached the forge');
+      }
+
+      // --- 2. paused INSIDE its PR call, past its renewed lease: the forge
+      // refuses the stale epoch the successor already superseded.
+      {
+        const a = await freshAttempt();
+        const zombie = await a.lease();
+        const resume = gate();
+        const paused = gate();
+        const pr = { headBranch: a.branch, base: 'main', title: 'ASEP', body: 'evidence' };
+        const zombiePr = upsertPrStep({
+          ...a.common, ...pr, log, leaseId: zombie.leaseId,
+          forge: {
+            ...countingForge,
+            upsertPullRequest: async (sc, i) => { paused.open(); await resume.opened; return forge.upsertPullRequest(sc, i); },
+          },
+        });
+        await paused.opened;
+        await waitOut(zombie.leaseId);
+        const successor = await a.lease();
+        const opened = await upsertPrStep({ ...a.common, ...pr, forge, log, leaseId: successor.leaseId });
+        assert.equal(opened.adopted, false, 'nothing had reached the forge; the successor opened the PR');
+        resume.open();
+        await assert.rejects(zombiePr, StaleFencingEpochError);
+        const prs = (await forge.listPullRequests()).filter((p) => p.headBranch === a.branch);
+        assert.equal(prs.length, 1, 'one PR');
+        assert.equal(fencingEpochOf(prs[0]!.body), successor.fencingEpoch, 'written by the newest owner, and only by it');
+      }
+
+      // --- 3. paused INSIDE its push call, past its renewed lease: the late push
+      // lands the attempt's one commit on its own branch again — nothing else —
+      // and its record stays the successor's.
+      {
+        const a = await freshAttempt();
+        const zombie = await a.lease();
+        const resume = gate();
+        const paused = gate();
+        const zombiePush = pushStep({
+          ...a.common, log, branch: a.branch, commitSha, leaseId: zombie.leaseId,
+          forge: {
+            ...countingForge,
+            pushBranch: async (sc, i) => { paused.open(); await resume.opened; return forge.pushBranch(sc, i); },
+          },
+        });
+        await paused.opened;
+        await waitOut(zombie.leaseId);
+        const successor = await a.lease();
+        await pushStep({ ...a.common, forge, log, branch: a.branch, commitSha, leaseId: successor.leaseId });
+        resume.open();
+        await assert.rejects(zombiePush, SideEffectFencingError, 'the late executor cannot record its push');
+        const tip = (await runGit(['-C', remote, 'rev-parse', `refs/heads/${a.branch}`])).stdout.trim();
+        assert.equal(tip, commitSha, 'the branch still holds the attempt\'s one commit');
+        const record = await log.find(scope, { operation: 'push', ...a.common });
+        assert.equal(record?.state, 'COMPLETED');
+        assert.equal(record?.ownerToken, successor.leaseId);
+      }
+    } finally {
+      await client.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 }

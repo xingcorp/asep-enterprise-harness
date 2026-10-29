@@ -953,3 +953,80 @@ test('a commit outcome must name an evidence reservation of its own attempt', as
     await f.client.close();
   }
 });
+
+// ---------------------------------------------------------------------------
+// confirmOwner: the check made immediately before the external call. An
+// executor paused between begin() and its forge call must not act once its
+// record was taken over; one that confirmed holds its lease for the call.
+// ---------------------------------------------------------------------------
+
+test('confirmOwner returns the owner\'s epoch and renews its lease', async () => {
+  const f = await fresh();
+  try {
+    const lease = await shortLease(f, TTL);
+    const key = { operation: 'push' as const, repositoryBindingId: f.binding.id, attemptId: f.attemptId };
+    await f.log.begin(f.scope, { ...key, requestFingerprint: 'push:x', ownerToken: lease.leaseId });
+    await sleep(TTL / 2);
+    const confirmed = await f.log.confirmOwner(f.scope, { ...key, ownerToken: lease.leaseId });
+    assert.equal(confirmed.fencingEpoch, lease.fencingEpoch);
+    // Renewed from the confirmation: still live past the original expiry.
+    await sleep(TTL / 2 + 100);
+    await f.leases.heartbeat(f.scope, lease.leaseId);
+  } finally {
+    await f.client.close();
+  }
+});
+
+test('an executor paused between begin and its call is refused once its record was taken over', async () => {
+  const f = await fresh();
+  try {
+    const lease = await shortLease(f, 150);
+    const key = { operation: 'push' as const, repositoryBindingId: f.binding.id, attemptId: f.attemptId };
+    await f.log.begin(f.scope, { ...key, requestFingerprint: 'push:x', ownerToken: lease.leaseId });
+    // The executor stalls; its lease lapses and a successor takes the record over.
+    await sleep(250);
+    const next = await successor(f);
+    await f.log.begin(f.scope, { ...key, requestFingerprint: 'push:x', ownerToken: next.leaseId });
+    await assert.rejects(
+      () => f.log.confirmOwner(f.scope, { ...key, ownerToken: lease.leaseId }),
+      (err: Error) => err instanceof SideEffectFencingError && /owned by another lease/.test(err.message),
+    );
+    assert.equal((await f.log.confirmOwner(f.scope, { ...key, ownerToken: next.leaseId })).fencingEpoch,
+      next.fencingEpoch, 'the successor acts under its own, newer epoch');
+  } finally {
+    await f.client.close();
+  }
+});
+
+test('an owner whose lease lapsed cannot confirm, even before anyone took over', async () => {
+  const f = await fresh();
+  try {
+    const lease = await shortLease(f, 150);
+    const key = { operation: 'push' as const, repositoryBindingId: f.binding.id, attemptId: f.attemptId };
+    await f.log.begin(f.scope, { ...key, requestFingerprint: 'push:x', ownerToken: lease.leaseId });
+    await sleep(250);
+    await assert.rejects(
+      () => f.log.confirmOwner(f.scope, { ...key, ownerToken: lease.leaseId }),
+      (err: Error) => err instanceof SideEffectFencingError && /no longer live/.test(err.message),
+    );
+    await assert.rejects(() => f.leases.heartbeat(f.scope, lease.leaseId), LeaseLostError, 'not revived');
+  } finally {
+    await f.client.close();
+  }
+});
+
+test('there is nothing to confirm for a finished or missing record', async () => {
+  const f = await fresh();
+  try {
+    const key = { operation: 'push' as const, repositoryBindingId: f.binding.id, attemptId: f.attemptId };
+    await assert.rejects(() => f.log.confirmOwner(f.scope, { ...key, ownerToken: f.owner }), SideEffectFencingError);
+    await f.log.begin(f.scope, { ...key, requestFingerprint: 'push:x', ownerToken: f.owner });
+    await f.log.complete(f.scope, { ...key, ownerToken: f.owner, resultRef: PUSHED });
+    await assert.rejects(
+      () => f.log.confirmOwner(f.scope, { ...key, ownerToken: f.owner }),
+      (err: Error) => err instanceof SideEffectFencingError && /no PENDING record/.test(err.message),
+    );
+  } finally {
+    await f.client.close();
+  }
+});

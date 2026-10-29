@@ -24,6 +24,7 @@ import {
   runGit as defaultRunGit, buildCloneUrl, safeRefspecFor, safeCommitRefspecFor,
 } from '@asep/git-worktree';
 import type { ForgeIdentity } from '@asep/git-worktree';
+import { StaleFencingEpochError, withFencingMarker, fencingEpochOf } from '@asep/ports';
 import type { GitHubAppCredentialProvider } from './credential-provider.js';
 import { isExpired } from './credential-provider.js';
 
@@ -156,7 +157,7 @@ export interface PullsApi {
     repo: string;
     head: string;          // `owner:branch`
     state: 'open' | 'closed' | 'all';
-  }): Promise<{ data: ReadonlyArray<{ number: number; html_url: string; head: { ref: string; sha?: string }; base: { ref: string } }> }>;
+  }): Promise<{ data: ReadonlyArray<{ number: number; html_url: string; head: { ref: string; sha?: string }; base: { ref: string }; body?: string | null }> }>;
   create(params: {
     owner: string;
     repo: string;
@@ -227,6 +228,9 @@ export interface UpsertPrInput {
   readonly base: string;
   readonly title: string;
   readonly body: string;
+  // The side-effect owner's fencing epoch, written into the PR body. An update
+  // of a PR whose body carries a newer epoch is refused.
+  readonly fencingEpoch: number;
 }
 
 // Scrub anything that looks like the JIT token or userinfo from a string before
@@ -368,14 +372,24 @@ export class GitHubAppForgeProvider {
         state: 'all',
       });
       const match = existing.data.find((pr) => pr.head.ref === input.headBranch);
+      const body = withFencingMarker(input.body, input.fencingEpoch);
 
       if (match) {
+        // FENCING: a PR a newer owner already wrote is not this caller's to
+        // rewrite. (GitHub offers no compare-and-set on a PR, so two owners
+        // racing inside this read-then-update could still interleave; the
+        // side-effect log's confirmation narrows that to an owner whose
+        // renewed lease outlived a takeover.)
+        const current = fencingEpochOf(match.body);
+        if (current !== null && current > input.fencingEpoch) {
+          throw new StaleFencingEpochError(`PR #${match.number}`, current, input.fencingEpoch);
+        }
         const updated = await octokit.pulls.update({
           owner,
           repo,
           pull_number: match.number,
           title: input.title,
-          body: input.body,
+          body,
         });
         return prResult(updated.data);
       }
@@ -386,7 +400,7 @@ export class GitHubAppForgeProvider {
         head: input.headBranch,
         base: input.base,
         title: input.title,
-        body: input.body,
+        body,
       });
       return prResult(created.data);
     });

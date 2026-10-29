@@ -344,6 +344,13 @@ export async function commitStep(input: CommitStepInput): Promise<CommitStepResu
     'ASEP-Evidence': input.evidenceId,
     ...(input.extraTrailers ?? {}),
   };
+  // Still the owner, with a live lease, at the moment of committing.
+  await input.log.confirmOwner(input.scope, {
+    operation: 'commit',
+    repositoryBindingId: input.repositoryBindingId,
+    attemptId: input.attemptId,
+    ownerToken: input.leaseId,
+  });
   const { commitSha } = await input.committer.commit(input.scope, {
     workspace: input.workspace,
     attemptId: input.attemptId,
@@ -715,10 +722,19 @@ export async function pushStep(input: PushStepInput): Promise<PushStepResult> {
     // Ref absent, or pointing elsewhere → the push for THIS commit did not
     // land; performing it below is safe (pushBranch still enforces ref safety).
   }
+  // Fenced at the call: an executor whose record was taken over while it was
+  // paused is refused here and never reaches the forge.
+  const { fencingEpoch } = await input.log.confirmOwner(input.scope, {
+    operation: 'push',
+    repositoryBindingId: input.repositoryBindingId,
+    attemptId: input.attemptId,
+    ownerToken: input.leaseId,
+  });
   await input.forge.pushBranch(input.scope, {
     repositoryBindingId: input.repositoryBindingId,
     branch: input.branch,
     commitSha: input.commitSha,
+    fencingEpoch,
     ...(input.expectedRemoteSha ? { expectedRemoteSha: input.expectedRemoteSha } : {}),
   });
   await input.log.complete(input.scope, {
@@ -839,12 +855,21 @@ export async function upsertPrStep(input: UpsertPrStepInput): Promise<UpsertPrSt
     }
     // No PR for this head branch → the upsert did not land; safe to perform.
   }
+  // Fenced at the call, and the epoch goes with it: the forge refuses to
+  // update a PR a newer owner already wrote.
+  const { fencingEpoch } = await input.log.confirmOwner(input.scope, {
+    operation: 'pr-upsert',
+    repositoryBindingId: input.repositoryBindingId,
+    attemptId: input.attemptId,
+    ownerToken: input.leaseId,
+  });
   const pr = await input.forge.upsertPullRequest(input.scope, {
     repositoryBindingId: input.repositoryBindingId,
     headBranch: input.headBranch,
     base: input.base,
     title: input.title,
     body: input.body,
+    fencingEpoch,
   });
   await input.log.complete(input.scope, {
     operation: 'pr-upsert',
