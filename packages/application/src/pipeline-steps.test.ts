@@ -5,8 +5,9 @@
 // @asep/ports, so no real adapter (pg/Octokit/Docker) is needed. Proves:
 //   - verification fails CLOSED on a non-zero/timed-out/truncated command and
 //     on a missing mandatory assurance level, STOPPING before any side effect;
-//   - the evidence id is PREALLOCATED before the commit and embedded in the
-//     ASEP-Evidence trailer; resultSha == the trusted harness commit SHA (D8);
+//   - the evidence id is RESERVED, with its draft, before the commit and
+//     embedded in the ASEP-Evidence trailer; resultSha == the trusted harness
+//     commit SHA, and the stored bundle is that draft plus it (D8);
 //   - push/PR are wrapped by the two-phase SideEffectLog (begin → call →
 //     complete) and ADOPTED (not replayed) when a COMPLETED record exists (C7);
 //   - the driver reaches WAITING_FOR_HUMAN_REVIEW and never past it (I1/I2).
@@ -38,6 +39,7 @@ import type {
   PullRequestRef,
   GitChangeObservation,
   EvidenceStore,
+  EvidenceDraft,
   SideEffectLog,
   SideEffectRecord,
   SideEffectResultRef,
@@ -50,6 +52,7 @@ import {
   verifyStep,
   commitStep,
   evidenceStep,
+  evidenceDraft,
   pushStep,
   upsertPrStep,
   setReviewStep,
@@ -89,6 +92,56 @@ function evidenceAbsent(): Error {
   const err = new Error('evidence bundle not found');
   err.name = 'EvidenceNotFoundError';
   return err;
+}
+
+// An in-memory EvidenceStore with the real reservation contract: reserve() keeps
+// the draft under a fresh id, getReservation() returns it, and putEvidence()
+// accepts only that draft plus a resultSha. `stored` seeds bundles already
+// present (a resume); `put` overrides the write (a fault).
+function memoryEvidence(opts: {
+  readonly stored?: Readonly<Record<string, EvidenceBundle>>;
+  readonly reserved?: Readonly<Record<string, EvidenceDraft>>;
+  readonly put?: (id: ArtifactId, bundle: EvidenceBundle) => Promise<ArtifactRef>;
+  readonly get?: (id: ArtifactId) => Promise<EvidenceBundle>;
+} = {}): EvidenceStore & {
+  readonly drafts: Map<string, EvidenceDraft>;
+  readonly puts: Array<{ id: ArtifactId; bundle: EvidenceBundle }>;
+  readonly calls: string[];
+} {
+  const drafts = new Map<string, EvidenceDraft>(Object.entries(opts.reserved ?? {}));
+  const stored = new Map<string, EvidenceBundle>(Object.entries(opts.stored ?? {}));
+  const puts: Array<{ id: ArtifactId; bundle: EvidenceBundle }> = [];
+  const calls: string[] = [];
+  let next = 0;
+  return {
+    drafts, puts, calls,
+    async reserveEvidence(_s, input) {
+      const id = `ev-reserved-${++next}`;
+      calls.push(`reserve:${id}`);
+      drafts.set(id, input.draft);
+      return id as ArtifactId;
+    },
+    async getReservation(_s, id) {
+      const draft = drafts.get(id);
+      if (draft === undefined) throw new Error(`evidence id ${id} is not reserved`);
+      return { evidenceId: id, repositoryBindingId: bindingId, attemptId: draft.attemptId, draft };
+    },
+    async putEvidence(_s, id, bundle) {
+      calls.push(`put:${id}`);
+      const { resultSha: _r, ...rest } = bundle;
+      if (JSON.stringify(rest) !== JSON.stringify(drafts.get(id))) throw new Error(`evidence for ${id} is not its draft`);
+      if (opts.put) return opts.put(id, bundle);
+      puts.push({ id, bundle });
+      stored.set(id, bundle);
+      return artifactRef(id, 'evidence-bundle');
+    },
+    async getEvidence(_s, id) {
+      if (opts.get) return opts.get(id);
+      const b = stored.get(id);
+      if (b === undefined) throw evidenceAbsent();
+      return b;
+    },
+  };
 }
 
 const cleanChange: GitChangeObservation = {
@@ -419,51 +472,48 @@ test('commitStep ADOPTS the recorded commit SHA + evidence id on a resume (HIGH-
   assert.equal(resume.evidenceId, 'ev-first', 'adopts the id embedded in the original commit');
 });
 
-test('evidenceStep sets resultSha to the harness commit SHA and stores at the preallocated id (D8)', async () => {
-  const puts: Array<{ id: ArtifactId; bundle: EvidenceBundle }> = [];
-  const store: EvidenceStore = {
-    allocateEvidenceId: () => 'ev-alloc' as ArtifactId,
-    async putEvidence(_scope, id, bundle) {
-      puts.push({ id, bundle });
-      return artifactRef(id, 'evidence-bundle');
-    },
-    // No bundle exists yet, so the step's reconcile probe must see ABSENCE and
-    // proceed to write. The real store signals that with EvidenceNotFoundError;
-    // a double that throws a generic Error would (correctly) propagate, because
-    // only a not-found result makes writing safe.
-    async getEvidence() {
-      throw evidenceAbsent();
-    },
-  };
+test('evidenceStep stores the reserved draft completed by the harness commit SHA (D8)', async () => {
+  const draft = evidenceDraft({
+    taskId, attemptId, baseSha: '0'.repeat(40), change: cleanChange, environment,
+    executions: [{
+      id: 'check-L0', category: 'unit', mandatory: true, command: 'verify-L0', exitCode: 0,
+      durationMs: 5, verdict: 'PASS', stdoutArtifactId: 'out-L0' as ArtifactId,
+    }],
+    createdAt: '2026-01-01T00:00:00.000Z',
+  });
+  const store = memoryEvidence({ reserved: { 'ev-reserved': draft } });
   const res = await evidenceStep({
-    store,
-    scope,
-    evidenceId: 'ev-alloc' as ArtifactId,
-    taskId,
-    attemptId,
-    baseSha: '0'.repeat(40),
-    resultSha: 'd'.repeat(40),
-    change: cleanChange,
-    environment,
-    executions: [
-      {
-        id: 'check-L0',
-        category: 'unit',
-        mandatory: true,
-        command: 'verify-L0',
-        exitCode: 0,
-        durationMs: 5,
-        verdict: 'PASS',
-        stdoutArtifactId: 'out-L0' as ArtifactId,
-      },
-    ],
-    now: () => '2026-01-01T00:00:00.000Z',
+    store, scope, evidenceId: 'ev-reserved' as ArtifactId, taskId, attemptId,
+    baseSha: '0'.repeat(40), resultSha: 'd'.repeat(40),
   });
   assert.equal(res.bundle.resultSha, 'd'.repeat(40));
   assert.equal(res.bundle.baseSha, '0'.repeat(40));
-  assert.equal(puts.length, 1);
-  assert.equal(puts[0]!.id, 'ev-alloc');
+  assert.equal(res.bundle.createdAt, '2026-01-01T00:00:00.000Z', "the draft's clock, not this step's");
+  assert.equal(store.puts.length, 1);
+  assert.equal(store.puts[0]!.id, 'ev-reserved');
   assert.equal(res.bundle.checks[0]!.command, 'verify-L0');
+});
+
+test('evidenceStep refuses a reservation whose draft is for another task, attempt or base', async () => {
+  for (const [field, over] of [
+    ['taskId', { taskId: 'task-OTHER' as TaskId }],
+    ['attemptId', { attemptId: 'att-OTHER' as AttemptId }],
+    ['baseSha', { baseSha: '1'.repeat(40) }],
+  ] as const) {
+    const draft = { ...evidenceDraft({
+      taskId, attemptId, baseSha: '0'.repeat(40), change: cleanChange, environment, executions: [],
+      createdAt: '2026-01-01T00:00:00.000Z',
+    }), ...over };
+    const store = memoryEvidence({ reserved: { 'ev-r': draft } });
+    await assert.rejects(
+      () => evidenceStep({
+        store, scope, evidenceId: 'ev-r' as ArtifactId, taskId, attemptId,
+        baseSha: '0'.repeat(40), resultSha: 'd'.repeat(40),
+      }),
+      EvidenceIdentityMismatchError, field,
+    );
+    assert.equal(store.puts.length, 0);
+  }
 });
 
 // --- SideEffectLog fake + push/PR (C7) -------------------------------------
@@ -757,16 +807,12 @@ test('setReviewStep throws from a non-VERIFYING state (never skips the review ga
 function driverInput(overrides: Partial<Parameters<typeof completeToReview>[0]> = {}) {
   const log = new MemorySideEffectLog();
   const forge = fakeForge(prRef);
-  const store: EvidenceStore = {
-    allocateEvidenceId: () => 'ev-alloc' as ArtifactId,
-    async putEvidence(_s, id, bundle) { return artifactRef(id, 'evidence-bundle'); },
-    // No bundle exists yet in the driver's default fixture, so the evidence
-    // step's reconcile probe must observe ABSENCE (the real store's
-    // EvidenceNotFoundError) and go on to write.
-    async getEvidence() { throw evidenceAbsent(); },
-  };
+  // No bundle exists yet in the driver's default fixture, so the evidence
+  // step's reconcile probe observes ABSENCE (the real store's
+  // EvidenceNotFoundError) and goes on to write the reserved draft.
+  const store = memoryEvidence();
   const committer: GitCommitter = {
-    async commit() { return { commitSha: 'd'.repeat(40) }; },
+    async commit() { store.calls.push('commit'); return { commitSha: 'd'.repeat(40) }; },
     async reconcile() { return null; },
   };
   return {
@@ -802,8 +848,13 @@ function driverInput(overrides: Partial<Parameters<typeof completeToReview>[0]> 
 }
 
 test('completeToReview drives verify -> commit -> evidence -> push -> PR -> WAITING_FOR_HUMAN_REVIEW', async () => {
-  const res = await completeToReview(driverInput());
+  const input = driverInput();
+  const res = await completeToReview(input);
   assert.equal(res.stoppedAt, 'complete');
+  const store = input.store as ReturnType<typeof memoryEvidence>;
+  assert.deepEqual(store.calls, ['reserve:ev-reserved-1', 'commit', 'put:ev-reserved-1'],
+    'the evidence draft is reserved BEFORE the commit, and stored after it');
+  assert.equal(res.evidence?.bundle.createdAt, '2026-01-01T00:00:00.000Z');
   assert.equal(res.commitSha, 'd'.repeat(40));
   assert.equal(res.evidence?.bundle.resultSha, 'd'.repeat(40));
   assert.equal(res.pr?.number, 7);
@@ -854,44 +905,22 @@ test('HIGH-006: evidenceStep ADOPTS an existing bundle instead of re-deriving it
     diff: { artifactId: cleanChange.diff.artifactId, sha256: cleanChange.diff.sha256 },
     checks: [],
   };
-  let writes = 0;
-  const store: EvidenceStore = {
-    allocateEvidenceId: () => 'ev-adopt' as ArtifactId,
-    async putEvidence(_s, id, bundle) {
-      writes += 1;
-      // The real store is immutable at a preallocated id: different bytes MUST
-      // fail closed. Model that, so a regression here fails loudly instead of
-      // silently overwriting evidence.
-      if (JSON.stringify(bundle) !== JSON.stringify(durable)) {
-        const e = new Error(`evidence id ${id} already holds different bytes`);
-        e.name = 'EvidenceImmutabilityError';
-        throw e;
-      }
-      return artifactRef(id, 'evidence-bundle');
-    },
-    async getEvidence() { return durable; },
-  };
-
-  // Resume with a DIFFERENT clock — the pre-fix code would have serialized a new
-  // timestamp and tripped the immutability guard.
+  const store = memoryEvidence({ stored: { 'ev-adopt': durable } });
   const res = await evidenceStep({
     store, scope, evidenceId: 'ev-adopt' as ArtifactId, taskId, attemptId,
-    baseSha: '0'.repeat(40), resultSha: 'd'.repeat(40), change: cleanChange,
-    environment, executions: [], now: () => '2026-06-30T12:00:00.000Z',
+    baseSha: '0'.repeat(40), resultSha: 'd'.repeat(40),
   });
 
   assert.equal(res.adopted, true, 'an existing bundle must be adopted');
-  assert.equal(writes, 0, 'adoption must not write evidence a second time');
+  assert.equal(store.puts.length, 0, 'adoption must not write evidence a second time');
   assert.equal(res.bundle.createdAt, '2026-01-01T00:00:00.000Z',
     'the ORIGINAL timestamp survives — the resume clock must not leak in');
   assert.equal(res.ref.artifactId, 'ev-adopt');
 });
 
 test('HIGH-006: a genuine integrity error from getEvidence is NOT swallowed (fail closed)', async () => {
-  const store: EvidenceStore = {
-    allocateEvidenceId: () => 'ev-corrupt' as ArtifactId,
-    async putEvidence(_s, id) { return artifactRef(id, 'evidence-bundle'); },
-    async getEvidence() {
+  const store = memoryEvidence({
+    async get() {
       // A mutated byte on read: the store re-hashes and rejects. This is NOT
       // "absent", so evidenceStep must propagate rather than write fresh bytes
       // over a corrupt record.
@@ -899,12 +928,11 @@ test('HIGH-006: a genuine integrity error from getEvidence is NOT swallowed (fai
       e.name = 'EvidenceImmutabilityError';
       throw e;
     },
-  };
+  });
   await assert.rejects(
     () => evidenceStep({
       store, scope, evidenceId: 'ev-corrupt' as ArtifactId, taskId, attemptId,
-      baseSha: '0'.repeat(40), resultSha: 'd'.repeat(40), change: cleanChange,
-      environment, executions: [], now: () => '2026-01-01T00:00:00.000Z',
+      baseSha: '0'.repeat(40), resultSha: 'd'.repeat(40),
     }),
     /already holds different bytes/,
   );
@@ -923,13 +951,10 @@ test('HIGH-006: a genuine integrity error from getEvidence is NOT swallowed (fai
 // pre-created, baseSha is the pinned checkout, resultSha is read back by trusted
 // inspection — so the check cannot be satisfied by anything the agent reports.
 function adoptingStore(persisted: EvidenceBundle): EvidenceStore {
-  return {
-    allocateEvidenceId: () => 'ev-x' as ArtifactId,
-    async putEvidence(_s, id) {
-      throw new Error(`putEvidence must not run when a bundle exists at ${id}`);
-    },
-    async getEvidence() { return persisted; },
-  };
+  return memoryEvidence({
+    stored: { 'ev-x': persisted },
+    async put(id) { throw new Error(`putEvidence must not run when a bundle exists at ${id}`); },
+  });
 }
 
 const adoptBase = {
@@ -939,10 +964,6 @@ const adoptBase = {
   attemptId,
   baseSha: '0'.repeat(40),
   resultSha: 'd'.repeat(40),
-  change: cleanChange,
-  environment,
-  executions: [],
-  now: () => '2026-06-30T12:00:00.000Z',
 } as const;
 
 // The bundle the harness would legitimately find on a resume: same identity,
@@ -1187,15 +1208,13 @@ test('M3/Fault3 (pipeline): an object-store outage at the evidence step STOPS be
   // The outage: the evidence write throws the way a real store does when the
   // object backend is unreachable. Note this is NOT a not-found — evidenceStep
   // must not mistake an outage for "safe to write".
-  const store: EvidenceStore = {
-    allocateEvidenceId: () => 'ev-outage' as ArtifactId,
-    async putEvidence() {
+  const store = memoryEvidence({
+    async put() {
       const e = new Error('object store unreachable: connect ECONNREFUSED');
       e.name = 'ObjectStoreUnavailableError';
       throw e;
     },
-    async getEvidence() { throw evidenceAbsent(); },
-  };
+  });
 
   await assert.rejects(
     () => completeToReview(driverInput({ store, forge })),

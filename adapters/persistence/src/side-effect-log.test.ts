@@ -73,6 +73,28 @@ async function fresh() {
 
 const BRANCH = 'asep/attempt-1';
 
+// An evidence reservation (migration 0018) with the given id for an attempt:
+// a draft artifact of the tenant plus the reservation row naming it.
+async function reserveEvidenceId(
+  client: SqlClient, scope: TenantScope, bindingId: string, attemptId: string, id: string,
+): Promise<void> {
+  const draftId = `D${id.slice(1)}`;
+  const sha = '7'.repeat(63) + String(id.charCodeAt(25) % 10);
+  await client.query(
+    `insert into artifacts
+       (id, organization_id, project_id, attempt_id, kind, sha256, size_bytes, storage_key, content_type)
+     values ($1, $2, $3, $4, 'evidence-draft', $5, 2, $6, 'application/json')`,
+    [draftId, scope.organizationId, scope.projectId, attemptId, sha, `k/${draftId}`],
+  );
+  await client.query(
+    `insert into evidence_reservations
+       (id, organization_id, project_id, repository_binding_id, attempt_id, draft_artifact_id, draft_sha256)
+     values ($1, $2, $3, $4, $5, $6, $7)`,
+    [id, scope.organizationId, scope.projectId, bindingId, attemptId, draftId, sha],
+  );
+}
+
+
 // The closed outcome of the push the tests below record.
 const PUSHED = { kind: 'push' as const, branch: 'asep/attempt-1', commitSha: 'a'.repeat(40) };
 
@@ -708,6 +730,7 @@ test('the DB refuses a second row for the same (binding, attempt, operation)', a
 test('the DB refuses any outcome that is not the operation\'s closed shape', async () => {
   const { client, scope, binding, attemptId, lease } = await fresh();
   const evidenceId = '01J0000000000000000000000E';
+  await reserveEvidenceId(client, scope, binding.id, attemptId, evidenceId);
   const bad: ReadonlyArray<readonly [string, string, unknown]> = [
     ['free-form object', 'commit', { anything: 1 }],
     ['missing kind', 'commit', { commitSha: SHA, evidenceId }],
@@ -777,6 +800,7 @@ test('a COMPLETED outcome is read back already parsed into its closed shape', as
   };
   await log.begin(scope, input);
   const evidenceId = '01J0000000000000000000000E';
+  await reserveEvidenceId(client, scope, binding.id, attemptId, evidenceId);
   await log.complete(scope, {
     operation: 'commit', repositoryBindingId: binding.id, attemptId, ownerToken: owner,
     resultRef: { kind: 'commit', commitSha: SHA, evidenceId },
@@ -901,6 +925,30 @@ test('a transaction opened before a lease expired sees it expired when it acquir
       [next.leaseId],
     );
     assert.ok(Number(ahead.rows[0]!['ms']) > 60_000 - PAST_TTL / 2, `expiry ${String(ahead.rows[0]!['ms'])}ms ahead`);
+  } finally {
+    await f.client.close();
+  }
+});
+
+// The evidence id a commit outcome names is a reservation of that very attempt
+// (migration 0018), not just a ULID-shaped string.
+test('a commit outcome must name an evidence reservation of its own attempt', async () => {
+  const f = await fresh();
+  try {
+    const key = { operation: 'commit' as const, repositoryBindingId: f.binding.id, attemptId: f.attemptId };
+    await f.log.begin(f.scope, { ...key, requestFingerprint: `commit:${f.attemptId}`, ownerToken: f.owner });
+    const complete = (evidenceId: string) => f.log.complete(f.scope, {
+      ...key, ownerToken: f.owner, resultRef: { kind: 'commit', commitSha: SHA, evidenceId },
+    });
+    await assert.rejects(() => complete('01J0000000000000000000000Z'), /foreign key|violates/i, 'an id nobody reserved');
+    // A reservation of another attempt of the same binding.
+    const task = await new TaskRepository(f.client).create(f.scope, { runId: f.runId, repositoryBindingId: f.binding.id, risk: 'R0' });
+    const other = await new AttemptRepository(f.client).create(f.scope, { taskId: task.id, repositoryBindingId: f.binding.id });
+    await reserveEvidenceId(f.client, f.scope, f.binding.id, other.id, '01J0000000000000000000000Y');
+    await assert.rejects(() => complete('01J0000000000000000000000Y'), /foreign key|violates/i, "another attempt's reservation");
+    assert.equal((await f.log.find(f.scope, key))!.state, 'PENDING');
+    await reserveEvidenceId(f.client, f.scope, f.binding.id, f.attemptId, '01J0000000000000000000000X');
+    assert.equal((await complete('01J0000000000000000000000X')).state, 'COMPLETED');
   } finally {
     await f.client.close();
   }

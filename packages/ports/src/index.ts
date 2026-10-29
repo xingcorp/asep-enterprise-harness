@@ -365,20 +365,54 @@ export interface ForgeProvider {
 }
 
 // ---------------------------------------------------------------------------
-// EvidenceStore — preallocated-id evidence persistence (disp. P2-PLAN-HIGH-008,
+// EvidenceStore — reserved-id evidence persistence (disp. P2-PLAN-HIGH-008,
 // exit D8). The canonical EvidenceBundle.resultSha must equal the FINAL harness
 // commit SHA, but a content-addressed id would depend on the bundle bytes which
-// depend on the commit SHA — a cycle. We break it by PREALLOCATING a
+// depend on the commit SHA — a cycle. We break it by RESERVING a
 // non-content-derived id BEFORE the commit: the commit embeds that id in its
-// `ASEP-Evidence` trailer, then the serialized bundle (carrying the resulting
-// commit SHA) is stored at the preallocated id AFTER commit but BEFORE push.
-// putEvidence is idempotent: re-storing identical bytes at the same id is a
-// no-op success (crash between commit and evidence persistence recovers without
-// a second commit); storing DIFFERENT bytes at an existing id fails closed.
+// `ASEP-Evidence` trailer, then the bundle (carrying the resulting commit SHA)
+// is stored at the reserved id AFTER commit but BEFORE push.
+//
+// The reservation is durable and carries the DRAFT: the bundle minus the one
+// fact only the commit can supply. So the evidence for a commit is fixed before
+// the commit exists, a crash between commit and evidence persistence recovers
+// by completing the draft with the committed SHA — never by re-deriving it —
+// and the id a commit names is always a reservation of that commit's own
+// attempt and tenant. putEvidence accepts only the reserved draft plus a
+// resultSha, is idempotent for identical bytes and fails closed on different
+// ones.
 // ---------------------------------------------------------------------------
 
+export type EvidenceDraft = Omit<EvidenceBundle, 'resultSha'>;
+
+/** The bundle for a reserved draft once its commit exists, in canonical field order. */
+export function evidenceBundleFrom(draft: EvidenceDraft, resultSha: string): EvidenceBundle {
+  return {
+    taskId: draft.taskId,
+    attemptId: draft.attemptId,
+    baseSha: draft.baseSha,
+    resultSha,
+    createdAt: draft.createdAt,
+    environment: draft.environment,
+    diff: draft.diff,
+    checks: draft.checks,
+  };
+}
+
+export interface EvidenceReservation {
+  readonly evidenceId: ArtifactId;
+  readonly repositoryBindingId: RepositoryBindingId;
+  readonly attemptId: AttemptId;
+  readonly draft: EvidenceDraft;
+}
+
 export interface EvidenceStore {
-  allocateEvidenceId(): ArtifactId;
+  reserveEvidence(scope: TenantScope, input: {
+    readonly repositoryBindingId: RepositoryBindingId;
+    readonly attemptId: AttemptId;
+    readonly draft: EvidenceDraft;
+  }): Promise<ArtifactId>;
+  getReservation(scope: TenantScope, id: ArtifactId): Promise<EvidenceReservation>;
   putEvidence(scope: TenantScope, id: ArtifactId, bundle: EvidenceBundle): Promise<ArtifactRef>;
   getEvidence(scope: TenantScope, id: ArtifactId): Promise<EvidenceBundle>;
 }

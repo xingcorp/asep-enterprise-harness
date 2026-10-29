@@ -36,6 +36,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ArtifactId, EvidenceBundle, TenantScope } from '@asep/contracts';
+import { evidenceBundleFrom } from '@asep/ports';
 import { PgliteClient } from './pglite-client.js';
 import { migrate } from './migrator.js';
 import { FilesystemObjectStore } from './object-store.js';
@@ -335,14 +336,17 @@ test('resolveEvidence re-hashes the bytes the real evidence store wrote, and see
     await seed(client);
     const scope: TenantScope = { organizationId: ORG as never, projectId: PROJ as never };
     const store = new ContentAddressedEvidenceStore(client, new FilesystemObjectStore(root));
-    const id = store.allocateEvidenceId();
-    const bundle: EvidenceBundle = {
-      taskId: TASK as never, attemptId: ATTEMPT as never, baseSha: '0'.repeat(40), resultSha: RESULT_SHA,
+    const draft = {
+      taskId: TASK as never, attemptId: ATTEMPT as never, baseSha: '0'.repeat(40),
       createdAt: '2026-10-29T00:00:00.000Z',
       environment: { imageDigest: `img@sha256:${'1'.repeat(64)}`, lockfileHash: '2'.repeat(64) },
-      diff: { artifactId: id as ArtifactId, sha256: '3'.repeat(64) },
+      diff: { artifactId: 'D'.repeat(26) as ArtifactId, sha256: '3'.repeat(64) },
       checks: [],
     };
+    const id = await store.reserveEvidence(scope, {
+      repositoryBindingId: BINDING as never, attemptId: ATTEMPT as never, draft,
+    });
+    const bundle: EvidenceBundle = evidenceBundleFrom(draft, RESULT_SHA);
     const ref = await store.putEvidence(scope, id, bundle);
 
     const resolver = resolverFor(client, root);

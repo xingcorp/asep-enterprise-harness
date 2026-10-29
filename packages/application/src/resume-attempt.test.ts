@@ -64,7 +64,8 @@ function world(risk: RiskLevel, calls: string[]): ResumeAttemptInput {
     fail: async (_s, i) => { calls.push(`log.fail:${i.operation}`); return record(i.operation, true); },
   };
   const evidence: EvidenceStore = {
-    allocateEvidenceId: () => evidenceId,
+    reserveEvidence: async () => { throw new Error('a resume never reserves evidence'); },
+    getReservation: async () => { throw new Error('the evidence is stored; its reservation is not read'); },
     putEvidence: async () => { throw new Error('a resume never writes evidence it did not find'); },
     getEvidence: async () => { calls.push('evidence.get'); return bundle; },
   };

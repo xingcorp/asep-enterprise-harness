@@ -308,6 +308,27 @@ async function seedArtifact(
   return id;
 }
 
+// An evidence reservation (migration 0018) with the given id for an attempt:
+// a draft artifact of the tenant plus the reservation row naming it.
+async function reserveEvidenceId(
+  client: SqlClient, scope: TenantScope, bindingId: string, attemptId: string, id: string,
+): Promise<void> {
+  const draftId = `D${id.slice(1)}`;
+  const sha = '7'.repeat(63) + String(id.charCodeAt(25) % 10);
+  await client.query(
+    `insert into artifacts
+       (id, organization_id, project_id, attempt_id, kind, sha256, size_bytes, storage_key, content_type)
+     values ($1, $2, $3, $4, 'evidence-draft', $5, 2, $6, 'application/json')`,
+    [draftId, scope.organizationId, scope.projectId, attemptId, sha, `k/${draftId}`],
+  );
+  await client.query(
+    `insert into evidence_reservations
+       (id, organization_id, project_id, repository_binding_id, attempt_id, draft_artifact_id, draft_sha256)
+     values ($1, $2, $3, $4, $5, $6, $7)`,
+    [id, scope.organizationId, scope.projectId, bindingId, attemptId, draftId, sha],
+  );
+}
+
 async function seedAttempt(
   client: Awaited<ReturnType<typeof freshDb>>, scope: TenantScope, bindingId: RepositoryBindingId,
 ): Promise<AttemptId> {
@@ -327,6 +348,7 @@ test('HIGH-005: attaching an in-scope evidence artifact ref persists id + expect
   const attemptId = await seedAttempt(client, scope, binding.id);
   const sha = 'c'.repeat(64);
   const artifactId = await seedArtifact(client, scope, sha);
+  await reserveEvidenceId(client, scope, binding.id, attemptId, artifactId);
   const v = await attempts.attachEvidence(scope, attemptId, 0, {
     artifactId: artifactId as never, sha256: sha, kind: 'evidence-bundle',
   });
@@ -485,6 +507,7 @@ test('HIGH-008: PR upsert is idempotent on (binding, head_branch) and persists t
   const attemptId = await seedAttempt(client, scope, binding.id);
   const sha = 'a'.repeat(64);
   const artifactId = await seedArtifact(client, scope, sha);
+  await reserveEvidenceId(client, scope, binding.id, attemptId, artifactId);
   const first = await prs.upsert(scope, {
     repositoryBindingId: binding.id, attemptId, forge: 'github',
     number: 7, headBranch: 'asep/attempt-1', baseBranch: 'main',
@@ -933,6 +956,8 @@ for (const ref of REF_COLUMNS) {
       );
       const sha = 'a'.repeat(64);
       const mine = await seedTyped(client, scope, ref.kind, sha);
+      // Evidence is also a reservation of the row's own attempt (migration 0018).
+      if (ref.column === 'evidence') await reserveEvidenceId(client, scope, binding.id, ids.attempts, mine);
       const foreign = await seedTyped(client, other.scope, ref.kind, sha);
       const wrongKind = await seedTyped(client, scope, ref.kind === 'work-order' ? 'context-pack' : 'work-order', sha);
 
@@ -1007,4 +1032,54 @@ test('upgrading over JSONB references keeps the valid ones and refuses a danglin
     [JSON.stringify({ artifactId: 'Z'.repeat(26), sha256: 'f'.repeat(64), kind: 'work-order' }), badIds.tasks]);
   await assert.rejects(() => migrate(dirty), /tasks: 1 work order reference/);
   await dirty.close();
+});
+
+// Attached evidence is a reservation of the attempt it is attached for
+// (migration 0018): an evidence bundle of the right tenant, checksum and kind
+// that was reserved for another attempt, or never reserved, is refused.
+test('attached evidence must be a reservation of the very attempt it is attached to', async () => {
+  const client = await freshDb();
+  try {
+    const { scope, binding } = await seedScope(client);
+    const ids = await seedChain(client, scope, binding.id);
+    const otherAttempt = await seedAttempt(client, scope, binding.id);
+    const sha = 'a'.repeat(64);
+    const unreserved = await seedTyped(client, scope, 'evidence-bundle', sha);
+    const forOther = await seedTyped(client, scope, 'evidence-bundle', 'b'.repeat(64));
+    await reserveEvidenceId(client, scope, binding.id, otherAttempt, forOther);
+    for (const table of ['attempts', 'pull_requests'] as const) {
+      const set = (id: string, s: string) => client.query(
+        `update ${table} set evidence_artifact_id = $1, evidence_sha256 = $2 where id = $3`, [id, s, ids[table]]);
+      await assert.rejects(() => set(unreserved, sha), /foreign key|violates/i, `${table}: never reserved`);
+      await assert.rejects(() => set(forOther, 'b'.repeat(64)), /foreign key|violates/i, `${table}: reserved for another attempt`);
+    }
+  } finally {
+    await client.close();
+  }
+});
+
+test('upgrading over a completed commit that predates reservations fails instead of inventing one', async () => {
+  const before = MIGRATIONS.findIndex((m) => m.id === '0018_evidence_reservations');
+  assert.ok(before > 0, 'the reservation migration is registered');
+  const db = await PgliteClient.create();
+  try {
+    await migrate(db, MIGRATIONS.slice(0, before));
+    const { scope, binding } = await seedScope(db);
+    const ids = await seedChain(db, scope, binding.id);
+    const lease = await new SqlWorkspaceLeaseRepository(db).acquire(scope, {
+      repositoryBindingId: binding.id, branch: 'asep/upgrade', attemptId: ids.attempts as never, ttlMs: 60_000,
+    });
+    assert.ok('leaseId' in lease);
+    await db.query(
+      `insert into side_effect_records
+         (id, organization_id, project_id, repository_binding_id, attempt_id, operation, request_fingerprint,
+          state, owner_lease_id, owner_epoch, result_ref)
+       values ($1, $2, $3, $4, $5, 'commit', 'commit:x', 'COMPLETED', $6, $7, $8)`,
+      ['S'.repeat(26), scope.organizationId, scope.projectId, binding.id, ids.attempts, lease.leaseId, lease.fencingEpoch,
+        JSON.stringify({ kind: 'commit', commitSha: 'c'.repeat(40), evidenceId: '01J0000000000000000000000E' })],
+    );
+    await assert.rejects(() => migrate(db), /predate evidence reservations/);
+  } finally {
+    await db.close();
+  }
 });

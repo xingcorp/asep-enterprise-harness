@@ -25,15 +25,16 @@
 // row and admitted BEFORE the lease is taken. A deferred risk (R2–R4) stops the
 // resume having touched nothing but that read.
 //
-// WHAT IS RESUMED. Only attempts whose harness commit AND evidence bundle are
-// already durable — the crash windows in which something may have reached the
-// outside world (the push and the PR). The commit was minted in the dead
-// executor's worktree, which is quarantined, never reused; evidence describes
-// that exact commit. Re-deriving either under a new workspace would attach
-// evidence for a tree nobody verified, so an attempt that crashed before both
-// were durable is reported `not-resumable` and must be re-executed as a new
-// attempt. Nothing had left the harness at that point: the push runs after the
-// evidence is stored.
+// WHAT IS RESUMED. Attempts whose harness commit is durable. The commit was
+// minted in the dead executor's worktree, which is quarantined, never reused.
+// Its evidence is adopted when it was stored; when the executor died between
+// the commit and the evidence write, the evidence is completed from the draft
+// reserved for it BEFORE the commit — the verified tree's diff, checks and
+// environment — plus the SHA the commit record holds. Evidence is never
+// re-derived under a new workspace: an unreadable draft stops the resume with
+// nothing published, and an attempt whose commit is not durable is reported
+// `not-resumable` and must be re-executed as a new attempt. Nothing had left the
+// harness at that point: the push runs after the evidence is stored.
 
 import type {
   TenantScope, ArtifactId, ArtifactRef, RepositoryBindingId, RunId, TaskId, AttemptId,
@@ -46,9 +47,7 @@ import { parseSideEffectResultRef } from '@asep/ports';
 import type { SpanTracer, AuditSink } from '@asep/observability';
 import { completionObserver, fencedBy } from './completion-observer.js';
 import { admitRisk } from './risk-admission.js';
-import {
-  pushStep, upsertPrStep, adoptVerifiedEvidence, isEvidenceAbsent,
-} from './pipeline-steps.js';
+import { pushStep, upsertPrStep, evidenceStep } from './pipeline-steps.js';
 import type { SlicePullRequestPort } from './vertical-slice-workflow.js';
 
 // --- repository ports (structural; the concrete repositories satisfy them) ----
@@ -232,24 +231,23 @@ async function resumeUnderLease(
   const commitSha = committed.commitSha;
   const evidenceId = committed.evidenceId as ArtifactId;
 
-  // --- …and so must the evidence for exactly that commit -----------------------
-  let evidenceRef: ArtifactRef;
-  try {
-    const bundle = await input.evidence.getEvidence(scope, evidenceId);
-    evidenceRef = adoptVerifiedEvidence(bundle, {
+  // --- …and its evidence: adopted when stored, else completed from the draft
+  // reserved for it before the commit (a crash between commit and evidence).
+  // The evidence step never re-derives evidence, so the bytes are the ones the
+  // dead executor would have written.
+  const evidence = await observe(
+    { span: 'artifact.put', action: 'evidence.put', detail: { evidenceId, resumed: true } },
+    () => evidenceStep({
+      store: input.evidence,
+      scope,
       evidenceId,
       taskId: input.taskId,
       attemptId: input.attemptId,
       baseSha: input.baseSha,
       resultSha: commitSha,
-    }).ref;
-  } catch (err) {
-    if (!isEvidenceAbsent(err)) throw err;
-    return {
-      stoppedAt: 'not-resumable',
-      reason: `no evidence bundle at ${evidenceId} for commit ${commitSha} — re-execute the attempt`,
-    };
-  }
+    }),
+  );
+  const evidenceRef: ArtifactRef = evidence.ref;
 
   // --- push + PR: take over, reconcile, then act only if needed ----------------
   const push = await observe(

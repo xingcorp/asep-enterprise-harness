@@ -54,10 +54,13 @@ import type {
   PullRequestRef,
   GitChangeObservation,
   EvidenceStore,
+  EvidenceDraft,
   SideEffectLog,
   PullRequestResultRef,
 } from '@asep/ports';
-import { parseSideEffectResultRef, SideEffectResultRefError } from '@asep/ports';
+import {
+  parseSideEffectResultRef, SideEffectResultRefError, evidenceBundleFrom,
+} from '@asep/ports';
 import { requiredLevels, type AssuranceLevel } from '@asep/policy';
 import { transitionTask, type TaskAggregate } from '@asep/domain';
 import type { StepStatus } from './execute-task.js';
@@ -401,26 +404,57 @@ export async function commitStep(input: CommitStepInput): Promise<CommitStepResu
 }
 
 // ---------------------------------------------------------------------------
-// Step 6 — build + persist the EvidenceBundle at the preallocated id.
+// Step 6 — persist the EvidenceBundle at the reserved id.
 //
-// resultSha = the harness commit SHA from the commit step (exit D8). The bundle
-// is stored AFTER the commit but BEFORE the push; putEvidence is idempotent, so
-// a crash between commit and evidence persistence recovers without a second
-// commit (re-store of identical bytes is a no-op success).
+// The evidence is fixed BEFORE the commit: the driver reserves the evidence id
+// with its draft (everything but resultSha), and the commit names that id. This
+// step completes the reserved draft with resultSha = the harness commit SHA
+// (exit D8) and stores it AFTER the commit but BEFORE the push. It never
+// re-derives evidence, so a crash between commit and evidence persistence — in
+// this process or a successor — recovers to the same bytes without a second
+// commit.
 // ---------------------------------------------------------------------------
 
 export interface EvidenceStepInput {
   readonly store: EvidenceStore;
   readonly scope: TenantScope;
-  readonly evidenceId: ArtifactId;
+  readonly evidenceId: ArtifactId;       // the reservation the commit names
   readonly taskId: TaskId;
   readonly attemptId: AttemptId;
   readonly baseSha: string;
   readonly resultSha: string;            // == commit SHA
-  readonly change: GitChangeObservation; // diff artifact ref
+}
+
+/** The evidence draft for a verified change: the bundle minus resultSha. */
+export function evidenceDraft(input: {
+  readonly taskId: TaskId;
+  readonly attemptId: AttemptId;
+  readonly baseSha: string;
+  readonly change: GitChangeObservation;
   readonly environment: EvidenceBundle['environment'];
   readonly executions: readonly VerificationCheckExecution[];
-  readonly now?: () => string;           // injectable clock (deterministic tests)
+  readonly createdAt: string;
+}): EvidenceDraft {
+  return {
+    taskId: input.taskId,
+    attemptId: input.attemptId,
+    baseSha: input.baseSha,
+    createdAt: input.createdAt,
+    environment: input.environment,
+    diff: {
+      artifactId: input.change.diff.artifactId,
+      sha256: input.change.diff.sha256,
+    },
+    checks: input.executions.map((e) => ({
+      id: e.id,
+      category: e.category,
+      command: e.command,
+      exitCode: e.exitCode,
+      durationMs: e.durationMs,
+      ...(e.stdoutArtifactId ? { stdoutArtifactId: e.stdoutArtifactId } : {}),
+      ...(e.stderrArtifactId ? { stderrArtifactId: e.stderrArtifactId } : {}),
+    })),
+  };
 }
 
 export interface EvidenceStepResult {
@@ -498,24 +532,18 @@ export function adoptVerifiedEvidence(
 }
 
 export async function evidenceStep(input: EvidenceStepInput): Promise<EvidenceStepResult> {
-  // Crash-recovery reconciliation for the evidence write (disp. P2-REREVIEW
-  // HIGH-006, exit D8).
+  // Crash-recovery reconciliation for the evidence write (exit D8).
   //
-  // THE DEFECT. Every other durable effect reconciles before it re-acts, but
-  // evidence did not — and it is the one step that CANNOT simply be re-run.
-  // `createdAt` is stamped from the clock on each invocation, so a resume that
-  // ADOPTED an existing commit (and therefore the evidence id embedded in that
-  // commit's ASEP-Evidence trailer) would serialize a bundle whose bytes differ
-  // only in the timestamp, then call putEvidence at that adopted id. The store
-  // correctly treats an evidence id as immutable and FAILS CLOSED on different
-  // bytes — so the attempt could never get past this step again. A crash between
-  // commit and evidence persistence permanently wedged the attempt.
+  // The evidence for a commit is fixed BEFORE the commit: the draft (diff,
+  // checks, environment, clock) is reserved with the evidence id the commit's
+  // trailer names, and the bundle is that draft plus the commit SHA. So the
+  // step never derives evidence; it either adopts what is stored at the id or
+  // completes the reservation, and any writer — the first run or a resume
+  // after a crash between commit and evidence — produces the same bytes.
   //
-  // THE FIX. Ask the authoritative store first. If a bundle already exists at
-  // this preallocated id, ADOPT it: the evidence for this commit is already
-  // durable, and re-deriving it would only invent a new timestamp. Any error
-  // other than "not found" propagates — a corrupt or cross-scope read must fail
-  // closed, never be papered over by writing fresh bytes.
+  // Ask the authoritative store first. Any error other than "not found"
+  // propagates — a corrupt or cross-scope read must fail closed, never be
+  // papered over by writing.
   try {
     const existing = await input.store.getEvidence(input.scope, input.evidenceId);
 
@@ -532,8 +560,8 @@ export async function evidenceStep(input: EvidenceStepInput): Promise<EvidenceSt
     // pre-created by the harness, baseSha is the pinned checkout, and resultSha
     // is the commit SHA read back by trusted inspection. None is
     // provider-reported, so this cannot be satisfied by anything the agent says.
-    // `createdAt` and `environment` are deliberately NOT compared: the clock
-    // difference is the benign case adoption exists to absorb.
+    // The rest of the bundle needs no comparison here: the store only accepts,
+    // at a reserved id, that reservation's draft completed by a resultSha.
     return adoptVerifiedEvidence(existing, input);
   } catch (err) {
     // An identity mismatch is a REAL fault, not an absence. Re-throw before the
@@ -545,28 +573,19 @@ export async function evidenceStep(input: EvidenceStepInput): Promise<EvidenceSt
     if (!isEvidenceAbsent(err)) throw err;
   }
 
-  const createdAt = (input.now ?? (() => new Date().toISOString()))();
-  const bundle: EvidenceBundle = {
-    taskId: input.taskId,
-    attemptId: input.attemptId,
-    baseSha: input.baseSha,
-    resultSha: input.resultSha,
-    createdAt,
-    environment: input.environment,
-    diff: {
-      artifactId: input.change.diff.artifactId,
-      sha256: input.change.diff.sha256,
-    },
-    checks: input.executions.map((e) => ({
-      id: e.id,
-      category: e.category,
-      command: e.command,
-      exitCode: e.exitCode,
-      durationMs: e.durationMs,
-      ...(e.stdoutArtifactId ? { stdoutArtifactId: e.stdoutArtifactId } : {}),
-      ...(e.stderrArtifactId ? { stderrArtifactId: e.stderrArtifactId } : {}),
-    })),
-  };
+  const { draft } = await input.store.getReservation(input.scope, input.evidenceId);
+  // The draft's harness-owned identity must be this attempt's, or the commit
+  // names evidence reserved for something else.
+  const fields: readonly (readonly [string, string, string])[] = [
+    ['taskId', String(draft.taskId), String(input.taskId)],
+    ['attemptId', String(draft.attemptId), String(input.attemptId)],
+    ['baseSha', String(draft.baseSha), String(input.baseSha)],
+  ];
+  const first = fields.find(([, reserved, want]) => reserved !== want);
+  if (first !== undefined) {
+    throw new EvidenceIdentityMismatchError(String(input.evidenceId), first[0], first[1], first[2]);
+  }
+  const bundle = evidenceBundleFrom(draft, input.resultSha);
   const ref = await input.store.putEvidence(input.scope, input.evidenceId, bundle);
   return { step: 'evidence', status: 'OK', bundle, ref, adopted: false };
 }
@@ -930,9 +949,23 @@ export async function completeToReview(
     return { stoppedAt: 'verify', verify };
   }
 
-  // Preallocate the non-content-derived evidence id BEFORE the commit so it can
-  // be embedded in the ASEP-Evidence trailer (exit D8).
-  const evidenceId = input.store.allocateEvidenceId();
+  // Reserve the non-content-derived evidence id BEFORE the commit so it can be
+  // embedded in the ASEP-Evidence trailer (exit D8). The reservation is durable
+  // and holds the draft — what was verified, against which change and where —
+  // so the evidence for the commit is fixed before the commit exists.
+  const evidenceId = await input.store.reserveEvidence(input.scope, {
+    repositoryBindingId: input.repositoryBindingId,
+    attemptId: input.attemptId,
+    draft: evidenceDraft({
+      taskId: input.taskId,
+      attemptId: input.attemptId,
+      baseSha: input.baseSha,
+      change: input.change,
+      environment: input.environment,
+      executions: verify.executions,
+      createdAt: (input.now ?? (() => new Date().toISOString()))(),
+    }),
+  });
 
   // Step 5 — harness commit, wrapped in the two-phase protocol (HIGH-006). On a
   // resume the commit is ADOPTED: the recorded SHA AND the evidence id embedded
@@ -962,8 +995,8 @@ export async function completeToReview(
   // trailer — the adopted id on a resume, the fresh id on first commit.
   const committedEvidenceId = commit.evidenceId;
 
-  // Step 6 — build + persist evidence at the committed id. resultSha is the
-  // trusted harness commit SHA (never provider-reported).
+  // Step 6 — persist evidence at the committed id: the draft reserved for it,
+  // completed by the trusted harness commit SHA (never provider-reported).
   const evidence = await observe(
     { span: 'artifact.put', action: 'evidence.put', detail: { evidenceId: committedEvidenceId } },
     () => evidenceStep({
@@ -974,10 +1007,6 @@ export async function completeToReview(
     attemptId: input.attemptId,
     baseSha: input.baseSha,
     resultSha: commit.commitSha,
-    change: input.change,
-    environment: input.environment,
-    executions: verify.executions,
-    ...(input.now ? { now: input.now } : {}),
     }),
   );
 

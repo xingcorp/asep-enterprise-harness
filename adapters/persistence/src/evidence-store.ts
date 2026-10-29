@@ -1,11 +1,17 @@
-// EvidenceStore port impl — preallocated-id evidence persistence (disp.
+// EvidenceStore port impl — reserved-id evidence persistence (disp.
 // P2-PLAN-HIGH-008, exit criterion D8). The canonical EvidenceBundle.resultSha
 // must equal the FINAL harness commit SHA. A content-addressed id would depend
 // on the bundle bytes, which depend on the commit SHA — a cycle. We break it by
-// PREALLOCATING a non-content-derived ULID BEFORE the commit; the commit embeds
+// RESERVING a non-content-derived ULID BEFORE the commit; the commit embeds
 // that id in its ASEP-Evidence trailer, then the serialized bundle (now
-// carrying the resulting commit SHA) is stored at the preallocated id AFTER the
+// carrying the resulting commit SHA) is stored at the reserved id AFTER the
 // commit but BEFORE the push.
+//
+// The reservation (migration 0018) is a row of the attempt that carries the
+// DRAFT — the bundle minus resultSha — as an 'evidence-draft' artifact. So the
+// evidence is fixed before the commit, a crash between commit and evidence is
+// recovered by completing the draft with the committed SHA, and putEvidence
+// accepts nothing at a reserved id but that draft plus a resultSha.
 //
 // Bytes live in the same content-addressed ObjectStore as every other artifact
 // (dedup + create-only + re-hash-on-read all reused); a small `evidence_index`
@@ -20,9 +26,10 @@
 
 import { createHash } from 'node:crypto';
 import type {
-  TenantScope, ArtifactId, ArtifactRef, EvidenceBundle,
+  TenantScope, ArtifactId, ArtifactRef, EvidenceBundle, AttemptId, RepositoryBindingId,
 } from '@asep/contracts';
-import type { EvidenceStore } from '@asep/ports';
+import type { EvidenceStore, EvidenceDraft, EvidenceReservation } from '@asep/ports';
+import { ContentAddressedArtifactStore } from './artifact-store.js';
 import type { SqlClient } from './sql.js';
 import { ScopeViolationError } from './sql.js';
 import type { ObjectStore } from './object-store.js';
@@ -30,6 +37,7 @@ import { ObjectExistsError } from './object-store.js';
 import { ulid } from './ulid.js';
 
 const EVIDENCE_KIND = 'evidence-bundle';
+const DRAFT_KIND = 'evidence-draft';
 const EVIDENCE_CONTENT_TYPE = 'application/json';
 
 function sha256Hex(bytes: Uint8Array): string {
@@ -58,6 +66,39 @@ export class EvidenceImmutabilityError extends Error {
   }
 }
 
+// The id was never reserved in this scope: there is no draft it could hold.
+export class EvidenceNotReservedError extends Error {
+  constructor(id: string) {
+    super(`evidence id ${id} is not reserved in this scope — refusing to store or read evidence for it`);
+    this.name = 'EvidenceNotReservedError';
+  }
+}
+
+// The bundle offered at a reserved id is not that reservation's draft plus a
+// resultSha: the evidence was fixed before the commit and cannot be rewritten.
+export class EvidenceDraftMismatchError extends Error {
+  constructor(id: string, reason: string) {
+    super(`evidence for ${id} does not match its reserved draft: ${reason} (fail closed)`);
+    this.name = 'EvidenceDraftMismatchError';
+  }
+}
+
+// JSON with keys sorted at every level: equality of meaning, not of key order.
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
+  if (value !== null && typeof value === 'object') {
+    const o = value as Record<string, unknown>;
+    return `{${Object.keys(o).filter((k) => o[k] !== undefined).sort()
+      .map((k) => `${JSON.stringify(k)}:${canonical(o[k])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function draftOf(bundle: EvidenceBundle): EvidenceDraft {
+  const { resultSha: _resultSha, ...draft } = bundle;
+  return draft;
+}
+
 export class EvidenceNotFoundError extends Error {
   constructor(id: string) {
     super(`evidence not visible in this scope: ${id}`);
@@ -71,13 +112,68 @@ export class ContentAddressedEvidenceStore implements EvidenceStore {
     private readonly objects: ObjectStore,
   ) {}
 
-  // Preallocate a non-content-derived id BEFORE the commit (exit D8). A ULID is
-  // used so the id is unique and sortable without depending on the bundle bytes.
-  allocateEvidenceId(): ArtifactId {
-    return ulid() as ArtifactId;
+  // Reserve a non-content-derived id BEFORE the commit (exit D8), durably, with
+  // the draft it will hold. A ULID is used so the id is unique and sortable
+  // without depending on the bundle bytes.
+  async reserveEvidence(scope: TenantScope, input: {
+    readonly repositoryBindingId: RepositoryBindingId;
+    readonly attemptId: AttemptId;
+    readonly draft: EvidenceDraft;
+  }): Promise<ArtifactId> {
+    if (input.draft.attemptId !== input.attemptId) {
+      throw new EvidenceDraftMismatchError('(new reservation)', `draft names attempt ${String(input.draft.attemptId)}`);
+    }
+    const bytes = new TextEncoder().encode(JSON.stringify(input.draft));
+    const draft = await new ContentAddressedArtifactStore(this.client, this.objects).put(scope, {
+      kind: DRAFT_KIND, content: bytes, sha256: sha256Hex(bytes),
+      contentType: EVIDENCE_CONTENT_TYPE, attemptId: input.attemptId,
+    });
+    const id = ulid() as ArtifactId;
+    await this.client.query(
+      `insert into evidence_reservations
+         (id, organization_id, project_id, repository_binding_id, attempt_id, draft_artifact_id, draft_sha256)
+       values ($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        id, scope.organizationId, scope.projectId, input.repositoryBindingId, input.attemptId,
+        draft.artifactId, draft.sha256,
+      ],
+    );
+    return id;
+  }
+
+  async getReservation(scope: TenantScope, id: ArtifactId): Promise<EvidenceReservation> {
+    const r = await this.client.query(
+      `select repository_binding_id, attempt_id, draft_artifact_id, draft_sha256
+         from evidence_reservations
+        where id = $1 and organization_id = $2 and project_id = $3`,
+      [id, scope.organizationId, scope.projectId],
+    );
+    if (r.rowCount === 0) throw new EvidenceNotReservedError(id);
+    const row = r.rows[0]!;
+    // Re-hashed on read by the artifact store; the reservation pins its sha256.
+    const stream = await new ContentAddressedArtifactStore(this.client, this.objects).get(scope, {
+      artifactId: row['draft_artifact_id'] as ArtifactId,
+      sha256: row['draft_sha256'] as string,
+      kind: DRAFT_KIND,
+    });
+    const draft = JSON.parse(new TextDecoder().decode(stream.content)) as EvidenceDraft;
+    if (draft.attemptId !== row['attempt_id']) {
+      throw new EvidenceDraftMismatchError(id, `draft names attempt ${String(draft.attemptId)}, reservation ${String(row['attempt_id'])}`);
+    }
+    return {
+      evidenceId: id,
+      repositoryBindingId: row['repository_binding_id'] as RepositoryBindingId,
+      attemptId: row['attempt_id'] as AttemptId,
+      draft,
+    };
   }
 
   async putEvidence(scope: TenantScope, id: ArtifactId, bundle: EvidenceBundle): Promise<ArtifactRef> {
+    // Only the reserved draft, completed by a resultSha, may be stored here.
+    const reservation = await this.getReservation(scope, id);
+    if (canonical(draftOf(bundle)) !== canonical(reservation.draft)) {
+      throw new EvidenceDraftMismatchError(id, 'the bundle differs from the draft in more than its resultSha');
+    }
     const bytes = serialize(bundle);
     const sha256 = sha256Hex(bytes);
     const key = evidenceKey(scope, id);
@@ -98,43 +194,17 @@ export class ContentAddressedEvidenceStore implements EvidenceStore {
       return { artifactId: id, sha256, kind: EVIDENCE_KIND };
     }
 
-    // Write the object FIRST (create-only).
+    // Write the object FIRST (create-only). A crash between this write and the
+    // metadata insert below leaves an orphan object with no row. The retry
+    // writes the same bytes — the draft fixed everything but the resultSha, and
+    // the commit fixed that — so the create-only put is a byte-identical no-op
+    // and the retry completes the insert. Different bytes at the key are not an
+    // interrupted write of THIS evidence, whatever identity they claim, and are
+    // never adopted.
     try {
       await this.objects.putIfAbsent(key, bytes);
     } catch (err) {
-      if (err instanceof ObjectExistsError) {
-        // ORPHAN RECONCILIATION (disp. P2-REREVIEW HIGH-006, exit D8).
-        //
-        // THE DEFECT. This used to fail closed unconditionally, which wedged an
-        // attempt FOREVER. The window: putIfAbsent above succeeds, then the
-        // process dies before the metadata insert below. The object now exists
-        // at a key derived from the preallocated id, but no `artifacts` row
-        // does — so the metadata probe at the top of this method sees nothing,
-        // getEvidence() reports ABSENT, and evidenceStep's reconcile concludes
-        // "safe to write". It then re-derives the bundle with a NEW `createdAt`
-        // from the clock, producing different bytes at the same key, and landed
-        // here as an immutability violation. Every subsequent retry stamps a
-        // new timestamp, so the collision is permanent: verified empirically by
-        // simulating the crash window, where both the resume and its retry threw
-        // EvidenceImmutabilityError with no path forward.
-        //
-        // THE FIX. An orphan object with no metadata row is OUR OWN interrupted
-        // write, and the bytes already on disk are the durable truth — they are
-        // what the first (successful) object write committed to. Adopt them by
-        // completing the metadata insert that never ran.
-        //
-        // This is NOT a weakening of immutability. Adoption is gated on the
-        // orphan being a real evidence bundle whose HARNESS-OWNED identity
-        // (task, attempt, baseSha, resultSha) matches what this call is writing.
-        // Those four facts are derived by trusted inspection, never
-        // agent-reported, so a bundle agreeing on all of them differs only in
-        // the clock — the very difference that caused the wedge. Disagreement on
-        // any of them means the id really is bound to other content, and that
-        // still fails closed exactly as before.
-        const adopted = await this.adoptOrphan(scope, id, key, bundle);
-        if (adopted !== null) return adopted;
-        throw new EvidenceImmutabilityError(id);
-      }
+      if (err instanceof ObjectExistsError) throw new EvidenceImmutabilityError(id);
       throw err;
     }
 
@@ -151,88 +221,6 @@ export class ContentAddressedEvidenceStore implements EvidenceStore {
       ],
     );
     return { artifactId: id, sha256, kind: EVIDENCE_KIND };
-  }
-
-  /**
-   * Complete the metadata insert for an ORPHAN evidence object — one whose bytes
-   * were durably written before the process died, leaving no `artifacts` row.
-   *
-   * Returns the adopted ref, or null when the orphan must NOT be adopted (in
-   * which case the caller fails closed). Adoption requires all of:
-   *
-   *   1. the key really holds bytes we can read and parse as an evidence bundle;
-   *   2. its HARNESS-OWNED identity — taskId, attemptId, baseSha, resultSha —
-   *      matches the bundle this call is trying to write. These four are derived
-   *      by trusted inspection of real Git state, never reported by the agent, so
-   *      agreement on all four means the two bundles describe the same attempt at
-   *      the same commit and differ only in the clock;
-   *   3. the metadata row is still absent at insert time (a concurrent writer
-   *      that got there first wins, and we converge on ITS bytes).
-   *
-   * Anything else — unreadable, unparseable, or disagreeing on identity — returns
-   * null so the id stays bound to whatever content is really there.
-   */
-  private async adoptOrphan(
-    scope: TenantScope,
-    id: ArtifactId,
-    key: string,
-    incoming: EvidenceBundle,
-  ): Promise<ArtifactRef | null> {
-    // The metadata probe already ran and found nothing, so anything at this key
-    // is an interrupted write. Read what is actually there.
-    let orphanBytes: Uint8Array;
-    try {
-      orphanBytes = await this.objects.get(key);
-    } catch {
-      // Cannot read it → cannot vouch for it. Fail closed.
-      return null;
-    }
-
-    let orphan: EvidenceBundle;
-    try {
-      orphan = JSON.parse(new TextDecoder().decode(orphanBytes)) as EvidenceBundle;
-    } catch {
-      // Not a bundle at all: this id is bound to foreign content.
-      return null;
-    }
-
-    // Harness-owned identity must match exactly. `createdAt` is deliberately NOT
-    // compared — a differing timestamp is precisely the benign case this exists
-    // to resolve.
-    const sameIdentity =
-      orphan?.taskId === incoming.taskId &&
-      orphan?.attemptId === incoming.attemptId &&
-      orphan?.baseSha === incoming.baseSha &&
-      orphan?.resultSha === incoming.resultSha;
-    if (!sameIdentity) return null;
-
-    const orphanSha = sha256Hex(orphanBytes);
-
-    // Insert the row that never landed. `on conflict do nothing` keeps a
-    // concurrent writer from turning adoption into a duplicate-key crash.
-    await this.client.query(
-      `insert into artifacts
-         (id, organization_id, project_id, attempt_id, kind, sha256, size_bytes, storage_key, content_type)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-       on conflict (id) do nothing`,
-      [
-        id, scope.organizationId, scope.projectId, orphan.attemptId,
-        EVIDENCE_KIND, orphanSha, orphanBytes.byteLength, key, EVIDENCE_CONTENT_TYPE,
-      ],
-    );
-
-    // Re-read the authoritative row: if a concurrent writer won, its sha256 is
-    // the truth and we must agree with it or fail closed.
-    const row = await this.client.query(
-      `select sha256 from artifacts
-       where id = $1 and organization_id = $2 and project_id = $3`,
-      [id, scope.organizationId, scope.projectId],
-    );
-    if (row.rowCount === 0) return null;
-    const persisted = row.rows[0]!['sha256'] as string;
-    if (persisted !== orphanSha) return null;
-
-    return { artifactId: id, sha256: orphanSha, kind: EVIDENCE_KIND };
   }
 
   async getEvidence(scope: TenantScope, id: ArtifactId): Promise<EvidenceBundle> {

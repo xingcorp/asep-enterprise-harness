@@ -9,8 +9,8 @@
 // Real adapters throughout (in-process PostgreSQL via PGlite, real git mirror +
 // worktree + bare remote, the real side-effect log and lease repository, the
 // filesystem object store). The "crash" here is a forge call that throws after
-// its effect landed, so the in-process run ends and releases its lease — the
-// revocation path. The authoritative proof, crash-takeover.itest.ts, kills a
+// its effect landed, or an evidence write that throws after the harness commit,
+// so the in-process run ends and releases its lease — the revocation path. The authoritative proof, crash-takeover.itest.ts, kills a
 // real child process with SIGKILL against real PostgreSQL so the lease has to
 // EXPIRE instead.
 
@@ -21,13 +21,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  PgliteClient, migrate, SqlSideEffectLog, SqlWorkspaceLeaseRepository, type SqlClient,
+  PgliteClient, migrate, SqlSideEffectLog, SqlWorkspaceLeaseRepository, FilesystemObjectStore,
+  ContentAddressedEvidenceStore, type SqlClient, type ObjectStore,
 } from '@asep/persistence';
 import { DockerSandboxProvider } from '@asep/command-runner';
 import { runGit, attemptBranch } from '@asep/git-worktree';
 import { createBareRemote, LocalBareForgeProvider } from '@asep/local-doubles';
 import {
-  SideEffectFencingError, LeaseLostError,
+  SideEffectFencingError, LeaseLostError, evidenceBundleFrom,
   type CommandSpec, type ForgeProvider, type PullRequestRef,
 } from '@asep/ports';
 import type {
@@ -65,6 +66,20 @@ class SimulatedCrash extends Error {}
 
 type CrashPoint = 'after-push' | 'after-pr';
 
+// The run's own object store, in which the executor "dies" at the first write
+// of an evidence bundle — after the harness commit, before its evidence.
+function crashingAtEvidence(root: string): ObjectStore {
+  const inner = new FilesystemObjectStore(root);
+  return {
+    async putIfAbsent(key, bytes) {
+      if (key.includes('/evidence/')) throw new SimulatedCrash('executor died between the commit and its evidence');
+      return inner.putIfAbsent(key, bytes);
+    },
+    get: (key) => inner.get(key),
+    exists: (key) => inner.exists(key),
+  };
+}
+
 // A forge whose effect LANDS and then the executor "dies" before it can record
 // the outcome — the window a naive retry would double.
 function crashingForge(inner: LocalBareForgeProvider, at: CrashPoint): ForgeProvider {
@@ -98,7 +113,7 @@ interface Crashed {
   readonly deadLease: string;
 }
 
-async function crashRun(at: CrashPoint | 'at-verify'): Promise<Crashed> {
+async function crashRun(at: CrashPoint | 'at-verify' | 'at-evidence'): Promise<Crashed> {
   const dir = await mkdtemp(join(tmpdir(), 'asep-crash-recovery-'));
   const client = await PgliteClient.create();
   await migrate(client);
@@ -115,7 +130,8 @@ async function crashRun(at: CrashPoint | 'at-verify'): Promise<Crashed> {
       sandbox,
       dir,
       checkCommand: at === 'at-verify' ? failingCheck : checkCommandFor,
-      forge: crashingForge(inner, at === 'at-verify' ? 'after-push' : at),
+      forge: crashingForge(inner, at === 'after-pr' ? 'after-pr' : 'after-push'),
+      ...(at === 'at-evidence' ? { objectStore: crashingAtEvidence(join(dir, 'objects')) } : {}),
       onWorkspaceCreated: (p) => inner.setWorktree(p),
     }),
     at === 'at-verify' ? /stopped early at 'verify'/ : SimulatedCrash,
@@ -311,18 +327,57 @@ test('an attempt whose commit never became durable is reported for re-execution,
   }
 });
 
-test('an attempt whose evidence is missing is not resumed: evidence for an unverified tree is never invented', async () => {
-  const c = await crashRun('after-push');
+test('a crash between the commit and its evidence: the successor completes the reserved evidence and publishes once', async () => {
+  const c = await crashRun('at-evidence');
   try {
-    const commit = (await records(c)).find((x) => x['operation'] === 'commit')!;
-    const ref = typeof commit['result_ref'] === 'string'
-      ? JSON.parse(commit['result_ref'] as string) as { evidenceId: string }
-      : commit['result_ref'] as { evidenceId: string };
-    await c.client.query(`delete from artifacts where id = $1`, [ref.evidenceId]);
+    const before = await records(c);
+    assert.deepEqual(before.map((r) => [r['operation'], r['state']]), [['commit', 'COMPLETED']]);
+    const evidenceId = (typeof before[0]!['result_ref'] === 'string'
+      ? JSON.parse(before[0]!['result_ref'] as string)
+      : before[0]!['result_ref']) as { evidenceId: string };
+    const stored = await c.client.query(
+      `select count(*)::int as n from artifacts where id = $1`, [evidenceId.evidenceId]);
+    assert.equal(stored.rows[0]!['n'], 0, 'the evidence bundle was never written');
+    assert.equal((await c.forge.listPullRequests()).length, 0, 'nothing was published');
+
     const r = await resume(c);
-    assert.equal(r.stoppedAt, 'not-resumable');
-    assert.match(r.reason ?? '', /no evidence bundle/);
+    assert.equal(r.stoppedAt, 'complete', r.reason);
+    assert.equal(r.evidenceArtifactId, evidenceId.evidenceId, 'the evidence lands at the id the commit names');
+    assert.equal(r.taskStatus, 'WAITING_FOR_HUMAN_REVIEW');
+    await assertConverged(c, r.commitSha!);
+
+    // The evidence is the draft the dead executor reserved before it committed,
+    // completed with that commit — nothing was re-derived.
+    const evidence = new ContentAddressedEvidenceStore(c.client, new FilesystemObjectStore(join(c.dir, 'objects')));
+    const reservation = await evidence.getReservation(c.scope, r.evidenceArtifactId!);
+    assert.deepEqual(
+      await evidence.getEvidence(c.scope, r.evidenceArtifactId!),
+      evidenceBundleFrom(reservation.draft, r.commitSha!),
+    );
+    const attempts = await c.client.query(
+      `select count(*)::int as n from attempts where task_id = $1`, [c.taskId]);
+    assert.equal(attempts.rows[0]!['n'], 1, 'the same attempt was resumed; none was started');
+  } finally {
+    await cleanup(c);
+  }
+});
+
+test('when the reserved evidence draft is unreadable the resume publishes nothing: evidence is never invented', async () => {
+  const c = await crashRun('at-evidence');
+  try {
+    const draft = await c.client.query(
+      `select a.storage_key from evidence_reservations r join artifacts a on a.id = r.draft_artifact_id
+        where r.attempt_id = $1`,
+      [c.attemptId],
+    );
+    assert.equal(draft.rows.length, 1);
+    await rm(join(c.dir, 'objects', draft.rows[0]!['storage_key'] as string));
+    await assert.rejects(() => resume(c));
+    const refs = (await runGit(['-C', c.forgeRemote, 'for-each-ref', 'refs/heads/'])).stdout.trim();
+    assert.equal(refs, '', 'nothing reached the remote');
     assert.equal((await c.forge.listPullRequests()).length, 0, 'no PR was opened');
+    const task = await c.client.query(`select status from tasks where id = $1`, [c.taskId]);
+    assert.notEqual(task.rows[0]!['status'], 'WAITING_FOR_HUMAN_REVIEW');
   } finally {
     await cleanup(c);
   }

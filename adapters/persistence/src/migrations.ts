@@ -964,6 +964,78 @@ alter table pull_requests add constraint pull_requests_evidence_ref_fk
   references artifacts (id, organization_id, project_id, sha256, kind);
 `;
 
+// ---------------------------------------------------------------------------
+// 0018 — evidence ids are reservations of their own attempt.
+//
+// A commit record's outcome named its evidence id as a bare string: the CHECK
+// of 0013 only asked that it look like a ULID. Nothing tied it to the tenant,
+// to the attempt that committed, or to anything that existed, and the evidence
+// for the commit was fixed nowhere until after the commit — so a crash between
+// commit and evidence left nothing to recover the evidence from.
+//
+// Now the id is RESERVED before the commit, and the reservation carries the
+// evidence DRAFT (the bundle minus the commit SHA) as an 'evidence-draft'
+// artifact of the same tenant, FK-bound with checksum and kind. The commit
+// record's evidence id (a generated column over its result_ref), the
+// attempt's evidence and the PR's evidence must each be a reservation of the
+// very attempt and binding the row belongs to.
+//
+// A database that already holds a completed commit, or attached evidence,
+// without a reservation has no draft to reserve, and the migration fails
+// rather than invent one. Append-only: earlier migrations are untouched.
+// ---------------------------------------------------------------------------
+const M0018 = `
+alter table artifacts
+  add constraint artifacts_attempt_scoped_ref_uq unique (id, organization_id, project_id, sha256, kind, attempt_id);
+
+create table evidence_reservations (
+  id                    char(26) primary key,
+  organization_id       char(26) not null,
+  project_id            char(26) not null,
+  repository_binding_id char(26) not null,
+  attempt_id            char(26) not null,
+  draft_artifact_id     char(26) not null,
+  draft_sha256          text not null,
+  draft_kind            text not null generated always as ('evidence-draft') stored,
+  created_at            timestamptz not null default now(),
+  foreign key (attempt_id, organization_id, project_id, repository_binding_id)
+    references attempts (id, organization_id, project_id, repository_binding_id),
+  foreign key (draft_artifact_id, organization_id, project_id, draft_sha256, draft_kind, attempt_id)
+    references artifacts (id, organization_id, project_id, sha256, kind, attempt_id),
+  unique (id, organization_id, project_id, repository_binding_id, attempt_id)
+);
+
+do $chk$
+declare commits bigint; attached bigint;
+begin
+  select count(*) into commits from side_effect_records
+    where operation = 'commit' and result_ref is not null;
+  select (select count(*) from attempts where evidence_artifact_id is not null)
+       + (select count(*) from pull_requests where evidence_artifact_id is not null) into attached;
+  if commits > 0 or attached > 0 then
+    raise exception 'evidence: % completed commit(s) and % attached evidence reference(s) predate evidence reservations and have no draft; refusing to invent one', commits, attached;
+  end if;
+end
+$chk$;
+
+alter table side_effect_records add column commit_evidence_id char(26)
+  generated always as (case when operation = 'commit' then (result_ref->>'evidenceId')::char(26) end) stored;
+alter table side_effect_records
+  add constraint side_effect_commit_evidence_fk
+  foreign key (commit_evidence_id, organization_id, project_id, repository_binding_id, attempt_id)
+  references evidence_reservations (id, organization_id, project_id, repository_binding_id, attempt_id);
+
+alter table attempts
+  add constraint attempts_evidence_reserved_fk
+  foreign key (evidence_artifact_id, organization_id, project_id, repository_binding_id, id)
+  references evidence_reservations (id, organization_id, project_id, repository_binding_id, attempt_id);
+
+alter table pull_requests
+  add constraint pull_requests_evidence_reserved_fk
+  foreign key (evidence_artifact_id, organization_id, project_id, repository_binding_id, attempt_id)
+  references evidence_reservations (id, organization_id, project_id, repository_binding_id, attempt_id);
+`;
+
 // Ordered, immutable migration set. Order is by id; the runner asserts it.
 export const MIGRATIONS: readonly Migration[] = Object.freeze([
   { id: '0001_init_tenancy', sql: M0001 },
@@ -983,4 +1055,5 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   { id: '0015_lease_attempt_fk', sql: M0015 },
   { id: '0016_lease_liveness_clock', sql: M0016 },
   { id: '0017_scoped_artifact_references', sql: M0017 },
+  { id: '0018_evidence_reservations', sql: M0018 },
 ]);

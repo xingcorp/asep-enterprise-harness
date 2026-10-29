@@ -8,12 +8,13 @@
 // stores, side-effect log and lease repository, real git — and the runbook's
 // decision is followed on the state the run leaves behind.
 //
-//   Fault 3: the object store disappears once verification has stored its
-//   outputs, so the evidence write fails. The attempt stops before the push
-//   with nothing published. After the store is restored, the artifacts already
-//   written still verify by checksum, and the attempt is NOT resumed: the
-//   harness never re-derives evidence it did not persist, so the task is re-run
-//   as a new attempt.
+//   Fault 3: the object store goes down at the evidence write — after the
+//   harness commit, so the commit is durable and its evidence is not. The
+//   attempt stops before the push with nothing published. After the store is
+//   restored, the artifacts already written still verify by checksum, and the
+//   SAME attempt is resumed: its evidence is the draft reserved before the
+//   commit, completed with that commit's SHA, so the resume publishes exactly
+//   one ref and one PR for the one commit — no new attempt, no second commit.
 //
 //   Fault 5: GitHub answers the PR creation with a 403 rate limit, through the
 //   real GitHub App adapter — credential handling, the forge port, and the
@@ -24,13 +25,13 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  PgliteClient, migrate, ContentAddressedArtifactStore, FilesystemObjectStore, RepositoryBindingRepository,
-  type SqlClient,
+  PgliteClient, migrate, ContentAddressedArtifactStore, ContentAddressedEvidenceStore, FilesystemObjectStore,
+  RepositoryBindingRepository, type SqlClient, type ObjectStore,
 } from '@asep/persistence';
 import { DockerSandboxProvider } from '@asep/command-runner';
 import { runGit, attemptBranch } from '@asep/git-worktree';
@@ -39,7 +40,7 @@ import {
   GitHubAppCredentialProvider, GitHubAppForgeProvider, GitHubAppForgePort, SqlForgeBindingResolver,
   type OctokitLike,
 } from '@asep/github-app';
-import type { CommandSpec, ForgeProvider, SandboxProvider } from '@asep/ports';
+import { evidenceBundleFrom, type CommandSpec, type ForgeProvider, type SandboxProvider } from '@asep/ports';
 import type {
   ArtifactId, AttemptId, OrganizationId, ProjectId, RepositoryBindingId, RunId, TaskId, TenantScope,
 } from '@asep/contracts';
@@ -114,7 +115,36 @@ async function remoteRefs(remote: string): Promise<string[]> {
     .split('\n').filter((l) => l.trim() !== '');
 }
 
-test('fault 3: an object-store outage at the evidence write stops the attempt before anything is published', async () => {
+// The filesystem store, with an outage that begins at the first evidence-bundle
+// write (the only object write between the commit and the push) and lasts
+// until `restore()`: every read and write fails while it is down.
+function storeWithEvidenceOutage(root: string): ObjectStore & { restore(): void; readonly struck: boolean } {
+  const inner = new FilesystemObjectStore(root);
+  let down = false;
+  let struck = false;
+  const fail = (): never => {
+    throw Object.assign(new Error('object store unavailable: connect ECONNREFUSED'), { code: 'ECONNREFUSED' });
+  };
+  return {
+    async putIfAbsent(key, bytes) {
+      if (!struck && key.includes('/evidence/')) { down = true; struck = true; }
+      if (down) fail();
+      return inner.putIfAbsent(key, bytes);
+    },
+    async get(key) {
+      if (down) fail();
+      return inner.get(key);
+    },
+    async exists(key) {
+      if (down) fail();
+      return inner.exists(key);
+    },
+    restore() { down = false; },
+    get struck() { return struck; },
+  } as ObjectStore & { restore(): void; readonly struck: boolean };
+}
+
+test('fault 3: an object-store outage at the evidence write stops the attempt; once restored, the same attempt is resumed', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'asep-fault-objects-'));
   const client = await PgliteClient.create();
   try {
@@ -122,49 +152,33 @@ test('fault 3: an object-store outage at the evidence write stops the attempt be
     const remote = await createBareRemote(join(dir, 'forge.git'));
     const forge = new LocalBareForgeProvider(remote);
     const objectRoot = join(dir, 'objects');
+    const objects = storeWithEvidenceOutage(objectRoot);
 
-    // The store goes away right after verification: the governed path stops
-    // its verification sandbox twice — once after the isolation probe, once
-    // after the checks have run and stored their outputs. The outage replaces
-    // the store's root with a plain file, which no write or read gets past.
-    const docker = await fakeDockerSandbox(join(dir, 'sandbox'));
-    let stops = 0;
-    let outage = false;
-    const sandbox: SandboxProvider = {
-      start: (profile, mount) => docker.start(profile, mount),
-      stop: async (handle) => {
-        await docker.stop(handle);
-        stops += 1;
-        if (stops === 2) {
-          await rename(objectRoot, `${objectRoot}.down`);
-          await writeFile(objectRoot, 'object store unavailable\n');
-          outage = true;
-        }
-      },
-    };
-
+    const sandbox = await fakeDockerSandbox(join(dir, 'sandbox'));
     await assert.rejects(
       () => runVerticalSlice({
-        client, sandbox, dir: join(dir, 'run'), objectStoreDir: objectRoot, checkCommand: checkCommandFor,
+        client, sandbox, dir: join(dir, 'run'),
+        objectStore: objects, checkCommand: checkCommandFor,
         forge, onWorkspaceCreated: (p) => forge.setWorktree(p),
       }),
-      /ENOTDIR|not a directory/,
+      /object store unavailable/,
     );
-    assert.equal(outage, true, 'the outage hit after verification, as injected');
+    assert.equal(objects.struck, true, 'the outage hit the evidence write, as injected');
 
-    // Nothing was published and the task did not reach review.
+    // Nothing was published and the task did not reach review; the commit is
+    // durable, and so is the evidence draft reserved before it.
     const a = await theAttempt(client);
     assert.deepEqual(await records(client, a.attemptId), [['commit', 'COMPLETED']], 'the commit is local; no push or PR was begun');
     assert.deepEqual(await remoteRefs(remote), [], 'nothing reached the remote');
     assert.equal((await forge.listPullRequests()).length, 0);
     assert.equal(await count(client, 'select count(*)::int as n from pull_requests', []), 0);
     assert.equal(await count(client, `select count(*)::int as n from artifacts where kind = 'evidence-bundle'`, []), 0);
+    assert.equal(await count(client, 'select count(*)::int as n from evidence_reservations where attempt_id = $1', [a.attemptId]), 1);
     const task = await client.query('select status from tasks where id = $1', [a.taskId]);
     assert.notEqual(task.rows[0]!['status'], 'WAITING_FOR_HUMAN_REVIEW');
 
     // Runbook §3.1: restore the store, re-verify what was written by checksum.
-    await rm(objectRoot);
-    await rename(`${objectRoot}.down`, objectRoot);
+    objects.restore();
     const store = new ContentAddressedArtifactStore(client, new FilesystemObjectStore(objectRoot));
     const written = await client.query(
       'select id, sha256, kind from artifacts where organization_id = $1 and project_id = $2',
@@ -178,13 +192,30 @@ test('fault 3: an object-store outage at the evidence write stops the attempt be
       assert.equal(v.ok, true, `artifact ${row['id']} still verifies`);
     }
 
-    // …and the attempt is not resumed: its evidence was never persisted.
+    // …then resume the SAME attempt: its evidence is its reserved draft plus the
+    // committed SHA, and it is published once.
     const resumed = await resumeVerticalSlice({
-      client, dir: join(dir, 'run'), objectStoreDir: objectRoot, ...a, forge,
+      client, dir: join(dir, 'run'), objectStore: objects, ...a, forge,
     });
-    assert.equal(resumed.stoppedAt, 'not-resumable');
-    assert.match(resumed.reason ?? '', /no evidence bundle .* re-execute the attempt/);
-    assert.deepEqual(await remoteRefs(remote), [], 'still nothing on the remote');
+    assert.equal(resumed.stoppedAt, 'complete', resumed.reason);
+    assert.equal(resumed.taskStatus, 'WAITING_FOR_HUMAN_REVIEW');
+    assert.deepEqual(await remoteRefs(remote), [`refs/heads/${a.branch}`], 'one ref');
+    const tip = (await runGit(['-C', remote, 'rev-parse', `refs/heads/${a.branch}`])).stdout.trim();
+    assert.equal(tip, resumed.commitSha, 'the ref is the one commit the attempt made');
+    assert.equal((await runGit(['-C', remote, 'rev-list', '--count', `${a.baseSha}..${tip}`])).stdout.trim(), '1');
+    assert.equal((await forge.listPullRequests()).length, 1, 'one PR');
+    const bundle = await client.query(
+      `select count(*)::int as n from artifacts where kind = 'evidence-bundle' and id = $1`, [resumed.evidenceArtifactId ?? null]);
+    assert.equal(bundle.rows[0]!['n'], 1, 'the evidence is stored at the id the commit names');
+    const evidence = new ContentAddressedEvidenceStore(client, new FilesystemObjectStore(objectRoot));
+    const reservation = await evidence.getReservation(a.scope, resumed.evidenceArtifactId!);
+    assert.deepEqual(
+      await evidence.getEvidence(a.scope, resumed.evidenceArtifactId!),
+      evidenceBundleFrom(reservation.draft, resumed.commitSha!),
+      'the evidence is exactly the draft reserved before the commit, completed with the commit SHA',
+    );
+    assert.equal(await count(client, 'select count(*)::int as n from attempts where task_id = $1', [a.taskId]), 1,
+      'no new attempt was started');
   } finally {
     await client.close();
     await rm(dir, { recursive: true, force: true });
