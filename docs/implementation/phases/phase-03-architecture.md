@@ -1,9 +1,11 @@
-# Phase 3 — Durable Orchestration — Architecture (LOCKED v3, pending controller confirmation)
+# Phase 3 — Durable Orchestration — Architecture (LOCKED v4, pending controller confirmation)
 
 > Companion to `phase-03-plan.md`. Base `00a6889` (head of `phase/02-single-agent-vertical-slice`, not yet
-> accepted); v1 of this document is at `80bb76a`, v2 at `98e92cf`. v2 folded in the Codex plan review; v3 folds
-> in the Codex lock-check of v2 (`phase-03-plan-review-codex-v2.md`) and the controller's reconciliation R15–R20
-> (`phase-03-review-log.md`, section "Lock-check v2"). Port signatures in §17 are design intent. The binding text
+> accepted); v1 of this document is at `80bb76a`, v2 at `98e92cf`, v3 at `7cbf5d3` (R20 at `e4fd343`). v2 folded in
+> the Codex plan review; v3 folds in the Codex lock-check of v2 (`phase-03-plan-review-codex-v2.md`) and the
+> controller's reconciliation R15–R20 (`phase-03-review-log.md`, section "Lock-check v2"); v4 folds in the Codex
+> review of v3 and audit of S2 (`phase-03-review-codex-v3.md`) and reconciliation R21 (review log, section
+> "Review v3"). Port signatures in §17 are design intent. The binding text
 > is plan §30 (shared-surface change requests) and, for the review-loop slot, the block
 > `Review-loop slot contract (verbatim for S0)` that Lane B locks and the controller hands over (plan §30, CR-10).
 
@@ -112,7 +114,7 @@ Forbidden-import rules added (CR-12). They are written against the rule framewor
 |---|---|---|
 | `@temporalio/*` confined | every package except `adapters/temporal` (its `src/test-support/**` included) | any import or require of `@temporalio/` |
 | workflow purity | `adapters/temporal/src/workflows/**` | any non-type import except `@temporalio/workflow`, `@asep/orchestration` and relative workflow modules |
-| core purity | production source of `packages/orchestration` (`src/**/*.ts` except `*.test.ts` and `src/test-support/**`) | a non-relative import or re-export that is not `import type`/`export type` from `@asep/contracts` or `@asep/ports`; uses of `Date`, `Math.random`, `setTimeout`, `setInterval`, `setImmediate`, `queueMicrotask`, `performance`, `process`, `crypto`, `require`, `globalThis`, `WeakRef`, `FinalizationRegistry`, `eval`, `fetch`, dynamic `import()` |
+| core purity | production source of `packages/orchestration` (`src/**/*.ts` except `*.test.ts` and `src/test-support/**`) | a non-relative import or re-export that is not `import type`/`export type` from `@asep/contracts` or `@asep/ports` (import-equals and import types included); a relative import or re-export whose target leaves `src/`, enters `src/test-support/**` or is a test file; uses of `Date`, `setTimeout`, `setInterval`, `setImmediate`, `queueMicrotask`, `performance`, `process`, `crypto`, `require`, `globalThis`, `WeakRef`, `FinalizationRegistry`, `eval`, `Function`, `fetch`, dynamic `import()`; `Math` other than `Math.<member>` for `abs`, `ceil`, `floor`, `imul`, `max`, `min`, `round`, `sign`, `trunc` |
 | bundler truth | `adapters/temporal` | real `bundleWorkflowCode()` with no `ignoreModules` succeeds. A seeded `node:fs` workflow fixture fails. |
 | no second driver | production entrypoints (`server-main`, `pilot-main`, `cli-main`, `workers/temporal-worker/src/main.ts`) | the import graph reaches `runVerticalSliceWorkflow`, `runVerticalSlice`, `governedExecution`, `completeToReview` or `executeTask` |
 | activity options explicit | `adapters/temporal/src/workflows/**` | a `proxyActivities` option set without `retry.maximumAttempts`, `startToCloseTimeout` or (for long activities) `heartbeatTimeout` (unit test over the exported option table) |
@@ -124,7 +126,12 @@ The core-purity rule has two acceptance checkpoints (P3-PLAN2-MED-001, MED-002):
 1. **S2, before G-P2.** A self-contained purity check inside the package (`packages/orchestration/src/purity.test.ts`,
    `asep-suite:orchestration-purity`). It does not touch the shared rule framework. It scans production source
    only, carries seeded violations for each rule, and has self-checks that a valid construct passes and that
-   the production file set excludes tests and test support.
+   the production file set excludes tests and test support. It is AST-based (P3-S2-MED-002, R21): it parses each
+   file with the TypeScript compiler API the repo already depends on (TypeScript 7.0.2 `typescript/unstable/sync`
+   over an in-memory file system, research register Q11), reads type-only status from each import clause and
+   specifier, resolves every relative specifier against the file and checks its target, and matches banned names on
+   the decoded identifier, so comments, string text, aliases, computed access and escaped identifiers neither hide
+   nor fake a use.
 2. **S7, after G-P2.** The same rule is written into `scripts/forbidden-imports.test.ts` on the accepted Phase 2
    framework, with its own seeded violation. The package-local suite stays registered afterwards, because
    `REQUIRED_SUITES` is append-only (R10), so the rule is enforced at every commit and both checks must pass.
@@ -152,17 +159,23 @@ BUDGET_CHECK (reservation for the planned attempt; table "Reservation failure" i
    ▼
 ATTEMPT_STARTING  (ensureAttempt → acquireLease → prepareWorkspace(base = task baseSha, or the lineage's
                    repairBaseSha) → storeAttemptInputs (repair lineage: ContextPack = buildRepairContextPack(...)))
-                   ensureAttempt fails ──▶ FAILED (attempt-registration-failed; never replaced, numbering stays contiguous)
+                   ensureAttempt fails ──▶ findAttempt (lookup by (task_id, attempt_number); R21):
+                     found  → the attempt ends `failed` with zero usage
+                     absent → no attempt-bound effect (usage, outcome) at all
+                     lookup fails → no attempt-bound effect; audited attempt.registration-unreconciled
+                   ──▶ FAILED (attempt-registration-failed; never replaced, numbering stays contiguous)
    ▼
 AGENT_RUNNING  (runAgent: engine maximumAttempts = 1; heartbeats; lease renewed on each tick)
    │ outcome table "Agent outcome" in §10 (the first matching row wins):
-   │   AGENT_DONE within every cap                     ──▶ INSPECTING → VERIFYING → … (full path)
+   │   AGENT_DONE within every cap (cost, tool calls,
+   │   harness-measured wall-clock up to cap + kill grace) ──▶ INSPECTING → VERIFYING → … (full path)
    │   a failure class that is not replaceable
    │   (FAILED, BLOCKED or a cap stop reporting one),
    │   overrun or not                                  ──▶ ATTEMPT_ABANDONED → FAILED with that class
    │                                                       (an overrun is still recorded and audited)
    │   BUDGET_EXHAUSTED (adapter stopped at a cap),
-   │   or reported usage above a cap (overrun)         ──▶ INSPECTING only → ATTEMPT_EXHAUSTED
+   │   or usage above a cap (cost, tool calls, or
+   │   wall-clock beyond cap + kill grace: overrun)    ──▶ INSPECTING only → ATTEMPT_EXHAUSTED
    │   FAILED / BLOCKED (replaceable failure class)    ──▶ ATTEMPT_ABANDONED(failure class)
    │   activity failure / heartbeat timeout (infra)    ──▶ ATTEMPT_ABANDONED(failure class)
    ▼
@@ -187,6 +200,13 @@ ASSURANCE_ROUND (assuranceRound activity = Lane B runAssuranceRound; cancellable
 PUBLICATION_GATE ──(publicationApprovalRequired)──▶ AWAITING_APPROVAL(publish-change)   [cancellable wait]
    ▼
 PUBLISHING  (publishBranch [critical unit 2] → upsertPullRequest [critical unit 3])
+   │ push fails non-retryably (definite: nothing pushed)    ──▶ FAILED (publication-failed)
+   │ push fails retryably after its retries, or times out
+   │ (ambiguous: the branch may exist)                      ──▶ upsertPullRequest still runs
+   │ PR upsert fails after its retry policy (non-retryable
+   │ error or retries exhausted)                            ──▶ FAILED (publication-incomplete), audited
+   │                                                            publication.incomplete with the remote branch and
+   │                                                            whether the push was confirmed; never CANCELLED
    ▼
 REVIEW_HANDOFF (projectTaskState WAITING_FOR_HUMAN_REVIEW) ─▶ CLEANUP ─▶ done
 
@@ -195,16 +215,20 @@ ATTEMPT_ABANDONED: reapContainers → quarantineWorkspace → releaseLease → r
    push record exists, else FAILED. Replaceable classes (policy data, `policies/orchestration-policy.yaml`):
    environment, provider, quota-rate-limit, tool, agent-loop-stall, artifact-loss, workflow-recovery-failure.
    Never replaceable: policy-violation, false-completion, duplicate-side-effect (Phase 1 taxonomy,
-   `policies/failure-taxonomy.yaml`).
+   `policies/failure-taxonomy.yaml`). This holds whatever the policy says: the core never treats these three as
+   replaceable, and the policy loader and the input mapping reject a policy that lists them (R21).
 ATTEMPT_EXHAUSTED: reapContainers → quarantineWorkspace → releaseLease → recordUsage (+ recordOverrun and an
    audited overrun incident when usage exceeded a cap) → recordAttemptOutcome('budget-exhausted')
    → BUDGET_CHECK (kind = retry, same repair lineage). Nothing of the attempt is verified, committed or published.
    An inspection that fails on an exhausted attempt is a normal ATTEMPT_ABANDONED (R20).
 Any phase + cancel → CANCELLING (finish an open critical unit, and once a push has started also the PR upsert;
    reap, quarantine, release, recordAttemptOutcome('cancelled')) → CANCELLED. Assurance, repair planning and
-   approval waits are interrupted at once.
+   approval waits are interrupted at once. A cancel never finalizes while a publication unit is unreconciled: if
+   the PR upsert fails after its retries, the task ends FAILED (publication-incomplete), not CANCELLED (R21).
 Any phase boundary + pause → PAUSED (lease renewed by timer; pause timeout → recordAttemptOutcome('cancelled')
-   → BLOCKED). A pause never splits a critical unit, nor push from its PR upsert.
+   → BLOCKED). A pause never splits a critical unit, nor push from its PR upsert. While the task waits for an
+   approval no request is in flight, so a pause applies at once: projection PAUSED, pause timer started. The
+   approval's expiry timer keeps running (R21).
 ```
 
 **Verification stops end the task.** A failed or errored mandatory verification is a deterministic result, and
@@ -247,8 +271,15 @@ unavailable, assurance `BLOCK`, publication rejected, pause timeout); `BUDGET_EX
   the run workflow appends it.
 - Run-level pause/resume are forwarded to the active child as signals (idempotent flags with `requestId`). Run
   cancel cancels the active child through cancellation-scope propagation, then closes.
+- **Seal and completion (R21, P3-PLAN3-HIGH-002).** A `seal` control (Update `control`, `kind: seal`, idempotent by
+  `requestId`) ends submissions: a later `submitTask` for a new task id is refused (`run-sealed`), a known task id
+  still gets its original receipt, and a second seal is refused (`already-sealed`). A run may also be created
+  already sealed with a fixed task list (`run-workflow-input.fixedTasks`), which is queued in order. A sealed run
+  completes `COMPLETED` as soon as no task is open (no active child, empty queue), whatever `maxTasks` says;
+  `maxTasks` stays a cap on submissions and still completes an unsealed run that reaches it. A pause does not hold
+  completion when nothing is left to run. The seal is audited (`workflow.seal`) like the other controls.
 - Continue-as-new when `workflowInfo().continueAsNewSuggested`, after `allHandlersFinished`. Carried state:
-  queue, dedup set, budget totals.
+  queue, dedup set, budget totals, the pause flag and the sealed flag.
 - **Deferred:** parallel tasks within a run, DAG ordering, cross-run fairness (see plan §4).
 
 ### 4.3 `workspaceJanitorWorkflow` (Temporal Schedule, every 15 min)
@@ -267,7 +298,8 @@ sets an explicit `retry`, `startToCloseTimeout` and, where marked, `heartbeatTim
 | Activity | Wraps (Phase 2 step / port / Lane B function) | startToClose | heartbeat | retry max | Idempotency key / natural key | Cancellable |
 |---|---|---|---|---|---|---|
 | `admitTask` | injected `admit(risk)`; default `admitRisk` (`risk-admission.ts:82`) | 30 s | — | 3 | pure | yes |
-| `ensureAttempt` | attempts repo (new natural key) | 30 s | — | 10 | `(task_id, attempt_number)` unique | yes |
+| `ensureAttempt` | attempts repo (new natural key); returns the attempt id and its remote branch name (the Git adapter's attempt branch rule, `vertical-slice-workflow.ts:27`) | 30 s | — | 10 | `(task_id, attempt_number)` unique | **no**: a short registration write; a cancel waits for it (R21) |
+| `findAttempt` | attempts repo, read-only lookup after a failed `ensureAttempt` (R21, §4.1) | 30 s | — | 10 | `(task_id, attempt_number)` | no |
 | `acquireLease` | Phase 2 lease primitive (accepted shape, R1) | 30 s | — | 10 | per the primitive; invariants §7 | yes |
 | `prepareWorkspace` | `WorkspaceManager.create` (create-or-adopt, CR-07) | 5 min | 30 s | 3 | `workspaces.attempt_id` unique | yes |
 | `storeAttemptInputs` | `ArtifactStore.put`; repair: `buildRepairContextPack(original, repairOrder)` (Lane B, pure) | 2 min | — | 5 | content address | yes |
@@ -283,8 +315,8 @@ sets an explicit `retry`, `startToCloseTimeout` and, where marked, `heartbeatTim
 | `projectTaskState` / `projectAttemptState` | projection writer (§13) | 30 s | — | 50, backoff to 1 min | monotonic `projection_seq` | no |
 | `recordUsage` | budget ledger: attempt usage, recorded overrun, granted extension | 30 s | — | 10 | `(attempt_id, entry_kind)` / `<approvalRequestId>:extension` key | no |
 | `openApprovalRequest` / `verifyApprovalDecision` / `expireApprovalRequest` / `cancelApprovalRequest` | approvals repo; `cancelApprovalRequest` closes an opened gate when the task ends without a decision, so a late decision gets 409 | 30 s | — | 10 | `approval_requests.id` deterministic from workflow (§11) | no (short gate writes; the wait between them is cancellable) |
-| `recordControl` | audit + `human.intervention` run event for an accepted control (§9) | 30 s | — | 10 | `requestId` | no |
-| `recordAudit` | audit row for a workflow-detected event: slot contract violation, assurance unavailable, unverified decision, soft threshold, overrun incident, pause timeout, cancel after publication | 30 s | — | 10 | `<workflowId>:<seq>` | no |
+| `recordControl` | audit + `human.intervention` run event for an accepted control, including a run `seal` (§9) | 30 s | — | 10 | `requestId` | no |
+| `recordAudit` | audit row for a workflow-detected event: slot contract violation, assurance unavailable, unverified decision, soft threshold, overrun incident, pause timeout, cancel after publication, incomplete publication, unreconciled attempt registration | 30 s | — | 10 | `<workflowId>:<seq>` | no |
 | `renewLease` | Phase 2 lease primitive renewal (invariant L2, §7) | 30 s | — | 5 | lease identity | yes |
 | `reapContainers` | `ExecutionReaper.reap` (CR-08) | 2 min | — | 10 | label `asep.attempt` | no |
 | `quarantineWorkspace` / `cleanupWorkspace` / `releaseLease` | Phase 2 ports via registry | 2 min | — | 10 | idempotent by id | no |
@@ -301,6 +333,9 @@ sets an explicit `retry`, `startToCloseTimeout` and, where marked, `heartbeatTim
 
 All other errors are retryable up to the table's limit. A table-driven test pins the mapping (exit D4). Failure
 classes come from activities, which call the Phase 1 `classifyFailure`. The workflow never reads policy YAML.
+The interpreter also tells the core whether the engine stopped on a non-retryable error (the activity failure's
+retry state) or because retries or time ran out. The core uses that only for the push: a non-retryable push
+failure is definite, any other push failure is ambiguous (§4.1, R21).
 
 **Why the agent is never engine-retried.** The agent mutates a worktree and spends money. A blind re-run on a
 half-mutated worktree is neither idempotent nor honest about cost. Phase 1's domain model already says
@@ -353,11 +388,13 @@ P3-PLAN-MED-009).
      commit, the manifest is never empty once the suite exists, and the final criterion is unchanged.
 6. **Deployment rule while Worker Versioning is deferred.** A worker build that changes workflow code ships only
    in one of two ways:
-   - **Drain-only (P3-PLAN2-MED-006).** In this order: (1) stop starting new executions, so the API refuses new
-     task and run starts with 503 and no submission reaches the task queue; (2) keep the old workers running, so
-     the open workflows reach a terminal state on the code that started them; (3) wait until the command that
-     lists open workflows on the task queue returns none; (4) stop the old workers; (5) start the new build and
-     re-enable starts. Stopping the old workers first would leave open workflows with nobody to run them.
+   - **Drain-only (P3-PLAN2-MED-006, R21).** In this order: (1) stop starting new executions, so the API refuses new
+     task and run starts with 503 and no submission reaches the task queue; (2) seal every open run (§4.2), so each
+     run completes once its queued tasks have finished instead of waiting for `maxTasks`; (3) keep the old workers
+     running, so the open workflows reach a terminal state on the code that started them; (4) wait until the
+     command that lists open workflows on the task queue returns none; (5) stop the old workers; (6) start the new
+     build and re-enable starts. Stopping the old workers first would leave open workflows with nobody to run them,
+     and skipping the seal would leave every run below `maxTasks` open for ever.
    - **Patched.** Every behavior change is behind `patched()`, and the replay corpus, including histories from
      the previous build, passes on the new build.
 
@@ -513,15 +550,16 @@ boundaries. Inbound forge webhooks do not exist; they were deferred in Phase 2 (
 
 | Control | Delivery | Semantics |
 |---|---|---|
-| pause | Update `control` (`kind: pause`, `requestId`) via API | Takes effect at the next phase boundary. An in-flight activity is not interrupted. The workflow waits on `condition(() => !paused \|\| cancelRequested, pauseTimeout)` and runs a `renewLease` timer loop meanwhile. Projection becomes `PAUSED`. Repeating the same `requestId` is a no-op. Pausing a paused workflow returns `accepted: false` with reason `already-paused`. |
-| resume | Update `control` (`kind: resume`) | Clears the flag and continues from the recorded phase. Projection returns to the phase's status. |
-| pause timeout | durable timer (policy `maxPauseHours`, default 72) | → reap, quarantine, release, `recordAttemptOutcome('cancelled')`, `BLOCKED` (`reason: pause-timeout`), audit. |
-| cancel | Temporal workflow cancellation through the API | Each operation that needs reconciliation is its own **critical unit** (R17, P3-PLAN2-HIGH-003): (1) commit plus evidence binding, (2) push, (3) PR upsert. A cancel that arrives inside a unit is processed when that unit has reconciled and its records are complete, so cancellation never leaves `PENDING` records. A cancel before push starts ends the task with nothing published. A cancel after push has started completes push and then PR upsert, so the remote ends either with no ASEP branch or with the branch and its PR. Assurance rounds, repair planning and approval waits are not critical: a cancel interrupts them at once (the assurance activity receives it on its `AbortSignal`; an open approval request is closed with `cancelApprovalRequest`). During `runAgent` or `runVerification` the cancellation reaches the activity's `AbortSignal`. The provider or runner then kills its process group, and the cleanup scope reaps the attempt's containers by label. Then the cleanup scope quarantines the workspace, releases the lease and projects `CANCELLED`. A published PR is **left open** for a human (the harness never deletes remote refs; Phase 2 RefSafetyPolicy forbids deletion). Cancellation after publication is audited with the PR reference. |
+| pause | Update `control` (`kind: pause`, `requestId`) via API | Takes effect at the next phase boundary. An in-flight activity is not interrupted. The workflow waits on `condition(() => !paused \|\| cancelRequested, pauseTimeout)` and runs a `renewLease` timer loop meanwhile. Projection becomes `PAUSED`. Repeating the same `requestId` is a no-op. Pausing a paused workflow returns `accepted: false` with reason `already-paused`. While the task waits for an approval no request is in flight, so the pause applies at once: projection `PAUSED`, pause timer started; a pause that arrives while the approval request is being opened or a decision verified applies when that request returns. The approval expiry timer is not suspended (R21, exit G14). |
+| resume | Update `control` (`kind: resume`) | Clears the flag and continues from the recorded phase. Projection returns to the phase's status, or to `WAITING_FOR_APPROVAL` while an approval request is still open. |
+| pause timeout | durable timer (policy `maxPauseHours`, default 72) | → reap, quarantine, release, `recordAttemptOutcome('cancelled')`, `BLOCKED` (`reason: pause-timeout`), audit; an open approval request is closed with `cancelApprovalRequest`. |
+| cancel | Temporal workflow cancellation through the API | Each operation that needs reconciliation is its own **critical unit** (R17, P3-PLAN2-HIGH-003): (1) commit plus evidence binding, (2) push, (3) PR upsert. A cancel that arrives inside a unit is processed when that unit has reconciled and its records are complete, so cancellation never leaves `PENDING` records. A cancel before push starts ends the task with nothing published. A cancel after push has started completes push and then PR upsert, so the remote ends either with no ASEP branch or with the branch and its PR. If the PR upsert fails after its retry policy, the cancel does not finalize: the task ends `FAILED / publication-incomplete`, and the audit row names the remote branch left without a PR for a human to reconcile (R21, exit G13). Assurance rounds, repair planning and approval waits are not critical: a cancel interrupts them at once (the assurance activity receives it on its `AbortSignal`; an open approval request is closed with `cancelApprovalRequest`). During `runAgent` or `runVerification` the cancellation reaches the activity's `AbortSignal`. The provider or runner then kills its process group, and the cleanup scope reaps the attempt's containers by label. Then the cleanup scope quarantines the workspace, releases the lease and projects `CANCELLED`. A published PR is **left open** for a human (the harness never deletes remote refs; Phase 2 RefSafetyPolicy forbids deletion). Cancellation after publication is audited with the PR reference. |
 | run-level pause/resume/cancel | Update on `runWorkflow` | Forwarded to the active child (signal for pause/resume, scope cancellation for cancel). No new child starts while the run is paused. |
+| run seal | Update `control` (`kind: seal`, target run) via API | No new task submission afterwards. The run completes once no task is open, whatever `maxTasks` says (§4.2). Drain seals every open run (§6.6). |
 
 Every control requires an authenticated principal with capability `executions:control` for the task's project
 (principal model: plan §30, CR-17). The **workflow** writes the audit row (`workflow.pause`, `workflow.resume`,
-`workflow.cancel`) and the `human.intervention` run event, through the `recordControl` activity, after it
+`workflow.cancel`, `workflow.seal`) and the `human.intervention` run event, through the `recordControl` activity, after it
 accepts the control. So an API crash can lose neither the effect nor its audit, and a rejected control writes
 no "accepted" audit row.
 
@@ -568,10 +606,10 @@ checked in order, and the first match wins:
 
 | Agent result | Inspect | Verify, commit, assurance, publish | Attempt terminal | Next |
 |---|---|---|---|---|
-| `AGENT_DONE`, reported usage within every cap | yes | yes, as designed | per the rest of the path | — |
+| `AGENT_DONE`, usage within every cap (reported cost and tool calls at most their caps, harness-measured wall-clock at most the cap plus the kill grace) | yes | yes, as designed | per the rest of the path | — |
 | `FAILED` / `BLOCKED`, or a cap stop that reports a failure class, where the class is not one the policy lists as replaceable (an unclassified failure included), overrun or not | no | no | `failed`, plus `recordOverrun` and an audited overrun incident if usage overran a cap | none: the task ends `FAILED` with that class |
 | `BUDGET_EXHAUSTED` (the adapter stopped the agent at a cap) | yes, to record evidence of the workspace state | **no** | `budget-exhausted` | a new attempt (`retry`, same lineage) if `BUDGET_CHECK` allows |
-| any other result with reported usage above a cap the adapter did not stop at (cost or tool calls) | yes | **no** | `budget-exhausted`, plus `recordOverrun` and an audited overrun incident | `BUDGET_CHECK`, where the recorded overrun ends the task `BUDGET_EXHAUSTED` while attempts remain |
+| any other result with usage above a cap the adapter did not stop at (reported cost, reported tool calls, or harness-measured wall-clock beyond the cap plus the kill grace) | yes | **no** | `budget-exhausted`, plus `recordOverrun` and an audited overrun incident | `BUDGET_CHECK`, where the recorded overrun ends the task `BUDGET_EXHAUSTED` while attempts remain |
 | `FAILED` / `BLOCKED` with a replaceable failure class | no | no | `failed` | a retry if `BUDGET_CHECK` allows |
 | activity failure or heartbeat timeout (infrastructure, worker death) | no | no | `failed` | a retry only for a replaceable class, if `maxAttempts` and a fresh reservation allow; `workflow.recovered` (`attempt-replaced`) after a timeout |
 
@@ -582,6 +620,28 @@ exhausted attempt with no attempt left, `BUDGET_CHECK` ends the task `FAILED / a
 Mandatory verification is never skipped on a path that publishes. It is not run on a path that can never publish.
 An agent that finishes `AGENT_DONE` having spent exactly its cap is within its cap and gets the full path, because
 verification was reserved separately (exit H5).
+
+**Wall-clock overrun and the kill grace (R21, P3-S2-HIGH-005, P3-PLAN3-MED-001).** The harness measures each
+attempt's agent wall-clock. A measured wall-clock above the attempt cap is an overrun exactly like cost or tool
+calls (table above), whatever the agent's status. The only tolerance is the kill-escalation grace: the interval
+between the agent adapter's stop signal at the cap and its hard kill, during which the agent may still be running.
+It is data, `policy.agentKillGraceSeconds` (data model §4.2), not a business allowance. The code default is 0, so
+without a stated interval there is no tolerance at all. The policy file sets it to the adapter's documented
+stop-to-kill interval, which CR-25 pins in S4. The overrun records the wall-clock excess over the cap
+(`recordOverrun.overrunWallClockMs`) (exit H11).
+
+**Budget precision (R21, P3-S2-MED-001).** Budget arithmetic is in integer micro-USD.
+
+- Reported usage converts with ceiling from its exact decimal value, so no overrun is ever rounded away: a reported
+  `5.0000004` on a cap of `5` is an overrun of `0.000001`.
+- Caps, the verification reserve, the run remainder and extension amounts must be exactly representable in
+  micro-USD and at most `100 000 000` USD each. Ten attempts, each charged at most that bound for the agent plus
+  its reserve, then sum to at most `2 × 10^15` micro-USD, well inside the safe-integer range (`9.0 × 10^15`).
+- The workflow-input mapping rejects any other amount (S7, with the rule the core exports), and an extension amount
+  outside it is refused by the decision validator.
+- A reported cost above `100 000 000` USD is charged at that bound; it is an overrun either way.
+- Plain decimal inputs such as `1.1` stay exact, because the conversion reads the number's shortest decimal form
+  instead of multiplying binary floating point.
 
 **Reservation failure (R17, R19, P3-PLAN2-HIGH-002).** At `BUDGET_CHECK`, for any planned attempt (initial,
 retry or repair):
@@ -599,7 +659,7 @@ only switch: "approvals disabled" for budget extensions means exactly "`maxBudge
 
 - Usage source: `AgentAttemptObservation.usage` is **provider-reported and untrusted**
   (`packages/ports/src/index.ts:49-57`). Wall-clock is measured by the harness. The ledger records `source`
-  per entry. Reported usage above a cap is an overrun: it is recorded (ledger entry `overrun` and an audit
+  per entry. Usage above a cap is an overrun: it is recorded (ledger entry `overrun` and an audit
   incident), the attempt is treated exactly like a cap-triggered exhaustion, and the recorded overrun fails every
   later reservation of the task. Residual risk: a provider that under-reports cost is bounded only by the adapter's
   stream-based cost cap and by wall-clock (PR3-16).
@@ -643,9 +703,13 @@ and keeps ADR 0014's named approval with rationale.
   (idempotent), `approval.expired`, and the kind's reject path. A late decision gets HTTP 409, and the validator
   rejects it. Its delivery row ends `TARGET_CLOSED` or is rejected by the validator, and either way it is
   audited.
-- **Allowed decisions per kind.** `budget-extension`: approve (with `extensionUsd ≤ policy max`) or reject.
-  `publish-change`: approve or reject. No approval kind is reachable after a verification stop, so a human can
+- **Allowed decisions per kind.** `budget-extension`: approve (with `extensionUsd`, positive, at most the policy
+  bound and exactly representable in micro-USD, §10) or reject. `publish-change`: approve or reject. Every decision
+  other than a budget-extension approve carries `extensionUsd: null`. The canonical control message carries the
+  amount (`workflow-control/v1` `approval-decision.extensionUsd`, data model §4.2), and the S7 mapping hands it to
+  the core unchanged (exit I8). No approval kind is reachable after a verification stop, so a human can
   never approve past failed mandatory verification (ADR 0010: deterministic evidence is stronger than review).
+- **Pause during a wait** applies at once and leaves the expiry timer running (§9, R21).
 
 ## 12. Review-loop slot (reconciled with Phase 4, R3)
 
@@ -734,8 +798,8 @@ What the fixed block is known to bring (R18), and what Lane A does with it:
   | after publication on `ESCALATE` | `escalated` |
   | on `REPAIR`, before the next attempt | `repair-requested` |
   | on `BLOCK` | `blocked` |
-  | budget exhaustion: the adapter stopped the agent at a cap, or reported usage overran a cap (§10) | `budget-exhausted` |
-  | abandonment (agent failure, overstep, worker death) and any other non-review stop | `failed` |
+  | budget exhaustion: the adapter stopped the agent at a cap, or usage overran a cap (§10) | `budget-exhausted` |
+  | abandonment (agent failure, overstep, worker death), an attempt found registered after a failed `ensureAttempt`, an incomplete publication, and any other non-review stop | `failed` |
   | cancel and pause timeout | `cancelled` |
 
   It is the only emitter of `attempt.declared_complete` and `attempt.completed`. So the false-completion metric
@@ -788,9 +852,10 @@ no push record exists; it never proceeds on a missing worktree. A test runs two 
   boundary spans (`git.commit`, `forge.push`, …) still fire inside the activities via the Phase 2 `observe` seam
   (`pipeline-steps.ts:870-877`).
 - **Audit actions** (CR-18): `workflow.start`, `workflow.pause`, `workflow.resume`, `workflow.cancel`,
-  `approval.request`, `approval.decide`, `approval.deliver`, `approval.expire`, `budget.threshold`,
+  `workflow.seal`, `approval.request`, `approval.decide`, `approval.deliver`, `approval.expire`, `budget.threshold`,
   `budget.extend`, `budget.overrun`, `side-effect.takeover`, `workspace.quarantine`, `review-slot.contract-violation`,
-  `assurance-unavailable`, `approval.unverified`, `workflow.pause-timeout`, `workflow.cancel.after-publication`.
+  `assurance-unavailable`, `approval.unverified`, `workflow.pause-timeout`, `workflow.cancel.after-publication`,
+  `publication.incomplete`, `attempt.registration-unreconciled`.
   Workflow-detected events are written by the `recordAudit` activity (§5).
 - **RunEvents** (persisted through `RunEventSink` into `run_events`, validated against `run-event` 1.2.0, S0).
   - Lane A emits: `run.started`, `task.started`, `attempt.started`, `verification.completed`, `task.completed`,

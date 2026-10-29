@@ -1,8 +1,9 @@
-# Phase 3 — Data Model (LOCKED v3, pending controller confirmation)
+# Phase 3 — Data Model (LOCKED v4, pending controller confirmation)
 
 > Companion to `phase-03-plan.md`. PostgreSQL 17 (same digest-pinned image as Phase 2). Base `00a6889`; v1 of
-> this document is at `80bb76a`, v2 at `98e92cf`. v2 folded in the Codex plan review; v3 folds in the Codex
-> lock-check of v2 and the controller's reconciliation R15–R19 (`phase-03-review-log.md`). The reconciliation wins
+> this document is at `80bb76a`, v2 at `98e92cf`, v3 at `7cbf5d3`. v2 folded in the Codex plan review; v3 folds in
+> the Codex lock-check of v2 and the controller's reconciliation R15–R19; v4 folds in the Codex review of v3 and
+> reconciliation R21 (`phase-03-review-log.md`, section "Review v3"). The reconciliation wins
 > where it and this document disagree.
 > Lane A migration range: **`0100`–`0199`** (lane contract). Migrations are append-only, checksummed and applied
 > in strictly ascending id order by the Phase 2 migrator, which allows gaps (`adapters/persistence/src/migrator.ts:45-51`).
@@ -332,8 +333,9 @@ Add `PAUSED`, `WAITING_FOR_APPROVAL`, `BUDGET_EXHAUSTED`. Transition table chang
 
 ```text
 READY / EXECUTING / VERIFYING  → PAUSED, WAITING_FOR_APPROVAL      (in addition to Phase 2 edges)
-PAUSED                         → READY, EXECUTING, VERIFYING, BLOCKED, CANCELLED
-WAITING_FOR_APPROVAL           → READY, EXECUTING, VERIFYING, BLOCKED, BUDGET_EXHAUSTED, CANCELLED
+PAUSED                         → READY, EXECUTING, VERIFYING, WAITING_FOR_APPROVAL, BLOCKED, BUDGET_EXHAUSTED,
+                                 CANCELLED
+WAITING_FOR_APPROVAL           → READY, EXECUTING, VERIFYING, PAUSED, BLOCKED, BUDGET_EXHAUSTED, CANCELLED
 READY / EXECUTING / VERIFYING  → BUDGET_EXHAUSTED
 BUDGET_EXHAUSTED               → (terminal)
 WAITING_FOR_HUMAN_REVIEW       → (terminal for the harness; unchanged; still no ACCEPTED/DONE)
@@ -342,6 +344,11 @@ WAITING_FOR_HUMAN_REVIEW       → (terminal for the harness; unchanged; still n
 `VERIFYING → BUDGET_EXHAUSTED` is needed when a replacement attempt is refused for budget after the task already
 reached verification (for example an exhausted repair attempt whose retry fails its reservation). The S2 decision
 core emits it, and S1 adds it to the domain table (R19).
+
+`WAITING_FOR_APPROVAL → PAUSED`, `PAUSED → WAITING_FOR_APPROVAL` and `PAUSED → BUDGET_EXHAUSTED` are needed because a
+pause during an approval wait applies at once, resume returns to the wait, and a budget-extension request can
+expire or be rejected while the task is paused (R21, architecture §9). The S2 core emits them, and S1 adds them to
+the domain table.
 
 The task stays `VERIFYING` across assurance and repair rounds, as Phase 4 requires (`phase-04-plan.md` §7 at
 `a2a7b8a`). No review-specific task status exists. `isTaskTerminal` gains `BUDGET_EXHAUSTED`. The Phase 2 table
@@ -367,24 +374,41 @@ runRemaining: { costUsd ≥ 0 }
 verification: { planId, checks: [{ id, level L0..L9, category, mandatory, commandId }] }   (no shell strings)
 governance: { publicationApprovalRequired, approvalTtlSeconds 60..604800, maxPauseHours 1..168,
               assuranceMode: shadow|gating (shadow in Phases 3 and 4), requestedBy (ULID) }
-policy: { replaceableFailureClasses: [failure class], maxBudgetExtensionUsd?: > 0 }
+policy: { replaceableFailureClasses: [failure class], maxBudgetExtensionUsd?: > 0, agentKillGraceSeconds: integer ≥ 0 }
         (resolved from `policies/orchestration-policy.yaml` at submit time; the workflow never reads policy files.
-         An absent maxBudgetExtensionUsd makes budget-extension approval unavailable, R19.)
+         An absent maxBudgetExtensionUsd makes budget-extension approval unavailable, R19.
+         replaceableFailureClasses never lists policy-violation, false-completion or duplicate-side-effect: the
+         loader and the input mapping reject such a policy, and the core ignores them anyway, R21.
+         agentKillGraceSeconds is the agent adapter's stop-to-kill interval, the only tolerance on the wall-clock
+         cap, R21.)
 ```
+
+Every money amount (`attemptBudget.maxCostUsd`, `taskBudget.maxCostUsd`, `taskBudget.softCostUsd`,
+`verificationReserve.costUsd`, `runRemaining.costUsd`, `policy.maxBudgetExtensionUsd`) must be exactly representable
+in micro-USD and at most `100 000 000` USD. JSON Schema `multipleOf` is not used for this, because binary floating
+point makes it unreliable; the S7 input mapping applies the core's exactness rule and rejects the input otherwise
+(R21, architecture §10, exit H12).
 
 `maxRepairCycles` from v1 is removed: the round limit belongs to Phase 4's review policy (`maxRounds`). Lane A
 enforces only `taskBudget.maxAttempts` as a hard ceiling across retries and repairs.
 
-`run-workflow-input/v1`: ids, risk, `runBudget {maxCostUsd, softCostUsd, maxTasks}`, `governance` defaults and
-`requestedBy`.
+`run-workflow-input/v1`: ids, risk, `runBudget {maxCostUsd, softCostUsd, maxTasks}`, `governance` defaults,
+`requestedBy`, and `fixedTasks: [taskId (ULID)] | null`. When `fixedTasks` is set, the run is created sealed with
+exactly those tasks, in order (unique, at most `maxTasks`); when it is null, tasks are submitted and the run is
+sealed later by the `seal` control (R21, architecture §4.2).
 
 `workflow-control/v1`: a `oneOf` discriminated by `kind`. It has **no free-text field** (P3-PLAN-MED-003):
 
 ```text
 pause | resume      { kind, requestId (ULID), target: {scope: 'task'|'run', id (ULID)}, principalId (ULID) }
+seal                { kind, requestId (ULID), target: {scope: 'run', id (ULID)}, principalId (ULID) }
 approval-decision   { kind, requestId (= decisionId, ULID), approvalRequestId, decision: approve|reject,
-                      principalId (ULID) }
+                      extensionUsd: number | null, principalId (ULID) }
 ```
+
+`extensionUsd` is non-null exactly for a `budget-extension` approve. It is positive, at most the policy bound and
+exactly representable in micro-USD (checked by the mapping and by the workflow validator); every other decision
+carries null (P3-PLAN3-MED-002, architecture §11).
 
 Every string field in the three schemas is constrained by `pattern`, `enum` or `format`. The payload-hygiene
 suite fails on any unconstrained string (exit B6). Rationale text, operator names and emails never enter
@@ -394,7 +418,7 @@ API after authorization, and the workflow audits it.
 ### 4.3 `run-event` 1.1.0 → 1.2.0 (MINOR; one superset bump in S0, R5)
 
 Lane A part: new `eventType` values `approval.requested`, `approval.expired`, `budget.threshold_crossed`. New
-optional fields `interventionKind` (`pause|resume|cancel|approval-approve|approval-reject`), `recoveryKind`
+optional fields `interventionKind` (`pause|resume|cancel|seal|approval-approve|approval-reject`), `recoveryKind`
 (`activity-retry|side-effect-reconciled|fencing-takeover|attempt-replaced|workspace-rehydrated|decision-redelivered`),
 `approvalKind` (`budget-extension|publish-change`), `budgetScope` (`attempt|task|run`), `thresholdKind`
 (`soft|hard`), `workflowId`.

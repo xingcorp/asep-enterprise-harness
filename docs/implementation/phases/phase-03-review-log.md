@@ -1,7 +1,8 @@
 # Phase 3 — Plan Review Disposition Log
 
-> Lane A adjudication of the independent Codex plan review (workflow step 3), and of the Codex lock-check of the
-> v2 plan (section "Lock-check v2" at the end, which also records the v3 freeze gate).
+> Lane A adjudication of the independent Codex plan review (workflow step 3), of the Codex lock-check of the
+> v2 plan (section "Lock-check v2", which also records the v3 freeze gate), and of the Codex review of plan v3 and
+> audit of the S2 code (section "Review v3" at the end, which records the v4 freeze gate).
 > Planner: Lane A (Claude). Reviewer: Codex `gpt-5.6-sol` via the kiro-proxy gateway, read-only, run by the
 > controller on 2026-10-29. Raw review: `phase-03-plan-review-codex-v1.md`.
 > Reviewed base: `80bb76a` · Verdict: **REQUEST_CHANGES** · Confidence: 0.98.
@@ -752,4 +753,303 @@ Lane A's S2 follow-up report (`5e9fb84`) raised four implementation choices. R20
 - [x] Reconciliation R15–R20 applied.
 - [ ] CR-10 verbatim text pasted (open by design; G-LB, R18).
 
-**PLAN_STATUS:** LOCKED v3 (pending controller confirmation)
+**PLAN_STATUS (v3):** LOCKED v3, superseded by v4 below. The independent review of v3 found two plan gaps the
+v3 gate did not catch (run drain below `maxTasks`, wall-clock overrun) and nine S2 code defects.
+
+---
+
+## Review v3
+
+> Lane A adjudication of the independent Codex review of plan v3 and audit of the S2 code.
+> Reviewer: Codex `gpt-6.1-sol` via the kiro-proxy gateway, read-only, run by the controller on 2026-10-29. The
+> Codex CLI 0.147.0 binary was already loaded when the run started; the installed CLI is 0.165.0. The gateway
+> appends its own style instructions and tools (R16). Raw output: `phase-03-review-codex-v3.md`.
+> Reviewed snapshot: `5e9fb84` · Verdict: **REQUEST_CHANGES** · Confidence: 0.98. The review predates `5b0afde`
+> and `e4fd343`, which apply R20.
+> Binding input: reconciliation R21, the controller's final decisions on the behavioral findings. Lane A applies it
+> exactly as written. Code line numbers below are at `e4fd343` unless a finding quotes the review's `5e9fb84`
+> numbers. Between the two, production code differs only by the R20 change (`task-core.ts`: the agent outcome and
+> `isReplaceable`; one comment in `types.ts`), per `git diff --stat 5e9fb84 e4fd343`.
+
+### Summary
+
+The review confirms every v2 finding FOLDED except P3-PLAN-HIGH-004, which stays PARTIAL by design until G-LB
+(R18): the verbatim slot block, its source SHA and the byte comparison. It confirms R1–R20 at the plan level and
+raises 15 new findings.
+
+| Group | Count | ACCEPTED | PARTIAL | REJECTED |
+|---|---|---|---|---|
+| Plan HIGH (P3-PLAN3-HIGH-001, 002) | 2 | 2 | 0 | 0 |
+| Plan MEDIUM (P3-PLAN3-MED-001…003) | 3 | 3 | 0 | 0 |
+| S2 HIGH (P3-S2-HIGH-001…005) | 5 | 5 | 0 | 0 |
+| S2 MEDIUM (P3-S2-MED-001…005) | 5 | 5 | 0 | 0 |
+| **Total** | **15** | **15** | **0** | **0** |
+
+Three findings were already resolved before this step, and this log confirms them with evidence instead of
+redoing them: P3-PLAN3-HIGH-001 and P3-S2-HIGH-001 (R20, `5b0afde`) and P3-PLAN3-MED-003 (`e4fd343`). The other
+twelve are folded into design, exit criteria and slices below. The nine S2 code findings among them are fixed by
+the S2 follow-up commits after this docs commit, test first; each new test fails on `e4fd343`, and the step report
+names the commits and how each test failed.
+
+New exit criteria: D13–D15, G13, G14, H11, H12, I8, I9. Amended: B2, D7, G7, H8, J5, M1.
+
+### P3-PLAN3-HIGH-001 and P3-S2-HIGH-001 — Overrun beat a never-replaceable failure — ACCEPTED, already fixed (R20)
+
+**Finding.** At `5e9fb84` an agent failure with a never-replaceable class that also overran took the exhaustion
+path (`task-core.ts:520` at `5e9fb84`; architecture §10 row order).
+
+**Evidence that it is resolved.** `5b0afde` checks the failure class first: `task-core.ts:522-527` abandons a
+`FAILED` or `BLOCKED` result, or a cap stop reporting a class, whose class is not replaceable, and the task ends
+`FAILED` with that class. The overrun is still recorded and audited (`recordUsage`, `task-core.ts:415-418`).
+Architecture §10 row 2 and exit H8 state the rule. Tests: the four traces "agent outcome: a non-replaceable failure
+beats the exhaustion path (…)" (`decide.test.ts:851-876`) and the property at `invariants.test.ts:330-344`; all were
+red on `5e9fb84` (R20 entry above). The audit asked for all three classes with an overrun. The R20 traces cover
+`policy-violation` (cost) and `false-completion` (tool calls). The hostile-policy table of P3-S2-HIGH-002 below adds
+each of the three classes with a cost overrun, under a policy that lists the class as replaceable.
+
+### P3-PLAN3-HIGH-002 and P3-S2-HIGH-004 — A run below `maxTasks` never closes, so drain never ends — ACCEPTED (R21)
+
+**Finding.** The run reducer completes only on cancel or once `finishedTasks >= maxTasks`
+(`run-core.ts:236-246`). A run with one finished task and a cap of ten stays open with an empty queue, and the
+drain procedure (architecture §6.6) waits for every workflow to close.
+
+**Disposition.** ACCEPTED. R21 decides the protocol.
+
+**Locked change.**
+
+- A run gains an explicit `seal` control. After it, no task submission is accepted (receipt `run-sealed`); a
+  duplicate submission of a known task id still returns the original receipt. A second seal is refused
+  (`already-sealed`), and a repeated request id is a duplicate.
+- A run may be created already sealed with a fixed task list (`run-workflow-input.fixedTasks`, data model §4.2).
+- A sealed run completes `COMPLETED` as soon as no task is open (none active, none queued), whatever `maxTasks`
+  says. `maxTasks` stays a cap on submissions, not the only completion path.
+- The sealed flag is carried across continue-as-new.
+- Drain = stop new executions, seal every open run, keep the workers until no workflow is open, then stop them
+  (architecture §6.6, exit M1).
+
+The seal is an accepted control like pause and resume: it is audited (`workflow.seal`) with a `human.intervention`
+event (`interventionKind: seal`, data model §4.3) and needs `executions:control` (plan §10, `POST
+/v1/runs/:runId/seal`).
+
+**Validation.** D15 (new): a run below `maxTasks` closes after seal, including a seal that arrives while a child is
+running; a run created sealed with a fixed list closes after its last task; the seal survives continue-as-new;
+a submission after the seal is refused. D7 amended; M1 amended. S2 core traces; S8/S9 e2e and route.
+
+### P3-PLAN3-MED-001 and P3-S2-HIGH-005 — Wall-clock overrun was not an overrun — ACCEPTED (R21)
+
+**Finding.** The overrun detector compared only reported cost and tool calls (`task-core.ts:364-384`). An
+`AGENT_DONE` that ran 34 minutes on a 30-minute cap was verified, committed and published; the audit counted 19
+such traces among 600 generated seeds. The architecture said usage had to be within every cap, while the overrun
+row listed only cost and tool calls (architecture §10 at `5e9fb84`).
+
+**Disposition.** ACCEPTED. R21 decides the behavior.
+
+**Locked change.** Harness-measured attempt wall-clock above the attempt cap is an overrun exactly like cost or
+tool calls: inspect only, no verification, commit or publication, `recordOverrun` with the wall-clock excess, an
+audited incident, and the recorded overrun ends the task at the next reservation. The only tolerance is the
+kill-escalation grace: the interval between the agent adapter's stop signal and its hard kill. It is policy data,
+`policy.agentKillGraceSeconds` (data model §4.2), not a business allowance. Its code default is 0 (no tolerance).
+The policy file sets it to the adapter's documented stop-to-kill interval, which CR-25 pins in S4. The rule applies
+to every agent status, and a non-replaceable failure still beats it (R20). Architecture §4.1, §10; plan §18.
+Consequence flagged for the controller: today's adapter sends `SIGKILL` the moment its timer fires
+(`adapters/agent-claude/src/claude-provider.ts:229-235`), so its interval is 0. A wall-clock cap stop measured even a
+millisecond past the cap is then an overrun and ends the task at the next reservation instead of being retried.
+That is fail-closed and follows R21's text; if retries after wall-clock stops are wanted, S4 must define a real
+stop-to-kill interval.
+
+**Validation.** H11 (new): `AGENT_DONE` at the cap and at cap + grace gets the full path; one millisecond above
+cap + grace is inspected only, records the overrun and an incident, and publishes nothing. H8 amended. The property
+generator emits wall-clock at, around and above cap + grace, and checks that no attempt measured above it is
+verified or published.
+
+### P3-PLAN3-MED-002 — The canonical approval message had no extension amount — ACCEPTED
+
+**Finding.** `workflow-control/v1` `approval-decision` carried no `extensionUsd` (data model §4.2 at `5e9fb84`),
+while the core DTO carries one (`types.ts:351-358`) and a budget-extension approve without a valid amount is
+rejected before verification (`approvals.ts:28-34`, `:57-59`).
+
+**Disposition.** ACCEPTED.
+
+**Locked change.** The canonical `approval-decision` message carries `extensionUsd`: a number, non-null exactly for
+a `budget-extension` approve, positive, at most the policy bound and exactly representable in micro-USD (H12);
+null otherwise. The API decision body carries the same field, and `approval_decisions.extension_usd` stores it
+(data model §3.5, already there). The S7 control mapping turns the message into the core's
+`approvalDecisionReceived` with the same amount. Plan §10, §19, CR-02; architecture §11.
+
+**Validation.** I8 (new): a mapping test in S7 (`adapters/temporal`): a budget-extension approve with a valid amount
+reaches `verifyApprovalDecision` with that amount; a missing, zero, inexact or out-of-bound amount, and an amount
+on any other decision, is refused by the validator before any state change.
+
+### P3-PLAN3-MED-003 — H8 and the disabled/unset wording — ACCEPTED, already folded (`e4fd343`)
+
+**Evidence.** H8 states the attempts-exhausted exception ("with none left the task ends
+`FAILED / attempts-exhausted`, R20") and the non-replaceable precedence (`phase-03-exit-criteria.md:366-371` at
+`e4fd343`). The disabled/unset wording is one condition everywhere: architecture §10 (`phase-03-architecture.md:596-598`),
+this log (P3-PLAN2-HIGH-002 and the R20 entry) and J4. No change in this step.
+
+### P3-S2-HIGH-002 — "Never replaceable" held only for the default policy — ACCEPTED (R21)
+
+**Finding.** `isReplaceable` trusted the policy list alone (`task-core.ts:703-706`). A policy listing
+`policy-violation` made the reducer retry the attempt, and the retry could publish.
+
+**Disposition.** ACCEPTED.
+
+**Locked change.** The core holds the three never-replaceable classes (`policy-violation`, `false-completion`,
+`duplicate-side-effect`) as a constant and never treats them as replaceable, whatever the policy says. It exports a
+policy validator that reports such a policy as invalid. The orchestration policy loader (S6,
+`packages/policy/src/orchestration-policy.ts`) rejects a policy file that lists any of them, using that rule, and
+the S7 input mapping rejects a task input whose resolved policy does. Architecture §4.1; plan §26 (S2, S6, S7).
+
+**Validation.** D14 (new): for each of the three classes, a hostile policy that lists it as replaceable still ends
+the task `FAILED` with that class after one attempt, with and without a cost overrun, and nothing is published
+(core table, S2); the validator reports each class (S2); the loader rejects each class (S6).
+
+### P3-S2-HIGH-003 — A failing PR upsert after a push let a cancel finish `CANCELLED` — ACCEPTED (R21)
+
+**Finding.** With a cancel pending after a successful push, a failing PR upsert closed the task `FAILED`, which
+`close()` then turned into `CANCELLED` with no PR (`task-core.ts:642-645`, `:1033-1037`). The remote held a branch
+without its PR, and the task said nothing about it.
+
+**Disposition.** ACCEPTED. R21 decides the behavior.
+
+**Locked change.**
+
+- A cancel never finalizes while a publication unit is unreconciled.
+- After a successful push, or an ambiguous one (the push activity failed retryably after its retries, or timed
+  out), the PR upsert runs and keeps retrying under its retry policy (architecture §5).
+- If the PR upsert finally fails (a non-retryable error, or its retries are exhausted), the task ends
+  `FAILED / publication-incomplete`, never `CANCELLED`. The audit entry `publication.incomplete` names the remote
+  branch and says whether the push was confirmed, so a human can reconcile it. The branch-without-PR state is
+  reported, not hidden.
+- A push that fails non-retryably is definite: nothing was pushed, and the task ends `FAILED / publication-failed`
+  (`CANCELLED` if a cancel is pending).
+
+Treating "retries exhausted" like "non-retryable" is Lane A's reading of "fails non-retryably": once the activity's
+bounded retry policy ends, the engine retries no more. It is flagged for the controller. Two supporting changes:
+the core learns the attempt's remote branch name from `ensureAttempt` (the attempt branch rule stays the Git
+adapter's, `packages/application/src/vertical-slice-workflow.ts:27`), and an activity failure tells the core whether
+the engine stopped on a non-retryable error. Architecture §4.1, §5, §9; threat T3-19 and risk PR3-18 amended.
+
+**Validation.** G13 (new), core table: a cancel during the push, then a failing PR upsert, ends
+`FAILED / publication-incomplete` with the audit naming the branch (push confirmed); an ambiguous push failure
+still runs the PR upsert (success → the PR exists and the cancel ends `CANCELLED` with the PR left open and audited;
+failure → `publication-incomplete`, push unconfirmed); a non-retryable push failure runs no PR upsert. The property
+"an accepted cancel ends `CANCELLED`" now allows `FAILED / publication-incomplete` and nothing else. Real proof in
+S11.
+
+### P3-S2-MED-001 — Rounding hid small overruns — ACCEPTED (R21)
+
+**Finding.** `toMicroUsd` rounded (`budget.ts:8-10`), so a reported cost of `5.0000004` on a cap of `5` was no
+overrun and published. Nothing bounded the precision or range of the amounts.
+
+**Disposition.** ACCEPTED.
+
+**Locked change.** Budget arithmetic stays in integer micro-USD. Reported usage converts with ceiling from its exact
+decimal value, so no overrun is ever rounded away. Caps, reserves, the run remainder and extension amounts must be
+exactly representable in micro-USD and at most `100 000 000` USD each, which keeps every sum the core forms within
+the safe-integer range. The workflow-input mapping rejects anything else (S7), the core exports the rule, and an
+extension amount outside it is refused like an out-of-bound one. A reported cost above that bound is charged at the
+bound (it is an overrun either way). The bound is Lane A's choice within R21's "safe-integer range" and is flagged
+for the controller. Architecture §10; data model §4.2.
+
+**Validation.** H12 (new): `5.0000004` on a cap of `5` is an overrun of `0.000001`; `1.1` on `1.1` is none; a
+sub-micro usage is charged one micro-dollar; inexact, negative, non-finite and out-of-range amounts are rejected by
+the input rule. The property oracle no longer reuses the implementation's conversion: caps are generated with
+fractional cents, and the oracle decides overruns by comparing the reported number with the cap directly.
+
+### P3-S2-MED-002 — The regex purity check missed evasions — ACCEPTED (R21)
+
+**Finding.** The detector missed `const m = Math; m.random()`, `Math["random"]()`, a re-export with a comment
+(`export /* bridge */ { readFileSync as read } from "node:fs"`), and relative imports that leave the package or reach
+test support (`purity.test.ts:117-150`).
+
+**Disposition.** ACCEPTED.
+
+**Locked change.** The package-local check becomes AST-based. It parses every production file with the TypeScript
+compiler API the repo already depends on (TypeScript 7.0.2, `typescript/unstable/sync` over an in-memory file
+system; research register Q11), and does not touch the shared fitness framework (R8). Rules: type-only status from
+the import clause and each specifier; the target of every relative import or re-export must stay in `src/`, outside
+`src/test-support/**`, and not be a test file; import-equals, dynamic `import()` and import types from other sources
+are flagged; banned names are matched on the decoded identifier, so escapes do not hide them; `Math` is allowed only
+as `Math.<member>` for a fixed list of pure members (`abs`, `ceil`, `floor`, `imul`, `max`, `min`, `round`, `sign`,
+`trunc`); `Function` joins the banned names. Architecture §3; exit B2.
+
+**Validation.** B2 amended. Seeded cases: alias, computed access, commented re-export, escaped identifier,
+`export *` out of the package, imports of test support and of a test file, import-equals, an import type, and the
+`Function` constructor; the earlier seeds stay; a clean set (mixed type specifiers, allowed `Math` members) passes.
+
+### P3-S2-MED-003 — Pause while waiting for an approval did nothing visible — ACCEPTED (R21)
+
+**Finding.** A pause during an approval wait only set `paused` (`task-core.ts:976-981`): no `PAUSED` projection and
+no pause timer, because no request was in flight to reach a boundary.
+
+**Disposition.** ACCEPTED.
+
+**Locked change.** When no request is in flight, a pause applies at once: the task projects `PAUSED` and the pause
+timer starts. A pause that arrives while an approval request is being opened or a decision verified applies as soon
+as that request returns, if the task is still waiting. The approval expiry keeps its own timer, and pause does not
+suspend it. A decision that arrives while paused is still verified (as before); if it releases the gate, the next
+request is withheld until resume. Resume returns the projection to `WAITING_FOR_APPROVAL` while the request is still
+open. Data model §4.1 gains `WAITING_FOR_APPROVAL → PAUSED`, `PAUSED → WAITING_FOR_APPROVAL` and
+`PAUSED → BUDGET_EXHAUSTED` (an extension that expires or is rejected while paused); S1 adds them to the domain
+table. Architecture §9, §11.
+
+**Validation.** G14 (new), core table, for both approval kinds: pause in the wait projects `PAUSED` and starts the
+pause timer; resume projects `WAITING_FOR_APPROVAL`; approval expiry while paused takes the kind's reject path; the
+pause timeout while waiting ends the task `BLOCKED` and closes the request with `cancelApprovalRequest`.
+
+### P3-S2-MED-004 — Two approval defenses had no test that kills them — ACCEPTED (R21)
+
+**Finding.** Two mutations kept all 107 package tests green: dropping the `ap.expiryFired` branch
+(`task-core.ts:887-890`) and dropping the `result.verified` check (`:891-893`). The interpreter delivered timers only
+while idle (`sequential-interpreter.ts:103-107`), and the generator paired `verified: false` only with a null
+decision (`invariants.test.ts:190`).
+
+**Disposition.** ACCEPTED.
+
+**Locked change.** The interpreter can deliver timer firings while a request is pending, as Temporal does.
+Direct traces cover the two races for both approval kinds. The generator emits timers during pending requests and
+`verified: false` together with a valid decision and amount, and the oracle replays the trace step by step: a gate is
+released (an extension recorded, or the publish-change push issued or withheld for a pause) only by the result of a
+`verifyApprovalDecision` that is verified, says approve, and arrives before that request's expiry fired.
+
+**Validation.** I9 (new): the direct traces and the step-aligned oracle; with either mutation applied, at least one
+test turns red (the step report records the runs).
+
+### P3-S2-MED-005 — Attempt effects for an attempt that may not exist — ACCEPTED (R21)
+
+**Finding.** The core added the attempt to its state when it issued `ensureAttempt` (`task-core.ts:288-317`). When
+`ensureAttempt` failed, `close()` still emitted usage and an outcome for it (`:615-618`, `:1040-1043`), even if the
+insert never happened, so an effect could carry `attemptId: null`.
+
+**Disposition.** ACCEPTED.
+
+**Locked change.**
+
+- No attempt-bound effect (usage, outcome) is emitted for an attempt whose registration has not reconciled.
+- `ensureAttempt` becomes non-cancellable (a short registration write, like the approval gate writes), so a cancel
+  waits for it.
+- When it fails, the core issues `findAttempt` (a non-cancellable lookup by the natural key
+  `(task_id, attempt_number)`). Found means the insert committed: the attempt ends `failed` with zero usage. Absent
+  means it failed before the insert: no attempt-bound effect. If the lookup fails too, the registration is unknown:
+  no attempt-bound effect, and an audited `attempt.registration-unreconciled` names the attempt number for a human.
+- In all three the task ends `FAILED / attempt-registration-failed` and the attempt is never replaced, so numbering
+  stays contiguous.
+
+Architecture §4.1, §5.
+
+**Validation.** D13 (new), core table: the three lookups. J5 amended: one outcome and one usage entry per
+**registered** attempt.
+
+### Freeze gate (v4)
+
+- [x] Every finding of the review dispositioned: 15/15 new; the v2 statuses confirmed, P3-PLAN-HIGH-004 still PARTIAL
+      by design.
+- [x] 0 unresolved CRITICAL/HIGH in the plan, **except** the verbatim-text part of P3-PLAN-HIGH-004, which is open by
+      design until G-LB and blocks S0. The S2 code HIGHs are folded here and fixed by the follow-up commits.
+- [x] Canonical docs updated: plan, architecture, data model, exit criteria, risk register, research register,
+      threat model delta.
+- [x] Reconciliation R21 applied.
+- [ ] CR-10 verbatim text pasted (open by design; G-LB, R18).
+
+**PLAN_STATUS:** LOCKED v4 (pending controller confirmation)

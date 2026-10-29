@@ -1,9 +1,10 @@
-# Phase 3 — Exit Criteria (LOCKED v3, pending controller confirmation; machine-checkable)
+# Phase 3 — Exit Criteria (LOCKED v4, pending controller confirmation; machine-checkable)
 
 > Phase 3 is COMPLETE only when every MUST below passes from a clean checkout of the phase branch, as run by
-> the **controller** (lane contract step 5). Base `00a6889`; v1 at `80bb76a`, v2 at `98e92cf`. v2 folded in the
-> Codex plan review and reconciliation R1–R14; v3 folds in the Codex lock-check of v2 and reconciliation R15–R20
-> (`phase-03-review-log.md`, section "Lock-check v2").
+> the **controller** (lane contract step 5). Base `00a6889`; v1 at `80bb76a`, v2 at `98e92cf`, v3 at `7cbf5d3`. v2
+> folded in the Codex plan review and reconciliation R1–R14; v3 folds in the Codex lock-check of v2 and
+> reconciliation R15–R20 (`phase-03-review-log.md`, section "Lock-check v2"); v4 folds in the Codex review of v3
+> and audit of S2 and reconciliation R21 (section "Review v3").
 > Each MUST names the executable test that proves it: `file` + SUITE-ID. Files marked *(new)* do not exist yet.
 > They are created by the slice named in `phase-03-plan.md` §26. Unit suites run in `pnpm test`, and
 > `*.itest.ts` suites run in `pnpm test:integration` against **real** Temporal, PostgreSQL, MinIO, Docker and
@@ -79,9 +80,13 @@
 - [ ] B2. The production source of `packages/orchestration` (`src/**/*.ts` except `*.test.ts` and
       `src/test-support/**`) has no external runtime dependency (only type imports from `@asep/contracts` and
       `@asep/ports`, plus relative imports between its own modules) and none of the banned constructs (`Date`,
-      `Math.random`, timers, `performance`, `process`, `crypto`, `require`, `globalThis`, `eval`, `fetch`, dynamic
-      `import()`). Tests may use runtime imports. Seeded violations fail, a valid construct passes, and the scanned
-      file set excludes tests and test support. Two checkpoints (architecture §3):
+      `Math` other than its listed pure members, timers, `performance`, `process`, `crypto`, `require`,
+      `globalThis`, `eval`, `Function`, `fetch`, dynamic `import()`). No relative import or re-export leaves `src/`,
+      reaches `src/test-support/**` or a test file. Tests may use runtime imports. The check is AST-based
+      (architecture §3). Seeded violations fail, including an alias of `Math`, computed access `Math["random"]`, a
+      re-export with a comment, an escaped identifier, `export *` out of the package, imports of test support and of
+      a test file, import-equals, an import type from another source and the `Function` constructor; a valid
+      construct passes, and the scanned file set excludes tests and test support. Two checkpoints (architecture §3):
       - S2: package-local self-check (`packages/orchestration/src/purity.test.ts`, `asep-suite:orchestration-purity`);
       - S7, after G-P2: the same rule in `scripts/forbidden-imports.test.ts` on the accepted Phase 2 framework
         (`asep-suite:forbidden-imports`); the package-local suite stays registered (append-only registry, R10).
@@ -174,7 +179,7 @@
       (`packages/application/src/orchestration-activities/activities.test.ts` *(new)*,
       `asep-suite:orchestration-activities`).
 - [ ] D7. `runWorkflow` runs children sequentially, deduplicates `submitTask` by task ID across continue-as-new
-      (forced in test), and carries queue, dedup set and budget totals across continue-as-new
+      (forced in test), and carries queue, dedup set, budget totals and the sealed flag across continue-as-new
       (`asep-suite:orchestration-core` + `asep-suite:temporal-e2e`).
 - [ ] D8. Duplicate task start returns the existing workflow (`USE_EXISTING`). A task whose workflow completed
       cannot be started again (`REJECT_DUPLICATE` → API 409) (`asep-suite:temporal-api-e2e`).
@@ -191,6 +196,24 @@
 - [ ] D12. **Agent death detection.** When a worker dies during `runAgent`, the activity fails on heartbeat
       timeout within `heartbeatTimeout` + 30 s, and the replacement attempt starts after the old container is
       reaped (timing assertion in F2) (`asep-suite:temporal-chaos-kill`).
+- [ ] D13. **Attempt registration (R21).** No usage or outcome is recorded for an attempt whose registration has not
+      reconciled. `ensureAttempt` is non-cancellable. When it fails, `findAttempt` looks the attempt up by
+      `(task_id, attempt_number)`: found → the attempt ends `failed` with zero usage; absent → no attempt-bound
+      effect; lookup failed → no attempt-bound effect and an audited `attempt.registration-unreconciled`. Each case
+      ends the task `FAILED / attempt-registration-failed` with no replacement (core table in
+      `asep-suite:orchestration-core`; the lookup activity in `asep-suite:orchestration-activities`).
+- [ ] D14. **Never-replaceable classes are absolute (R21).** For each of `policy-violation`, `false-completion` and
+      `duplicate-side-effect`, a hostile policy that lists it as replaceable still ends the task `FAILED` with that
+      class after one attempt, with and without a cost overrun, and nothing is published (core table in
+      `asep-suite:orchestration-core`). The core's policy rule reports each class (same suite), and the orchestration
+      policy loader rejects a policy file that lists any of them
+      (`packages/policy/src/orchestration-policy.test.ts` *(new, S6)*, `asep-suite:orchestration-policy-loader`).
+- [ ] D15. **Run seal and drain (R21).** After `seal`, a submission of a new task is refused (`run-sealed`) and a
+      second seal is refused (`already-sealed`). A sealed run completes `COMPLETED` once no task is open, whatever
+      `maxTasks` says: a run below `maxTasks` closes after seal, also when the seal arrives while a child is running
+      or while the run is paused with an empty queue. A run created sealed with `fixedTasks` runs exactly those tasks
+      and closes. The sealed flag survives continue-as-new (core table in `asep-suite:orchestration-core`; real proof in
+      `asep-suite:temporal-e2e`).
 
 ## E. Idempotency and fencing
 
@@ -327,7 +350,8 @@ All in `workers/temporal-worker/src/e2e/controls.itest.ts` *(new)*, `asep-suite:
 - [ ] G6. Cancel during the agent: container reaped, workspace quarantined, no commit.
 - [ ] G7. Critical units (architecture §9): a cancel inside commit plus evidence binding is processed after that
       unit reconciles, with nothing pushed; a cancel after push has started completes push and PR upsert, no
-      `PENDING` record remains, the PR stays open and is referenced in the audit row; task `CANCELLED` in both.
+      `PENDING` record remains, the PR stays open and is referenced in the audit row; task `CANCELLED` in both. When
+      the PR upsert fails after its retry policy, G13 applies instead.
 - [ ] G8. Run-level pause and cancel propagate to the active child, and no new child starts while paused.
 - [ ] G9. Controls need `executions:control` held by an authenticated principal: 401 unauthenticated, 403 without
       capability, 404 cross-tenant. The workflow audits every accepted control with the principal id, and a
@@ -342,6 +366,22 @@ All in `workers/temporal-worker/src/e2e/controls.itest.ts` *(new)*, `asep-suite:
 - [ ] G10. Cancel during verification: the cancellation reaches the runner's per-call signal, the verification
       process group is gone, no `asep-verify-<attemptId>-*` container remains, no verification process is
       running, no commit exists and the task is `CANCELLED`.
+- [ ] G13. **Incomplete publication (R21).** A cancel never finalizes while a publication unit is unreconciled:
+      - a cancel during a successful push, then a PR upsert that fails after its retry policy, ends the task
+        `FAILED / publication-incomplete`, never `CANCELLED`, with an audit row `publication.incomplete` naming the
+        remote branch and `pushConfirmed: true`;
+      - an ambiguous push failure (retries exhausted or timed out) still runs the PR upsert: success leaves the PR
+        open and, with a cancel pending, ends `CANCELLED` with the PR audited; failure ends
+        `FAILED / publication-incomplete` with `pushConfirmed: false`;
+      - a non-retryable push failure runs no PR upsert and ends `FAILED / publication-failed` (`CANCELLED` with a
+        cancel pending).
+
+      Core table in `asep-suite:orchestration-core`; real proof here with a forge double that fails the PR create.
+- [ ] G14. **Pause while waiting for approval (R21).** For both approval kinds: a pause in the wait applies at once
+      (projection `PAUSED`, pause timer started); resume projects `WAITING_FOR_APPROVAL` again; the approval expiry
+      timer is not suspended, and expiry while paused takes the kind's reject path; a pause timeout while waiting
+      ends the task `BLOCKED` and closes the request with `cancelApprovalRequest` (core table in
+      `asep-suite:orchestration-core`; real proof here).
 
 ## H. Budgets
 
@@ -363,7 +403,8 @@ End-to-end checks in `workers/temporal-worker/src/e2e/budgets-approvals.itest.ts
       still gets every mandatory check, the commit, the assurance round and publication.
 - [ ] H6. The run budget spans tasks: the second task's cap is the run remainder.
 - [ ] H7. Ledger totals equal the workflow's totals at close (reconciliation assertion).
-- [ ] H8. Reported usage above a cap (cost or tool calls) records an `overrun` entry and an audited incident; the
+- [ ] H8. Usage above a cap (reported cost, reported tool calls, or harness-measured wall-clock beyond the cap plus
+      the kill grace, H11) records an `overrun` entry and an audited incident; the
       attempt is inspected but never verified, committed or published, ends `budget-exhausted`, and the recorded
       overrun ends the task `BUDGET_EXHAUSTED` at the next reservation while attempts remain (with none left the
       task ends `FAILED / attempts-exhausted`, R20). If the agent also failed with a failure class that is not
@@ -381,6 +422,21 @@ End-to-end checks in `workers/temporal-worker/src/e2e/budgets-approvals.itest.ts
       `FAILED` with that class, and an inspection that fails on an exhausted attempt is a normal abandon (`failed`,
       retried only for a replaceable class) (R20). Paired with H9, which proves the adapter reports the status
       (`asep-suite:orchestration-core`, `asep-suite:temporal-budgets-approvals`).
+- [ ] H11. **Wall-clock overrun (R21).** With a kill grace `g` (`policy.agentKillGraceSeconds`): `AGENT_DONE` with a
+      measured wall-clock equal to the cap, and equal to the cap plus `g`, gets the full path; one millisecond above
+      the cap plus `g` is an overrun: inspected only, `recordOverrun` with the wall-clock excess over the cap, an
+      audited incident, nothing verified, committed or published. With the code default `g = 0` one millisecond
+      above the cap is an overrun. The property test checks that no attempt measured above the cap plus `g` is
+      verified or published (`asep-suite:orchestration-core`, `asep-suite:orchestration-properties`; real proof in
+      `asep-suite:temporal-budgets-approvals`).
+- [ ] H12. **Budget precision (R21).** Budget arithmetic is in integer micro-USD and usage converts with ceiling:
+      a reported `5.0000004` on a cap of `5` is an overrun of `0.000001`, `1.1` on `1.1` is none, and a sub-micro
+      usage is charged one micro-dollar. The input rule rejects a money amount that is not exactly representable in
+      micro-USD, negative, non-finite or above `100 000 000` USD, and the decision validator refuses such an
+      extension amount (core in `asep-suite:orchestration-core`; property oracle independent of the implementation's
+      conversion in `asep-suite:orchestration-properties`). The S7 input mapping rejects such an input before a
+      workflow starts (`adapters/temporal/src/workflows/input-mapping.test.ts` *(new, S7)*,
+      `asep-suite:temporal-input-mapping`).
 
 ## I. Approvals
 
@@ -403,6 +459,19 @@ End-to-end checks in `workers/temporal-worker/src/e2e/budgets-approvals.itest.ts
       is reachable after a verification stop (`asep-suite:orchestration-core`).
 - [ ] I7. `publicationApprovalRequired` cannot change after run start. When true, no push happens before an
       approve decision (`asep-suite:temporal-budgets-approvals`).
+- [ ] I8. **The approval message carries the amount (R21, P3-PLAN3-MED-002).** `workflow-control/v1`
+      `approval-decision` carries `extensionUsd`. The S7 mapping turns a budget-extension approve with a valid amount
+      into the core's decision message with the same amount, and it reaches `verifyApprovalDecision`; a missing,
+      zero, inexact or out-of-bound amount, or an amount on any other decision, is refused before any state change
+      (`adapters/temporal/src/workflows/input-mapping.test.ts` *(new, S7)*, `asep-suite:temporal-input-mapping`).
+- [ ] I9. **Approval races (R21).** For both kinds: an expiry timer that fires while a decision is being verified
+      wins over a verified approve (the request expires, the kind's reject path runs, nothing is released); a
+      verification result with `verified: false` and a valid approve and amount keeps the gate closed. The property
+      generator delivers timers while requests are pending and `verified: false` with valid decisions, and a
+      step-aligned oracle checks that every release (an extension recorded, a publish-change push issued or withheld
+      for a pause) comes from a verified approve that arrived before its request's expiry fired. Dropping the
+      expiry-wins branch or the `verified` check each turns a test red (`asep-suite:orchestration-core`,
+      `asep-suite:orchestration-properties`).
 
 ## J. Review-loop slot (Phase 4 semantics, R3)
 
@@ -438,9 +507,9 @@ Real-Temporal proofs in `workers/temporal-worker/src/e2e/assurance-slot.itest.ts
       unset, ends the task `BUDGET_EXHAUSTED`. Nothing is published in any of these cases. A `retry` that replaces a failed repair
       attempt keeps the lineage: same `repairBaseSha`, repair order, round and prior adjudication, and its
       assurance round continues them (trace `REPAIR` → agent death → replacement → assurance, core table + e2e).
-- [ ] J5. `recordAttemptOutcome` is called exactly once per attempt at every terminal in architecture §12. This
-      holds across engine retries: one `attempt.completed` per attempt (property test in
-      `asep-suite:orchestration-properties` + e2e).
+- [ ] J5. `recordAttemptOutcome` is called exactly once per registered attempt at every terminal in architecture
+      §12, and never for an attempt whose registration did not reconcile (D13). This holds across engine retries:
+      one `attempt.completed` per registered attempt (property test in `asep-suite:orchestration-properties` + e2e).
 - [ ] J6. A scripted slot defined in a module that imports neither `@asep/orchestration`, `@asep/temporal` nor
       `@temporalio/*` drives the real workflow. This proves Lane B can plug in without Lane A imports.
 - [ ] J7. In every generated path, the assurance outcome for an attempt precedes any publish command for it, and
@@ -487,8 +556,9 @@ Real-Temporal proofs in `workers/temporal-worker/src/e2e/assurance-slot.itest.ts
 ## M. Operational readiness
 
 - [ ] M1. `phase-03-runbook.md` covers:
-      - starting, stopping and draining workers, with drain-only in this order: stop new executions, keep the old
-        workers until no open workflow remains, then stop them and start the new build (architecture §6.6);
+      - starting, stopping and draining workers, with drain-only in this order: stop new executions, seal every
+        open run, keep the old workers until no open workflow remains, then stop them and start the new build
+        (architecture §6.6);
       - the two deployment procedures of architecture §6.6 (drain-only, or patched with the replay corpus)
         and the command that lists open workflows on the task queue;
       - stuck workflows and the approval backlog, including undelivered decision rows;
