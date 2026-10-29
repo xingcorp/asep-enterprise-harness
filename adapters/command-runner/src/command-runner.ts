@@ -24,7 +24,7 @@ import { BoundedCapture } from './bounded-capture.js';
 import { resolveEnvironment } from './environment-profiles.js';
 import { executionOf } from './sandbox.js';
 import {
-  dockerCaller, dockerClientEnv, removeLabelledContainers, SandboxTeardownError,
+  dockerCaller, dockerClientEnv, removeLabelledContainers, SandboxTeardownError, DOCKER_CALL_TIMEOUT_MS,
 } from './container-teardown.js';
 
 function sha256Hex(bytes: Uint8Array): string {
@@ -50,6 +50,29 @@ export class SandboxHandleNotProvenError extends Error {
   }
 }
 
+/** A moment of one run() as the runner lives it. */
+export type CommandLifecyclePhase =
+  | 'spawned'   // the command's process (or its docker client) was spawned
+  | 'stop'      // the timeout fired or the cancellation was acted on: `reason`
+  | 'killed'    // the container was killed by name (in a container) and the process group signalled
+  | 'exited'    // the process (or docker client) ended
+  | 'removed';  // in a container: its removal by label returned
+
+export interface CommandLifecycleEvent {
+  readonly phase: CommandLifecyclePhase;
+  // Date.now() when the runner reached the phase.
+  readonly at: number;
+  readonly reason?: 'timeout' | 'aborted';
+}
+
+/**
+ * The longest a verification container's command can keep running after the
+ * decision to stop it (the `stop` phase): the container is killed by name — a
+ * docker call bounded by DOCKER_CALL_TIMEOUT_MS — and its client's process
+ * group is SIGKILLed as soon as that call returns.
+ */
+export const COMMAND_STOP_BOUND_MS = DOCKER_CALL_TIMEOUT_MS;
+
 // The runner needs the scope to store artifacts. It is constructed per attempt
 // with a scope + artifact store, then run() is called per command.
 export class TrustedCommandRunner implements CommandRunner {
@@ -60,7 +83,20 @@ export class TrustedCommandRunner implements CommandRunner {
     private readonly scope: TenantScope,
     private readonly artifacts: ArtifactStore,
     private readonly signal?: AbortSignal,
+    // Told each moment of a run as the runner reaches it, so a caller can time
+    // the stop apart from the start. Whatever it does or throws changes nothing
+    // about the run. Production passes none.
+    private readonly observeLifecycle?: (event: CommandLifecycleEvent) => void,
   ) {}
+
+  private mark(phase: CommandLifecyclePhase, reason?: 'timeout' | 'aborted'): void {
+    if (this.observeLifecycle === undefined) return;
+    try {
+      this.observeLifecycle({ phase, at: Date.now(), ...(reason !== undefined ? { reason } : {}) });
+    } catch {
+      // An observer never changes the run.
+    }
+  }
 
   async run(spec: CommandSpec, sandbox: SandboxHandle): Promise<CommandResult> {
     const env = resolveEnvironment(spec.environmentProfile);
@@ -126,9 +162,11 @@ export class TrustedCommandRunner implements CommandRunner {
         detached: true,
         stdio: ['ignore', 'pipe', 'pipe'],
       });
+      this.mark('spawned');
 
       let timedOut = false;
       let settled = false;
+      let stopped = false;
 
       const killGroup = (sig: NodeJS.Signals) => {
         if (child.pid === undefined) return;
@@ -143,15 +181,21 @@ export class TrustedCommandRunner implements CommandRunner {
       // Stop the container first: killing only its client would leave it
       // running. The client is killed afterwards in case it has not exited, and
       // the container is removed once the client has ended (below).
-      const terminate = () => {
-        void killContainer().finally(() => killGroup('SIGKILL'));
+      const terminate = (reason: 'timeout' | 'aborted') => {
+        if (stopped) return;
+        stopped = true;
+        this.mark('stop', reason);
+        void killContainer().finally(() => {
+          killGroup('SIGKILL');
+          this.mark('killed');
+        });
       };
       const timer = setTimeout(() => {
         timedOut = true;
-        terminate();
+        terminate('timeout');
       }, spec.timeoutMs);
 
-      const onAbort = () => { terminate(); };
+      const onAbort = () => { terminate('aborted'); };
       if (this.signal) {
         if (this.signal.aborted) onAbort();
         else this.signal.addEventListener('abort', onAbort, { once: true });
@@ -163,6 +207,7 @@ export class TrustedCommandRunner implements CommandRunner {
       child.on('error', (err) => {
         if (settled) return;
         settled = true;
+        this.mark('exited');
         clearTimeout(timer);
         if (this.signal) this.signal.removeEventListener('abort', onAbort);
         reject(err);
@@ -171,6 +216,7 @@ export class TrustedCommandRunner implements CommandRunner {
       child.on('close', (code, sig) => {
         if (settled) return;
         settled = true;
+        this.mark('exited');
         clearTimeout(timer);
         if (this.signal) this.signal.removeEventListener('abort', onAbort);
         // Preserve EXACTLY what the OS reported. No coercion of 1→0.
@@ -181,6 +227,7 @@ export class TrustedCommandRunner implements CommandRunner {
     // However the client ended, the container goes with it: removed by name and
     // shown gone, or the run fails closed below.
     const left = await removeContainer();
+    if (container !== undefined) this.mark('removed');
 
     // Store raw output as immutable artifacts BEFORE returning (D5). This
     // happens for every run, success or fail, so evidence exists before any

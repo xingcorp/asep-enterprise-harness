@@ -33,12 +33,13 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   ClaudeCodingProvider, FileModelCredentialProvider, AgentConfigError, MODEL_KEY_PLACEHOLDER,
   claudeToolGrant, ToolPolicyError, buildClaudeArgs, parseModelBaseUrl, ModelCredentialError,
-  parseStream, MalformedEventError, redactSecrets, agentNetworkIsolationGap,
-  type AgentSandboxConfig, type ModelCredentialProvider,
+  parseStream, MalformedEventError, redactSecrets, agentNetworkIsolationGap, AGENT_STOP_BOUND_MS,
+  type AgentSandboxConfig, type ModelCredentialProvider, type AgentLifecycleEvent, type AgentLifecyclePhase,
 } from './index.js';
 import {
   PgliteClient, migrate, ContentAddressedArtifactStore, FilesystemObjectStore,
 } from '@asep/persistence';
+import { DOCKER_CALL_TIMEOUT_MS } from '@asep/command-runner';
 import type { ArtifactStore, AgentExecuteRequest, ToolPolicyProfile } from '@asep/ports';
 import type {
   OrganizationId, ProjectId, TenantScope, WorkspaceId, AttemptId, ArtifactRef,
@@ -68,11 +69,17 @@ const POLICY: ToolPolicyProfile = {
 // test about something else. Five minutes is far above anything observed and
 // still well below the fake CLI's 10-minute hang.
 const BUDGET = { maxTurns: 5, maxToolCalls: 10, maxCostUsd: 1, maxWallClockMinutes: 5 };
-const BUDGET_MS = BUDGET.maxWallClockMinutes * 60_000;
 // The budget of the test that is about the wall clock: it must outlast the
 // setup before the agent starts, which took at most 2.4 s at load average 120
 // on 8 CPUs, or the deadline fires while the proxy is still starting.
 const SHORT_WALL_CLOCK_MINUTES = 0.2;
+// How late, on a loaded host, the provider may act on a deadline or a
+// cancellation it was handed, and a docker client end after its call's
+// timeout: the scheduling allowance of every timing assertion below. It is
+// added to the product's own bounds, never in place of them. Against the real
+// daemon at load average 37–106 (CPU burners and docker churn) the stop came
+// at most 4 ms after its deadline.
+const SCHEDULING_ALLOWANCE_MS = 2_000;
 const ATTEMPT = 'D'.repeat(26) as AttemptId;
 const BINDING = 'E'.repeat(26);
 
@@ -150,13 +157,20 @@ interface Harness {
   readonly upstream: Upstream;
   workRef: ArtifactRef;
   ctxRef: ArtifactRef;
+  // Every lifecycle moment of every attempt this harness's providers ran.
+  readonly lifecycle: AgentLifecycleEvent[];
   cli(scenario: string, env?: Record<string, string>): Promise<string>;
-  provider(scenario: string, over?: Partial<AgentSandboxConfig>, credentials?: ModelCredentialProvider): Promise<ClaudeCodingProvider>;
+  provider(
+    scenario: string, over?: Partial<AgentSandboxConfig>, credentials?: ModelCredentialProvider,
+    observe?: (e: AgentLifecycleEvent) => void,
+  ): Promise<ClaudeCodingProvider>;
   invocations(): Record<string, unknown>[];
   close(): Promise<void>;
 }
 
-async function harness(opts: { echoKey?: boolean; workOrder?: unknown; refuseRemoval?: boolean } = {}): Promise<Harness> {
+async function harness(opts: {
+  echoKey?: boolean; workOrder?: unknown; refuseRemoval?: boolean; hangKill?: boolean;
+} = {}): Promise<Harness> {
   // Real paths: the provider resolves the worktree with realpath(3).
   const dir = await realpath(await mkdtemp(join(tmpdir(), 'claude-provider-')));
   const state = join(dir, 'docker-state');
@@ -164,11 +178,13 @@ async function harness(opts: { echoKey?: boolean; workOrder?: unknown; refuseRem
   await mkdir(bin, { recursive: true });
   const docker = join(bin, 'docker');
   // Records each client's pid and argv, so a test can kill one; with
-  // `refuseRemoval` it stands for a daemon that cannot stop or remove anything.
+  // `refuseRemoval` it stands for a daemon that cannot stop or remove anything,
+  // with `hangKill` for one whose `docker kill` of the agent never answers.
   await writeFile(docker, [
     '#!/bin/sh',
     `echo "$$ $*" >> "${join(dir, 'client-pids')}"`,
     ...(opts.refuseRemoval ? ['case "$1" in rm|kill) echo "Error response from daemon: removal refused" >&2; exit 1;; esac'] : []),
+    ...(opts.hangKill ? ['case "$1 $2" in "kill asep-agent-"*) exec sleep 600;; esac'] : []),
     `exec "${process.execPath}" "${FAKE_DOCKER}" --state "${state}" "$@"`,
     '',
   ].join('\n'), { mode: 0o755 });
@@ -187,9 +203,10 @@ async function harness(opts: { echoKey?: boolean; workOrder?: unknown; refuseRem
   const wo = new TextEncoder().encode(JSON.stringify(opts.workOrder ?? { objective: 'add feature.txt' }));
   const cp = new TextEncoder().encode(JSON.stringify({ relevantFiles: ['feature.txt'] }));
   const upstream = await fakeModelApi(opts);
+  const lifecycle: AgentLifecycleEvent[] = [];
 
   const h: Harness = {
-    dir, state, docker, wt, secret, keyFile, store, objects, upstream,
+    dir, state, docker, wt, secret, keyFile, store, objects, upstream, lifecycle,
     workRef: await store.put(scope, { kind: 'work-order', content: wo, sha256: sha(wo), contentType: 'application/json' }),
     ctxRef: await store.put(scope, { kind: 'context-pack', content: cp, sha256: sha(cp), contentType: 'application/json' }),
     async cli(scenario, env = {}) {
@@ -202,7 +219,7 @@ async function harness(opts: { echoKey?: boolean; workOrder?: unknown; refuseRem
         { mode: 0o755 });
       return path;
     },
-    async provider(scenario, over = {}, credentials) {
+    async provider(scenario, over = {}, credentials, observe) {
       return new ClaudeCodingProvider(
         {
           executable: await h.cli(scenario), model: MODEL, cliVersion: CLI_VERSION, maxTurns: 5,
@@ -211,6 +228,7 @@ async function harness(opts: { echoKey?: boolean; workOrder?: unknown; refuseRem
             dockerBinary: docker, inputRoot: dir, ...over,
           },
           credentials: credentials ?? new FileModelCredentialProvider({ apiKeyFile: keyFile, baseUrl: upstream.url }),
+          observeLifecycle: observe ?? ((e) => { lifecycle.push(e); }),
         },
         scope, store,
       );
@@ -255,6 +273,58 @@ function assertTornDown(h: Harness): void {
     'the per-attempt input directory is removed');
 }
 
+// --- timing what the provider bounds: the stop, not the setup ----------------------
+
+type Timeline = readonly AgentLifecycleEvent[];
+
+// The attempt as it happened, relative to its start: what a failed timing
+// assertion prints.
+function showTimeline(t: Timeline): string {
+  const t0 = t[0]?.at ?? 0;
+  return t.map((e) => `  +${e.at - t0} ms ${e.phase}${e.reason !== undefined ? ` (${e.reason})` : ''}`
+    + `${e.deadline !== undefined ? `, deadline at +${e.deadline - t0} ms` : ''}`).join('\n');
+}
+
+function phaseOf(t: Timeline, phase: AgentLifecyclePhase): AgentLifecycleEvent {
+  const found = t.filter((e) => e.phase === phase);
+  assert.equal(found.length, 1, `exactly one '${phase}' moment:\n${showTimeline(t)}`);
+  return found[0]!;
+}
+
+// When the wall clock's stop was due: at the deadline, or as soon as the agent
+// started if the setup outlasted the deadline.
+function wallClockDue(t: Timeline): number {
+  return Math.max(phaseOf(t, 'started').deadline!, phaseOf(t, 'agent-started').at);
+}
+
+// The stop was for `reason`; when `due` is given it was acted on no earlier
+// than that (timers and Date.now() may disagree by a few ms) and no later than
+// the scheduling allowance after it; and the agent container was removed
+// within the product's stop bound after the stop.
+function assertStoppedInTime(t: Timeline, reason: 'timeout' | 'aborted' | 'violation', due?: number): void {
+  const stop = phaseOf(t, 'stop');
+  assert.equal(stop.reason, reason, showTimeline(t));
+  if (due !== undefined) {
+    assert.ok(stop.at - due >= -50, `stopped ${due - stop.at} ms before it was due:\n${showTimeline(t)}`);
+    assert.ok(stop.at - due <= SCHEDULING_ALLOWANCE_MS,
+      `stopped ${stop.at - due} ms after it was due (allowance ${SCHEDULING_ALLOWANCE_MS} ms):\n${showTimeline(t)}`);
+  }
+  const removed = phaseOf(t, 'agent-removed');
+  assert.ok(removed.at - stop.at <= AGENT_STOP_BOUND_MS + SCHEDULING_ALLOWANCE_MS,
+    `the agent container was removed ${removed.at - stop.at} ms after the stop; the bound is `
+      + `${AGENT_STOP_BOUND_MS} ms + ${SCHEDULING_ALLOWANCE_MS} ms:\n${showTimeline(t)}`);
+}
+
+// The agent ended on its own — nothing stopped it, least of all the wall
+// clock — and its container was removed within one docker call of its end.
+function assertExitedAndRemoved(t: Timeline): void {
+  assert.deepEqual(t.filter((e) => e.phase === 'stop'), [], `nothing stopped the agent:\n${showTimeline(t)}`);
+  const exited = phaseOf(t, 'agent-exited');
+  const removed = phaseOf(t, 'agent-removed');
+  assert.ok(removed.at - exited.at <= DOCKER_CALL_TIMEOUT_MS + SCHEDULING_ALLOWANCE_MS,
+    `the agent container was removed ${removed.at - exited.at} ms after its client ended:\n${showTimeline(t)}`);
+}
+
 async function eventStream(h: Harness, refs: readonly ArtifactRef[]): Promise<string> {
   const ref = refs.find((r) => r.kind === 'claude-event-stream');
   assert.ok(ref, 'the raw event stream is recorded');
@@ -262,6 +332,30 @@ async function eventStream(h: Harness, refs: readonly ArtifactRef[]): Promise<st
 }
 
 // --- the happy path ------------------------------------------------------------------
+
+test('the lifecycle observer sees each moment of an attempt in order, and one that throws changes nothing', async () => {
+  const h = await harness();
+  try {
+    const obs = await (await h.provider('ok')).execute(request(h));
+    assert.equal(obs.status, 'AGENT_DONE', obs.knownLimitations.join('; '));
+    assert.deepEqual(h.lifecycle.map((e) => e.phase), [
+      'started', 'network-ready', 'proxy-ready', 'agent-started', 'agent-exited', 'agent-removed', 'torn-down',
+    ]);
+    assert.ok(h.lifecycle.every((e) => e.attemptId === ATTEMPT));
+    assert.ok(h.lifecycle.every((e, i) => i === 0 || e.at >= h.lifecycle[i - 1]!.at), 'in the order they happened');
+    assert.equal(h.lifecycle[0]!.deadline, h.lifecycle[0]!.at + BUDGET.maxWallClockMinutes * 60_000);
+
+    let calls = 0;
+    const throwing = await h.provider('ok', {}, undefined, () => { calls++; throw new Error('observer failure'); });
+    const again = await throwing.execute(request(h));
+    assert.equal(again.status, 'AGENT_DONE', again.knownLimitations.join('; '));
+    assert.equal(again.summary, obs.summary);
+    assert.equal(calls, 7, 'it was told every moment all the same');
+    assertTornDown(h);
+  } finally {
+    await h.close();
+  }
+});
 
 test('a contained attempt: internal network, proxy, agent, teardown — and an untrusted observation', async () => {
   const h = await harness();
@@ -603,13 +697,14 @@ for (const c of failClosed) {
   test(`fail closed: ${c.scenario} → ${c.status}, evidence kept, everything torn down`, async () => {
     const h = await harness();
     try {
-      const started = Date.now();
       const obs = await (await h.provider(c.scenario)).execute(request(h));
       assert.equal(obs.status, c.status, obs.knownLimitations.join('; '));
       assert.match(obs.knownLimitations.join(' '), c.match);
-      // A violation stops the agent at once: the status says which stop it was,
-      // and nothing waited for the wall-clock budget.
-      assert.ok(Date.now() - started < BUDGET_MS, `returned after ${Date.now() - started}ms`);
+      // A violation the stream shows stops the agent at once; anything else is
+      // judged once the agent exited on its own. Either way nothing waited for
+      // the wall clock, and the container went within the product's bound.
+      if (h.lifecycle.some((e) => e.phase === 'stop')) assertStoppedInTime(h.lifecycle, 'violation');
+      else assertExitedAndRemoved(h.lifecycle);
       if (c.scenario !== 'nonzero') await eventStream(h, obs.eventArtifactRefs);
       assertTornDown(h);
     } finally {
@@ -641,14 +736,14 @@ test('G6: a permission denial is reported, an API retry is noted, an agent claim
 test('G3: the tool-call budget is enforced while the agent runs', async () => {
   const h = await harness();
   try {
-    const started = Date.now();
     const obs = await (await h.provider('tool-flood')).execute(
       request(h, { budget: { ...BUDGET, maxToolCalls: 3 } }),
     );
     assert.equal(obs.status, 'BUDGET_EXHAUSTED');
     assert.match(obs.knownLimitations.join(' '), /tool-call budget of 3 exceeded/);
     assert.equal(obs.usage.toolCalls, 4, 'stopped at the first call over the budget');
-    assert.ok(Date.now() - started < BUDGET_MS, 'stopped by the tool-call budget, not the wall clock');
+    // Stopped by the tool-call budget, not the wall clock, and removed in time.
+    assertStoppedInTime(h.lifecycle, 'violation');
     assertTornDown(h);
   } finally {
     await h.close();
@@ -658,13 +753,14 @@ test('G3: the tool-call budget is enforced while the agent runs', async () => {
 test('G3: a hung agent is removed by the wall-clock budget, with no external abort', async () => {
   const h = await harness();
   try {
-    const started = Date.now();
     const obs = await (await h.provider('hang')).execute(
       request(h, { budget: { ...BUDGET, maxWallClockMinutes: SHORT_WALL_CLOCK_MINUTES } }),
     );
     assert.equal(obs.status, 'BUDGET_EXHAUSTED', obs.knownLimitations.join('; '));
     assert.match(obs.knownLimitations.join(' '), /wall-clock/);
-    assert.ok(Date.now() - started < BUDGET_MS, 'removed at its own budget, long before the hang ends');
+    // Stopped at its deadline — measured from the deadline, not from a start
+    // that includes the setup — and removed within the product's stop bound.
+    assertStoppedInTime(h.lifecycle, 'timeout', wallClockDue(h.lifecycle));
     assert.ok(argvOf(h.invocations()).some((a) => a[0] === 'rm' && a[2]!.startsWith('asep-agent-')),
       'the container itself is removed, not just its client');
     assertTornDown(h);
@@ -677,13 +773,16 @@ test('G3: cancellation stops a running agent promptly; an already-aborted signal
   const h = await harness();
   try {
     const ac = new AbortController();
-    const started = Date.now();
     const p = (await h.provider('hang')).execute(request(h, { signal: ac.signal }));
-    setTimeout(() => ac.abort(), 1500);
+    // Cancelled once the agent runs, so the setup before it is not measured.
+    await until('the agent container to start', () => containerRecords(h).some((c) => String(c['name']).startsWith('asep-agent-')));
+    const cancelledAt = Date.now();
+    ac.abort();
     const obs = await p;
     assert.equal(obs.status, 'BLOCKED');
     assert.match(obs.knownLimitations.join(' '), /cancelled during execution/);
-    assert.ok(Date.now() - started < BUDGET_MS, 'stopped by the cancellation, not the wall clock');
+    // Stopped when the cancellation was delivered, and removed in time.
+    assertStoppedInTime(h.lifecycle, 'aborted', cancelledAt);
     assertTornDown(h);
 
     const before = h.invocations().length;
@@ -692,6 +791,29 @@ test('G3: cancellation stops a running agent promptly; an already-aborted signal
     const blocked = await (await h.provider('hang')).execute(request(h, { signal: pre.signal }));
     assert.equal(blocked.status, 'BLOCKED');
     assert.equal(h.invocations().length, before, 'nothing was started');
+  } finally {
+    await h.close();
+  }
+});
+
+// The stop path's bound is the product's own: a `docker kill` that never
+// answers is cut at the docker-call timeout, the client is killed and the
+// container removed by name — all within AGENT_STOP_BOUND_MS of the stop.
+test('G3: a docker kill that never answers is cut at its bound, and the agent is still removed in time', async () => {
+  const h = await harness({ hangKill: true });
+  try {
+    const ac = new AbortController();
+    const p = (await h.provider('hang')).execute(request(h, { signal: ac.signal }));
+    await until('the agent container to start', () => containerRecords(h).some((c) => String(c['name']).startsWith('asep-agent-')));
+    const cancelledAt = Date.now();
+    ac.abort();
+    const obs = await p;
+    assert.equal(obs.status, 'BLOCKED', obs.knownLimitations.join('; '));
+    assertStoppedInTime(h.lifecycle, 'aborted', cancelledAt);
+    const killedAfter = phaseOf(h.lifecycle, 'agent-killed').at - phaseOf(h.lifecycle, 'stop').at;
+    assert.ok(killedAfter >= DOCKER_CALL_TIMEOUT_MS - 50 && killedAfter <= DOCKER_CALL_TIMEOUT_MS + SCHEDULING_ALLOWANCE_MS,
+      `the hung kill was cut ${killedAfter} ms after the stop, not at its ${DOCKER_CALL_TIMEOUT_MS} ms bound:\n${showTimeline(h.lifecycle)}`);
+    assertTornDown(h);
   } finally {
     await h.close();
   }

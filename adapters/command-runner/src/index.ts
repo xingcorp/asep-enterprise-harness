@@ -14,8 +14,8 @@ export {
   ENVIRONMENT_PROFILES, resolveEnvironment, UnknownEnvironmentProfileError,
 } from './environment-profiles.js';
 
-export type { CommandRunnerConfig } from './command-runner.js';
-export { TrustedCommandRunner, SandboxHandleNotProvenError } from './command-runner.js';
+export type { CommandRunnerConfig, CommandLifecycleEvent, CommandLifecyclePhase } from './command-runner.js';
+export { TrustedCommandRunner, SandboxHandleNotProvenError, COMMAND_STOP_BOUND_MS } from './command-runner.js';
 
 export type { SandboxHandleEx, DockerSandboxConfig } from './sandbox.js';
 export {
@@ -25,5 +25,5 @@ export {
 
 export type { DockerCall, DockerResult } from './container-teardown.js';
 export {
-  dockerCaller, dockerClientEnv, removeLabelledContainers, SandboxTeardownError,
+  dockerCaller, dockerClientEnv, removeLabelledContainers, SandboxTeardownError, DOCKER_CALL_TIMEOUT_MS,
 } from './container-teardown.js';

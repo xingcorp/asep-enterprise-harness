@@ -44,11 +44,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
-  ClaudeCodingProvider, FileModelCredentialProvider, MODEL_KEY_PLACEHOLDER,
+  ClaudeCodingProvider, FileModelCredentialProvider, MODEL_KEY_PLACEHOLDER, AGENT_STOP_BOUND_MS,
+  type AgentLifecycleEvent, type AgentLifecyclePhase,
 } from './index.js';
 import {
   PgliteClient, migrate, ContentAddressedArtifactStore, FilesystemObjectStore,
 } from '@asep/persistence';
+import { DOCKER_CALL_TIMEOUT_MS } from '@asep/command-runner';
 import type { AgentExecuteRequest } from '@asep/ports';
 import type {
   OrganizationId, ProjectId, TenantScope, WorkspaceId, AttemptId, ArtifactRef,
@@ -233,7 +235,9 @@ async function put(s: ContentAddressedArtifactStore, kind: string, value: unknow
   });
 }
 
-async function provider(w: World, s: ContentAddressedArtifactStore, scenario: string): Promise<ClaudeCodingProvider> {
+async function provider(
+  w: World, s: ContentAddressedArtifactStore, scenario: string, lifecycle?: AgentLifecycleEvent[],
+): Promise<ClaudeCodingProvider> {
   return new ClaudeCodingProvider(
     {
       executable: await w.shim(scenario), model: MODEL, cliVersion: CLI_VERSION, maxTurns: 5,
@@ -244,9 +248,63 @@ async function provider(w: World, s: ContentAddressedArtifactStore, scenario: st
       credentials: new FileModelCredentialProvider({
         apiKeyFile: w.keyFile, baseUrl: `http://${w.modelName}:8080`,
       }),
+      ...(lifecycle !== undefined ? { observeLifecycle: (e: AgentLifecycleEvent) => { lifecycle.push(e); } } : {}),
     },
     scope, s,
   );
+}
+
+// --- timing what the provider bounds: the stop, not the setup ----------------------
+//
+// The stop path is bounded by the product: from the moment a stop is decided
+// (the deadline fires, a cancellation is delivered) the agent container is
+// killed and removed by name, each a docker call bounded by
+// DOCKER_CALL_TIMEOUT_MS (AGENT_STOP_BOUND_MS). The setup before the agent
+// starts — network, proxy, image start — is not bounded by the product and is
+// never part of an asserted interval. Each test prints its timeline to the
+// gate log, so a slow run shows where its time went.
+
+// How late, on a loaded host, the provider may act on a deadline or a
+// cancellation it was handed, and a docker client end after its call's
+// timeout: the scheduling allowance added to the product's bounds. At load
+// average 37–106 (CPU burners and docker churn) the stop came at most 4 ms
+// after its deadline.
+const SCHEDULING_ALLOWANCE_MS = 2_000;
+
+type Timeline = readonly AgentLifecycleEvent[];
+
+function showTimeline(t: Timeline): string {
+  const t0 = t[0]?.at ?? 0;
+  return t.map((e) => `+${e.at - t0}ms ${e.phase}${e.reason !== undefined ? `(${e.reason})` : ''}`
+    + `${e.deadline !== undefined ? `[deadline +${e.deadline - t0}ms]` : ''}`).join(' ');
+}
+
+function phaseOf(t: Timeline, phase: AgentLifecyclePhase): AgentLifecycleEvent {
+  const found = t.filter((e) => e.phase === phase);
+  assert.equal(found.length, 1, `exactly one '${phase}' moment: ${showTimeline(t)}`);
+  return found[0]!;
+}
+
+// When the wall clock's stop was due: at the deadline, or as soon as the agent
+// started if the setup outlasted the deadline.
+function wallClockDue(t: Timeline): number {
+  return Math.max(phaseOf(t, 'started').deadline!, phaseOf(t, 'agent-started').at);
+}
+
+// The stop was for `reason`, acted on no earlier than `due` (timers and
+// Date.now() may disagree by a few ms) and no later than the scheduling
+// allowance after it, and the agent container was removed within the
+// product's stop bound after the stop.
+function assertStoppedInTime(t: Timeline, reason: 'timeout' | 'aborted', due: number): void {
+  const stop = phaseOf(t, 'stop');
+  assert.equal(stop.reason, reason, showTimeline(t));
+  assert.ok(stop.at - due >= -50, `stopped ${due - stop.at} ms before it was due: ${showTimeline(t)}`);
+  assert.ok(stop.at - due <= SCHEDULING_ALLOWANCE_MS,
+    `stopped ${stop.at - due} ms after it was due (allowance ${SCHEDULING_ALLOWANCE_MS} ms): ${showTimeline(t)}`);
+  const removed = phaseOf(t, 'agent-removed');
+  assert.ok(removed.at - stop.at <= AGENT_STOP_BOUND_MS + SCHEDULING_ALLOWANCE_MS,
+    `the agent container was removed ${removed.at - stop.at} ms after the stop; the bound is `
+      + `${AGENT_STOP_BOUND_MS} ms + ${SCHEDULING_ALLOWANCE_MS} ms: ${showTimeline(t)}`);
 }
 
 function request(workOrderRef: ArtifactRef, contextPackRef: ArtifactRef, over: Partial<AgentExecuteRequest> = {}): AgentExecuteRequest {
@@ -427,6 +485,13 @@ test('the agent container has no route out, reaches the model only through the p
   }
 });
 
+// The budget outlasts the setup before the agent starts even under load: the
+// proxy must be ready before the deadline, or the attempt fails in setup. At
+// load average 60–106 with docker churn the setup took up to 19.1 s; at 3 it
+// took 0.4 s. What is asserted is measured from the deadline, never from the
+// start.
+const HUNG_WALL_CLOCK_MINUTES = 0.75;
+
 test('a hung agent is removed by the wall-clock budget, and so is everything else', async () => {
   const w = await world();
   const { db, store: s } = await store(w.dir);
@@ -434,14 +499,15 @@ test('a hung agent is removed by the wall-clock budget, and so is everything els
     const workOrderRef = await put(s, 'work-order', { objective: 'hang' });
     const contextPackRef = await put(s, 'context-pack', {});
     const req = request(workOrderRef, contextPackRef, {
-      budget: { maxTurns: 5, maxToolCalls: 10, maxCostUsd: 1, maxWallClockMinutes: 0.15 },
+      budget: { maxTurns: 5, maxToolCalls: 10, maxCostUsd: 1, maxWallClockMinutes: HUNG_WALL_CLOCK_MINUTES },
     });
     await seedAttempt(db, req.attemptId);
-    const started = Date.now();
-    const obs = await (await provider(w, s, 'hang')).execute(req);
-    assert.equal(obs.status, 'BUDGET_EXHAUSTED', obs.knownLimitations.join('; '));
+    const lifecycle: AgentLifecycleEvent[] = [];
+    const obs = await (await provider(w, s, 'hang', lifecycle)).execute(req);
+    console.log('hung agent timeline:', showTimeline(lifecycle));
+    assert.equal(obs.status, 'BUDGET_EXHAUSTED', `${obs.knownLimitations.join('; ')} — ${showTimeline(lifecycle)}`);
     assert.match(obs.knownLimitations.join(' '), /wall-clock/);
-    assert.ok(Date.now() - started < 60_000);
+    assertStoppedInTime(lifecycle, 'timeout', wallClockDue(lifecycle));
     assert.equal(await leftovers(req.attemptId), '', 'the container was removed, not merely abandoned');
   } finally {
     await db.close();
@@ -474,15 +540,23 @@ test('SIGKILLing the agent and proxy docker clients mid-run leaves no container 
     const contextPackRef = await put(s, 'context-pack', {});
     const req = request(workOrderRef, contextPackRef);
     await seedAttempt(db, req.attemptId);
-    const started = Date.now();
-    const execution = (await provider(w, s, 'hang')).execute(req);
+    const lifecycle: AgentLifecycleEvent[] = [];
+    const execution = (await provider(w, s, 'hang', lifecycle)).execute(req);
     await until('the agent container to be running', () => running(req.attemptId, 'agent'));
     assert.equal(await running(req.attemptId, 'egress-proxy'), true);
+    const killedAt = Date.now();
     process.kill(w.runClientPid('agent'), 'SIGKILL');
     process.kill(w.runClientPid('egress-proxy'), 'SIGKILL');
     const obs = await execution;
+    console.log('killed clients timeline:', showTimeline(lifecycle));
     assert.equal(obs.status, 'FAILED', obs.knownLimitations.join('; '));
-    assert.ok(Date.now() - started < 90_000, 'the attempt ended with its clients, not at its wall-clock budget');
+    // The attempt ended with its client — nothing, least of all the wall clock,
+    // had to stop it — and the container went within one docker call.
+    assert.deepEqual(lifecycle.filter((e) => e.phase === 'stop'), [], showTimeline(lifecycle));
+    const exited = phaseOf(lifecycle, 'agent-exited');
+    assert.ok(exited.at - killedAt <= SCHEDULING_ALLOWANCE_MS, showTimeline(lifecycle));
+    assert.ok(phaseOf(lifecycle, 'agent-removed').at - exited.at <= DOCKER_CALL_TIMEOUT_MS + SCHEDULING_ALLOWANCE_MS,
+      showTimeline(lifecycle));
     assert.equal(await leftovers(req.attemptId), '', 'the containers and the network were removed, not abandoned');
   } finally {
     await db.close();
@@ -499,11 +573,15 @@ test('a cancelled attempt leaves no container or network behind', async () => {
     const ac = new AbortController();
     const req = request(workOrderRef, contextPackRef, { signal: ac.signal });
     await seedAttempt(db, req.attemptId);
-    const execution = (await provider(w, s, 'hang')).execute(req);
+    const lifecycle: AgentLifecycleEvent[] = [];
+    const execution = (await provider(w, s, 'hang', lifecycle)).execute(req);
     await until('the agent container to be running', () => running(req.attemptId, 'agent'));
+    const cancelledAt = Date.now();
     ac.abort();
     const obs = await execution;
+    console.log('cancelled agent timeline:', showTimeline(lifecycle));
     assert.equal(obs.status, 'BLOCKED', obs.knownLimitations.join('; '));
+    assertStoppedInTime(lifecycle, 'aborted', cancelledAt);
     assert.equal(await leftovers(req.attemptId), '', 'cancelled: nothing left');
   } finally {
     await db.close();

@@ -44,7 +44,8 @@ import type {
   CodingAgentProvider, AgentExecuteRequest, AgentAttemptObservation, ArtifactStore,
 } from '@asep/ports';
 import {
-  isDigestPinned, dockerCaller, dockerClientEnv, removeLabelledContainers, type DockerCall,
+  isDigestPinned, dockerCaller, dockerClientEnv, removeLabelledContainers, DOCKER_CALL_TIMEOUT_MS,
+  type DockerCall,
 } from '@asep/command-runner';
 import {
   ClaudeStreamParser, MalformedEventError, type ClaudeInit, type ParsedStream,
@@ -92,7 +93,41 @@ export interface ClaudeProviderConfig {
   // E8/G3: always contained. There is no host-execution mode.
   readonly sandbox: AgentSandboxConfig;
   readonly credentials: ModelCredentialProvider;
+  // Told each moment of the attempt as the provider reaches it, so a caller can
+  // time what the provider bounds (the stop path) apart from what it does not
+  // (setup). Called synchronously; whatever it does or throws changes nothing
+  // about the attempt. Production passes none.
+  readonly observeLifecycle?: (event: AgentLifecycleEvent) => void;
 }
+
+/** A moment of a contained attempt. */
+export type AgentLifecyclePhase =
+  | 'started'        // execute() began; `deadline` is the wall-clock deadline
+  | 'network-ready'  // the agent network exists and the daemon shows it isolated
+  | 'proxy-ready'    // the egress proxy listens and is attached to that network
+  | 'agent-started'  // the agent container's docker client was spawned
+  | 'stop'           // the first reason to stop the agent was acted on: `reason`
+  | 'agent-killed'   // `docker kill` of the agent container returned
+  | 'agent-exited'   // the agent container's docker client ended
+  | 'agent-removed'  // `docker rm -f` of the agent container returned
+  | 'torn-down';     // every container and network of the attempt was handled
+
+export interface AgentLifecycleEvent {
+  readonly phase: AgentLifecyclePhase;
+  readonly attemptId: string;
+  // Date.now() when the provider reached the phase.
+  readonly at: number;
+  readonly deadline?: number;
+  readonly reason?: 'timeout' | 'aborted' | 'violation';
+}
+
+/**
+ * The longest the agent container can outlive the decision to stop it (the
+ * `stop` phase) before it is removed: it is killed by name, then removed by
+ * name, each a docker call bounded by DOCKER_CALL_TIMEOUT_MS. Its client is
+ * SIGKILLed as soon as the kill returns, so it does not outlast the kill.
+ */
+export const AGENT_STOP_BOUND_MS = 2 * DOCKER_CALL_TIMEOUT_MS;
 
 export class AgentConfigError extends Error {
   constructor(reason: string) {
@@ -303,7 +338,7 @@ function appendBounded(c: Captured, chunk: Buffer, max: number): void {
 }
 
 function runDocker(
-  bin: string, args: readonly string[], timeoutMs = 60_000,
+  bin: string, args: readonly string[], timeoutMs = DOCKER_CALL_TIMEOUT_MS,
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
     const child = spawn(bin, args, { env: dockerClientEnv(), shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -337,6 +372,11 @@ async function removeLabelledNetworks(docker: DockerCall, label: string): Promis
 }
 
 // --- the attempt ---------------------------------------------------------------
+
+type Mark = (
+  phase: AgentLifecyclePhase,
+  extra?: Pick<AgentLifecycleEvent, 'deadline' | 'reason'>,
+) => void;
 
 type AgentEnd =
   | { readonly kind: 'exit'; readonly code: number | null }
@@ -439,6 +479,8 @@ export class ClaudeCodingProvider implements CodingAgentProvider {
   ): Promise<void> {
     const sb = this.cfg.sandbox;
     const deadline = started + Math.max(1, Math.round(req.budget.maxWallClockMinutes * 60_000));
+    const mark = this.marker(req.attemptId);
+    mark('started', { deadline });
     const suffix = `${req.attemptId.slice(-8).toLowerCase()}-${randomBytes(4).toString('hex')}`;
     const network = `asep-agent-net-${suffix}`;
     const proxyName = `asep-egress-${suffix}`;
@@ -615,6 +657,7 @@ export class ClaudeCodingProvider implements CodingAgentProvider {
         setup('FAILED', `the agent network is not isolated from the host: ${gap}`);
         return;
       }
+      mark('network-ready');
 
       // --- the egress proxy, credential on stdin ----------------------------
       const proxyReady = await new Promise<string | undefined>((resolve) => {
@@ -652,10 +695,11 @@ export class ClaudeCodingProvider implements CodingAgentProvider {
         setup('FAILED', `docker network connect failed: ${connect.stderr.trim().slice(0, 300)}`);
         return;
       }
+      mark('proxy-ready');
 
       // --- the agent ----------------------------------------------------------
       created.agent = true;
-      rec.end = await this.runAgent(req, agentArgs, agentName, prompt, deadline, workdir, grant, rec);
+      rec.end = await this.runAgent(req, agentArgs, agentName, prompt, deadline, workdir, grant, rec, mark);
 
       // The inputs were read-only binds; prove they are byte-identical still.
       let intact = true;
@@ -677,7 +721,10 @@ export class ClaudeCodingProvider implements CodingAgentProvider {
       // everything labelled with this attempt is removed and shown gone. What
       // cannot be shown gone fails the attempt (see conclude).
       const docker = dockerCaller(this.docker, dockerClientEnv());
-      if (created.agent) await this.remove(agentName, rec);
+      if (created.agent) {
+        await this.remove(agentName, rec);
+        mark('agent-removed');
+      }
       if (created.proxy) {
         await docker(['kill', proxyName]);
         proxyChild?.kill('SIGKILL');
@@ -698,7 +745,22 @@ export class ClaudeCodingProvider implements CodingAgentProvider {
         await chmod(inputDir, 0o755).catch(() => undefined);
         await rm(inputDir, { recursive: true, force: true }).catch(() => undefined);
       }
+      mark('torn-down');
     }
+  }
+
+  // Reports a lifecycle moment to the configured observer, if any. The observer
+  // only watches: its failure is swallowed so it can never change an attempt.
+  private marker(attemptId: string): Mark {
+    const observe = this.cfg.observeLifecycle;
+    return (phase, extra = {}) => {
+      if (observe === undefined) return;
+      try {
+        observe({ phase, attemptId, at: Date.now(), ...extra });
+      } catch {
+        // An observer never changes the attempt.
+      }
+    };
   }
 
   private async remove(name: string, rec: RunRecord): Promise<void> {
@@ -717,11 +779,13 @@ export class ClaudeCodingProvider implements CodingAgentProvider {
     workdir: string,
     grant: ClaudeToolGrant,
     rec: RunRecord,
+    mark: Mark,
   ): Promise<AgentEnd> {
     return new Promise<AgentEnd>((resolve) => {
       const child = spawn(this.docker, args, {
         env: dockerClientEnv(), shell: false, stdio: ['pipe', 'pipe', 'pipe'],
       });
+      mark('agent-started');
       let ended: AgentEnd | undefined;
       let pending = '';
       // The first reason to stop wins; the container itself is stopped (not
@@ -730,7 +794,11 @@ export class ClaudeCodingProvider implements CodingAgentProvider {
       const stop = (end: AgentEnd): void => {
         if (ended !== undefined) return;
         ended = end;
-        void runDocker(this.docker, ['kill', name]).finally(() => child.kill('SIGKILL'));
+        mark('stop', { reason: end.kind === 'timeout' || end.kind === 'aborted' ? end.kind : 'violation' });
+        void runDocker(this.docker, ['kill', name]).finally(() => {
+          mark('agent-killed');
+          child.kill('SIGKILL');
+        });
       };
       const timer = setTimeout(() => stop({ kind: 'timeout' }), Math.max(1, deadline - Date.now()));
       const onAbort = (): void => stop({ kind: 'aborted' });
@@ -775,7 +843,12 @@ export class ClaudeCodingProvider implements CodingAgentProvider {
         }
       });
       child.stderr.on('data', (d: Buffer) => appendBounded(rec.stderr, d, MAX_STDERR_BYTES));
+      let exited = false;
       const settle = (fallback: AgentEnd): void => {
+        if (!exited) {
+          exited = true;
+          mark('agent-exited');
+        }
         clearTimeout(timer);
         req.signal.removeEventListener('abort', onAbort);
         if (ended === undefined) {

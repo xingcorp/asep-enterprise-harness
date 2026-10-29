@@ -14,7 +14,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PgliteClient, migrate, ContentAddressedArtifactStore, FilesystemObjectStore } from '@asep/persistence';
 import type { SqlClient } from '@asep/persistence';
-import { TrustedCommandRunner } from './command-runner.js';
+import { TrustedCommandRunner, type CommandLifecycleEvent } from './command-runner.js';
 import { BoundedCapture, TRUNCATION_MARKER } from './bounded-capture.js';
 import { resolveEnvironment, UnknownEnvironmentProfileError } from './environment-profiles.js';
 import {
@@ -559,6 +559,37 @@ test('a timed-out command has its container removed, not merely its client kille
     assert.deepEqual(d.containers(), []);
     assert.ok(d.invocations().some((a) => a[0] === 'kill' && a.includes(`${handle.sandboxId}-1`)),
       'the container itself was stopped, by its name');
+  } finally {
+    await client.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('the runner tells each moment of a timed-out run in order, and an observer that throws changes nothing', async () => {
+  const { client, store, scope, dir } = await harness();
+  try {
+    const d = await fakeDaemon(dir);
+    const handle = await dockerHandle(d);
+    const seen: CommandLifecycleEvent[] = [];
+    const r = await new TrustedCommandRunner(scope, store, undefined, (e) => { seen.push(e); })
+      .run(spec({ ...LONG, cwd: d.wt, timeoutMs: 1_000 }), handle);
+    assert.equal(r.timedOut, true);
+    // The client may end before the kill call returns, or after it.
+    assert.deepEqual(seen.slice(0, 2).map((e) => [e.phase, e.reason]), [['spawned', undefined], ['stop', 'timeout']]);
+    assert.deepEqual(seen.slice(2, 4).map((e) => e.phase).sort(), ['exited', 'killed']);
+    assert.deepEqual(seen.slice(4).map((e) => e.phase), ['removed']);
+    assert.ok(seen.every((e, i) => i === 0 || e.at >= seen[i - 1]!.at), 'in the order they happened');
+    // At the timeout, not before it, and not later than a loaded host's
+    // scheduling allows.
+    const late = seen[1]!.at - seen[0]!.at - 1_000;
+    assert.ok(late >= -50 && late <= 2_000, `the stop came ${late} ms off the timeout`);
+
+    let calls = 0;
+    const again = await new TrustedCommandRunner(scope, store, undefined, () => { calls++; throw new Error('observer failure'); })
+      .run(spec({ ...LONG, cwd: d.wt, timeoutMs: 1_000 }), handle);
+    assert.equal(again.timedOut, true);
+    assert.equal(calls, 5, 'it was told every moment all the same');
+    assert.deepEqual(d.containers(), []);
   } finally {
     await client.close();
     await rm(dir, { recursive: true, force: true });

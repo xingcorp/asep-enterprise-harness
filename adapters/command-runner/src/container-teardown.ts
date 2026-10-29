@@ -20,6 +20,13 @@ export type DockerCall = (args: readonly string[]) => Promise<DockerResult>;
 
 const MAX_OUTPUT = 64 * 1024;
 
+/**
+ * How long one docker client call of a sandbox may take before its client is
+ * killed. Every stop and removal is made of such calls, so this is what bounds
+ * how long a container can outlive the decision to stop it.
+ */
+export const DOCKER_CALL_TIMEOUT_MS = 30_000;
+
 // The docker client gets only what it needs to find its daemon. None of it
 // reaches a container: a container's environment is exactly its `-e` list.
 const DOCKER_CLIENT_ENV = [
@@ -39,7 +46,7 @@ export function dockerClientEnv(): Record<string, string> {
 
 /** A bounded docker client call with a fixed environment, shell-free. */
 export function dockerCaller(
-  binary: string, env: Readonly<Record<string, string>>, timeoutMs = 30_000,
+  binary: string, env: Readonly<Record<string, string>>, timeoutMs = DOCKER_CALL_TIMEOUT_MS,
 ): DockerCall {
   return (args) => new Promise((resolve) => {
     const child = spawn(binary, [...args], { env, shell: false, stdio: ['ignore', 'pipe', 'pipe'] });

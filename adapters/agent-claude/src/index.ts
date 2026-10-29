@@ -24,9 +24,11 @@ export {
   parseModelBaseUrl, redactSecrets,
 } from './model-credentials.js';
 
-export type { ClaudeProviderConfig, AgentSandboxConfig } from './claude-provider.js';
+export type {
+  ClaudeProviderConfig, AgentSandboxConfig, AgentLifecycleEvent, AgentLifecyclePhase,
+} from './claude-provider.js';
 export {
-  ClaudeCodingProvider, AgentConfigError,
+  ClaudeCodingProvider, AgentConfigError, AGENT_STOP_BOUND_MS,
   buildClaudeArgs, buildPrompt, buildAgentRunArgs, buildProxyRunArgs, initViolation,
   MODEL_KEY_PLACEHOLDER, EGRESS_ALLOWLIST, AGENT_NETWORK_FLAGS, agentNetworkIsolationGap,
 } from './claude-provider.js';

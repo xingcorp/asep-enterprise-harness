@@ -29,7 +29,7 @@ import { join } from 'node:path';
 import { execFile, execFileSync } from 'node:child_process';
 import { PgliteClient, migrate, ContentAddressedArtifactStore, FilesystemObjectStore } from '@asep/persistence';
 import type { SqlClient } from '@asep/persistence';
-import { TrustedCommandRunner } from './command-runner.js';
+import { TrustedCommandRunner, COMMAND_STOP_BOUND_MS, type CommandLifecycleEvent } from './command-runner.js';
 import { DockerSandboxProvider, type SandboxHandleEx } from './sandbox.js';
 import type { CommandSpec } from '@asep/ports';
 import type { OrganizationId, ProjectId, TenantScope, WorkspaceId } from '@asep/contracts';
@@ -332,16 +332,39 @@ test('F3 (in-container): SIGKILLing the docker client mid-run leaves no containe
   }
 });
 
+// How late, on a loaded host, the runner may act on its timeout, and a docker
+// client end after its call's timeout: the allowance added to the runner's
+// own bounds.
+const SCHEDULING_ALLOWANCE_MS = 2_000;
+
 test('F3 (in-container): a timeout removes the container itself', async () => {
   const { client, store, scope, dir } = await harness();
   try {
     const d = await pidRecordingDocker(dir);
     const { provider, handle } = await labelledSandbox(dir, d.docker);
-    const started = Date.now();
-    const res = await new TrustedCommandRunner(scope, store)
-      .run(spec(dir, { executable: 'sleep', args: ['120'], timeoutMs: 3_000 }), handle);
+    const lifecycle: CommandLifecycleEvent[] = [];
+    const timeoutMs = 3_000;
+    const res = await new TrustedCommandRunner(scope, store, undefined, (e) => { lifecycle.push(e); })
+      .run(spec(dir, { executable: 'sleep', args: ['120'], timeoutMs }), handle);
+    const t0 = lifecycle[0]?.at ?? 0;
+    const shown = lifecycle.map((e) => `+${e.at - t0}ms ${e.phase}${e.reason !== undefined ? `(${e.reason})` : ''}`).join(' ');
+    console.log('timed-out command timeline:', shown);
     assert.equal(res.timedOut, true);
-    assert.ok(Date.now() - started < 60_000, 'the run returned at its timeout, not when sleep would have ended');
+    const at = (phase: CommandLifecycleEvent['phase']): CommandLifecycleEvent => {
+      const found = lifecycle.filter((e) => e.phase === phase);
+      assert.equal(found.length, 1, `exactly one '${phase}' moment: ${shown}`);
+      return found[0]!;
+    };
+    // Measured from the runner's own timer and its own stop, never from a start
+    // that includes the container's: the timeout fired when it was due, and the
+    // command was stopped within one docker call of it — then shown removed.
+    const stop = at('stop');
+    assert.equal(stop.reason, 'timeout', shown);
+    const late = stop.at - at('spawned').at - timeoutMs;
+    assert.ok(late >= -50 && late <= SCHEDULING_ALLOWANCE_MS, `the timeout fired ${late} ms off its due time: ${shown}`);
+    assert.ok(at('exited').at - stop.at <= COMMAND_STOP_BOUND_MS + SCHEDULING_ALLOWANCE_MS,
+      `the command ended ${at('exited').at - stop.at} ms after its stop: ${shown}`);
+    assert.ok(at('removed').at >= at('exited').at, shown);
     assert.deepEqual(await containersLabelled(`asep.sandbox=${handle.sandboxId}`), []);
     await provider.stop(handle);
   } finally {
