@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import type { ArtifactId, ArtifactRef, AttemptId, OrganizationId, ProjectId, RepositoryBindingId, RunId, TaskId } from '@asep/contracts';
 import { loadReviewPolicy } from '@asep/policy';
 import { buildReviewPacket, type PacketLimits, type PacketSources } from './packet.js';
+import { buildCheckReport } from './check-report.js';
 import { runDeterministicCheckRules } from './checks.js';
 import { parseUnifiedDiff } from './diff.js';
 import type { AdjudicationInput, ReviewInput } from './adjudication.js';
@@ -364,7 +365,7 @@ export function adjudicationBase(options: { readonly round?: number; readonly wo
       pushGuard: checks.pushGuard,
       egress: { decision: checks.egress.decision, packetSha256: checks.egress.packetSha256 },
       findings: checks.findings,
-      reportSha256: sha256Of(utf8(JSON.stringify(checks.findings))),
+      reportSha256: buildCheckReport(checks, { packetSha256: built.sha256, sarif: [] }).sha256,
     },
     unsatisfiable: null,
     reviewers: [{ reviewerConfigId: PRIMARY, role: 'primary', independentOfImplementer: true }],

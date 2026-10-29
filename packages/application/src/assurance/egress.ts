@@ -115,16 +115,19 @@ export function decideEgress(
     for (const label of labels) hits.push({ kind: 'secret', part, detail: label });
   }
 
+  return { decision: egressDecisionFor(hits), packetSha256: built.sha256, hits };
+}
+
+/** The egress decision a set of hits implies, by the precedence of `decideEgress`. */
+export function egressDecisionFor(hits: readonly EgressHit[]): EgressDecision {
   const has = (kind: EgressHit['kind']) => hits.some((h) => h.kind === kind);
-  const decision: EgressDecision =
-    has('not-opted-in') || has('deny-path')
-      ? 'STOP_CLASSIFIED'
-      : has('unscannable')
-        ? 'STOP_UNSCANNABLE'
-        : has('secret')
-          ? 'STOP_SECRET'
-          : 'CLEAR';
-  return { decision, packetSha256: built.sha256, hits };
+  return has('not-opted-in') || has('deny-path')
+    ? 'STOP_CLASSIFIED'
+    : has('unscannable')
+      ? 'STOP_UNSCANNABLE'
+      : has('secret')
+        ? 'STOP_SECRET'
+        : 'CLEAR';
 }
 
 /** Re-scan the exact request body bytes immediately before a provider call. */

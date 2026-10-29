@@ -97,11 +97,14 @@ Plan §18.4 lists the one new `eventType` (`review.finding_dispositioned`) and t
 ### 2.8 Internal artifacts (not canonical contracts)
 
 `check-report` (canonical JSON, `check-report/v1`, built and parsed by `packages/application/src/assurance/check-report.ts`,
-S6): the packet sha256, push-guard decision, egress decision with its hits (part, pattern label, offset — never the
-matched text), every deterministic and SARIF finding, and the raw check-output refs the checks read. There is no JSON
-Schema file: the harness writes it and re-reads it by content address, and a strict structural parser (unknown keys,
-wrong types and a sha256 mismatch fail closed) guards every read (v3; replaces the v2 schema file, which would have
-needed a new `ajv` dependency in `@asep/application`).
+S6): the packet sha256, push-guard decision, egress decision with its hits (`{kind, part, detail}`, where `detail` is
+a path, a pattern label or a fixed reason — never the matched text), every deterministic and SARIF finding, and the
+sha256 and size of each SARIF log the checks read (the raw outputs themselves are artifacts the check step stores,
+S12). There is no timestamp in it. There is no JSON Schema file: the harness writes it and re-reads it by content
+address, and a strict structural parser guards every read (v3; replaces the v2 schema file, which would have needed
+a new `ajv` dependency in `@asep/application`). Unknown or missing keys, wrong types, a sha256 mismatch, an egress
+decision for another packet, and a push-guard or egress decision that does not follow from the report's own findings
+and hits fail closed.
 `review-prompt`: instructions, rendered input, output schema, template hash.
 `gateway-appendix`: the text the gateway appended to the sent `instructions`, as returned in the response (gateway-controlled; stored so its drift is visible).
 

@@ -176,7 +176,8 @@ function pushGuardFindings(packet: ReviewPacket, diff: DiffFileChange[] | null, 
 
 const BLOCK_ORDER: readonly BlockReason[] = ['secret-in-diff', 'forbidden-path', 'unscannable-sensitive-change'];
 
-function pushGuardDecision(findings: readonly CheckFinding[]): PushGuardResult {
+/** The push-guard decision a set of findings implies: the first block reason, in order, that a finding carries. */
+export function pushGuardDecision(findings: readonly CheckFinding[]): PushGuardResult {
   for (const reason of BLOCK_ORDER) {
     if (findings.some((f) => f.ruleId === reason)) return { decision: 'BLOCK', reason };
   }

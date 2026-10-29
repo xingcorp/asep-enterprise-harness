@@ -13,7 +13,8 @@ import {
   type RecordedCheckVerdict,
 } from './checks.js';
 import { parseUnifiedDiff } from './diff.js';
-import { sha256Hex } from './canonical-json.js';
+import { canonicalBytes, sha256Hex } from './canonical-json.js';
+import { CheckReportError, buildCheckReport, checkReportSummary, parseCheckReport, reviewerClearance } from './check-report.js';
 import { CHECK_RULES, findingFingerprint, type CheckFinding } from './findings.js';
 import { SECRET_PATTERNS, findSecrets } from './secret-patterns.js';
 import type { ArchitectureInvariantRecord } from './local-types.js';
@@ -485,4 +486,81 @@ test('check findings are fingerprinted, de-duplicated and ordered', () => {
   );
   assert.deepEqual(again, result);
   for (const finding of result.findings) assert.match(finding.raisedBy, /^(deterministic|sarif):/);
+});
+
+test('the check report is canonical and fails closed when it is read back', () => {
+  const sarifLog = {
+    version: '2.1.0',
+    runs: [{ tool: { driver: { name: 'lint' } }, results: [{ ruleId: 'r1', level: 'warning', message: { text: 'unused' } }] }],
+  };
+  const sarif = [{ checkId: 'lint', content: utf8(JSON.stringify(sarifLog)) }];
+  const reportFor = (world: FixtureWorld, inputs: typeof sarif = []) => ({
+    result: checksFor(world, { sarif: inputs }),
+    packetSha256: buildReviewPacket(world.sources, world.limits).sha256,
+  });
+
+  // Canonical and input-derived: the same checks give the same bytes, and the parser returns the report.
+  const { result, packetSha256 } = reportFor(fixtureWorld({ unitStdout: 'ℹ tests 0\nℹ pass 0\nℹ fail 0\n' }), sarif);
+  const report = buildCheckReport(result, { packetSha256, sarif });
+  assert.deepEqual(buildCheckReport(result, { packetSha256, sarif }).bytes, report.bytes);
+  assert.equal(report.sha256, sha256Hex(report.bytes));
+  assert.deepEqual(parseCheckReport(report.bytes, report.sha256), report.report);
+  assert.deepEqual(Object.keys(report.report).sort(), ['egress', 'findings', 'packetSha256', 'pushGuard', 'reportVersion', 'sarifInputs']);
+  assert.deepEqual(report.report.findings, result.findings);
+  assert.deepEqual(report.report.sarifInputs, [{ checkId: 'lint', sha256: sha256Hex(sarif[0]!.content), bytes: sarif[0]!.content.byteLength }]);
+
+  // The step's summary counts and the clearance a reviewer request is checked against.
+  const blocking = result.findings.filter((f) => f.severity === 'CRITICAL' || f.severity === 'HIGH').length;
+  assert.ok(blocking > 0, 'the zero-test run must raise a blocking finding');
+  assert.ok(result.findings.length > blocking, 'the sarif warning must not block');
+  assert.deepEqual(checkReportSummary(report.report, ['CRITICAL', 'HIGH']), { total: result.findings.length, blocking });
+  assert.deepEqual(reviewerClearance(report.report), { pushGuard: { decision: 'PASS' }, egress: { decision: 'CLEAR', packetSha256 } });
+
+  // A blocked round's report keeps the block and the egress stop it implies.
+  const leaked = reportFor(worldFromDiff([{ path: 'src/k.ts', status: 'A', added: [`const k = '${AWS_KEY}';`] }], SRC));
+  const blocked = buildCheckReport(leaked.result, { packetSha256: leaked.packetSha256, sarif: [] });
+  assert.deepEqual(reviewerClearance(blocked.report), {
+    pushGuard: { decision: 'BLOCK', reason: 'secret-in-diff' },
+    egress: { decision: 'STOP_SECRET', packetSha256: leaked.packetSha256 },
+  });
+  assert.equal(new TextDecoder().decode(blocked.bytes).includes(AWS_KEY), false, 'the report never carries the matched text');
+
+  // A report for another packet is never built.
+  assert.throws(() => buildCheckReport(result, { packetSha256: 'f'.repeat(64), sarif }), CheckReportError);
+
+  // Every tampered or inconsistent report is refused.
+  const docOf = (bytes: Uint8Array) => JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>;
+  const clean = docOf(report.bytes);
+  const stopped = docOf(blocked.bytes);
+  const cleanEgress = clean['egress'] as Record<string, unknown>;
+  const stoppedEgress = stopped['egress'] as Record<string, unknown>;
+  const firstFinding = result.findings[0]!;
+  const reread = (value: unknown) => {
+    const bytes = canonicalBytes(value);
+    return () => parseCheckReport(bytes, sha256Hex(bytes));
+  };
+  const tampered: readonly (readonly [string, () => unknown])[] = [
+    ['digest mismatch', () => parseCheckReport(report.bytes, 'f'.repeat(64))],
+    ['not JSON', () => parseCheckReport(utf8('{'), sha256Hex(utf8('{')))],
+    ['not UTF-8', () => parseCheckReport(new Uint8Array([0x7b, 0xff, 0x7d]), sha256Hex(new Uint8Array([0x7b, 0xff, 0x7d])))],
+    ['unknown key', reread({ ...clean, extra: true })],
+    ['missing key', reread(Object.fromEntries(Object.entries(clean).filter(([key]) => key !== 'findings')))],
+    ['wrong version', reread({ ...clean, reportVersion: 'check-report/v0' })],
+    ['egress for another packet', reread({ ...clean, egress: { ...cleanEgress, packetSha256: 'f'.repeat(64) } })],
+    ['clear despite stop hits', reread({ ...stopped, egress: { ...stoppedEgress, decision: 'CLEAR' } })],
+    ['stop without hits', reread({ ...clean, egress: { ...cleanEgress, decision: 'STOP_SECRET' } })],
+    ['a stop its hits do not imply', reread({ ...stopped, egress: { ...stoppedEgress, decision: 'STOP_CLASSIFIED' } })],
+    ['unknown hit kind', reread({ ...stopped, egress: { ...stoppedEgress, hits: [{ kind: 'other', part: 'diff', detail: 'x' }] } })],
+    ['unknown push-guard reason', reread({ ...stopped, pushGuard: { decision: 'BLOCK', reason: 'other' } })],
+    ['block without its finding', reread({ ...clean, pushGuard: { decision: 'BLOCK', reason: 'secret-in-diff' } })],
+    ['pass despite a blocking finding', reread({ ...stopped, pushGuard: { decision: 'PASS' } })],
+    ['another block reason', reread({ ...stopped, pushGuard: { decision: 'BLOCK', reason: 'forbidden-path' } })],
+    ['pass with a reason', reread({ ...clean, pushGuard: { decision: 'PASS', reason: 'secret-in-diff' } })],
+    ['unknown severity', reread({ ...clean, findings: [{ ...firstFinding, severity: 'SEVERE' }] })],
+    ['bad line range', reread({ ...clean, findings: [{ ...firstFinding, lineStart: null, lineEnd: 3 }] })],
+    ['raiser of another source', reread({ ...clean, findings: [{ ...firstFinding, raisedBy: 'sarif:x' }] })],
+    ['short fingerprint', reread({ ...clean, findings: [{ ...firstFinding, fingerprint: 'abc' }] })],
+    ['negative sarif size', reread({ ...clean, sarifInputs: [{ checkId: 'lint', sha256: 'a'.repeat(64), bytes: -1 }] })],
+  ];
+  for (const [label, read] of tampered) assert.throws(read, CheckReportError, label);
 });
