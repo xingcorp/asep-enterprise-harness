@@ -1,10 +1,11 @@
-# Phase 4 — Threat Model Delta (LOCKED v2)
+# Phase 4 — Threat Model Delta (LOCKED v3, pending controller confirmation)
 
 > Delta over `docs/operations/security-threat-model.md` and `phase-02-threat-model-delta.md`. Phase 4 adds the
 > first **external model call made by the trusted harness about untrusted content**, a second credential class,
 > persisted review records and a measurement corpus. Base `00a6889`; v1 reviewed at `a2a7b8a`. v2 closes the
 > egress-before-block hole (P4-PLAN-CRIT-001), moves the credential to the composition root (R13), adds fencing
-> and closure-authority threats, and retires promotion threats with the deferral of promotion.
+> and closure-authority threats, and retires promotion threats with the deferral of promotion. v3 (lock-check of
+> `3201335`) adds the workspace seam (T4-24) and corpus answer-key leakage through history (T4-25).
 
 ## 1. Trust boundaries
 
@@ -58,6 +59,8 @@ and excerpts, recorded responses and scorecards, metric snapshots, human reviewe
 | T4-21 | Cost DoS (huge diffs × retries × two reviewers × effort) | Packet budget; `max_output_tokens`; task `budgetRemaining`; bounded transport attempts; capture budget stop | EC D7, G4, G5 |
 | T4-22 | Corpus leakage turns measurement into recall of the answer key | Reviewed-SHA packets only; review artifacts and git metadata excluded | EC I2 |
 | T4-23 | Cross-tenant review data access | Composite tenant FKs on every review table; IDOR tests | EC H2 |
+| T4-24 | A step reads repository content through another tenant's workspace, or a superseded holder keeps reading after a lease takeover | `AssuranceWorkspaceResolver` (S0 block) checks tenant, an `ACTIVE` lease, the holder's lease id and the current epoch in one read; every refusal stops the step before any read; a workspace never comes from activity-local memory; the resolver kit runs on Lane A's lease table and Lane B's fake | EC E13; PR4-34 |
+| T4-25 | Historical trees leak the answer key into corpus packets (finding ids in code comments, review documents, per-item packets that point at the defect) | Packets per cycle in label-independent chunks; leakage path filter; finding-id tokens masked to the same length; commit messages have no packet field; leakage test | EC I2, I12 |
 
 ## 4. Non-issues (documented, not fixed in Phase 4)
 

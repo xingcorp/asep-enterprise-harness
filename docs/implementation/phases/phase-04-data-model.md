@@ -1,7 +1,7 @@
-# Phase 4 — Data Model (LOCKED v2)
+# Phase 4 — Data Model (LOCKED v3, pending controller confirmation)
 
 > Companion to `phase-04-plan.md`. PostgreSQL 17 (digest-pinned in `compose.yaml`). Base `00a6889`; v1 reviewed at
-> `a2a7b8a`. Conventions inherited from `phase-02-data-model.md` §1: ULID `char(26)` ids, `timestamptz` UTC,
+> `a2a7b8a`; v2 lock-checked at `3201335`. Conventions inherited from `phase-02-data-model.md` §1: ULID `char(26)` ids, `timestamptz` UTC,
 > optimistic `version` columns on mutable aggregates, `TenantScope` first on every repository method, composite
 > foreign keys onto `(id, organization_id, project_id)`, append-only checksummed migrations
 > (`adapters/persistence/src/migrator.ts`: strictly ascending ids, checksum per applied id). v2 writes the full DDL
@@ -61,9 +61,9 @@ outputTokens, reasoningTokens, wallClockMs, transportAttempts}`), `providerCalls
 | `risk`, `reviewKind` | |
 | `workOrder` | `{objective, requirementIds, requirements?[{id, statement, priority}], allowedPaths, forbiddenChanges, architectureInvariants, acceptanceCheckIds}` |
 | `change` | `{taskBaseSha, resultSha, repairBaseSha|null, cumulativeDiff: ArtifactRef, repairDelta: ArtifactRef|null, files: [{path, status, binary, postImage: ArtifactRef|null, lineCount, omittedReason|null}]}` |
-| `execution` | `{verdict, environment: {imageDigest, lockfileHash, nodeVersion|null}, checks: [{id, category, command, exitCode, durationMs, stdout: {artifactId, sha256, bytes, excerptTail}|null, stderr: (same)|null, testSummary: {runner, tests, pass, fail, skipped, todo}|null}]}` |
+| `execution` | `{verdict: PASS|FAIL|ERROR|NOT_RECORDED, environment: {imageDigest, lockfileHash, nodeVersion|null}|null, checks: [{id, category, command, exitCode, durationMs, stdout: {artifactId, sha256, bytes, excerptTail}|null, stderr: (same)|null, testSummary: {runner, tests, pass, fail, skipped, todo}|null}]}`; `NOT_RECORDED` (with `environment: null`, `checks: []`) is used only by corpus packets (plan §7.8), never at runtime |
 | `priorFindings` | `review-finding/v1[]` (re-review only, adjudicated, with ids and lifecycle state) |
-| `budget` | `{maxBytes, includedBytes, overBudget, omissions: [{path, reason}]}` |
+| `budget` | `{maxBytes, includedBytes, overBudget, omissions: [{path, reason}]}`; the slot step returns only the omission count (`omittedFiles`), the list stays here |
 
 No field exists for coder self-report, ContextPack, events, commit messages or other reviewers' output.
 
@@ -76,7 +76,7 @@ BLOCK`), `reason` (escalation/block reason or null), `ruleFired` (`A1`…`A11`, 
 `verdictMismatches` (`[{reviewId, verdict, groundedBlockingCount}]`), `closureDecisions` (`[{priorFindingId,
 raisedBy, claims: [{by, status}], effectiveState, rule: deterministic-recheck|human|independent-reviewer|raiser-claim|closure-without-change|unchanged}]`),
 `policyVersion`, `inputs` (`{packetSha256, checkReportSha256, reviewRecordSha256s[]}`), `fence` (`{leaseId,
-leaseEpoch}`).
+fencingEpoch}`). No timestamp field: the decision time lives in the `adjudications.decided_at` column only (plan §11).
 
 ### 2.5 `repair-order/v1`
 
@@ -96,8 +96,12 @@ Plan §18.4 lists the one new `eventType` (`review.finding_dispositioned`) and t
 
 ### 2.8 Internal artifacts (not canonical contracts)
 
-`check-report` (JSON, schema in `packages/application/src/assurance/schemas/check-report.schema.json`): raw check
-outputs by artifact ref, findings, push-guard decision, egress decision with per-part scan results, omissions.
+`check-report` (canonical JSON, `check-report/v1`, built and parsed by `packages/application/src/assurance/check-report.ts`,
+S6): the packet sha256, push-guard decision, egress decision with its hits (part, pattern label, offset — never the
+matched text), every deterministic and SARIF finding, and the raw check-output refs the checks read. There is no JSON
+Schema file: the harness writes it and re-reads it by content address, and a strict structural parser (unknown keys,
+wrong types and a sha256 mismatch fail closed) guards every read (v3; replaces the v2 schema file, which would have
+needed a new `ajv` dependency in `@asep/application`).
 `review-prompt`: instructions, rendered input, output schema, template hash.
 `gateway-appendix`: the text the gateway appended to the sent `instructions`, as returned in the response (gateway-controlled; stored so its drift is visible).
 
@@ -502,6 +506,10 @@ scheme used for `human_authorizations` (`migrations.ts` `0010`).
 
 ### 3.2 `0201_metric_snapshots`
 
+Snapshots are **append-only versions** (P4-PLAN2-MED-006, R18): a recompute that changes nothing writes nothing; a
+changed value appends the next version; earlier versions are never updated or deleted, so a cohort's history stays
+readable. Panels read the latest version through `metric_snapshots_latest`.
+
 ```sql
 create table metric_snapshots (
   id                 char(26)    primary key,
@@ -514,6 +522,7 @@ create table metric_snapshots (
   window_end         timestamptz not null,
   dimensions         jsonb       not null,   -- canonical, sorted keys
   dimensions_sha256  text        not null,
+  snapshot_version   integer     not null,
   value              numeric,
   numerator          numeric,
   denominator        numeric,
@@ -522,23 +531,64 @@ create table metric_snapshots (
   source_event_count integer     not null,
   source_watermark   timestamptz,           -- max inserted_at of the events read
   computed_at        timestamptz not null,
-  revision           integer     not null default 1,
   constraint metric_snapshots_window_ck   check (window_end > window_start),
   constraint metric_snapshots_null_ck     check ((value is null) = (null_reason is not null)),
   constraint metric_snapshots_privacy_ck  check (privacy_class in ('public','operational','sensitive','restricted')),
   constraint metric_snapshots_dims_sha_ck check (dimensions_sha256 ~ '^[0-9a-f]{64}$'),
-  constraint metric_snapshots_counts_ck   check (source_event_count >= 0 and revision >= 1),
-  constraint metric_snapshots_key_uq      unique (organization_id, project_id, metric_name, dictionary_version,
-                                            window_start, window_end, dimensions_sha256),
+  constraint metric_snapshots_counts_ck   check (source_event_count >= 0 and snapshot_version >= 1),
+  constraint metric_snapshots_version_uq  unique (organization_id, project_id, metric_name, dictionary_version,
+                                            window_start, window_end, dimensions_sha256, snapshot_version),
   constraint metric_snapshots_project_fk  foreign key (project_id, organization_id)
     references projects (id, organization_id)
 );
 create index metric_snapshots_lookup_idx on metric_snapshots (organization_id, project_id, metric_name, window_end);
+
+-- versions are contiguous from 1, and a new version must change the value
+create function assurance_metric_snapshot_version() returns trigger
+language plpgsql as $$
+declare
+  prev metric_snapshots%rowtype;
+begin
+  select * into prev from metric_snapshots
+   where organization_id = new.organization_id and project_id = new.project_id
+     and metric_name = new.metric_name and dictionary_version = new.dictionary_version
+     and window_start = new.window_start and window_end = new.window_end
+     and dimensions_sha256 = new.dimensions_sha256
+   order by snapshot_version desc
+   limit 1;
+  if not found then
+    if new.snapshot_version <> 1 then
+      raise exception 'first snapshot version must be 1, got %', new.snapshot_version using errcode = '55000';
+    end if;
+  elsif new.snapshot_version <> prev.snapshot_version + 1 then
+    raise exception 'snapshot version must be %, got %', prev.snapshot_version + 1, new.snapshot_version
+      using errcode = '55000';
+  elsif (new.value, new.numerator, new.denominator, new.null_reason)
+        is not distinct from (prev.value, prev.numerator, prev.denominator, prev.null_reason) then
+    raise exception 'snapshot version % repeats version %', new.snapshot_version, prev.snapshot_version
+      using errcode = '55000';
+  end if;
+  return new;
+end;
+$$;
+create trigger metric_snapshots_version_guard before insert on metric_snapshots
+  for each row execute function assurance_metric_snapshot_version();
+create trigger metric_snapshots_append_only before update or delete on metric_snapshots
+  for each row execute function assurance_reject_mutation();
+
+create view metric_snapshots_latest as
+  select distinct on (organization_id, project_id, metric_name, dictionary_version, window_start, window_end,
+                      dimensions_sha256) *
+    from metric_snapshots
+   order by organization_id, project_id, metric_name, dictionary_version, window_start, window_end,
+            dimensions_sha256, snapshot_version desc;
 ```
 
-Recompute is an upsert on `metric_snapshots_key_uq` that bumps `revision` only when numerator, denominator, value
-or null reason changed, so a late human disposition is reflected without losing idempotency (exit H6). Retention
-follows the dictionary privacy class; `restricted` metrics are computed only when capture is enabled.
+A recompute reads the latest version for the key and inserts version `n + 1` only when numerator, denominator,
+value or null reason changed; two concurrent recomputes cannot both insert `n + 1` (`metric_snapshots_version_uq`),
+and the loser re-reads and retries. A late human disposition therefore appends a version to the cohort of the
+round it disposes (plan §15; exit H6, H7). Retention follows the dictionary privacy class; `restricted` metrics are
+computed only when capture is enabled.
 
 ### 3.3 `0202_attempt_review_states`
 
@@ -582,7 +632,12 @@ to `OPEN`; round identity is immutable. Not isolated by the probe: the `review_r
 probe tripped `review_rounds_attempt_uq` first). This is design validation, not the S8 acceptance suite; S8 repeats
 every check on PGlite and on real PostgreSQL 17. After the 2026-10-29 amendment added the `gateway_alteration`
 columns and constraints to `review_records`, the §3.1–§3.3 blocks and the §3.6 rollback were applied again on PGlite
-`0.5.4` in a fresh scratch directory: all applied, and the three new constraints exist.
+`0.5.4` in a fresh scratch directory: all applied, and the three new constraints exist. After v3 replaced
+`metric_snapshots` with append-only versions, the §3.1–§3.3 blocks and the §3.6 rollback were extracted from this
+document and applied again on PGlite `0.5.4` after the twelve Phase 2 migrations, in a fresh scratch directory
+outside the repository: all applied. A probe on one snapshot key confirmed that a first version other than 1, a
+version gap, a version repeating the previous value, an update and a delete are rejected; versions 1, 2 and 3 with
+values `0`, `1`, `0` are accepted; `metric_snapshots_latest` returns version 3; and the rollback removes the tables.
 
 ### 3.6 Rollback (forward compensating migrations; applied only by operator decision, never by editing `02xx`)
 
@@ -601,7 +656,9 @@ alter table attempts add constraint attempts_status_check check (status in
    'COMMITTED','PUSHED','PR_OPEN','SUCCEEDED','FAILED','BLOCKED','BUDGET_EXHAUSTED','CANCELLED'));
 
 -- undo 0201
+drop view metric_snapshots_latest;
 drop table metric_snapshots;
+drop function assurance_metric_snapshot_version();
 
 -- undo 0200 (destroys review history: export first)
 drop table adjudications;
@@ -650,25 +707,31 @@ different eligible reviewer, a human, or (deterministic findings) the same rule 
 COMMITTED → UNDER_REVIEW → PUSHED        (PROCEED; ESCALATE in drill)
 UNDER_REVIEW → CHANGES_REQUESTED         (REPAIR in drill; terminal for this attempt)
 UNDER_REVIEW → BLOCKED                   (push guard)
-COMMITTED → PUSHED                       (kept: compositions with the disabled slot)
+COMMITTED → PUSHED                       (kept: compositions without Lane B's slot — the not-configured default or the disabled opt-out)
 ```
 
 ## 5. Metrics dictionary changes (SR-D1, SR-D2; dictionary 1.0.0 → 1.1.0)
 
-New operand option: `dedupeLatestBy: <RunEvent field>` — group events by that field and keep the latest by
-`(occurredAt, eventId)` before filtering and aggregating (SR-X6).
+New operand options (SR-X6):
+
+- `dedupeLatestBy: <RunEvent field>` — group events by that field and keep the latest by `(occurredAt, eventId)`
+  before filtering and aggregating.
+- `cohortBy: <RunEvent date-time field>` — the operand's window filter uses that field instead of `occurredAt`, so a
+  disposition counts in the cohort of the round it disposes (plan §15, R18). Dedupe runs before the window filter,
+  so a later reversal replaces the earlier disposition inside the same cohort.
 
 | Metric | Numerator | Denominator | Zero-denominator policy | Privacy |
 |---|---|---|---|---|
-| `review_finding_yield` (changed) | `count(review.finding_dispositioned where findingValid=true and dispositionActorKind=human)`, `dedupeLatestBy: findingId` | `sum(review.completed.reviewFindingsTotal)` | `report-null-when-no-findings` | operational |
+| `review_finding_yield` (changed) | `count(review.finding_dispositioned where findingValid=true and dispositionActorKind=human)`, `dedupeLatestBy: findingId`, `cohortBy: reviewRoundCompletedAt` | `sum(review.completed.reviewFindingsTotal)` | `report-null-when-no-findings` | operational |
 | `review_false_positive_rate` (changed) | same with `findingValid=false` | same | `report-null-when-no-findings` | operational |
-| `review_adjudication_coverage` | `count(review.finding_dispositioned where dispositionActorKind=human)`, `dedupeLatestBy: findingId` | `sum(review.completed.reviewFindingsTotal)` | `report-null-when-no-findings` | operational |
+| `review_adjudication_coverage` | `count(review.finding_dispositioned where dispositionActorKind=human)`, `dedupeLatestBy: findingId`, `cohortBy: reviewRoundCompletedAt` | `sum(review.completed.reviewFindingsTotal)` | `report-null-when-no-findings` | operational |
 | `review_ungrounded_rate` | `sum(review.completed.reviewFindingsUngrounded)` | `sum(review.completed.reviewFindingsTotal)` | `report-null-when-no-findings` | operational |
 | `reviewer_failure_rate` | `count(review.completed where reviewerFailed=true and reviewerRole!=deterministic)` | `count(review.completed where reviewerRole!=deterministic)` | `report-null-when-no-reviews` | operational |
 | `review_egress_stop_rate` | `count(review.completed where egressStopped=true and reviewerRole!=deterministic)` | `count(review.completed where reviewerRole!=deterministic)` | `report-null-when-no-reviews` | operational |
 | `shadow_would_block_rate` | `count(attempt.completed where reviewMode=shadow and shadowWouldBlock=true)` | `count(attempt.completed where reviewMode=shadow)` | `report-null-when-no-shadow-rounds` | operational |
 | `review_cost_coverage` | `count(review.completed where reviewCostPriced=true and reviewerRole!=deterministic)` | `count(review.completed where reviewerRole!=deterministic)` | `report-null-when-no-reviews` | operational |
 | `mean_review_cost_usd` | `mean(review.completed.reviewCostUsd)` | — | — | restricted |
+| `review_disposition_latency_ms` | `mean(review.finding_dispositioned.dispositionLatencyMs where dispositionActorKind=human)`, `cohortBy: reviewRoundCompletedAt` | — | — | operational |
 | `repair_success_rate` | `count(attempt.completed where repairRound=true and repairClosedAllBlocking=true)` | `count(attempt.completed where repairRound=true)` | `report-null-when-no-repairs` (always null in Phase 4 production) | operational |
 | `review_escalation_rate` | `count(attempt.completed where assuranceOutcome=ESCALATE)` | `count(attempt.completed where reviewMode=gating)` | `report-null-when-no-gating-rounds` (always null in Phase 4 production) | operational |
 
@@ -681,9 +744,9 @@ mapping exists), `cost_per_accepted_task`, `workflow_recovery_rate`, `repair_cyc
 | Event | Emitted by | Key fields |
 |---|---|---|
 | `attempt.declared_complete` | `recordAttemptOutcome` | `declaredComplete`; `passedRequiredAssurance` = verification PASS ∧ outcome ≠ BLOCK (shadow/not-required) or outcome = PROCEED (drill gating) |
-| `attempt.completed` | `recordAttemptOutcome` | `outcome`, `failureClass`, `modelCostUsd`, `computeCostUsd`, `reviewCostUsd` (round sum, omitted when any call is unpriced), `reviewRound`, `reviewMode`, `assuranceOutcome`, `shadowWouldBlock`, `repairRound`, `repairClosedAllBlocking` |
+| `attempt.completed` | `recordAttemptOutcome` | `outcome`, `failureClass`, `modelCostUsd`, `computeCostUsd`, `reviewCostUsd` (round sum, omitted when any call is unpriced), `reviewRound`, `reviewMode`, `assuranceOutcome`, `shadowWouldBlock`, `repairRound`, `repairClosedAllBlocking`, `assuranceUnavailable` (R19) |
 | `review.completed` | `adjudicateRound`, one per review source (each model reviewer record + one `deterministic`) | `reviewerConfigId`, `reviewerRole`, `reviewRound`, `reviewMode`, `reviewFindingsTotal`, `reviewFindingsUngrounded`, `reviewFindingsBlocking`, `reviewerFailed`, `egressStopped`, `reviewCostUsd`/`reviewCostPriced`, tokens, `durationMs` |
-| `review.finding_dispositioned` | disposition use case (human) | `findingId`, `findingValid`, `findingDisposition`, `dispositionActorKind=human`, `findingSource`, `findingSeverity`, `reviewerConfigId` (raiser), `reviewRound` |
+| `review.finding_dispositioned` | disposition use case (human) | `findingId`, `findingValid`, `findingDisposition`, `dispositionActorKind=human`, `findingSource`, `findingSeverity`, `reviewerConfigId` (raiser), `reviewRound`, `reviewRoundCompletedAt` (cohort key), `dispositionLatencyMs` |
 | `repair.started` | `adjudicateRound` on REPAIR (drill only) | `reviewRound` = next round |
 
 Event ids are input-derived (architecture §7), so a retried emission is a no-op through `RunEventSink`.
@@ -749,32 +812,44 @@ rejects `gating`; `approval-matrix.yaml` and `verification-matrix.yaml` stay byt
 
 ### 7.1 Corpus item (`evals/review-corpus/self-history/items/<id>.json`)
 
+Fields marked *(S19 now)* are collected by S19's pure core; the others are filled when the protocol of plan §7.8 is
+confirmed and the corpus is frozen.
+
 | Field | Notes |
 |---|---|
 | `id` | `<findingId>@<reviewedSha7>` |
-| `findingId`, `phase`, `cycle`, `reviewKind` (`final, rereview`) | |
-| `reviewedSha`, `reviewedShaSource` (`recorded-in-review, derived, unknown`) | full 40-hex |
-| `reachability` | `reachable` (advertised refs) / `object-store-only` / `bundle-only` / `unavailable` |
-| `fixCommits[]`, `postFixSha`, `negativeEligible` | post-fix negative pair when the post-fix tree is buildable |
-| `excerpts` | `[{side: reviewed|post-fix, path, sha256}]` → `blobs/<sha256>` |
-| `provenance` | `{doc, line}` for the label; `excerptSource: git|object-store|bundle`; `excerpt-only` flag |
-| `confirmation` | `{doc, status: RESOLVED|PARTIAL|REGRESSED|null}` |
-| `severity`, `category`, `defectClass` | |
-| `locations[]` | `{file, lineStart, lineEnd}` at `reviewedSha` |
+| `findingId`, `phase`, `cycle`, `reviewKind` (`final, rereview`) | *(S19 now)* |
+| `reviewedSha`, `reviewedShaSource` (`recorded-in-review, derived, unknown`) | *(S19 now)* full 40-hex; `derived` = parent of the commit that added the review document |
+| `baseSha`, `baseShaSource` | *(S19 now)* `B_c`: the phase plan's `BASE_SHA` line read at `reviewedSha` |
+| `reachability` | *(S19 now)* `reachable` (advertised refs) / `object-store-only` / `bundle-only` / `unavailable` |
+| `fixCommits[]` | *(S19 now)* commits between `reviewedSha` and the next cycle's reviewed SHA whose subject names the finding id (long or short form) |
+| `postFixSha`, `negativeEligible` | the next cycle's reviewed SHA `R_{c+1}`; eligible iff the item is `RESOLVED` there and at least one location maps (plan §7.8) |
+| `excerpts` | *(S19 now, cited files)* `[{side: reviewed|post-fix, path, sha256}]` → `blobs/<sha256>`; chunk diffs and post-images are added at the freeze |
+| `provenance` | *(S19 now)* `{doc, line}` for the label; `excerptSource: git|object-store|bundle`; `excerpt-only` flag |
+| `confirmation` | *(S19 now)* `{doc, line, status: RESOLVED|PARTIAL|REGRESSED|null}` from the next cycle's document |
+| `severity`, `goldCategory`, `goldCategoryRationale`, `defectClass` | severity *(S19 now)* from the label; `goldCategory` (category table `corpus-categories/v1`) and its one-line rationale assigned by Lane B |
+| `locations[]` | *(S19 now)* `{file, lineStart, lineEnd}` at `reviewedSha`, parsed from the label |
+| `mappedLocations[]` | `{file, lineStart, lineEnd}` at `postFixSha` (plan §7.8 mapping) |
 | `labelSource` | `codex-gpt-5.6-sol`, `implementer-self-found`, `controller-ai-paraphrase` |
 | `labelQuality` | `primary`, `secondhand` |
 | `labellerMiss`, `instanceKind` (`first-occurrence, residual`) | |
 | `set` | `prompt-development` (Phase 1) / `reporting` (Phase 2); reporting labels were visible to the prompt author |
-| `excluded` | null or `{reason: tree-unavailable | not-in-packet | excerpt-unpublishable | plan-defect | …}` |
+| `excluded` | null or `{reason}` with the reasons and order of plan §7.8; S19 records only `plan-defect`, `tree-unavailable` and `excerpt-unpublishable` |
+| `synthetic` | the synthetic-field record of plan §7.8 (identity labels, objective text, `NOT_RECORDED`, masks applied) |
 | `humanVerified` | null (DF-8) or `{by, at, agrees}` |
 
-`manifest.json`: item ids, packet rule versions, exclusion table, set counts, blob index, `corpusSha256`.
+`manifest.json`: item ids, cycle records (`R_c`, `B_c`, sources, chunk ids and file lists), packet rule versions,
+exclusion table, set counts, blob index, `corpusSha256`. The manifest and `corpusSha256` are written only at the
+freeze.
 
 ### 7.2 Preregistration (`evals/review-benchmark/preregistration.json`, committed or hash-recorded by the controller)
 
-`protocolSha256`, `matcher` (path equality, line tolerance ±10, category compatibility table version), `floors`
+`protocolSha256` (plan §7.8 text, category table `corpus-categories/v1`, the constants `T = 10`,
+`maxPostImageBytesPerFile = 65536` and the git diff flags), `matcher` (`{tolerance: 10, categoryTable:
+"corpus-categories/v1", strict: "location+category", lenient: "path", cardinality: "one-to-one-greedy"}`), `floors`
 (plan §7.4), `k`, `sets`, `corpusSha256`, `reviewers: [{reviewerConfigId, configSha256}]` for primary and
-comparator, `approvedBy` (controller), `approvalRef` (commit SHA or review-log entry).
+comparator, `goldenItem` (`P2-FINAL-HIGH-003@2e61f24` and the sha256 of its fixture directory listing), `approvedBy`
+(controller), `approvalRef` (commit SHA or review-log entry).
 
 ### 7.3 Recorded run (`evals/review-benchmark/recorded/<runId>/`)
 

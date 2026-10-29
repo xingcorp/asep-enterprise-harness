@@ -1,7 +1,17 @@
-# Phase 4 — Independent Assurance — Plan (LOCKED v2)
+# Phase 4 — Independent Assurance — Plan (LOCKED v3, pending controller confirmation)
 
-> Status: **LOCKED v2.** Confirmed by the controller on 2026-10-29 for the pre-S0 slices (S3, S4 domain file, S5,
-> S6, S7); later slices are released step by step.
+> Status: **LOCKED v3 (pending controller confirmation).** v2 (`3201335`) received an independent lock-check
+> (`phase-04-plan-review-codex-v2.md`, Codex `gpt-6.1-sol`, REQUEST_CHANGES 0.97: 14 of 15 v1 findings folded, v1
+> MED-001 partial, 2 new HIGH and 8 new MEDIUM). Every finding is dispositioned in `phase-04-review-log.md` and
+> folded into this plan and its companions; the controller's decisions R18 (and the assurance-failure rule of R19)
+> are applied. v3 fixes the slot block (§18: workspace resolver, fixed logical time with a byte-comparing
+> redelivery case, `ArtifactRef` envelope with a boundary case, shadow fields only on `PROCEED`, two default slots),
+> restages every pre-S0 slice into a pure-core and an integration part with named owners (§21.1–§21.2, §22), locks
+> the corpus packet recipe and matcher before any freeze (§7.8), gives late dispositions cohort semantics with
+> append-only snapshot versions (§15) and extends the proof manifest to both runners (§19.7).
+>
+> v2 status, kept for the record: **LOCKED v2.** Confirmed by the controller on 2026-10-29 for the pre-S0 slices
+> (S3, S4 domain file, S5, S6, S7); later slices are released step by step.
 > **Controller-approved amendment (2026-10-29, after `3201335`):** (a) gateway prompt injection is **verified** —
 > the kiro-proxy gateway appends instructions and tools to every request (PR4-30, §11); (b) `gpt-6.1-sol` is the
 > **primary candidate reviewer**, distinct from the corpus labeller `gpt-5.6-sol` (§3 U-4, §7.2); (c) reconciliation
@@ -19,11 +29,12 @@
 > Lane: **B** (parallel to Lane A / Phase 3 durable orchestration). Planner: Claude (Lane B session).
 > Companion documents: `phase-04-architecture.md`, `phase-04-data-model.md`, `phase-04-exit-criteria.md`,
 > `phase-04-risk-register.md`, `phase-04-research-register.md`, `phase-04-threat-model-delta.md`,
-> `phase-04-review-log.md`, `phase-04-plan-review-codex-v1.md`.
+> `phase-04-review-log.md`, `phase-04-plan-review-codex-v1.md`, `phase-04-plan-review-codex-v2.md`.
 
 ```text
 BASE_SHA:        00a68895d205122767167942326e2e0466571059   (head of phase/02-single-agent-vertical-slice; Phase 2 NOT yet accepted)
 REVIEWED_V1:     a2a7b8ad09a5389339fc3ef7131ae7b2b294d97f
+REVIEWED_V2:     32013356e0845354f40ac6f63925f928637d6fb3   (lock-check, REQUEST_CHANGES 0.97)
 TARGET_BRANCH:   phase/04-independent-assurance
 SCOPE SOURCE:    docs/implementation/90-day-plan.md:33-40 (Days 46–60)
 EXIT CRITERION:  "reviewer performance measured on historical defects" (90-day-plan.md:40)
@@ -39,7 +50,9 @@ The lane contract governs this phase. Implementation starts only when the contro
 per commit (§21). Ordering follows reconciliation §"Ordering and gating": Phase 2 lands first; Lane A then lands
 the shared foundation commit **S0**, whose review-loop slot text is §18 of this plan; Lane B rebases onto S0
 before any Lane B slice that touches a shared surface. Lane B slices that touch only Lane B-owned directories may
-run before S0 (§21 marks each slice).
+run before S0. Since v3 every such slice has a **pure-core part** (Lane B paths only, built on frozen local DTOs)
+and an **integration part** (contract and port binding, package exports, suite registries, `evals` project
+references), and only the pure-core part may land before S0 (§21.1, R18).
 
 Lane B is **orchestration-agnostic**. Every review, repair, re-review and adjudication behaviour is a
 framework-free step use case behind ports, proven by a thin sequential driver and a durable-shaped fake that
@@ -61,6 +74,21 @@ uses no orchestration SDK. Lane B never imports the Temporal SDK or anything Lan
 | Full loop | could pass with a fake coder | the real-coder loop is a separate MUST blocked by the Phase 2 agent-runtime repair; until then the loop proof is called **assurance-only** (§21 S22) |
 | Gate adequacy | structural coverage guard | proof manifest from the test reporter plus seeded **mutation proofs** for the key MUSTs (§21 S23) |
 | Slices | S11–S13 bundled | split into S12–S18 with independent acceptance checks and rollback |
+
+What v3 changes (lock-check `phase-04-plan-review-codex-v2.md`, controller decisions R18, R19):
+
+| Area | v2 | v3 |
+|---|---|---|
+| Pre-S0 staging | whole slices marked pre-S0 | each slice split into pure core and integration; owners for every shared Lane B file; DAG edges policy → packet/checks → adjudication and runtime grounding → scorer (§21.1, §21.2, §22) |
+| Workspace for trusted reads | not reachable from the slot input | `AssuranceWorkspaceResolver.resolve(scope, { attemptId, leaseId, fencingEpoch })` in the slot block; Lane A implements it over the lease table; refusals fail closed (§16, §18) |
+| Clock | `now()` doc comment only | R15 invariant in the block header; content-addressed artifacts carry no timestamp; conformance case RLC-11 compares persisted record and event bytes after a redelivery (§11, §18.2) |
+| Envelope | 64 KiB stated; `ContextPack` and omission lists inline | ContextPack, PR sections and growing lists travel by `ArtifactRef`; `assertWithinReviewLoopEnvelope` with a boundary case at 65 536 bytes (§18) |
+| Shadow fields | `shadow` non-null iff mode shadow, for every kind | `shadow` only on `PROCEED`; `BLOCK` never carries one, matching the DDL; case RLC-12 (§12, §18.2) |
+| Default slots | Lane A composes the disabled slot until integration | Lane A's `NotConfiguredAssuranceSlot` is the default binding; Lane B's `createDisabledAssuranceSlot` is the literal opt-out; Lane B's terminal vocabulary (§18.2) |
+| Assurance-activity failure | unspecified | audited `assurance-unavailable`; shadow → `PROCEED`, gating → `ESCALATE`, never `FAILED`; `recordAttemptOutcome` carries `assuranceUnavailable` (R19, §18.3) |
+| Late dispositions | counted in the window of the disposition | counted in the cohort of the disposed round; recompute writes a new append-only snapshot version; disposition latency reported (§15) |
+| Corpus protocol | rule names only | P/C/post-fix recipe, synthetic fields, exclusion order, category table, strict/lenient matcher, cardinality, post-fix location mapping and a golden historical item, locked before any freeze (§7.8) |
+| Proof manifest | canonical runner only | canonical and integration runners; live reviewer optionality is a policy test, never a runner skip (§19.7, exit G8, L3) |
 
 ---
 
@@ -354,7 +382,7 @@ the corpus, or promotion. Validity problems and their handling:
 |---|---|
 | Answer-key leakage (review documents, logs, fix-commit messages, or a tree containing the cycle's review doc — e.g. `3ea0293` adds the Phase 2 final review on top of reviewed tree `2e61f24`) | packets built from the reviewed SHA only; review artifacts and git metadata excluded by rule; leakage test (exit I2) |
 | Tuning on reported items | protocol, matcher, floors, corpus manifest hash and both reviewer configuration hashes frozen in a **controller-approved preregistration** before any capture; capture refuses mismatches (exit I4) |
-| Lenient or model-judged matching | deterministic matcher, strict and lenient variants, no model in scoring (exit I5) |
+| Lenient or model-judged matching | deterministic matcher, strict and lenient variants, no model in scoring; protocol, category table and cardinality locked in §7.8 (exit I5, I12) |
 | Counting unmatched findings as right or wrong | `unlabelled` bucket; precision only over human-adjudicated findings |
 | One lucky sample | k = 3 runs per reporting item for both reviewers; stability reported (exit I6) |
 | Dropping hard items | rule-based exclusions enumerated in the manifest and the scorecard denominator table |
@@ -390,6 +418,11 @@ Floors make the measurement falsifiable; failing one does not fail the phase, be
   consistency of the excerpts (bytes hash to their names; manifest hash), and items from unreachable trees are
   marked `provenance: excerpt-only`. The verifier takes the bundle path from an explicit argument supplied by the
   controller; Lane B never reads it on its own.
+- **Collection is not freezing (R18).** S19's pure core collects label provenance (review document and line,
+  derived reviewed SHAs, fix commits, reachability) and content-addressed excerpts with their hashes. It records only
+  provenance-level exclusions (`plan-defect`, `tree-unavailable`, `excerpt-unpublishable`). Packet-dependent
+  eligibility (`leakage-filtered`, `not-in-packet`, `egress-stopped`), the manifest's `corpusSha256` and the
+  preregistration are frozen only after the controller confirms the protocol of §7.8.
 
 ### 7.6 Comparator choice (D-4)
 
@@ -412,6 +445,130 @@ The primary candidate is `gpt-6.1-sol` (U-4, family `openai-gpt`). The gateway a
 DF-6 (independent pilot corpus) is the only route to a production-valid measurement. DF-8 (blind human relabel)
 would quantify label error. Neither is a Phase 4 MUST.
 
+### 7.8 Corpus protocol: packet recipe and matcher (locked before any freeze; P4-PLAN2-HIGH-002, R18)
+
+Corpus packets go through the runtime path: the same `buildReviewPacket`, `renderReviewPrompt`, egress decision,
+output validation and grounding. Only the sources are historical. This section, the category table and the
+constants below are hashed into the preregistration's `protocolSha256`; nothing here changes after it is approved.
+
+**Units.** A *review cycle* `c` is one labelled review: Phase 1 final review and re-reviews, Phase 2 final review
+v1 and re-reviews v2–v5, and the self-found cycle-6 item. Each cycle has a reviewed SHA `R_c` and a base `B_c`.
+`R_c` is the parent of the commit that added the cycle's review document, unless the document names its reviewed
+HEAD (`reviewedShaSource: recorded-in-review | derived`). `B_c` is the `BASE_SHA` line of the phase plan read at
+`R_c`. A defect instance is `(findingId, R_c, location set)`. Packets are built per cycle, never per item, so no
+packet depends on a label.
+
+**Rule P — first occurrence, fresh review.** For every cycle with first-occurrence items, and for the next cycle's
+reviewed tree as a post-fix negative:
+
+1. Diff: `git diff --no-color --no-ext-diff --no-textconv --find-renames --unified=3 B_c R_c`, stored as an excerpt
+   (S9's runtime reader uses the same flags).
+2. Leakage filter, applied before building: files matching `docs/implementation/phases/*review*`,
+   `docs/implementation/phases/*-report.md`, `artifacts/**` or `**/*.log` are removed from the diff and post-images
+   (each recorded `leakage-filtered`). Every finding-ID token in every remaining text part (regexes
+   `\bP[0-9]+-[A-Z0-9]+(?:-[A-Z0-9]+)*-[0-9]{3}\b` and `\b(?:CRIT|CRITICAL|HIGH|MED|MEDIUM|LOW)-[0-9]{3}\b`) is
+   replaced by `X` repeated to the token's length, so line numbers and byte offsets do not move; the count per part
+   is recorded. Commit messages never enter a packet (no field exists).
+3. Post-images: every changed, non-deleted file at `R_c`, each limited to `maxPostImageBytesPerFile = 65536`;
+   binary, non-UTF-8, submodule and over-limit files become omissions with the runtime reasons.
+4. Chunking: if the whole-cycle packet exceeds the reviewer's `packetBudgetBytes`, the changed files, sorted by
+   path in byte order, are packed greedily into consecutive chunks, each packet within budget. A chunk's diff is the
+   per-file sections of the cycle diff, byte for byte. A file whose own packet exceeds the budget is an omission
+   `too-large`. Chunk ids are `<cycle>/<side>/<k>`.
+5. Synthetic fields (recorded in every corpus item and in the protocol, never presented as history):
+
+   | Field | Value |
+   |---|---|
+   | `identity` ids | 26-character Crockford base32 of the first 16 bytes of `sha256(label)`, labels `corpus:org`, `corpus:project`, `corpus:binding`, `corpus:run`, `corpus:task:<cycle>`, `corpus:attempt:<chunk id>` |
+   | `risk`, `round`, `reviewKind` | `R1`, `1`, `fresh` |
+   | `workOrder.objective` | `Phase <N> (<title from docs/implementation/90-day-plan.md>) at the reviewed commit. The phase plan, exit criteria and code are part of the change; review the change against them.` |
+   | `workOrder` lists | `requirementIds`, `requirements`, `forbiddenChanges`, `architectureInvariants`, `acceptanceCheckIds` empty; `allowedPaths: ['**']` |
+   | `execution` | `{ verdict: 'NOT_RECORDED', environment: null, checks: [] }`; runtime packets never use `NOT_RECORDED`, and the prompt states that no execution evidence exists for the tree |
+   | `priorFindings` | empty |
+6. Egress: the decision of §10.1 with the committed policy and the corpus project opted in. A chunk that is not
+   `CLEAR` is never sent; its items are excluded `egress-stopped`.
+
+**Rule C — residual, re-review.** For an item labelled at cycle `c` and marked `PARTIAL` or `REGRESSED` at cycle
+`c+1`: the rule-P recipe at `R_{c+1}` with `round = 2`, `reviewKind = re-review`, `repairBaseSha = R_c`, a repair
+delta `R_c..R_{c+1}` (same flags; per chunk, the delta sections of the chunk's files) and `priorFindings` = every
+item labelled at `c` whose file is in the chunk (not only the residual ones, so the packet does not single any
+out). Each prior finding is a `review-finding/v1` with `id` from `corpus:finding:<findingId>`, `source: model`,
+`raisedBy: labeller:<labelSource>`, the gold severity and `goldCategory`, the first location at `R_c`, `evidence` and
+`requiredFix` taken verbatim from the label (ID tokens masked), `grounded: true`, `lifecycleState: OPEN`. Gold is the
+status at `c+1`; a reviewer's `priorFindingClaims` entry matches when `RESOLVED ↔ RESOLVED` or
+`PARTIAL | REGRESSED ↔ PARTIAL | OPEN`.
+
+**Post-fix negatives.** An item whose status at `c+1` is `RESOLVED` is negative-eligible. Its negative is the
+rule-P packet set at `R_{c+1}` (base `B_c`, fresh). A reviewer finding there that matches the *mapped* gold
+location is a stale flag. Items fixed only by implementer commits and never re-reviewed have no negative.
+
+**Post-fix location mapping.** A gold location `(path, s, e)` at `R_c` maps to `R_{c+1}` through
+`git diff --find-renames R_c R_{c+1} -- <path>` (stored as an excerpt): a rename follows the new path; a deleted
+file has no mapped location; a line outside every hunk shifts by the sum of `newLines − oldLines` over the hunks that
+end before it; a line inside a hunk's old range maps to that hunk's whole new range; the mapped range spans the
+mapped `s` and `e`. An item without any mapped location is not negative-eligible.
+
+**Matcher (deterministic, no model).** Per `(cycle, side, run)`, the validated and grounded model findings of all
+chunks are pooled (identity `(chunk, fingerprint)`); ungrounded findings never match. Gold items carry one
+`goldCategory`, assigned by Lane B at collection with a one-line written rationale (reviewable, never model-assigned).
+Category table `corpus-categories/v1`:
+
+| `goldCategory` | Compatible finding categories (strict) |
+|---|---|
+| CORRECTNESS | CORRECTNESS, SECURITY |
+| SECURITY | SECURITY, CORRECTNESS |
+| ARCHITECTURE | ARCHITECTURE, MAINTAINABILITY, SPEC |
+| SPEC | SPEC, CORRECTNESS, ARCHITECTURE |
+| TEST_QUALITY | TEST_QUALITY, EVIDENCE_INTEGRITY |
+| EVIDENCE_INTEGRITY | EVIDENCE_INTEGRITY, TEST_QUALITY, SPEC |
+| PERFORMANCE | PERFORMANCE, CORRECTNESS |
+| MAINTAINABILITY | MAINTAINABILITY, ARCHITECTURE |
+
+- **Location match:** the finding's `file` equals a gold location's path, and the ranges are within tolerance
+  `T = 10` lines (`fs ≤ ge + T` and `fe ≥ gs − T`); a gold location without lines matches any finding in that file;
+  a file-less finding never matches.
+- **Strict:** a location match and a compatible category. **Lenient:** the same path, any lines, any category.
+  Severity is not part of either; agreement is reported separately.
+- **Cardinality: one-to-one.** Candidate pairs that satisfy the variant are ordered by line distance (0 when the
+  ranges overlap, else the gap), then gold item id, then finding fingerprint, and assigned greedily; each gold item
+  and each finding is used at most once; a multi-location gold item matches through its nearest location. A finding
+  that satisfied the predicate only with an already-matched gold item is `duplicate`; any other unmatched finding is
+  `unlabelled` (never counted as a false positive).
+- Recall = matched / eligible gold items; stale-flag rate = matched negatives / negative-eligible items.
+
+**Exclusion rules, in order (the first that applies wins; each is counted in the scorecard's denominator table):**
+
+| # | Reason | Applies when | Level |
+|---|---|---|---|
+| 1 | `plan-defect` | the item labels a plan or document review (no code tree) | provenance |
+| 2 | `tree-unavailable` | `R_c` or `B_c` is in no source (reachable git, local object store, controller bundle) | provenance |
+| 3 | `excerpt-unpublishable` | a cited file at `R_c` cannot pass the publication gates | provenance |
+| 4 | `leakage-filtered` | every cited file is removed by the leakage filter | packet |
+| 5 | `not-in-packet` | no cited location lies in any chunk's packet content | packet |
+| 6 | `egress-stopped` | every chunk holding a cited file is not `CLEAR` | packet |
+
+Second-hand labels are not excluded; they are reported separately (`labelQuality`). S19 may record rules 1–3 now;
+rules 4–6 are frozen only after the controller confirms this protocol.
+
+**Golden fixtures (one historical item, both sides).** Item `P2-FINAL-HIGH-003@2e61f24` (risk admission after
+workspace creation; Phase 2 final review v1, cited `packages/application/src/execute-task.ts:143-148` among others;
+`R_c = 2e61f2447f6812f9ed795a5195a25861ada1c50b`, derived as the parent of `3ea0293`; `RESOLVED` at re-review v2,
+whose derived `R_{c+1}` is `061ec236dacb985c77afa29205bf8bc0a185a49e`). Files under
+`evals/review-benchmark/golden/P2-FINAL-HIGH-003/`:
+
+- `item.json` — the corpus item (provenance, gold locations, `goldCategory`, synthetic-field record);
+- `reviewed/` and `post-fix/` — `packet-sources.sha256`, `packet.sha256` and `prompt.sha256` of the chunk that
+  holds the first cited file, plus `chunks.json` (chunk ids and their file lists); `post-fix/mapped-locations.json`;
+- `outputs/reviewed/` and `outputs/post-fix/` — scripted review outputs placed relative to that side's gold location
+  (reviewed) or mapped location (post-fix): `exact`, `near` (shifted by 10 lines), `far` (shifted by 11 lines),
+  `wrong-category` and `other-file`;
+- `expected-matches.json` — for each output and side, the strict and lenient result: `exact` and `near` match
+  strictly on the reviewed side and are stale flags on the post-fix side; `far` and `wrong-category` match only
+  leniently; `other-file` is `unlabelled`.
+
+The S20 test "golden historical item reconstructs identical packets and matches as specified on both sides"
+rebuilds both sides from the committed excerpts and requires every digest and every expected match.
+
 ---
 
 ## 8. Assurance round sequence
@@ -419,7 +576,8 @@ would quantify label error. Neither is a Phase 4 MUST.
 ```text
 [attempt N evidence persisted; resultSha = harness commit]                 (Phase 2 steps / Lane A workflow)
   → planAssurance             pure: risk + policy + registry → mode, reviewers (primary [+ comparator]), limits
-  → buildReviewPacket         trusted sources only; canonical bytes; byte budget; never truncates silently
+  → buildReviewPacket         trusted sources only, read through the workspace the resolver returns for the
+                              caller's fence (§16 I6); canonical bytes; byte budget; never truncates silently
   → runDeterministicChecks    push guard (secret in added lines, forbidden path, unscannable change at a sensitive
                               path); egress decision over the exact packet bytes; false-green, Trojan Source,
                               dependency, invariant checks; SARIF from L4/L5
@@ -493,8 +651,12 @@ no process environment (fitness rule, exit C5). The source returns `{ value, exp
 re-fetches before `expiresAt` minus skew and never holds a value longer than `maxCredentialAgeMs` (policy, proposal
 15 minutes) even when the source reports no expiry; on HTTP 401 it invalidates, re-fetches once and retries once
 (rotation), then fails `AUTH_ERROR`. The value appears only in the `Authorization` header and never in an artifact,
-log, error text or row (canary test). The controller supplies base URL and credential only for the opt-in live run;
-when it sets `ASEP_REQUIRE_LIVE_REVIEWER=1`, the live production-path test is required and its absence fails.
+log, error text or row (canary test). The controller supplies base URL and credential only for the opt-in live run.
+Whether the live operation runs is a **policy decision with its own unit test, never a test-runner skip**
+(P4-PLAN2-MED-003, R18): `liveReviewerRequirement({ requireFlag, credentialConfigured })` returns `run`,
+`not-configured` (flag unset, no credential: the live test records the reason and the proof manifest sees the policy
+test pass) or `fail-closed` (flag `ASEP_REQUIRE_LIVE_REVIEWER=1` without a credential). With the flag set, the live
+round trip runs and any failure is red (exit G8).
 
 ### 10.3 Prompt injection
 
@@ -536,8 +698,16 @@ Consequences:
 
 No wall-clock time is read in the assurance steps (R15): timestamps come from `AssuranceStepContext.now()`, which is
 one fixed logical time per activity execution and identical on every retry, so a retried step writes byte-identical
-records. Durations and retry back-off belong to adapters with injected clocks; they are recorded as usage and kept
-out of the bytes that identify a record.
+records and events. Content-addressed artifacts (packet, check report, review record, adjudication record, repair
+order) carry **no timestamp at all**: their ids and the round's outcome are the same whichever execution produced
+them, and only row columns and run events carry `now()`. The one exception is the repair ContextPack, whose
+`context-pack/v1` schema requires `generatedAt`: it takes the `decided_at` of the persisted REPAIR adjudication, a
+value fixed once by an append-only row, so every execution derives the same bytes. Likewise, adjudication evaluates
+waiver expiry at the round's opening time (`review_rounds.opened_at`, written once when the round opens), not at the
+adjudicating execution's `now()`, so the decision is the same whichever execution makes it. Durations and retry
+back-off belong to adapters with injected clocks; they are recorded as usage and kept out of the bytes that
+identify a record. The slot block states this invariant itself, and conformance case RLC-11 compares the persisted record and
+event bytes of an interrupted-then-redelivered round with an uninterrupted one (§18.2).
 
 ---
 
@@ -567,7 +737,9 @@ with no grounded blocking finding is non-blocking ("generic comments do not bloc
 and de-duplicated by fingerprint per raiser; a model can never waive or refute a grounded HIGH/CRITICAL finding
 (`docs/architecture/04-state-machines.md:48`); only an ungrounded finding can be machine-refuted (reason
 `citation-unresolvable`). The persisted `adjudications` row enforces "shadow ⇒ PROCEED or BLOCK" with a check
-constraint (data model §3).
+constraint (data model §3). A shadow `BLOCK` (A1) carries **no shadow verdict**, neither in `BlockOutcome` nor in
+the row (`adjudications_shadow_ck` sets `would_be_outcome` only for a shadow `PROCEED`): the push guard is not a
+gating decision, so there is no would-be outcome to record (P4-PLAN2-MED-005; conformance case RLC-12).
 
 ---
 
@@ -635,8 +807,20 @@ constraint (data model §3).
   rejecting a finding after the round changes the next snapshot; a later reversal changes it again. Harness-rule
   refutations of ungrounded findings are reported separately (`review_ungrounded_rate`). This needs one new
   dictionary aggregation option (`dedupeLatestBy`, SR-D2) and a dictionary version bump.
+- **Cohort semantics for late dispositions (P4-PLAN2-MED-006, R18).** A disposition counts in the **cohort of the
+  review round it disposes** — the window in which that round's `review.completed` occurred — never in the window in
+  which the disposition arrived. Each `review.finding_dispositioned` event carries `reviewRoundCompletedAt` (the
+  `occurredAt` of the disposed round's `review.completed`), and the numerator operands select by it (dictionary
+  operand option `cohortBy: reviewRoundCompletedAt`, SR-X6). A late disposition makes the evaluator recompute that
+  cohort's snapshots and write them as a **new snapshot version**; earlier versions are append-only and retained, and
+  panels read the latest version. Disposition latency (`dispositionLatencyMs` = disposition `occurredAt` −
+  `reviewRoundCompletedAt`) is reported as `review_disposition_latency_ms`, per cohort. Test (exit H6): one finding
+  reviewed on day 1, accepted on day 2 and rejected on day 3 gives the day-1 cohort's yield snapshot versions 1–3
+  (`0`, `1`, `0`) and its false-positive snapshot versions 1–2 (`0`, `1`), with every earlier version still readable,
+  while the day-2 and day-3 windows count no disposition of that round.
 - **Evaluator** computes every metric from events with the dictionary's own filters, zero-denominator policy and
-  privacy class; snapshots are recomputed idempotently into `metric_snapshots`; panels read snapshots only.
+  privacy class; a recompute is idempotent (an unchanged value writes nothing) and a changed value appends a new
+  version to `metric_snapshots`; panels read the latest version only.
 - **Dashboards:** false completion, review yield (yield, false positives, adjudication coverage, ungrounded rate,
   reviewer failure, egress stops, shadow would-block), cost (per accepted task, per review, cost coverage),
   recovery (`workflow_recovery_rate` from Lane A's events; `null` with reason until they exist — never 0).
@@ -664,6 +848,13 @@ the dependency by invariant until Phase 2 is accepted:
   adopted instead of calling again. `store: false` means there is no remote state to query.
 - **I5** Every Lane B write that records a decision — review-round open/close, review-record terminal state,
   adjudication, repair order, harness disposition — performs the fence check of I1 in its own transaction.
+- **I6** (P4-PLAN2-MED-001, R18) Steps read repository content only through a workspace obtained from
+  `AssuranceWorkspaceResolver.resolve(scope, { attemptId, leaseId, fencingEpoch })` (slot block, §18) for the
+  caller's fence. The resolver checks tenant, an `ACTIVE` lease held by that lease id and the current epoch, and
+  fails closed; a refusal stops the step before any read (`not-in-scope` → `ReviewLoopContractError`, every other
+  refusal → `AssuranceFencedError`). Lane A implements it over the lease table; no workspace comes from
+  activity-local memory. Tests: wrong tenant, wrong lease, stale epoch and ended lease, through the framework-free
+  resolver kit (WRC-01…05) on Lane A's implementation and on Lane B's fake, plus slot-level refusal tests (exit E13).
 
 **Change request CR-F1 against the Phase 2 primitive** (exact signature decided after Phase 2 acceptance):
 (a) a reviewer call is claimed as a side-effect operation whose semantic key is qualified by the `reviewId` (one
@@ -695,14 +886,16 @@ a reopened `FAILED` call adopts an existing raw response instead of calling.
 
 Lane A copies the block below verbatim into its plan and lands it in S0 as three files under
 `packages/application/src/review-loop/` (re-exported from `packages/application/src/index.ts`). The types file is
-complete; the two helper files are given as signatures (`declare`) with their behaviour specified in §18.2.
+complete, including the envelope helper; the two helper files are given as signatures (`declare`) with their
+behaviour specified in §18.2. This is the **v3 block** (R18): it replaces the v2 text that Lane A has not yet
+received.
 
 Location: Lane A's v1 plan put the port and kit in `packages/ports` (CR-10). The slot returns `AdmissionResult`,
 which lives in `@asep/application` (`packages/application/src/risk-admission.ts:30-36`), and ports must not depend
 on application; the orchestration workflow already depends on `@asep/application` for the Phase 2 step use cases.
-So the slot, the disabled slot and the kit live in `packages/application/src/review-loop/`. Lane A's
-`ReviewLoopPort`, `ReviewLoopRequest`, `ReviewLoopDecision`, `ReviewLoopTrigger` and `ReviewLoopUnavailableError`
-are superseded by this contract (R3).
+So the slot, the disabled slot, the workspace resolver port and the kit live in
+`packages/application/src/review-loop/`. Lane A's `ReviewLoopPort`, `ReviewLoopRequest`, `ReviewLoopDecision`,
+`ReviewLoopTrigger` and `ReviewLoopUnavailableError` are superseded by this contract (R3).
 
 ```typescript
 // ===========================================================================
@@ -710,29 +903,45 @@ are superseded by this contract (R3).
 // ===========================================================================
 // The review-loop slot: one assurance round after evidence is persisted and before
 // push. Framework-free: no orchestration SDK, no wall-clock reads, no process
-// environment. Every input and output is plain JSON (no functions, class instances,
-// Dates, bigint or undefined-valued keys) and at most 64 KiB when serialized; large
-// data travels by ArtifactRef. The assurance service implements ReviewLoopSlot; the
-// orchestration workflow composes it and wraps each call as an activity. Changing
-// this file after S0 needs a new controller reconciliation.
+// environment.
+//
+// Envelope. Every input and output is plain JSON (no functions, class instances,
+// Dates, bigint or undefined-valued keys) and at most REVIEW_LOOP_MAX_PAYLOAD_BYTES
+// when serialized. A ContextPack, a packet, a check report, a review record, a repair
+// order, a PR section and any list that grows with the change travel by ArtifactRef,
+// never inline.
+//
+// Time. AssuranceStepContext.now() is one fixed logical time per activity execution,
+// identical on every retry of that execution. Every timestamp an implementation
+// writes (row columns, run events) comes from it, so a redelivery writes
+// byte-identical records and events. Content-addressed artifacts (packet, check
+// report, review record, adjudication record, repair order) carry no timestamp, so
+// their ids and the round's outcome do not depend on which execution produced them.
+//
+// The assurance service implements ReviewLoopSlot; the orchestration workflow composes
+// it and wraps each call as an activity. Changing this file after S0 needs a new
+// controller reconciliation.
 
 import type {
   ArtifactRef,
   AttemptId,
-  ContextPack,
   RepositoryBindingId,
   RiskLevel,
   RunId,
   TaskId,
   TenantScope,
 } from '@asep/contracts';
+import type { WorkspaceCapability } from '@asep/ports';
 import type { AdmissionResult } from '../risk-admission.js';
 
 export const REVIEW_LOOP_SLOT_VERSION = 'review-loop/v1' as const;
 export type ReviewLoopSlotVersion = typeof REVIEW_LOOP_SLOT_VERSION;
 
-/** Explicit literal a composition must pass to run without independent assurance (Phase 2 behaviour). */
+/** Explicit literal a composition must pass to opt out of independent assurance (Phase 2 behaviour). */
 export const REVIEW_LOOP_DISABLED = 'review-loop-disabled-phase2-behaviour' as const;
+
+/** Largest serialized size of any slot input or output, in UTF-8 bytes of JSON.stringify(value). */
+export const REVIEW_LOOP_MAX_PAYLOAD_BYTES = 65_536;
 
 // --- delivery context ---------------------------------------------------------
 
@@ -755,15 +964,15 @@ export interface AssuranceHeartbeat {
 
 /**
  * Engine-neutral context for one delivery of one step. The orchestration adapter builds
- * it from its own activity context; the sequential driver builds it from an
- * AbortController and an injected clock.
+ * it from its own activity context and the logical time carried in the activity input;
+ * the sequential driver builds it from an AbortController and an injected clock.
  */
 export interface AssuranceStepContext {
   readonly signal: AbortSignal;
   /**
    * ISO-8601 UTC timestamp: one fixed logical time per activity execution, identical on
-   * every retry of that execution, so a retried step writes byte-identical records. It does
-   * not advance within a step. Steps never read the wall clock themselves.
+   * every retry of that execution and not advancing within it. Steps take every
+   * timestamp from it and never read the wall clock (see the file header).
    */
   now(): string;
   /** Called at least every 30 seconds while a step is working. */
@@ -775,14 +984,42 @@ export interface AssuranceStepContext {
 /**
  * The caller's workspace-lease identity. Every claim, completion and decision write the
  * implementation makes checks, in the same transaction, that this lease is ACTIVE, is
- * held by `leaseId`, and is at epoch `leaseEpoch` (the Phase 2 fenced-takeover
- * invariant). A caller whose lease was taken over gets AssuranceFencedError and changes
- * nothing.
+ * held by `leaseId`, and is at `fencingEpoch` (the Phase 2 fenced-takeover invariant).
+ * A caller whose lease was taken over gets AssuranceFencedError and changes nothing.
  */
 export interface AssuranceFence {
   readonly leaseId: string;
-  /** Integer >= 1: the epoch the accepted Phase 2 primitive assigned to this lease holder. */
-  readonly leaseEpoch: number;
+  /** Integer >= 1: the fencing epoch the accepted Phase 2 primitive assigned to this lease holder. */
+  readonly fencingEpoch: number;
+}
+
+// --- workspace resolution -------------------------------------------------------
+
+export interface AssuranceWorkspaceQuery {
+  readonly attemptId: AttemptId;
+  readonly leaseId: string;
+  readonly fencingEpoch: number;
+}
+
+/** Checked in this order; the first failing check is reported. */
+export type AssuranceWorkspaceRefusal = 'not-in-scope' | 'lease-not-active' | 'lease-not-held' | 'stale-epoch';
+
+export type AssuranceWorkspaceResolution =
+  | { readonly kind: 'resolved'; readonly workspace: WorkspaceCapability }
+  | { readonly kind: 'refused'; readonly reason: AssuranceWorkspaceRefusal };
+
+/**
+ * The only way an assurance step obtains the attempt's workspace for trusted reads (range
+ * diffs and post-images). Framework-free and read-only; the orchestration lane implements
+ * it over the workspace-lease table, and a workspace never comes from activity-local
+ * memory. It checks that the attempt belongs to `scope` ('not-in-scope', which reveals
+ * nothing about other tenants), and that the attempt's workspace lease is ACTIVE, is held
+ * by `leaseId` and is at `fencingEpoch`. The slot maps 'not-in-scope' to
+ * ReviewLoopContractError and every other refusal to AssuranceFencedError, before any
+ * repository read.
+ */
+export interface AssuranceWorkspaceResolver {
+  resolve(scope: TenantScope, query: AssuranceWorkspaceQuery): Promise<AssuranceWorkspaceResolution>;
 }
 
 // --- vocabulary ------------------------------------------------------------------
@@ -805,6 +1042,7 @@ export type BlockReason = 'secret-in-diff' | 'forbidden-path' | 'unscannable-sen
 
 export type EgressDecision = 'CLEAR' | 'STOP_SECRET' | 'STOP_CLASSIFIED' | 'STOP_UNSCANNABLE';
 
+/** Reasons recorded in the packet's budget.omissions list. */
 export type PacketOmissionReason = 'binary' | 'too-large' | 'deleted' | 'submodule' | 'non-utf8';
 
 // --- round input -------------------------------------------------------------------
@@ -871,12 +1109,13 @@ export interface BuildReviewPacketInput {
 }
 
 export interface BuildReviewPacketOutput {
-  /** Canonical review-packet/v1 bytes. */
+  /** Canonical review-packet/v1 bytes; the omission list lives inside it (budget.omissions). */
   readonly packetRef: ArtifactRef;
   readonly packetSha256: string;
   /** True: the packet holds metadata only; content is never cut silently. */
   readonly overBudget: boolean;
-  readonly omissions: readonly { readonly path: string; readonly reason: PacketOmissionReason }[];
+  /** Number of changed files whose content the packet omits, for any reason. */
+  readonly omittedFiles: number;
 }
 
 export interface DeterministicCheckInput {
@@ -968,7 +1207,7 @@ export interface AssuranceOutcomeBase {
 
 export interface ProceedOutcome extends AssuranceOutcomeBase {
   readonly kind: 'PROCEED';
-  /** Non-null iff mode is 'shadow'. */
+  /** Non-null iff mode is 'shadow'. PROCEED is the only kind that carries a shadow verdict. */
   readonly shadow: ShadowVerdict | null;
   /** Assurance section for the PR body; null when there is nothing to show. */
   readonly prBodySectionRef: ArtifactRef | null;
@@ -991,7 +1230,11 @@ export interface EscalateOutcome extends AssuranceOutcomeBase {
   readonly prBodySectionRef: ArtifactRef;
 }
 
-/** Any mode: the deterministic push guard. The orchestrator does not push; the task ends BLOCKED. */
+/**
+ * Any mode: the deterministic push guard. The orchestrator does not push; the task ends
+ * BLOCKED. It carries no shadow verdict in any mode: the push guard is not a gating
+ * decision, so a blocked round has no would-be outcome.
+ */
 export interface BlockOutcome extends AssuranceOutcomeBase {
   readonly kind: 'BLOCK';
   readonly reason: BlockReason;
@@ -1026,8 +1269,15 @@ export interface AttemptOutcomeInput {
   readonly terminal: AttemptTerminal;
   /** Null when verification never ran. */
   readonly verificationVerdict: 'PASS' | 'FAIL' | 'ERROR' | null;
-  /** Null when no assurance round ran for this attempt. */
+  /** Null when no assurance round completed for this attempt. */
   readonly adjudicationId: string | null;
+  /**
+   * True only when the assurance activity failed after its retry policy, or
+   * non-retryably: the orchestrator audited 'assurance-unavailable' and continued as
+   * PROCEED (shadow) or ESCALATE (gating), so terminal is 'proceeded' or 'escalated' and
+   * adjudicationId is null. Never true at a verification stop.
+   */
+  readonly assuranceUnavailable: boolean;
   /** Failure taxonomy class id (for example 'artifact-loss'); null on success. */
   readonly failureClass: string | null;
   readonly cost: {
@@ -1055,14 +1305,17 @@ export interface RepairContextInput {
   readonly scope: TenantScope;
   /** The repair attempt being prepared. */
   readonly attemptId: AttemptId;
-  readonly original: ContextPack;
+  /** The task's original context-pack/v1 artifact; the pack itself never travels inline. */
+  readonly originalContextPackRef: ArtifactRef;
   readonly repairOrderRef: ArtifactRef;
 }
 
 export interface RepairContextOutput {
-  /** context-pack/v1 with its hash recomputed. */
-  readonly contextPack: ContextPack;
-  /** Persisted before return. */
+  /**
+   * context-pack/v1 with its hash recomputed, persisted before return. Its generatedAt is
+   * the decision time of the persisted REPAIR adjudication, so every execution derives the
+   * same bytes.
+   */
   readonly contextPackRef: ArtifactRef;
 }
 
@@ -1094,7 +1347,7 @@ export interface ReviewLoopSlot {
 // --- errors -----------------------------------------------------------------------------------
 // Any other thrown error is transient and safe to retry with the same input.
 
-/** Malformed input or an outcome that violates this contract. Non-retryable. */
+/** Malformed input, an input over the envelope, or an outcome that violates this contract. Non-retryable. */
 export class ReviewLoopContractError extends Error {
   constructor(message: string) {
     super(message);
@@ -1118,17 +1371,47 @@ export class AssuranceCancelledError extends Error {
   }
 }
 
+// --- envelope -------------------------------------------------------------------------------------
+
+/** Serialized size of a slot payload: UTF-8 bytes of JSON.stringify(value). */
+export function reviewLoopPayloadBytes(value: unknown): number {
+  let json: unknown;
+  try {
+    json = JSON.stringify(value);
+  } catch {
+    throw new ReviewLoopContractError('payload is not JSON-serializable');
+  }
+  if (typeof json !== 'string') throw new ReviewLoopContractError('payload is not JSON-serializable');
+  return new TextEncoder().encode(json).byteLength;
+}
+
+/**
+ * Throws ReviewLoopContractError when a payload is larger than REVIEW_LOOP_MAX_PAYLOAD_BYTES.
+ * Implementations call it on every input before any state change and on every output before
+ * returning; orchestration adapters may call it before scheduling an activity.
+ */
+export function assertWithinReviewLoopEnvelope(label: string, value: unknown): void {
+  const bytes = reviewLoopPayloadBytes(value);
+  if (bytes > REVIEW_LOOP_MAX_PAYLOAD_BYTES) {
+    throw new ReviewLoopContractError(
+      `${label} serializes to ${bytes} bytes; the slot envelope allows ${REVIEW_LOOP_MAX_PAYLOAD_BYTES}`,
+    );
+  }
+}
+
 // ===========================================================================
 // packages/application/src/review-loop/disabled-slot.ts            (S0; signature)
 // ===========================================================================
 
 /**
- * Phase 2 behaviour: every round returns PROCEED with mode 'not-required' and no
- * reviewer call; recordAttemptOutcome records nothing; admitWithAssurance equals
- * admitRisk; buildRepairContextPack throws ReviewLoopContractError. Constructible only
- * with the explicit literal.
+ * The explicit, literal opt-out (Phase 2 behaviour), constructible only with the literal.
+ * Every round returns PROCEED with mode 'not-required', shadow null, no reviewer call and
+ * no event; recordAttemptOutcome records nothing; admitWithAssurance equals admitRisk;
+ * buildRepairContextPack throws ReviewLoopContractError. It is never a default binding:
+ * when no assurance is configured, the orchestration lane binds its
+ * NotConfiguredAssuranceSlot, which fails closed for any risk that requires review.
  */
-export declare function createDisabledReviewLoopSlot(ack: typeof REVIEW_LOOP_DISABLED): ReviewLoopSlot;
+export declare function createDisabledAssuranceSlot(ack: typeof REVIEW_LOOP_DISABLED): ReviewLoopSlot;
 
 // ===========================================================================
 // packages/application/src/review-loop/review-loop-contract.ts     (S0 conformance kit; signatures)
@@ -1137,12 +1420,26 @@ export declare function createDisabledReviewLoopSlot(ack: typeof REVIEW_LOOP_DIS
 export interface ReviewLoopConformanceFixture {
   /** A valid round-1 input that the implementation's backing store accepts. */
   readonly input: AssuranceSlotInput;
+  /** A valid round-1 input whose change trips the push guard; null when the implementation cannot produce one. */
+  readonly pushGuardInput: AssuranceSlotInput | null;
   /**
    * Simulates a lease handoff in the backing store and returns the new holder's fence;
    * null for a stateless implementation (fencing cases then report not-applicable).
    */
   readonly rotateFence: (() => Promise<AssuranceFence>) | null;
+  /**
+   * Canonical bytes of every row and run event the backing store holds for one round key,
+   * in a stable order; null for a stateless implementation (RLC-11 then reports
+   * not-applicable).
+   */
+  readonly persistedRoundBytes: ((roundKey: string) => Promise<string>) | null;
 }
+
+/** The implementation under test over an empty backing store; the kit builds a fresh one per case. */
+export type ReviewLoopConformanceSubject = () => Promise<{
+  readonly slot: ReviewLoopSlot;
+  readonly fixture: ReviewLoopConformanceFixture;
+}>;
 
 export interface ReviewLoopConformanceResult {
   readonly caseId: string;
@@ -1150,11 +1447,33 @@ export interface ReviewLoopConformanceResult {
   readonly detail: string;
 }
 
-/** Runs cases RLC-01…RLC-10 against any implementation. Framework-free; callers assert on the result. */
+/**
+ * Runs cases RLC-01…RLC-13 against any implementation. Framework-free; callers assert on
+ * the result. `makeCtx(logicalTime)` returns a live context whose now() is `logicalTime`;
+ * the kit reuses one value for every redelivery of one execution.
+ */
 export declare function runReviewLoopContract(
-  slot: ReviewLoopSlot,
-  fixture: ReviewLoopConformanceFixture,
-  makeCtx: () => AssuranceStepContext,
+  makeSubject: ReviewLoopConformanceSubject,
+  makeCtx: (logicalTime: string) => AssuranceStepContext,
+): Promise<readonly ReviewLoopConformanceResult[]>;
+
+export interface WorkspaceResolverConformanceFixture {
+  readonly scope: TenantScope;
+  /** An attempt whose workspace lease is ACTIVE and held by `fence` in the backing store. */
+  readonly attemptId: AttemptId;
+  readonly fence: AssuranceFence;
+  /** Another tenant's scope that the backing store also holds. */
+  readonly foreignScope: TenantScope;
+  /** Ends the attempt's lease (expiry or release) in the backing store. */
+  readonly endLease: () => Promise<void>;
+}
+
+/** Runs cases WRC-01…WRC-05 against any resolver, each on a fresh subject. */
+export declare function runWorkspaceResolverContract(
+  makeSubject: () => Promise<{
+    readonly resolver: AssuranceWorkspaceResolver;
+    readonly fixture: WorkspaceResolverConformanceFixture;
+  }>,
 ): Promise<readonly ReviewLoopConformanceResult[]>;
 
 export interface ScriptedReviewLoopScript {
@@ -1167,39 +1486,68 @@ export interface ScriptedReviewLoopScript {
 export declare function createScriptedReviewLoopSlot(script: ScriptedReviewLoopScript): ReviewLoopSlot;
 ```
 
-### 18.2 Helper behaviour and conformance cases (S0)
+### 18.2 Default slots, helper behaviour and conformance cases (S0)
 
-`createDisabledReviewLoopSlot` is what Lane A composes until Lane B's implementation is integrated; it reproduces
-Phase 2 exactly (no review, push after evidence) and needs the explicit literal, mirroring `HOST_EXECUTION_WAIVER`.
+**Two default slots coexist with distinct jobs** (P4-PLAN2-MED-007, R18):
+
+- Lane A's `NotConfiguredAssuranceSlot` (Lane A's plan) is the **default binding** when no assurance is configured.
+  It fails closed for any risk that requires review and emits the attempt-outcome events. Lane A composes it until
+  Lane B's implementation is integrated, and it passes the conformance kit.
+- Lane B's `createDisabledAssuranceSlot(REVIEW_LOOP_DISABLED)` is the **explicit, literal opt-out**, mirroring
+  `HOST_EXECUTION_WAIVER`: `PROCEED` without events. It is never a default.
+
 `createScriptedReviewLoopSlot` lets Lane A drive its workflow through all four outcome kinds.
 
-`runReviewLoopContract` cases, run by both lanes (Lane A against the scripted and disabled slots, Lane B against
-`createAssuranceSlot` on PGlite and on real PostgreSQL):
+**Terminal vocabulary.** `AttemptTerminal` above is the vocabulary of `recordAttemptOutcome`. A verification stop is
+`verification-stopped`; the agent's own failure or overstep is `agent-failed`; worker death, an activity failure
+outside assurance and other infrastructure stops are `infrastructure-failed`; budget exhaustion is
+`budget-exhausted`; cancellation and a pause timeout are `cancelled`. Lane A updates its prose, its terminal table
+and exit J2 to this vocabulary at hand-off (R18).
+
+`runReviewLoopContract` cases, run by both lanes (Lane A against the scripted, disabled and not-configured slots;
+Lane B against `createAssuranceSlot` on PGlite and on real PostgreSQL). Every case starts from a fresh subject:
 
 | Case | Assertion |
 |---|---|
-| RLC-01 | every input and output of every method JSON-round-trips deep-equal and serializes to ≤ 64 KiB |
+| RLC-01 | every input and output of every method JSON-round-trips deep-equal and `reviewLoopPayloadBytes` ≤ 65 536; `assertWithinReviewLoopEnvelope` accepts a payload of exactly 65 536 bytes and rejects one of 65 537 with `ReviewLoopContractError`; an input padded past the envelope (in `implementer.providerId`) → `ReviewLoopContractError` and no state change |
 | RLC-02 | `runAssuranceRound` twice with the same input → deep-equal outcomes; the second call sends no provider request |
 | RLC-03 | `slotVersion` other than `review-loop/v1` → `ReviewLoopContractError` |
 | RLC-04 | round 1 with a `priorAdjudicationId`, or round > 1 without one → `ReviewLoopContractError` |
 | RLC-05 | after `rotateFence()`, a call with the old fence → `AssuranceFencedError` and no state change; the new fence completes and converges to RLC-02's outcome |
-| RLC-06 | outcome invariants: `roundKey = idempotencyKey`; mode `shadow` or `not-required` ⇒ kind ∈ {PROCEED, BLOCK}; `shadow` non-null iff mode `shadow`; REPAIR ⇒ `nextRound = round + 1` and `repairBaseSha = resultSha` |
+| RLC-06 | outcome invariants: `roundKey = idempotencyKey`; mode `shadow` or `not-required` ⇒ kind ∈ {PROCEED, BLOCK}; only `PROCEED` has a `shadow` key, and it is non-null iff mode `shadow`; REPAIR ⇒ `nextRound = round + 1` and `repairBaseSha = resultSha` |
 | RLC-07 | an aborted signal → `AssuranceCancelledError`; a later call with a live signal converges to RLC-02's outcome |
 | RLC-08 | `recordAttemptOutcome` twice with the same input resolves both times and records once |
 | RLC-09 | `admitWithAssurance` with `promotedReviewerConfigIds: []` equals `admitRisk` for R0–R4; R3/R4 are `DEFERRED` for every capability |
 | RLC-10 | running the individual steps in order yields the same outcome as `runAssuranceRound` |
+| RLC-11 | fixed logical time (R15): for each boundary after `plan`, `packet`, `checks`, each reviewer and `adjudicate`, a fresh subject runs the steps up to the boundary at logical time T and is interrupted; a redelivery of `runAssuranceRound` with the same input and T returns the outcome of an uninterrupted run at T on another fresh subject, and `persistedRoundBytes` of both are byte-identical; a further redelivery at a later logical time changes no persisted byte and returns the same outcome |
+| RLC-12 | shadow `BLOCK`: `pushGuardInput` → kind `BLOCK` with a `BlockReason`, no `shadow` key, `usage.providerCalls = 0` (not-applicable when `pushGuardInput` is null) |
+| RLC-13 | an input whose `scope` is another tenant's → `ReviewLoopContractError` and no state change (not-applicable for a stateless implementation) |
 
-### 18.3 Obligations of the orchestration composition (SR-A1…SR-A7)
+`runWorkspaceResolverContract` cases, run by Lane A against its implementation over the lease table on real
+PostgreSQL and by Lane B against its fake (exit E13):
+
+| Case | Assertion |
+|---|---|
+| WRC-01 | the current holder `(attemptId, fence.leaseId, fence.fencingEpoch)` resolves to a workspace whose `leaseId` equals `fence.leaseId` |
+| WRC-02 | the same query under `foreignScope` → `refused` / `not-in-scope` |
+| WRC-03 | another lease id → `refused` / `lease-not-held` |
+| WRC-04 | `fencingEpoch` one below or one above the current epoch → `refused` / `stale-epoch` |
+| WRC-05 | after `endLease()` → `refused` / `lease-not-active` |
+
+### 18.3 Obligations of the orchestration composition (SR-A1…SR-A10)
 
 | ID | Obligation |
 |---|---|
 | SR-A1 | Call the slot after evidence persistence and before push; never at a verification stop. Map outcomes: PROCEED → push, PR with `prBodySectionRef` content, `WAITING_FOR_HUMAN_REVIEW`; REPAIR → new attempt; ESCALATE → push, PR flagged "assurance not satisfied", `WAITING_FOR_HUMAN_REVIEW`; BLOCK → no push, task `BLOCKED`. |
-| SR-A2 | A repair attempt gets a fresh workspace at `repairBaseSha` and the ContextPack from `buildRepairContextPack` (the "task baseSha + apply diff" design is withdrawn, R3). |
+| SR-A2 | A repair attempt gets a fresh workspace at `repairBaseSha` and the ContextPack referenced by `buildRepairContextPack`'s `contextPackRef` (the "task baseSha + apply diff" design is withdrawn, R3). |
 | SR-A3 | Call `recordAttemptOutcome` at every attempt terminal, verification stops included. |
 | SR-A4 | Pass `(risk) => slot.admitWithAssurance(risk, capability)` through the optional `admit` hook (SR-X1). |
 | SR-A5 | Emit `workflow.recovered` through the shared `RunEventSink`. |
 | SR-A6 | Do not emit `attempt.declared_complete`, `attempt.completed`, `review.completed`, `review.finding_dispositioned` or `repair.started`; Lane B's slot owns them, so no event is double-counted. |
 | SR-A7 | Emit `task.completed` (with `outcome` and `repairCycles`) at task terminal; Lane B does not. |
+| SR-A8 | Implement `AssuranceWorkspaceResolver` over the workspace-lease table and pass `runWorkspaceResolverContract` on real PostgreSQL (R18). |
+| SR-A9 | Carry the activity's logical time (the workflow time at scheduling) in the activity input; the context adapter's `now()` returns it on every redelivery of that execution (R15). |
+| SR-A10 | When the assurance activity fails after its retry policy, or non-retryably: audit `assurance-unavailable`; shadow mode → continue as PROCEED with no section; gating mode → ESCALATE; never `FAILED`; call `recordAttemptOutcome` with `assuranceUnavailable: true` and `adjudicationId: null` (R19). |
 | — | Activity policy: heartbeat timeout ≥ 60 s; retry transient errors; never retry `ReviewLoopContractError` or `AssuranceFencedError` within the same delivery; on `AssuranceFencedError` the attempt is superseded under Lane A's lease-takeover semantics. |
 
 ### 18.4 Other S0 items Lane B depends on (R4, R5)
@@ -1228,10 +1576,31 @@ export class RunEventConflictError extends Error {
 `run_events` (Lane A `0107`, R4 union, R15): composite key `(organization_id, project_id, event_id)`, composite FK
 onto `runs`, `payload_sha256` with conflict on different bytes, append-only trigger rejecting UPDATE and DELETE, and
 an index `(organization_id, project_id, event_type, occurred_at)`. Lane B adds nothing to that table and writes only
-operational-run events to it.
+operational-run events to it. The only sink is Lane A's `adapters/persistence/src/run-events/**` (R15); Lane B owns
+none, and benchmark, replay and corpus measurement never write to `run_events`.
 
-The only change to the verbatim slot block since `3201335` is the doc comment on `AssuranceStepContext.now()`,
-aligned with R15 (no type or signature change).
+Changes to the verbatim slot block since `3201335` (v3; P4-PLAN2-MED-001/002/004/005/007, R18, R19):
+
+| Change | Why |
+|---|---|
+| file header states the envelope and the fixed-logical-time invariant; content-addressed artifacts carry no timestamp | R15 inside the block (MED-002) |
+| `REVIEW_LOOP_MAX_PAYLOAD_BYTES`, `reviewLoopPayloadBytes`, `assertWithinReviewLoopEnvelope` | deterministic envelope error and a boundary case (MED-004) |
+| `AssuranceFence.leaseEpoch` → `fencingEpoch` | one name for the value the resolver checks (R18) |
+| `AssuranceWorkspaceResolver`, `AssuranceWorkspaceQuery`, `AssuranceWorkspaceResolution`, `AssuranceWorkspaceRefusal` | workspace seam (MED-001) |
+| `BuildReviewPacketOutput.omissions` → `omittedFiles` (the list stays in the packet artifact) | a list that grows with the change no longer travels inline (MED-004) |
+| `RepairContextInput.original: ContextPack` → `originalContextPackRef`; `RepairContextOutput.contextPack` removed | ContextPack by `ArtifactRef` only (MED-004) |
+| `ProceedOutcome.shadow` and `BlockOutcome` doc: only PROCEED carries a shadow verdict | matches the DDL (MED-005) |
+| `AttemptOutcomeInput.assuranceUnavailable` | assurance-activity failure is visible in telemetry (R19) |
+| `createDisabledReviewLoopSlot` → `createDisabledAssuranceSlot`, documented as the literal opt-out, never a default | two default slots (MED-007) |
+| conformance kit: fresh subject per case, `makeCtx(logicalTime)`, `pushGuardInput`, `persistedRoundBytes`, RLC-11…13; resolver kit WRC-01…05 | byte-comparing redelivery, shadow BLOCK, workspace refusals (MED-001/002/005) |
+
+The v3 block was extracted from this plan and type-checked as one module in a scratch directory outside the
+repository with TypeScript 7.0.2 and the repository's base compiler options (`strict`, `noUncheckedIndexedAccess`,
+`exactOptionalPropertyTypes`, declaration emit, `types: ["node"]`), **against the real built declarations** of
+`@asep/contracts` and `@asep/ports` and the real `AdmissionResult` of `@asep/application` from this branch's
+`tsc -b` output (not stubs, unlike v2): no errors; a seeded wrong field (`leaseEpoch`) failed as a control. The
+compiled envelope helper accepted a 65 536-byte payload and rejected a 65 537-byte one with
+`ReviewLoopContractError` (review log, "Slot block type-check").
 
 `run-event` 1.2.0 (R5), Lane B's part of the superset — one new `eventType` and optional fields:
 
@@ -1257,6 +1626,9 @@ aligned with R15 (no type or signature change).
 | `dispositionActorKind` | enum `human, harness-rule` | `review.finding_dispositioned` |
 | `findingSource` | enum `model, deterministic, sarif` | dimension |
 | `findingSeverity` | enum `INFO, LOW, MEDIUM, HIGH, CRITICAL` | dimension |
+| `reviewRoundCompletedAt` | string, `date-time` | `review.finding_dispositioned`: the cohort key (the disposed round's `review.completed` `occurredAt`) |
+| `dispositionLatencyMs` | integer ≥ 0 | `review.finding_dispositioned` (disposition latency) |
+| `assuranceUnavailable` | boolean | `attempt.completed` (R19) |
 
 All additive (COMPATIBILITY.md: optional property and enum value → MINOR).
 
@@ -1271,7 +1643,7 @@ request lands in a Lane B slice after the rebase onto S0, unless noted.
 
 | ID | Item |
 |---|---|
-| SR-S0-1 | `packages/application/src/review-loop/{slot.ts, disabled-slot.ts, review-loop-contract.ts}` + export lines (§18 "Review-loop slot contract (verbatim for S0)" and §18.2) |
+| SR-S0-1 | `packages/application/src/review-loop/{slot.ts, disabled-slot.ts, review-loop-contract.ts}` + export lines (§18 "Review-loop slot contract (verbatim for S0)" v3 and §18.2): the slot, the envelope helper, the workspace resolver port, the disabled slot, the slot kit (RLC-01…13), the resolver kit (WRC-01…05) and the scripted slot |
 | SR-S0-2 | `RunEventSink`, `RunEventConflictError` in `packages/ports/src/index.ts` (§18.4) |
 | SR-S0-3 | Lane B's `run-event` 1.2.0 additions (§18.4) inside the single superset bump |
 | SR-S0-4 | `run_events` DDL union in Lane A's `0107` (§18.4); Lane B's `0201_run_events` is withdrawn |
@@ -1323,12 +1695,19 @@ Lane A imports it at integration time.
 ### 19.7 Required suites and gates
 
 - SR-T1 `scripts/lib/canonical-tests.mjs` `REQUIRED_SUITES` += the unit suite ids in exit criteria
-  §"Suite registry" (append-only, R10).
+  §"Suite registry" (append-only, R10). Each slice's integration part appends its own ids (§21.2); the nine ids of
+  S3–S7 were appended early, in the pure-core commits, and stay (recorded in the review log).
 - SR-T2 `scripts/integration/lib.mjs` `REQUIRED_ITEST_SUITES` += the itest suite ids there.
-- SR-T3 `scripts/run-canonical-tests.mjs` (+ `canonical-tests.mjs`): add a JUnit reporter to a temp file next to
-  the existing stdout reporter (`--test-reporter` / `--test-reporter-destination` pairs, research register §5),
-  and a registered post-run proof-check list; Lane B registers the exit-criteria proof check, which fails the run
-  if any MUST-mapped test name is missing, skipped, todo or failed. Generic; Lane A may register its own.
+- SR-T3 **Proof manifest over both runners** (v1 MED-001 partial, P4-PLAN2-MED-003, R18). `scripts/run-canonical-tests.mjs`
+  (+ `canonical-tests.mjs`) **and** `scripts/integration/run-integration.mjs` (+ `lib.mjs`) each add a JUnit
+  reporter to a temp file next to their existing stdout reporter (`--test-reporter` / `--test-reporter-destination`
+  pairs, research register §5) and run one shared, registered post-run proof check
+  (`scripts/lib/proof-manifest.mjs`, new). Lane B registers the exit-criteria proof check: every `unit` row's test
+  names must appear as **passed** in the canonical runner's report and every `itest` row's in the integration
+  runner's report; missing, skipped, todo or failed is red. A row whose proof is conditional names its condition
+  (only G8's live round trip, required when `ASEP_REQUIRE_LIVE_REVIEWER=1`); the live reviewer's optionality is a
+  policy test that always runs and passes or fails on its own, never a runner skip (exit G8). Generic; Lane A may
+  register its own check.
 - SR-T4 `scripts/integration/{images.mjs, lib.mjs, run-integration.mjs}`: a digest-pinned Grafana container with
   the committed provisioning mounted read-only, health-gated on `GET /api/health`, torn down in `finally`; its
   base URL exported to itests. Digest recorded in S18 (not verified in this session).
@@ -1347,13 +1726,14 @@ Lane A imports it at integration time.
 
 - SR-D1 new metrics: `review_adjudication_coverage`, `review_ungrounded_rate`, `reviewer_failure_rate`,
   `review_egress_stop_rate`, `shadow_would_block_rate`, `review_cost_coverage`, `mean_review_cost_usd`,
-  `repair_success_rate` and `review_escalation_rate` (both `null` in Phase 4 production: no gating). Definitions
-  in data model §5.
+  `review_disposition_latency_ms`, `repair_success_rate` and `review_escalation_rate` (the last two `null` in
+  Phase 4 production: no gating). Definitions in data model §5.
 - SR-D2 `review_finding_yield` and `review_false_positive_rate` numerators move to
-  `review.finding_dispositioned` (human actor, latest per `findingId`); denominators unchanged; dictionary
-  `version` 1.0.0 → 1.1.0. Nothing computes these metrics today, so no consumer breaks.
-- SR-X6 `packages/observability/src/metrics.ts`: accept and validate the optional operand key
-  `dedupeLatestBy: <RunEvent field>`; coordinate with Lane A's dictionary-validator change (CR-19).
+  `review.finding_dispositioned` (human actor, latest per `findingId`, cohort of the disposed round); denominators
+  unchanged; dictionary `version` 1.0.0 → 1.1.0. Nothing computes these metrics today, so no consumer breaks.
+- SR-X6 `packages/observability/src/metrics.ts`: accept and validate the optional operand keys
+  `dedupeLatestBy: <RunEvent field>` and `cohortBy: <RunEvent date-time field>` (the operand's window filter uses
+  that field instead of `occurredAt`, §15); coordinate with Lane A's dictionary-validator change (CR-19).
 
 ### 19.10 Other existing modules
 
@@ -1361,10 +1741,12 @@ Lane A imports it at integration time.
 |---|---|---|
 | SR-X1 | `packages/application/src/governed-execution.ts` | optional `admit?: (risk: RiskLevel) => AdmissionResult` on `GovernedExecutionInput`; default `admitRisk`; byte-identical behaviour when absent (R3) |
 | SR-X2 | `packages/domain/src/operational.ts` | attempt edges `COMMITTED → UNDER_REVIEW → PUSHED`, `UNDER_REVIEW → CHANGES_REQUESTED` (terminal), `UNDER_REVIEW → BLOCKED`; `COMMITTED → PUSHED` kept |
-| SR-X3 | package `index.ts` files of application, policy, observability, git-worktree, persistence | append-only export lines (R10) |
+| SR-X3 | package `index.ts` files of application, policy, observability, git-worktree, persistence | append-only export lines (R10); owners in §21.2. The policy and domain lines were appended early, in `040ee5e` and `723b3f4` (recorded in the review log) |
 | SR-X4 | `scripts/forbidden-imports.test.ts` (or its AST successor, R8) | no `@temporalio/*` in Lane B paths; no global `fetch`/`WebSocket` calls in domain/application; no `process.env` in `adapters/reviewer-*`; production entry points never import `assurance/drill`; each with a seeded self-check |
 | SR-X5 | `compose.yaml` | mount `deploy/grafana/provisioning` read-only into the Grafana service (R9) |
 | SR-X7 | `attempts` table (via Lane B's `0200` in `adapters/persistence/src/migrations.ts`) | add `attempts_id_task_scope_uq unique (id, task_id, organization_id, project_id)` so review rounds can prove attempt ∈ task at the DB; additive, no Phase 2 or Lane A column touched |
+| SR-X8 | `evals/tsconfig.json` | `include` += `review-corpus/**/*.ts` (S19 pure core: no new dependency edge, the corpus code imports only `node:` builtins); `include` += `review-benchmark/**/*.ts` and `references` += application and the reviewer adapters (S20 integration, after S0/S1) |
+| SR-X9 | `packages/policy/src/policy-source.ts` | `readPolicyFile(file): Buffer`, the raw bytes the review-policy loader hashes; `loadYaml` reads through it (behaviour unchanged). Landed early in `040ee5e` (recorded in the review log) |
 
 ### 19.11 Requests to the controller
 
@@ -1407,52 +1789,109 @@ Lane A's plan was read read-only from its committed tree at `80bb76a`; no path a
 
 Each slice: read its exit criteria → tests first where sensible → smallest change → slice gate (`pnpm verify:all`;
 plus `pnpm test:integration` when it adds or changes an itest) → review the diff → commit. "Pre-S0" slices touch
-only Lane B-owned paths. "After P2" means after the rebase onto accepted Phase 2. Every slice is independently
-revertible; a slice that adds a mutation-proof entry adds it in the same commit.
+only Lane B-owned paths, and since v3 only their **pure-core part** lands before S0 (§21.1). "After P2" means after
+the rebase onto accepted Phase 2. Every slice is independently revertible. Mutation-proof entries follow the owner
+rule of §21.2.
 
 | Slice | Deliverable | Acceptance checks (executable) | When | Commit |
 |---|---|---|---|---|
 | S1 | SR-C1/C2/C4/C6/C7/C8 | new fixtures accept/reject; compat gate classifies `architecture-invariant` as MINOR; `review-report/v1` and `finding/v1` schema and snapshot bytes unchanged (digest test); drift guard; templates validate | after S0 | `feat(contracts): add review record, finding, packet, adjudication and repair contracts` |
 | S2 | SR-P1/P3/P4 | typecheck; structural compile test for the deprecated port | after S0 | `feat(ports): add packet-only reviewer and review-source ports` |
-| S3 | `review-policy.yaml` + loader | YAML↔TS parity; unknown family fails closed; implementer-family reviewer rejected; comparator must differ from primary family; **loader rejects `gating`**; D-2 rule table (R1 + promoted → no human review required; R1 unpromoted → required; R2 promoted → still deferred); approval/verification matrices byte-unchanged | pre-S0 | `feat(policy): declare reviewer independence, egress classification and shadow-only modes as data` |
-| S4 | finding lifecycle + closure authority + review-round machine; SR-X2 | table-driven transitions; raiser cannot verify; model cannot waive/refute grounded HIGH/CRITICAL; waiver needs human + rationale + expiry; `closure-without-change` | domain file pre-S0; SR-X2 after S0 | `feat(domain): finding lifecycle with closure authority and review-round states` |
-| S5 | packet builder (incl. execution manifest), prompt renderer, independence checks | canaries in coder self-report never reach packet, prompt or request bytes; identical bytes across builds; nonce derivation; over-budget flagged, never cut; manifest carries command, exit code, environment digest, raw refs, scanned bounded excerpts | pre-S0 (fakes) | `feat(assurance): build an independent review packet with an execution manifest` |
-| S6 | push guard, egress decision, false-green checks, Trojan Source, dependency/invariant checks, SARIF | seeded violation per check; secret-pattern parity; each egress stop kind; seeded false-green cases (zero tests, added skip, exit-code mismatch, missing check) all caught | pre-S0 | `feat(assurance): deterministic push guard, egress decision and false-green checks` |
-| S7 | grounding, adjudication rule table, closure authority, repair order | every rule row × {gating, shadow}; shadow never yields REPAIR/ESCALATE; out-of-packet citations refuted; repair order bounded and anchored | pre-S0 | `feat(assurance): grounding, adjudication and closure authority` |
-| S8 | SR-M1/M3/M4, repositories, fenced decision writes, snapshot store | PGlite + real PG: migrations apply once and stay in range; tenant IDOR rejected; append-only and final-record triggers; shadow check constraint; disposition actor constraints; fence: new owner completes after handoff, old owner fenced, concurrent claim one winner | after P2 + S0 | `feat(persistence): persist review rounds, findings, dispositions and adjudications under fencing` |
+| S3 | `review-policy.yaml` + loader | YAML↔TS parity; unknown family fails closed; implementer-family reviewer rejected; comparator must differ from primary family; **loader rejects `gating`**; D-2 rule table (R1 + promoted → no human review required; R1 unpromoted → required; R2 promoted → still deferred); approval/verification matrices byte-unchanged | pure core pre-S0; integration after S0 (§21.1) | `feat(policy): declare reviewer independence, egress classification and shadow-only modes as data` |
+| S4 | finding lifecycle + closure authority + review-round machine; SR-X2 | table-driven transitions; raiser cannot verify; model cannot waive/refute grounded HIGH/CRITICAL; waiver needs human + rationale + expiry; `closure-without-change` | pure core (domain file) pre-S0; SR-X2 and integration after S0 (§21.1) | `feat(domain): finding lifecycle with closure authority and review-round states` |
+| S5 | packet builder (incl. execution manifest), prompt renderer, independence checks | canaries in coder self-report never reach packet, prompt or request bytes; identical bytes across builds; nonce derivation; over-budget flagged, never cut; manifest carries command, exit code, environment digest, raw refs, scanned bounded excerpts | pure core pre-S0 (frozen local DTOs); integration after S0/S1/S2 (§21.1) | `feat(assurance): build an independent review packet with an execution manifest` |
+| S6 | push guard, egress decision, false-green checks, Trojan Source, dependency/invariant checks, SARIF | seeded violation per check; secret-pattern parity; each egress stop kind; seeded false-green cases (zero tests, added skip, exit-code mismatch, missing check) all caught | pure core pre-S0; integration after S0/S1 (§21.1) | `feat(assurance): deterministic push guard, egress decision and false-green checks` |
+| S7 | grounding, adjudication rule table, closure authority, repair order | every rule row × {gating, shadow}; shadow never yields REPAIR/ESCALATE; out-of-packet citations refuted; repair order bounded and anchored | pure core pre-S0; integration after S0/S1 (§21.1) | `feat(assurance): grounding, adjudication and closure authority` |
+| S8 | SR-M1/M3/M4, repositories, fenced decision writes, snapshot store | PGlite + real PG: migrations apply once and stay in range; tenant IDOR rejected; append-only and final-record triggers; shadow check constraint; disposition actor constraints; `metric_snapshots` versions append-only; fence: new owner completes after handoff, old owner fenced, concurrent claim one winner | after P2 + S0 | `feat(persistence): persist review rounds, findings, dispositions and adjudications under fencing` |
 | S9 | `ReviewSourceReader` | real temp repos: exact range diff; binary/too-large/submodule/deleted/non-UTF-8 reported, never dropped; traversal rejected | after S0 | `feat(workspace): trusted range diffs and post-images for review` |
 | S10 | `adapters/reviewer-openai` + credential source + request-byte egress re-check | fake HTTP server rows for every adapter MUST; exact request body asserted; credential canary absent; rotation on 401; expiry refresh; no `process.env` in adapter source; gateway-alteration detection (returned `instructions` vs sent, usage attribution) recorded per call against a fake gateway that mimics the injection; opt-in probe of primary (`gpt-6.1-sol`) and comparator records the gateway's behaviour and confirms detection live | after S0 | `feat(reviewer): OpenAI-compatible Responses reviewer with an injected credential source` |
 | S11 | `adapters/reviewer-replay` | exact replay by request hash; miss and manifest mismatch fail closed; scripted provider marked fake | after S0 | `feat(reviewer): deterministic replay and scripted reviewers` |
-| S12 | step use cases `planAssurance`, `buildReviewPacket`, `runDeterministicChecks`, `runReviewer`, `adjudicateRound` (application, against fakes) | JSON round trip; zero provider calls on push-guard BLOCK and on every egress stop; crash at each step boundary converges; parallel reviewers blind | after S0 | `feat(assurance): idempotent assurance step use cases` |
-| S13 | `createAssuranceSlot` (composite, `recordAttemptOutcome`, `admitWithAssurance`, `buildRepairContextPack`, event emission); SR-X1 | conformance kit RLC-01…10 on PGlite; events per §15 with deterministic ids; `admitWithAssurance` equals `admitRisk` for production capability; governed-execution suite unchanged | after S0 | `feat(assurance): implement the review-loop slot and attempt-outcome events` |
+| S12 | step use cases `planAssurance`, `buildReviewPacket`, `runDeterministicChecks`, `runReviewer`, `adjudicateRound` (application, against fakes) | JSON round trip within the envelope; zero provider calls on push-guard BLOCK and on every egress stop; crash at each step boundary converges with byte-identical records (fixed logical time); the workspace comes only from the resolver and every refusal stops the step before any read (E13); resolver kit WRC-01…05 on the fake; parallel reviewers blind | after S0 | `feat(assurance): idempotent assurance step use cases` |
+| S13 | `createAssuranceSlot` (composite, `recordAttemptOutcome`, `admitWithAssurance`, `buildRepairContextPack`, event emission); SR-X1 | conformance kit RLC-01…13 on PGlite; events per §15 with deterministic ids; repair ContextPack by `ArtifactRef` with `generatedAt` from the REPAIR decision; `admitWithAssurance` equals `admitRisk` for production capability; governed-execution suite unchanged | after S0 | `feat(assurance): implement the review-loop slot and attempt-outcome events` |
 | S14 | `runAssuredTask` sequential driver + durable-shaped fake | shadow mode changes no workflow decision except BLOCK; drill gating loop bounded by `maxRounds`; activity-granular fake converges under retries, cancellation and a lease handoff | after S0 | `feat(assurance): sequential proof driver and activity-granular fake` |
 | S15 | `assurance-root.ts` + CLI (`asep assurance report`, disposition entry for humans) | fail-closed config; gating unreachable from production composition (policy with `gating` refused); credential source injected; disabled-reviewer literal | after S0 | `feat(control-plane): compose the independent reviewer behind a fail-closed root` |
 | S16 | **assurance-only** loop itest | real PG + Git + sandbox + real adapter vs local fake HTTP: shadow PROCEED with recorded wouldBe; push-guard BLOCK with zero gateway requests and zero forge calls; each egress stop with zero gateway requests; drill composition: REPAIR → re-review closed by the other reviewer → PROCEED, raiser-only closure → ESCALATE at max rounds; conformance kit on real PG | after P2 + S0 | `test(control-plane): assurance-only loop on real backends` |
-| S17 | metric evaluator + snapshot recompute (incl. `dedupeLatestBy`); SR-D1/D2, SR-X6 | golden values; a human accept then reject after the round changes the next snapshot each time; harness refutations excluded from yield; nulls carry reasons | after S0 | `feat(observability): evaluate dictionary metrics from events and human dispositions` |
+| S17 | metric evaluator + versioned snapshot recompute (incl. `dedupeLatestBy`, `cohortBy`); SR-D1/D2, SR-X6 | golden values; review day 1, accept day 2, reject day 3: the day-1 cohort gains a new snapshot version each time, earlier versions retained, day-2/day-3 windows unaffected; disposition latency per cohort; harness refutations excluded from yield; nulls carry reasons | after S0 | `feat(observability): evaluate dictionary metrics from events and human dispositions` |
 | S18 | Grafana provisioning + SR-T4 + SR-X5 | itest: Grafana `GET /api/health` ok; data source by uid loads; every dashboard by uid loads; every panel query via `POST /api/ds/query` returns the snapshot values the S16 run produced | after S0 | `feat(observability): provision assurance dashboards and load them in the integration gate` |
-| S19 | `evals/review-corpus` manifest + content-addressed excerpts + verifier | every claim verified (reachable SHAs against git; excerpt hashes; fix-commit subjects; review-doc lines); exclusions enumerated; no pre-rewrite ref created; excerpts pass publication gates; bundle mode verified when the controller supplies the path | pre-S0 | `feat(evals): content-addressed self-history defect corpus` |
-| S20 | protocol, preregistration file, matcher, scorer, baselines, injection and false-green suites, floor evaluation | rescoring is byte-identical; scorer refuses fake recordings and any `eligibleForPromotion` other than false for self-history; capture refuses a preregistration mismatch; Wilson intervals; suite `INVALID_CONTROL` state | pre-S0 | `feat(evals): pre-registered rediscovery protocol and deterministic scorer` |
+| S19 | `evals/review-corpus` manifest + content-addressed excerpts + verifier | every claim verified (reachable SHAs against git; excerpt hashes; fix-commit subjects; review-doc lines); exclusions enumerated; no pre-rewrite ref created; excerpts pass publication gates; bundle mode verified when the controller supplies the path | pure core (provenance, excerpts) pre-S0; freeze after §7.8 is confirmed; integration after S0 (§21.1) | `feat(evals): content-addressed self-history defect corpus` |
+| S20 | protocol, preregistration file, matcher, scorer, baselines, injection and false-green suites, floor evaluation | rescoring is byte-identical; scorer refuses fake recordings and any `eligibleForPromotion` other than false for self-history; capture refuses a preregistration mismatch; Wilson intervals; suite `INVALID_CONTROL` state; golden historical item (§7.8) | pure core after §7.8 is confirmed; integration after S0/S1 (§21.1) | `feat(evals): pre-registered rediscovery protocol and deterministic scorer` |
 | S21 | live capture (primary + comparator, k = 3 on reporting items), scorecards, `phase-04-report.md` | recordings and manifests committed; controller rescoring is byte-identical; report fields generated from scorecards and gate logs | after SR-G2/SR-G3 | `docs(phase-4): record descriptive reviewer measurement on self-history` |
 | S22 | real-coder shadow round | one real `CodingAgentProvider` attempt (accepted Phase 2 runtime) through a shadow round on real backends; evidence committed | **blocked** until the Phase 2 agent-runtime repair is accepted | `test(control-plane): real coder attempt through a shadow assurance round` |
-| S23 | SR-T3 proof check + mutation proofs | every MUST-mapped test passed per the JUnit manifest; each seeded mutation (data in `scripts/assurance-mutation-proofs.json`) turns its mapped test red in a temp copy; the unmutated control passes; a mutation whose search text does not match exactly once fails the suite | after S0 (runner change); entries accrue per slice | `test(assurance): proof manifest and seeded mutation proofs for key guards` |
+| S23 | SR-T3 proof check + mutation proofs | every MUST-mapped test passed per the JUnit manifests of the canonical and the integration runner; the live-reviewer policy test runs on every gate; each seeded mutation (data in `scripts/assurance-mutation-proofs.json`) turns its mapped test red in a temp copy; the unmutated control passes; a mutation whose search text does not match exactly once fails the suite | after S0 (both runners); entries per the owner rule of §21.2 | `test(assurance): proof manifest and seeded mutation proofs for key guards` |
 | S24 | runbook + executable rehearsal | 429 storm, 503, malformed outputs, cost budget exceeded, served-model drift, credential expiry/rotation, egress stop and reviewer disabled each reach the documented decision on real mechanisms | after S15 | `docs(phase-4): assurance runbook and executable fault rehearsal` |
+
+### 21.1 Pre-S0 staging: pure core and integration (P4-PLAN2-HIGH-001, R18)
+
+A slice's **pure core** touches only Lane B-owned paths (§20), imports only packages it already depends on, and
+types its boundary with the frozen stand-ins in `packages/application/src/assurance/local-types.ts` (copies of the
+S0 slot vocabulary, the S1 contract shapes and the S2 port shapes as this plan specifies them). Its **integration
+part** binds those stand-ins to the landed types, appends package exports and suite registrations, and wires
+build references; it lands after S0 (and S1/S2 where named). A slice counts as accepted only when both parts have
+landed and the integration part's checks pass.
+
+| Slice | Pure core (pre-S0) | Integration (after S0; S1/S2 where named) |
+|---|---|---|
+| S3 | `policies/review-policy.yaml`; `packages/policy/src/review.ts` loader, family resolution, independence, shadow-only validation, D-2 rule; tests — `040ee5e` | `packages/policy/src/index.ts` export lines, `policy-source.ts` `readPolicyFile` (SR-X9) and the `review-policy` suite id: **landed early in `040ee5e`**, kept (append-only lines, no forbidden surface; recorded in the review log); config-hash freeze for preregistration (S20) |
+| S4 | `packages/domain/src/assurance.ts`: lifecycle, closure authority, waivers, review-round and review-record machines; tests — `723b3f4` | `packages/domain/src/index.ts` export lines and the `finding-lifecycle` suite id: **landed early in `723b3f4`**, kept; SR-X2 attempt edges in `operational.ts`; `AttemptStatus` (S1); DB enforcement (S8) |
+| S5 | canonical JSON, execution manifest (test-summary parsers, excerpt tails), whitelist packet builder, prompt renderer over local DTOs — `f6ca91d` | replace the packet, finding, blob and slot stand-ins in `local-types.ts` with `review-packet/v1`, `review-finding/v1` (S1), `ReviewBlob` (S2) and the S0 slot types, proven by a type-level assignability check and a fixture round trip through the S1 validator; the packet step reads through `ReviewSourceReader` with a workspace from `AssuranceWorkspaceResolver` (S12); suite ids **landed early** |
+| S6 | secret patterns, diff parser, push guard, egress decision and `sendIfCleared`, false-green, Trojan Source, dependency and invariant checks, SARIF — `7bcec5e`; plus the **check report** (canonical bytes, sha256, structural parser, summary counts) | bind invariant checks to `architecture-invariant` 1.1.0 (S1); SR-X4 fitness rules on the accepted Phase 2 AST framework (R8); persistence of the check report and zero-request proofs on the composed path (S12, S16); suite ids **landed early** |
+| S7 | grounding, the A1–A11 rule table, closure decisions, repair order — `b2096d3`; plus the fence field `fencingEpoch` and waiver expiry at the round's opening time (§11) | bind records to `adjudication-record/v1`, `repair-order/v1`, `review-finding/v1` (S1); dispositions and DB closure constraints (S8); drill loop proof (S16); suite ids **landed early** |
+| S19 | provenance collection from the review documents and git (finding ids, document lines, derived reviewed SHAs, fix commits, reachability) and content-addressed excerpts with hash verification; provenance-level exclusions only (§7.5, §7.8) | packet-dependent eligibility, `corpusSha256` freeze and manifest after §7.8 is confirmed; bundle mode when the controller supplies the path; `review-corpus` suite id |
+| S20 | after §7.8 is confirmed: matcher, category table, post-fix mapping, Wilson intervals, floors, the corpus `execution: null` (`NOT_RECORDED`) builder variant, golden item | scorer through the runtime grounding and packet code; `evals/tsconfig.json` include + references and `evals/package.json` deps (SR-X8, lockfile workspace links); preregistration (SR-G3); suite ids |
+
+Work that landed early in the pure-core commits and is, by this staging, integration work: the `policy` and
+`domain` index export lines (`040ee5e`, `723b3f4`), `readPolicyFile` in `policy-source.ts` (`040ee5e`) and nine
+`REQUIRED_SUITES` ids (`040ee5e`…`b2096d3`). None touches a surface the lane contract forbids, all are append-only,
+and none is reverted; the review log records them. From v3 on, a new pure-core test file lands unregistered (the
+canonical runner discovers and runs every `*.test.ts` under `TEST_ROOTS`, `scripts/lib/canonical-tests.mjs:26-33`)
+and its slice's integration part registers it.
+
+### 21.2 Owners of shared Lane B files
+
+| File | Owner | Rule |
+|---|---|---|
+| `packages/application/src/assurance/local-types.ts` | S5 (created); S6 and S7 add | frozen copies of this plan's shapes; never edited to diverge; each stand-in is deleted by the integration part that binds the real type |
+| `packages/application/src/assurance/ports.ts` (application-local repository ports, architecture §6) | S12 creates (after S2) | S13 and S17 append; every write method takes `AssuranceFence` |
+| contract schema files, fixtures and `snapshots/v1` entries for the five new contracts and `architecture-invariant` 1.1.0 | S1 | later changes need a new MINOR and the compat gate |
+| the internal check report | S6 (`check-report.ts`) | a TypeScript structural parser plus its sha256; no JSON Schema file and no new dependency (data model §2.8) |
+| package `index.ts` export lines | application: S13; policy: S3; domain: S4; observability: S17; git-worktree: S9; persistence: S8 | append-only (R10) |
+| `REQUIRED_SUITES` | each slice's integration part, for its own suite ids (the S3–S7 ids landed early) | append-only (R10) |
+| `REQUIRED_ITEST_SUITES` | S8, S16, S18 (S22) | append-only |
+| `evals/tsconfig.json` | `include` `review-corpus/**`: S19 pure core; `include` `review-benchmark/**` and `references`: S20 integration | append-only |
+| `evals/package.json` dependencies and scripts | S20 integration | after S0 (lockfile workspace links) |
+| root `tsconfig.json` references for the new adapter packages | S10, S11 | after S0 |
+| `scripts/assurance-mutation-proofs.json` and its suite | S23 creates both, after S0 | pre-S0 slices record their seeded mutations in their commit reports and S23 transcribes them; later slices append one entry per † row in their own commit |
+| `scripts/lib/proof-manifest.mjs` (both runners' proof check) | S23 | generic; Lane A may register its own check |
 
 ---
 
 ## 22. Task DAG
 
+`c` = pure core (pre-S0, Lane B paths only), `i` = integration part (§21.1). An edge `X → Y` means Y needs X.
+
 ```text
-S0 (Lane A) ─┬─> S1 ─> S2 ─┬─> S9 ──┐
-             │             ├─> S10 ─┼─> S12 ─> S13 ─> S14 ─> S15 ─> S16 ─┬─> S18
-             │             └─> S11 ─┤                                    ├─> S17 ─> S18
-S3, S4, S5, S6, S7 (pre-S0) ────────┘                                    └─> S24
-Phase 2 accepted ─> S8 ─> S13
-S19 ─> S20 ─> S21 <─ S10 + S11 (+ SR-G2, SR-G3)
-Phase 2 agent runtime ─> S22 <─ S16
-S23 runner change after S0; mutation entries accrue with S5–S20; the suite closes after S21
+Pure core, before S0:
+  S3c ──> S5c ──> S6c ──> S7c ──> S20c          policy → packet/checks → adjudication; runtime grounding → scorer
+   └─────────────> S6c                          checks read the policy's egress and deny rules
+  S4c ──────────────────> S7c                   closure authority
+  S19c (provenance, excerpts) ─> S19 freeze ─> S20c       (both only after §7.8 is confirmed)
+  S5c ──────────────────────────> S19 freeze             eligibility needs the packet builder
+
+Integration, after S0:
+  S0 ─> S1 ─> S2
+  S1 ─> S3i, S4i, S6i, S7i                       bind the stand-ins to the landed contracts
+  S1 + S2 ─> S5i                                 packet DTOs, ReviewBlob, WorkspaceCapability
+  S2 ─> S9, S10, S11
+  S5i + S6i + S7i + S9 + S10 + S11 ─> S12 ─> S13 ─> S14 ─> S15 ─> S16
+  Phase 2 accepted ─> S8 ─> S13
+  S16 ─> S17 ─> S18;  S16 ─> S18;  S15 + S16 ─> S24
+  S20c + S1 + S5i + S7i ─> S20i ─> S21 <─ S10 + S11 (+ SR-G2, SR-G3)
+  Phase 2 agent runtime + S16 ─> S22
+  S0 ─> S23 (both runners); mutation entries per §21.2; the suite closes after S21
 ```
 
-Acyclic. S19/S20 depend on no persistence.
+Acyclic. S19/S20 depend on no persistence. The scorer reuses the runtime grounding (S7) and packet builder (S5)
+rather than a copy, which is why S20's integration part follows S5i and S7i.
 
 ---
 
@@ -1479,7 +1918,8 @@ evidence in review records)`. A verdict block without it fails exit I9.
 ## 24. Rollback
 
 Per-slice commits on the lane branch; `main` untouched until the controller merges. The slot is inert until Lane A
-wires it (the disabled slot reproduces Phase 2). Production mode is shadow, so reverting a Lane B slice restores
+wires Lane B's implementation (Lane A's not-configured default and Lane B's literal opt-out both keep Phase 2
+behaviour). Production mode is shadow, so reverting a Lane B slice restores
 Phase 2 behaviour. Migrations are forward-only; the documented rollback for each is a forward compensating
 migration (data model §3.6).
 
@@ -1494,6 +1934,7 @@ migration (data model §3.6).
    `…MEASUREMENT_PENDING…`. Neither `gpt-6.1-sol` nor the comparator has been probed by the lane (not verified); the gateway's request alteration is verified by the controller (U-3).
 4. **Phase 2 agent-runtime repair**: S22. Without it the verdict carries `ASSURANCE_ONLY_LOOP`.
 5. **Pilot repository**: DF-6 only.
+6. **Controller confirmation of v3**: the S19 freeze and every S20 part wait for it (§7.8, R18).
 
 None blocks plan lock.
 
@@ -1502,9 +1943,10 @@ None blocks plan lock.
 ## Output
 
 ```text
-PLAN_STATUS: LOCKED v2 (confirmed for pre-S0 slices S3–S7; controller-approved amendment 2026-10-29)
+PLAN_STATUS: LOCKED v3 (pending controller confirmation)
 BASE_SHA: 00a68895d205122767167942326e2e0466571059 (Phase 2 not accepted)
 REVIEWED_V1: a2a7b8ad09a5389339fc3ef7131ae7b2b294d97f — Codex REQUEST_CHANGES 0.99 (1 CRITICAL, 8 HIGH, 5 MEDIUM, 1 LOW), all dispositioned
+REVIEWED_V2: 32013356e0845354f40ac6f63925f928637d6fb3 — Codex gpt-6.1-sol lock-check REQUEST_CHANGES 0.97 (14/15 v1 folded, v1 MED-001 partial; new 2 HIGH, 8 MEDIUM), all dispositioned
 BASELINE: lane-observed at a2a7b8a — verify:all exit 0; tests 548 pass 548; 50 files; 28 required suites; compat 13 schemas
 PLAN_FILES:
   - docs/implementation/phases/phase-04-plan.md
@@ -1516,8 +1958,10 @@ PLAN_FILES:
   - docs/implementation/phases/phase-04-threat-model-delta.md
   - docs/implementation/phases/phase-04-review-log.md
   - docs/implementation/phases/phase-04-plan-review-codex-v1.md
+  - docs/implementation/phases/phase-04-plan-review-codex-v2.md
 NEW_THIRD_PARTY_DEPENDENCIES: none
 GATING: shadow only in Phase 4 (user decision); gating/promotion/thresholds/R2 admission deferred
-SHARED_SURFACE_REQUESTS: §19 (S0 4, ports 3, contracts 6 (+ SR-C3 withdrawn, SR-C5 moved to S0), migrations 3 (+ 0201_run_events withdrawn), fencing CR-F1, gates 4, dictionary 2 + loader, other 6, controller 3)
-READY_FOR_IMPLEMENTATION: pre-S0 slices S3, S4 (domain file), S5, S6, S7 released; the rest after Phase 2 acceptance, Lane A S0 and per-step controller release
+SLOT_BLOCK: v3 (R18, R19), type-checked against the real built @asep/contracts, @asep/ports and AdmissionResult; hand-off to Lane A after controller confirmation
+SHARED_SURFACE_REQUESTS: §19 (S0 4, ports 3, contracts 6 (+ SR-C3 withdrawn, SR-C5 moved to S0), migrations 3 (+ 0201_run_events withdrawn), fencing CR-F1, gates 4 (both runners), dictionary 2 + loader, other 8, controller 3)
+READY_FOR_IMPLEMENTATION: pure-core parts of S3–S7 and S19 (provenance and excerpts) per §21.1; S19 freeze and S20 after v3 confirmation; integration parts after Phase 2 acceptance, Lane A S0 and per-step controller release
 ```

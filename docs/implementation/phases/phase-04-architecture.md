@@ -1,6 +1,6 @@
-# Phase 4 — Architecture (LOCKED v2)
+# Phase 4 — Architecture (LOCKED v3, pending controller confirmation)
 
-> Companion to `phase-04-plan.md`. Base `00a6889`; v1 reviewed at `a2a7b8a`. Thesis unchanged from the ADRs: an
+> Companion to `phase-04-plan.md`. Base `00a6889`; v1 reviewed at `a2a7b8a`; v2 lock-checked at `3201335`. Thesis unchanged from the ADRs: an
 > agent cannot approve its own work (README thesis 3), every framework sits behind a port (ADR 0005),
 > deterministic evidence is stronger than model review (ADR 0010), raw evidence is captured before any reduction
 > (ADR 0009), humans own high-risk decisions (ADR 0014). v2 changes are driven by the Codex plan review and the
@@ -80,7 +80,7 @@ All arrows are ports or pure calls. No step imports `pg`, an HTTP client, the Te
 ## 4. Layering and fitness rules
 
 ```text
-packages/application/src/review-loop   (S0) → contracts, ../risk-admission (types only)
+packages/application/src/review-loop   (S0) → contracts, ports (WorkspaceCapability), ../risk-admission (types only)
 packages/application/src/assurance       → contracts, domain, policy, ports, observability, review-loop
 packages/policy/src/review.ts            → contracts (+ yaml loader already used by @asep/policy)
 packages/domain/src/assurance.ts         → contracts
@@ -214,12 +214,14 @@ export interface ReviewSourceReader {
 export interface ReviewProvider { /* unchanged */ }
 ```
 
-`RunEventSink` and `RunEventConflictError` are S0 items (plan §18.4). Application-local repository ports (Lane B,
-`packages/application/src/assurance/ports.ts`, following the structural pattern of
-`packages/application/src/registration.ts`): `ReviewRoundStore`, `ReviewRecordStore`, `FindingStore`,
-`DispositionStore`, `AdjudicationStore`, `ReviewCallClaims` (the Phase 2 fenced primitive seen through CR-F1),
-`RunEventReader`, `MetricSnapshotStore`. Every write method takes the `AssuranceFence` and performs the fence check
-in its own transaction (plan §16 I5).
+`RunEventSink` and `RunEventConflictError` are S0 items (plan §18.4). The workspace seam
+`AssuranceWorkspaceResolver` is part of the S0 slot block (plan §18, §16 I6), because Lane A implements it over the
+lease table; Lane B's steps receive it in `deps`. Application-local repository ports (Lane B,
+`packages/application/src/assurance/ports.ts`, created by S12 after S2 and appended by S13 and S17, following the
+structural pattern of `packages/application/src/registration.ts`): `ReviewRoundStore`, `ReviewRecordStore`,
+`FindingStore`, `DispositionStore`, `AdjudicationStore`, `ReviewCallClaims` (the Phase 2 fenced primitive seen
+through CR-F1), `RunEventReader`, `MetricSnapshotStore`. Every write method takes the `AssuranceFence` and performs
+the fence check in its own transaction (plan §16 I5).
 
 Adapter-local (not a shared port), `adapters/reviewer-openai/src/credential.ts`:
 
@@ -242,10 +244,22 @@ The complete slot contract is plan §18 ("Review-loop slot contract (verbatim fo
 by `assurance-root.ts` (production) or by tests and `assurance/drill/**` (drill). Step implementations live in
 `packages/application/src/assurance/steps/*.ts` with the signatures of the slot methods.
 
-**Identifiers** (all input-derived, so an activity retry converges): `packetSha256` from canonical bytes;
+**Identifiers** (all input-derived, so an activity retry converges; content-addressed artifacts carry no timestamp,
+plan §11): `packetSha256` from canonical bytes;
 `reviewId = sha256(attemptId|round|reviewerConfigId|packetSha256)`; `adjudicationId =
 sha256(roundKey|policyVersion|packetSha256|checkReportSha256|sorted reviewRecordSha256s)`; event ids
 `${attemptId}:${eventType}[:${reviewerConfigId}|:${findingId}:${dispositionId}]`.
+
+**Packet step** (plan §16 I6):
+
+```text
+buildReviewPacket(input, ctx):
+  0. resolver.resolve(scope, { attemptId, leaseId: fence.leaseId, fencingEpoch: fence.fencingEpoch })
+       refused not-in-scope        → ReviewLoopContractError, no read
+       refused (any other reason)  → AssuranceFencedError, no read
+  1. read evidence + WorkOrder by ref; range diffs and post-images through ReviewSourceReader with that workspace
+  2. build the canonical packet (budget, omissions inside it); persist; return { packetRef, packetSha256, overBudget, omittedFiles }
+```
 
 **Reviewer call protocol** (plan §16):
 
@@ -263,7 +277,8 @@ runReviewer(input, ctx):
   6. validate + ground; write the review record and findings with a fence check in the same transaction
 ```
 
-**Durable-engine compatibility.** Inputs/outputs are plain JSON; `AbortSignal`, clock and heartbeat live in
+**Durable-engine compatibility.** Inputs/outputs are plain JSON within the 64 KiB envelope
+(`assertWithinReviewLoopEnvelope` on every input before any state change and on every output); `AbortSignal`, clock and heartbeat live in
 `AssuranceStepContext`; dependencies live in the closure of `createAssuranceSlot`. PostgreSQL rows are the
 operational projection; the orchestrator holds orchestration authority. `ctx.now()` is one fixed logical time per
 activity execution, identical on every retry (R15); steps take every timestamp from it and never read the wall
@@ -370,6 +385,8 @@ deleted lines) except for `SPEC`/`EVIDENCE_INTEGRITY`, which may cite a packet `
 non-empty `evidence`/`requiredFix` above minimum lengths. Failure → `grounded: false`, disposition
 `REJECTED_WITH_EVIDENCE` by `harness-rule:citation-unresolvable` (excluded from yield metrics).
 
+Waiver expiry is evaluated at the round's opening time, never at the adjudicating execution's `now()` (plan §11).
+
 **Closure authority** (plan §13), evaluated per prior blocking finding `F` raised by `R(F)`:
 
 ```text
@@ -388,8 +405,9 @@ else                                                                       uncha
 ```text
 corpus manifest + content-addressed excerpts (frozen, hashed)
         │
-        ├─> packet reconstruction from excerpts (same packet builder + prompt renderer as runtime)
-        │        rule P (first occurrence, fresh), rule C (residual, re-review), post-fix negatives
+        ├─> packet reconstruction from excerpts (same packet builder + prompt renderer as runtime), plan §7.8:
+        │        per cycle, label-independent chunks; leakage filter + ID masking; synthetic fields recorded
+        │        rule P (first occurrence, fresh), rule C (residual, re-review), post-fix negatives at R_{c+1}
         ▼
 preregistration.json (controller-approved: protocol, floors, matcher, corpus hash, both config hashes)
         │
@@ -397,12 +415,14 @@ preregistration.json (controller-approved: protocol, floors, matcher, corpus has
 CAPTURE (live, opt-in, network): primary + comparator, k = 3 on reporting items → recorded observations
         │ committed under evals/review-benchmark/recorded/<runId>/ + sha256 manifest
         ▼
-SCORE (offline, deterministic, no model): validate → ground → match to gold → metrics + Wilson CIs + floors
+SCORE (offline, deterministic, no model): validate → ground → match to gold (strict/lenient, one-to-one, category
+        table corpus-categories/v1, post-fix location mapping) → metrics + Wilson CIs + floors
         ▼
 scorecard JSON (sorted keys): scope=self-history, eligibleForPromotion=false, all hashes, floorsMet per floor
 ```
 
-The scorer reuses the runtime validation and grounding code, so the benchmark measures the production path.
+The scorer reuses the runtime validation and grounding code, so the benchmark measures the production path; the
+golden historical item (plan §7.8) pins packet, prompt and match results on both sides.
 Scoring can run under the trusted deterministic bootstrap (network denied, ADR 0016) to prove it is offline.
 
 ## 13. Metrics and dashboards
@@ -410,14 +430,17 @@ Scoring can run under the trusted deterministic bootstrap (network denied, ADR 0
 ```text
 slot steps ──RunEventSink──> run_events (Lane A 0107, append-only)
                                    │
-            metric evaluator (dictionary-driven; dedupeLatestBy for dispositions; privacy-class aware)
+            metric evaluator (dictionary-driven; dedupeLatestBy + cohortBy for dispositions; privacy-class aware)
                                    │
-                   metric_snapshots (idempotent recompute) ──> Grafana panels (read snapshots only)
+                   metric_snapshots (append-only versions; unchanged recompute writes nothing)
+                                   └──> metric_snapshots_latest view ──> Grafana panels (latest version only)
                                    │
                          CLI report (asep assurance report)
 ```
 
-The evaluator is the single place formulas are implemented. A telemetry-completeness check (terminal attempts in
+The evaluator is the single place formulas are implemented. A disposition counts in the cohort of the round it
+disposes (`cohortBy: reviewRoundCompletedAt`), so a late disposition recomputes that cohort's snapshots and appends
+new versions (plan §15). A telemetry-completeness check (terminal attempts in
 operational tables vs emitted `attempt.completed`) runs alongside; its operands are table rows, so it is not a
 dictionary metric. The integration gate loads the provisioning into a digest-pinned Grafana and checks it through
 `GET /api/health`, `GET /api/datasources/uid/:uid`, the dashboard endpoints and `POST /api/ds/query` (research

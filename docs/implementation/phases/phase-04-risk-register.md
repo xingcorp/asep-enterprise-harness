@@ -1,6 +1,7 @@
-# Phase 4 — Risk Register (LOCKED v2)
+# Phase 4 — Risk Register (LOCKED v3, pending controller confirmation)
 
-> Delivery, design and measurement risks for independent assurance. Base `00a6889`; v1 reviewed at `a2a7b8a`.
+> Delivery, design and measurement risks for independent assurance. Base `00a6889`; v1 reviewed at `a2a7b8a`; v2
+> lock-checked at `3201335` (v3 adds PR4-32…PR4-36 and amends PR4-07, PR4-28).
 > Severity = impact × likelihood. v2 adds the risks surfaced by the Codex plan review and the reconciliation, and
 > retires the promotion risks with the deferral of promotion.
 
@@ -12,7 +13,7 @@
 | PR4-04 | **Small n** read as precise numbers | HIGH | n + Wilson 95% interval everywhere; n < 20 descriptive-only (D-7); no difference claimed on overlapping intervals | Exit I6 |
 | PR4-05 | **Label errors** (transcription, merged IDs, second-hand Phase 1 labels, AI-controller paraphrase) | MED | Git-verified claims; `labelQuality`, `labelSource` incl. `controller-ai-paraphrase`; first-occurrence vs residual reported separately; blind human relabel available as DF-8 | Exit I10 |
 | PR4-06 | **Corpus irreproducible**: pre-rewrite reviewed trees are unreachable and must not be tagged (R12) | HIGH | Content-addressed excerpts in the corpus; verifier in bundle mode when the controller supplies the private bundle path; plan states plainly that full re-derivation needs that bundle | Verifier reports items without a verifiable source |
-| PR4-07 | **Green gate that does not exercise the MUSTs** (Phase 2 lesson) | HIGH | Coverage guard + JUnit proof manifest (passed, not skipped) + seeded mutation proofs for key guards | Exit L3, L4 |
+| PR4-07 | **Green gate that does not exercise the MUSTs** (Phase 2 lesson) | HIGH | Coverage guard + JUnit proof manifest over **both** the canonical and the integration runner (passed, not skipped) + seeded mutation proofs for key guards; optional live behaviour is a policy test, never a runner skip | Exit L3, L4, G8 |
 | PR4-08 | **Faked backends where real ones are required** | HIGH | Real PG + Git + sandbox itests; reviewer faked only at HTTP behind the real adapter and composition; measurement only from live recordings; real-coder loop is its own MUST | Exit E10, I7, N1 |
 | PR4-09 | **Dashboards as vocabulary only** | HIGH | Emission inside the slot; evaluator itest from real emitted events; digest-pinned Grafana loads and queries the provisioning in the integration gate | Exit J4, J5 |
 | PR4-10 | **False completion of the phase itself** | HIGH | Report fields from machine sources; "not verified" vocabulary; sentinel binds HEAD | Controller reruns gates |
@@ -33,10 +34,15 @@
 | PR4-25 | **Recordings or excerpts trip publication gates** (secret- or PII-like strings, credential-shaped fixture in pre-rewrite trees, > 500 KiB) | MED | One file per item/run; scanners run on all committed files; unpublishable content excluded with reason, never allowlisted | `verify:all` scans; exit I10 |
 | PR4-26 | **Comparator not served over the Responses API** (or without strict structured outputs) through the gateway | MED | S10 probe; fallback order `qwen3.8-max` → `grok-4.6`, recorded in the review log; if none works, controller decides on a chat-completions mode or a capped verdict | Exit I1 unmet |
 | PR4-27 | **Real coder unavailable**: the agent runs `--network none` without a model credential (`pilot-main.ts:156`, `claude-provider.ts:131-142`) | HIGH | Full-loop MUST N1 separated and blocked on the Phase 2 agent-runtime repair; verdict carries `ASSURANCE_ONLY_LOOP` until then | S22 stays blocked |
-| PR4-28 | **Late human dispositions ignored by metrics** (P4-PLAN-HIGH-004) | MED | `review.finding_dispositioned` + `dedupeLatestBy`; snapshot recompute; test that accept-then-reject changes snapshots | Exit H6 |
+| PR4-28 | **Late human dispositions ignored by metrics, or counted in the wrong window** (P4-PLAN-HIGH-004, P4-PLAN2-MED-006) | MED | `review.finding_dispositioned` + `dedupeLatestBy` + `cohortBy: reviewRoundCompletedAt`: a disposition counts in the cohort of the round it disposes; recompute appends a snapshot version, earlier versions retained; latency reported | Exit H6, H7 |
 | PR4-29 | **Mutation proofs flaky or slow** (temporary tree copies, symlinked `node_modules`) | LOW | ≤ 12 mutations, each running one test file; exact-match search text; control run; failure messages name the mutation | Suite runtime tracked in the gate log |
 | PR4-30 | **Gateway alters prompts in transit — verified by the controller**: the kiro-proxy gateway appends ~330 tokens of terse-style instructions and attributes ~300 tokens of tools to every request, on both endpoints, so what the model is served is not what the harness sent | HIGH | Recorded request bytes are only what the harness sent; per-call detection (returned `instructions` vs sent, `usage` attribution) recorded as `gatewayAlteration` with the appended block as an artifact; replay and independence claims bounded to "via this gateway"; scorecards carry the gateway block; every verdict carries `MEASURED_VIA` | Probe or call shows an unrecorded alteration, or a report omits `MEASURED_VIA` → exit G10 / I9 fails |
 | PR4-31 | **Drill-only repair loop rots** because production never exercises it | LOW | Conformance kit and drill itest run in every gate; residual-instance corpus items exercise re-review packets | Exit E10, E12 |
+| PR4-32 | **Pre-S0 pure core drifts from the contracts and ports S1/S2 land** (it is built on frozen local stand-ins) | MED | Stand-ins in `local-types.ts` copy this plan's shapes and are never edited to diverge; each slice's integration part replaces them with the landed types behind a type-level assignability check and a fixture round trip; a slice is accepted only when both parts have landed (plan §21.1) | Assignability check or fixture round trip fails at the rebase |
+| PR4-33 | **Corpus packets differ from runtime packets** (no execution evidence, empty WorkOrder lists, per-cycle chunks), so gate-config and test-adequacy defects are under-represented | MED | Synthetic fields recorded per item and in the protocol hash; per-defect-class reporting; the prompt and scorecard state `NOT_RECORDED`; the golden item pins the recipe on both sides (plan §7.8) | Scorecard without the synthetic record; exit I12 |
+| PR4-34 | **A step reads content through a foreign or superseded workspace** (wrong tenant, taken-over lease, stale epoch) | MED | `AssuranceWorkspaceResolver` in the S0 block checks tenant, `ACTIVE`, holder and epoch; every refusal stops the step before any read; no workspace from activity-local memory; resolver kit on both lanes | Exit E13 |
+| PR4-35 | **Snapshot versions grow without bound** under frequent recompute | LOW | An unchanged recompute writes nothing (the version trigger rejects a repeat); versions are added only when a value changes | Version count per key in the evaluator log |
+| PR4-36 | **Integration lines landed early** (policy/domain exports, `readPolicyFile`, nine suite ids) conflict at merge | LOW | Append-only lines in files the reconciliation unions at merge (R10); recorded in the review log | Merge conflict on those lines |
 
 Retired from v1: promotion forgery/expiry risks (promotion deferred, DF-2); per-major compat-gate gap (D-1 = b,
 SR-C3 withdrawn); Grafana-not-exercised (D-6 = yes).
@@ -52,6 +58,6 @@ SR-C3 withdrawn); Grafana-not-exercised (D-6 = yes).
 
 ## Rollback
 
-Per-slice commits on `phase/04-independent-assurance`; `main` untouched until the controller merges. The disabled
-slot reproduces Phase 2; production mode is shadow; reverting any Lane B slice restores Phase 2 behaviour.
+Per-slice commits on `phase/04-independent-assurance`; `main` untouched until the controller merges. Lane A's
+not-configured default and the disabled opt-out keep Phase 2 behaviour; production mode is shadow; reverting any Lane B slice restores Phase 2 behaviour.
 Migrations are forward-only; data model §3.6 holds the compensating SQL.
