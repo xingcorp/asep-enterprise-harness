@@ -2,10 +2,11 @@
 //
 // Runs scripts/lib/ts-guard.mjs over the real repository — which must be
 // clean — and over fixtures that try each evasion a regex misses: an alias, a
-// constant-folded computed property name, an object spread, and the rest of
-// the shapes the guard closes. Fixtures are VIRTUAL files placed inside a real
-// project (apps/control-plane-api), so they type-check against the real
-// @asep/ports and @asep/command-runner types and nothing touches the disk.
+// constant-folded computed property name, an object spread, a persistence
+// repository reached under any name, and the rest of the shapes the guard
+// closes. Fixtures are VIRTUAL files placed inside a real project
+// (apps/control-plane-api, a composition root), so they type-check against the
+// real @asep/* types and nothing touches the disk.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -13,7 +14,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 // @ts-expect-error — .mjs helpers have no type declarations; we test their runtime contract.
-import { runGuard, isShippedSource, CLAIM_ALLOWED_FILES } from './lib/ts-guard.mjs';
+import { runGuard, isShippedSource, isCompositionRoot, CLAIM_ALLOWED_FILES } from './lib/ts-guard.mjs';
 
 console.log('SUITE-ID: asep-suite:ts-guard');
 
@@ -200,6 +201,95 @@ export async function use(p: SandboxProvider, run: (h: SandboxHandle) => Promise
   await p.stop(h);
 }
 export const unrelated = { profile: 'verification-no-network', ['sandbox' + 'Id']: 'x' };
+`,
+  }, 'isolation-claim');
+  assert.deepEqual(v, []);
+});
+
+// --- persistence calls in composition roots ---------------------------------------
+
+test('composition-root selection covers apps and workers shipped source only', () => {
+  assert.equal(isCompositionRoot('apps/control-plane-api/src/principal-resolver.ts'), true);
+  assert.equal(isCompositionRoot('workers/workflow-worker/src/main.ts'), true);
+  assert.equal(isCompositionRoot('apps/control-plane-api/src/control-plane.test.ts'), false);
+  assert.equal(isCompositionRoot('packages/application/src/registration.ts'), false);
+  assert.equal(isCompositionRoot('adapters/persistence/src/repositories.ts'), false);
+});
+
+test('a root that calls the persistence adapter is caught whatever the value is called', () => {
+  const v = check({
+    'guard-fixture-persistence.ts': `import { ProjectRepository, PgliteClient, PgPoolClient, ulid } from '@asep/persistence';
+import type { OrganizationId, ProjectId } from '@asep/contracts';
+export async function viaAnyName(projects: ProjectRepository, o: OrganizationId, p: ProjectId) {
+  return projects.belongsToOrg(o, p);
+}
+export async function shapes(x: ProjectRepository, o: OrganizationId, p: ProjectId) {
+  const { belongsToOrg } = x;
+  await belongsToOrg(o, p);
+  await x.belongsToOrg.call(x, o, p);
+  await x.belongsToOrg.apply(x, [o, p]);
+  await x.belongsToOrg.bind(x)(o, p);
+  await x['belongsToOrg'](o, p);
+  const later = x.belongsToOrg.bind(x);
+  await later(o, p);
+  await (x as ProjectRepository).belongsToOrg(o, p);
+}
+export const minted = ulid();
+export async function deep(db: PgliteClient) {
+  return db.query('select 1', []);
+}
+export async function either(db: PgliteClient | PgPoolClient) {
+  return db.query('select 1', []);
+}
+`,
+  }, 'persistence-call-in-root');
+  const expected: Record<number, string> = {
+    4: 'a repository named without a Repo suffix', 8: 'a destructured method', 9: '.call', 10: '.apply',
+    11: '.bind(...)()', 12: 'an element access', 13: 'the bind itself', 14: 'a bound method called later',
+    15: 'through a cast', 17: 'an imported persistence function', 19: 'a raw query on the client',
+    22: 'a method of a union of adapters',
+  };
+  const lines = new Set(v.map((x) => x.line));
+  for (const [line, what] of Object.entries(expected)) {
+    assert.ok(lines.has(Number(line)), `${what} (line ${line}) must be flagged: ${JSON.stringify(v)}`);
+  }
+});
+
+test('a persistence value retyped as a port is still caught when a root drives it', () => {
+  const v = check({
+    'guard-fixture-port.ts': `import { ProjectRepository, PgliteClient } from '@asep/persistence';
+import type { ProjectMembershipPort } from '@asep/application';
+import type { ArtifactStore, ArtifactRef } from '@asep/ports';
+import type { OrganizationId, ProjectId, TenantScope } from '@asep/contracts';
+export async function laundered(db: PgliteClient, o: OrganizationId, p: ProjectId) {
+  const projects: ProjectMembershipPort = new ProjectRepository(db);
+  await projects.belongsToOrg(o, p);
+  const { belongsToOrg } = projects;
+  await belongsToOrg(o, p);
+}
+export async function viaPortsPackage(store: ArtifactStore, scope: TenantScope, ref: ArtifactRef) {
+  return store.verify(scope, ref);
+}
+`,
+  }, 'port-call-in-root');
+  const lines = new Set(v.map((x) => x.line));
+  for (const line of [7, 9, 12]) {
+    assert.ok(lines.has(line), `line ${line} must be flagged: ${JSON.stringify(v)}`);
+  }
+});
+
+test('a root may construct, open, migrate and ping persistence, and hand it to a use case', () => {
+  const v = check({
+    'guard-fixture-persistence-wiring.ts': `import { ProjectRepository, PgliteClient, migrate } from '@asep/persistence';
+import { projectBelongsToOrganization } from '@asep/application';
+import type { OrganizationId, ProjectId } from '@asep/contracts';
+export async function wire(o: OrganizationId, p: ProjectId): Promise<boolean> {
+  const db = await PgliteClient.create();
+  await migrate(db);
+  await db.ping();
+  const projects = new ProjectRepository(db);
+  return projectBelongsToOrganization(projects, { organizationId: o, projectId: p });
+}
 `,
   });
   assert.deepEqual(v, []);

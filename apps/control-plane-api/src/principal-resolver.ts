@@ -11,12 +11,13 @@
 // this for an OIDC/JWT validator reading the org claim; the invariant is the
 // same — scope is derived from a verified credential, not a typed-in header.
 //
-// Composition-root discipline (arch guard): this file authors NO raw SQL. The
-// membership check delegates to ProjectRepository.belongsToOrg — the query
-// lives behind the persistence seam where it belongs.
+// Composition-root discipline (arch guard): this file neither authors SQL nor
+// invokes the persistence adapter. The membership check is the application use
+// case projectBelongsToOrganization, driven against a structural port that the
+// concrete project repository satisfies.
 
 import type { OrganizationId, ProjectId } from '@asep/contracts';
-import type { ProjectRepository } from '@asep/persistence';
+import { projectBelongsToOrganization, type ProjectMembershipPort } from '@asep/application';
 import type { OperatorPrincipal, PrincipalResolver } from './auth.js';
 
 // A single credential binding: an opaque token authenticates as exactly one
@@ -42,7 +43,7 @@ export class RepositoryPrincipalResolver implements PrincipalResolver {
   private readonly operators: Map<string, OperatorPrincipal>;
 
   constructor(
-    private readonly projects: ProjectRepository,
+    private readonly projects: ProjectMembershipPort,
     bindings: readonly TokenBinding[] = [],
     operators: readonly OperatorBinding[] = [],
   ) {
@@ -78,9 +79,9 @@ export class RepositoryPrincipalResolver implements PrincipalResolver {
     return this.operators.get(token);
   }
 
-  // Authoritative membership check via the persistence seam: a token for org A
-  // cannot select a project under org B (fails closed to false → 401).
+  // Authoritative membership check through the application use case: a token
+  // for org A cannot select a project under org B (fails closed to false → 401).
   async projectBelongsToOrg(org: OrganizationId, project: ProjectId): Promise<boolean> {
-    return this.projects.belongsToOrg(org, project);
+    return projectBelongsToOrganization(this.projects, { organizationId: org, projectId: project });
   }
 }

@@ -57,6 +57,12 @@ export interface TaskPort {
   }>;
 }
 
+// The authoritative project → organization relation the authentication edge
+// asks about. The concrete project repository satisfies it structurally.
+export interface ProjectMembershipPort {
+  belongsToOrg(organizationId: OrganizationId, projectId: ProjectId): Promise<boolean>;
+}
+
 // The repository bundle the use cases drive. The composition root builds the
 // concrete repositories and hands them in — this bundle names only the ports.
 export interface RegistrationRepositories {
@@ -165,4 +171,15 @@ export async function getTask(
   status: TaskStatus; risk: RiskLevel; baseSha: string | null; resultSha?: string | null;
 }> {
   return repos.tasks.getScoped(scope, taskId);
+}
+
+// Does the selected project sit under the organization the credential
+// authenticates as? The authentication edge calls this for every scoped
+// request; a `false` fails the request closed. The answer comes from the
+// persisted project row, never from anything the client sent.
+export async function projectBelongsToOrganization(
+  projects: ProjectMembershipPort,
+  input: { organizationId: OrganizationId; projectId: ProjectId },
+): Promise<boolean> {
+  return projects.belongsToOrg(input.organizationId, input.projectId);
 }

@@ -25,6 +25,21 @@
 //     a type assertion that pins a claim-carrying type onto a value that does not
 //     have it, and an `any` flowing into a claim-typed position.
 //
+//   persistence-call-in-root  A composition root (apps/*, workers/*) wires the
+//     persistence adapter and hands it to application use cases; it never
+//     invokes it. Any call whose target is declared in adapters/persistence is
+//     refused — resolved by symbol and by type, so the variable's name does not
+//     matter, and a destructured method, `.call` / `.apply` / `.bind`, or an
+//     element access is seen through. Construction (`new X(...)`) is not a call,
+//     and opening, migrating and pinging the database (PERSISTENCE_BOOTSTRAP)
+//     are the sanctioned uses.
+//
+//   port-call-in-root  The same call with the adapter's type laundered through
+//     a port: a root may not invoke a member of an interface declared in
+//     packages/application or packages/ports. Ports are driven by use cases.
+//     A value retyped through an interface the root declares itself is beyond
+//     what a static check can follow.
+//
 // The guard is a static net, not a proof: a value built at run time from
 // arbitrary computation can still evade it. It closes the shapes that are
 // cheap to write by accident or on purpose, and the runtime refusal of any
@@ -50,10 +65,25 @@ export const RETIRED_IDENTIFIERS = Object.freeze([
 
 export const PROJECT_DIRS = Object.freeze(['packages', 'adapters', 'apps', 'workers']);
 
+// The persistence calls a composition root may make itself: opening the
+// database, bringing its schema up to date, and probing the connection for
+// readiness. Everything else is reached through an application use case.
+export const PERSISTENCE_BOOTSTRAP = Object.freeze([
+  'migrate', 'PgPoolClient.fromPool', 'PgliteClient.create',
+  'PgPoolClient.ping', 'PgliteClient.ping', 'SqlClient.ping',
+]);
+const PERSISTENCE_SOURCE = /\/adapters\/persistence\/(src|dist)\//;
+const PORT_SOURCE = /\/packages\/(application|ports)\/(src|dist)\//;
+
 /** Shipped TypeScript: package src, not tests, not declarations. */
 export function isShippedSource(rel) {
   return /^(packages|adapters|apps|workers)\/[^/]+\/src\/.+\.ts$/.test(rel) &&
     !/\.(test|itest|live)\.ts$/.test(rel) && !rel.endsWith('.d.ts');
+}
+
+/** Shipped source of a composition root (apps/*, workers/*). */
+export function isCompositionRoot(rel) {
+  return /^(apps|workers)\//.test(rel) && isShippedSource(rel);
 }
 
 export function discoverProjects(root) {
@@ -205,6 +235,7 @@ class FileCheck {
 
     this.retiredVocabulary(nodes);
     if (!this.claimsAllowed) this.isolationClaims(nodes);
+    if (isCompositionRoot(this.rel)) this.persistenceCalls(nodes.calls);
     return this.out;
   }
 
@@ -526,5 +557,59 @@ class FileCheck {
     const owner = sym.getParent?.()?.name;
     const methods = owner ? REFLECTIVE.get(owner) : undefined;
     return methods?.has(sym.name) ? sym.name : undefined;
+  }
+
+  // --- rule: persistence calls in composition roots ------------------------
+
+  persistenceCalls(calls) {
+    const rule = 'persistence-call-in-root';
+    for (const call of calls) {
+      let callee = call.expression;
+      while (WRAPPERS.has(callee.kind)) callee = callee.expression;
+      // `fn.call(…)`, `fn.apply(…)`, `fn.bind(…)`: the target is `fn`. A bound
+      // function called later (`fn.bind(x)(…)`) keeps `fn`'s type, so the type
+      // check below sees through it.
+      if (callee.kind === SyntaxKind.PropertyAccessExpression && ['call', 'apply', 'bind'].includes(callee.name.text)) {
+        callee = callee.expression;
+      }
+      while (WRAPPERS.has(callee.kind)) callee = callee.expression;
+      const named = callee.kind === SyntaxKind.PropertyAccessExpression ? callee.name
+        : callee.kind === SyntaxKind.ElementAccessExpression ? callee.argumentExpression : callee;
+      // By symbol (`repo.method`, an imported function, a member of a union of
+      // adapters) and by type (a destructured or bound method, an element
+      // access): either one reaching a persistence declaration is a
+      // persistence call.
+      const candidates = [this.symbolOf(named), this.typeOf(callee)?.getSymbol?.()].filter(Boolean);
+      const target = candidates.find((s) => this.declaredIn(s, PERSISTENCE_SOURCE));
+      if (target) {
+        const qualified = this.qualifiedName(target);
+        if (PERSISTENCE_BOOTSTRAP.includes(qualified)) continue;
+        this.report(rule, call, `a composition root calls the persistence adapter directly (${qualified}); ` +
+          'route it through an application use case');
+        continue;
+      }
+      // The same call with the adapter's type laundered through a port: the
+      // application drives its ports, a root only wires them.
+      const port = candidates.find((s) => this.isPortMember(s));
+      if (port) {
+        this.report('port-call-in-root', call, `a composition root invokes the port member ${this.qualifiedName(port)} ` +
+          'itself; ports are driven by application use cases');
+      }
+    }
+  }
+
+  qualifiedName(sym) {
+    const owner = sym.getParent?.()?.name;
+    return owner && owner !== sym.name && !owner.startsWith('"') ? `${owner}.${sym.name}` : sym.name;
+  }
+
+  isPortMember(sym) {
+    const owner = sym.getParent?.();
+    return !!owner && (owner.flags & SymbolFlags.Interface) !== 0 && this.declaredIn(sym, PORT_SOURCE);
+  }
+
+  declaredIn(sym, pattern) {
+    const decls = [sym.valueDeclaration, ...(sym.declarations ?? [])].filter(Boolean);
+    return decls.some((d) => pattern.test((d.path ?? d.resolve?.()?.getSourceFile?.()?.fileName ?? '').split('\\').join('/')));
   }
 }

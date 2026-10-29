@@ -15,7 +15,7 @@ import {
 } from '@asep/persistence';
 import type { CodingAgentProvider, AgentExecuteRequest, AgentAttemptObservation, GitChangeInspector, GitChangeObservation } from '@asep/ports';
 import type { ArtifactRef } from '@asep/contracts';
-import { createOrganization } from '@asep/application';
+import { createOrganization, projectBelongsToOrganization } from '@asep/application';
 import { buildApp, type Repositories } from './app.js';
 import { PROJECT_HEADER, CAP_CREATE_ORGANIZATION } from './auth.js';
 import { RepositoryPrincipalResolver } from './principal-resolver.js';
@@ -341,6 +341,32 @@ test('HIGH-004: createOrganization USE CASE fails closed without the capability'
       'the application use case must enforce the capability itself',
     );
     assert.equal(await orgCount(db), before, 'no organization row may be created');
+  } finally {
+    await db.close();
+  }
+});
+
+// Project membership is an application use case answered from the persisted
+// project row; the principal resolver forwards to it rather than to persistence.
+test('projectBelongsToOrganization answers from the persisted row, and the resolver forwards to it', async () => {
+  const { repos, db, principals } = await buildStore();
+  try {
+    const a = await repos.organizations.create({ name: 'A' });
+    const b = await repos.organizations.create({ name: 'B' });
+    const pa = await repos.projects.create({ organizationId: a.id, name: 'pa', defaultBranch: 'main' });
+    const unknown = '01HZZZZZZZZZZZZZZZZZZZZZZZ' as typeof pa.id;
+    assert.equal(await projectBelongsToOrganization(repos.projects, { organizationId: a.id, projectId: pa.id }), true);
+    assert.equal(await projectBelongsToOrganization(repos.projects, { organizationId: b.id, projectId: pa.id }), false);
+    assert.equal(await projectBelongsToOrganization(repos.projects, { organizationId: a.id, projectId: unknown }), false);
+
+    const asked: Array<[string, string]> = [];
+    const spy = new RepositoryPrincipalResolver({
+      belongsToOrg: async (org, project) => { asked.push([org, project]); return org === a.id; },
+    });
+    assert.equal(await spy.projectBelongsToOrg(a.id, pa.id), true);
+    assert.equal(await spy.projectBelongsToOrg(b.id, pa.id), false);
+    assert.deepEqual(asked, [[a.id, pa.id], [b.id, pa.id]], 'the resolver asks the membership port, once per check');
+    assert.equal(await principals.projectBelongsToOrg(b.id, pa.id), false);
   } finally {
     await db.close();
   }

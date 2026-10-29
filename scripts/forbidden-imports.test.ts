@@ -312,6 +312,13 @@ const ROOT_FORBIDDEN: ReadonlyArray<{ label: string; test: (src: string) => bool
   // request schemas) is NOT a persistence call and stays accepted. (b) The
   // remaining injected adapter names, which have no such suffix, listed
   // explicitly. `new X(...)` is neutralised first so CONSTRUCTION never matches.
+  //
+  // A name-based rule cannot see a repository held under any other name (a
+  // field called `projects` slipped past it). The typed rule
+  // persistence-call-in-root in scripts/lib/ts-guard.mjs resolves every call in
+  // a root to its declaration and refuses any that lands in the persistence
+  // adapter, whatever the receiver is called; this pattern stays as a cheap
+  // first net.
   {
     label: 'direct persistence adapter call',
     test: (s) => {
