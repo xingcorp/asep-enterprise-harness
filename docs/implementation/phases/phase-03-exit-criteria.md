@@ -2,7 +2,7 @@
 
 > Phase 3 is COMPLETE only when every MUST below passes from a clean checkout of the phase branch, as run by
 > the **controller** (lane contract step 5). Base `00a6889`; v1 at `80bb76a`, v2 at `98e92cf`. v2 folded in the
-> Codex plan review and reconciliation R1–R14; v3 folds in the Codex lock-check of v2 and reconciliation R15–R19
+> Codex plan review and reconciliation R1–R14; v3 folds in the Codex lock-check of v2 and reconciliation R15–R20
 > (`phase-03-review-log.md`, section "Lock-check v2").
 > Each MUST names the executable test that proves it: `file` + SUITE-ID. Files marked *(new)* do not exist yet.
 > They are created by the slice named in `phase-03-plan.md` §26. Unit suites run in `pnpm test`, and
@@ -365,7 +365,10 @@ End-to-end checks in `workers/temporal-worker/src/e2e/budgets-approvals.itest.ts
 - [ ] H7. Ledger totals equal the workflow's totals at close (reconciliation assertion).
 - [ ] H8. Reported usage above a cap (cost or tool calls) records an `overrun` entry and an audited incident; the
       attempt is inspected but never verified, committed or published, ends `budget-exhausted`, and the recorded
-      overrun ends the task `BUDGET_EXHAUSTED` at the next reservation.
+      overrun ends the task `BUDGET_EXHAUSTED` at the next reservation while attempts remain (with none left the
+      task ends `FAILED / attempts-exhausted`, R20). If the agent also failed with a failure class that is not
+      replaceable, that failure wins: the attempt is not inspected, ends `failed`, and the task ends `FAILED` with
+      that class, while the overrun is still recorded and audited (R20).
 - [ ] H9. The agent adapter (rebased Phase 2 adapter + CR-25) enforces each request cap. A fake stream that
       exceeds `maxTurns`, `maxToolCalls`, `maxCostUsd` or `maxWallClockMinutes` is killed as soon as the cap is
       crossed and reports `BUDGET_EXHAUSTED`. `--max-turns` comes from the request. A cap the adapter cannot
@@ -374,7 +377,9 @@ End-to-end checks in `workers/temporal-worker/src/e2e/budgets-approvals.itest.ts
 - [ ] H10. Agent outcome table (architecture §10), core table plus e2e: a cap-triggered `BUDGET_EXHAUSTED` is
       inspected only (no verification, commit or publication), the attempt ends `budget-exhausted`, and a new
       `retry` attempt (same lineage) starts only if `maxAttempts` and a fresh reservation allow; otherwise the
-      reservation-failure table decides. Paired with H9, which proves the adapter reports the status
+      reservation-failure table decides. A cap stop that reports a non-replaceable failure class ends the task
+      `FAILED` with that class, and an inspection that fails on an exhausted attempt is a normal abandon (`failed`,
+      retried only for a replaceable class) (R20). Paired with H9, which proves the adapter reports the status
       (`asep-suite:orchestration-core`, `asep-suite:temporal-budgets-approvals`).
 
 ## I. Approvals
@@ -428,9 +433,9 @@ Real-Temporal proofs in `workers/temporal-worker/src/e2e/assurance-slot.itest.ts
 
       Capacity (R17, R19): with `maxAttempts` exhausted the task ends `FAILED` (`repair-capacity-exhausted`)
       whatever the budget says. With attempts left but a failed reservation, a task-cap shortfall opens a
-      `budget-extension` approval when one is available (approve → the repair attempt starts with the same lineage;
-      reject or expiry → `BUDGET_EXHAUSTED`); any other budget cause, or no approval available, ends the task
-      `BUDGET_EXHAUSTED`. Nothing is published in any of these cases. A `retry` that replaces a failed repair
+      `budget-extension` approval while `maxBudgetExtensionUsd` is set (approve → the repair attempt starts with the
+      same lineage; reject or expiry → `BUDGET_EXHAUSTED`); any other budget cause, or `maxBudgetExtensionUsd`
+      unset, ends the task `BUDGET_EXHAUSTED`. Nothing is published in any of these cases. A `retry` that replaces a failed repair
       attempt keeps the lineage: same `repairBaseSha`, repair order, round and prior adjudication, and its
       assurance round continues them (trace `REPAIR` → agent death → replacement → assurance, core table + e2e).
 - [ ] J5. `recordAttemptOutcome` is called exactly once per attempt at every terminal in architecture §12. This

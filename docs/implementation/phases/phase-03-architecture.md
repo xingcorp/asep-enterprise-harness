@@ -2,7 +2,7 @@
 
 > Companion to `phase-03-plan.md`. Base `00a6889` (head of `phase/02-single-agent-vertical-slice`, not yet
 > accepted); v1 of this document is at `80bb76a`, v2 at `98e92cf`. v2 folded in the Codex plan review; v3 folds
-> in the Codex lock-check of v2 (`phase-03-plan-review-codex-v2.md`) and the controller's reconciliation R15–R19
+> in the Codex lock-check of v2 (`phase-03-plan-review-codex-v2.md`) and the controller's reconciliation R15–R20
 > (`phase-03-review-log.md`, section "Lock-check v2"). Port signatures in §17 are design intent. The binding text
 > is plan §30 (shared-surface change requests) and, for the review-loop slot, the block
 > `Review-loop slot contract (verbatim for S0)` that Lane B locks and the controller hands over (plan §30, CR-10).
@@ -145,21 +145,25 @@ ADMITTING (admitTask: injected admit hook, default admitRisk) ──(DEFERRED)�
 BUDGET_CHECK (reservation for the planned attempt; table "Reservation failure" in §10)
    │ reserved           ──(maxAttempts exhausted)──▶ FAILED (attempts-exhausted; repair-capacity-exhausted for
    │                                                  a repair lineage)
-   │                    ──(task cap short, budget-extension approvals available)──▶ AWAITING_APPROVAL(budget-extension)
+   │                    ──(task cap short, maxBudgetExtensionUsd set)──▶ AWAITING_APPROVAL(budget-extension)
    │                                                  approve → BUDGET_CHECK (same attempt plan and lineage)
    │                                                  reject/expiry → BUDGET_EXHAUSTED (terminal)
-   │                    ──(any other budget cause, or approvals unavailable)──▶ BUDGET_EXHAUSTED (terminal)
+   │                    ──(any other budget cause, or maxBudgetExtensionUsd unset)──▶ BUDGET_EXHAUSTED (terminal)
    ▼
 ATTEMPT_STARTING  (ensureAttempt → acquireLease → prepareWorkspace(base = task baseSha, or the lineage's
                    repairBaseSha) → storeAttemptInputs (repair lineage: ContextPack = buildRepairContextPack(...)))
                    ensureAttempt fails ──▶ FAILED (attempt-registration-failed; never replaced, numbering stays contiguous)
    ▼
 AGENT_RUNNING  (runAgent: engine maximumAttempts = 1; heartbeats; lease renewed on each tick)
-   │ outcome table "Agent outcome" in §10:
+   │ outcome table "Agent outcome" in §10 (the first matching row wins):
    │   AGENT_DONE within every cap                     ──▶ INSPECTING → VERIFYING → … (full path)
+   │   a failure class that is not replaceable
+   │   (FAILED, BLOCKED or a cap stop reporting one),
+   │   overrun or not                                  ──▶ ATTEMPT_ABANDONED → FAILED with that class
+   │                                                       (an overrun is still recorded and audited)
    │   BUDGET_EXHAUSTED (adapter stopped at a cap),
    │   or reported usage above a cap (overrun)         ──▶ INSPECTING only → ATTEMPT_EXHAUSTED
-   │   FAILED / BLOCKED (agent's own failure)          ──▶ ATTEMPT_ABANDONED(failure class)
+   │   FAILED / BLOCKED (replaceable failure class)    ──▶ ATTEMPT_ABANDONED(failure class)
    │   activity failure / heartbeat timeout (infra)    ──▶ ATTEMPT_ABANDONED(failure class)
    ▼
 INSPECTING     (inspectWorkspace)        ▶ overstep → ATTEMPT_ABANDONED(policy-violation)
@@ -195,6 +199,7 @@ ATTEMPT_ABANDONED: reapContainers → quarantineWorkspace → releaseLease → r
 ATTEMPT_EXHAUSTED: reapContainers → quarantineWorkspace → releaseLease → recordUsage (+ recordOverrun and an
    audited overrun incident when usage exceeded a cap) → recordAttemptOutcome('budget-exhausted')
    → BUDGET_CHECK (kind = retry, same repair lineage). Nothing of the attempt is verified, committed or published.
+   An inspection that fails on an exhausted attempt is a normal ATTEMPT_ABANDONED (R20).
 Any phase + cancel → CANCELLING (finish an open critical unit, and once a push has started also the PR upsert;
    reap, quarantine, release, recordAttemptOutcome('cancelled')) → CANCELLED. Assurance, repair planning and
    approval waits are interrupted at once.
@@ -553,19 +558,26 @@ and the task is `CANCELLED`.
 - **Verification has its own reservation (R17).** When an attempt starts, the core reserves the agent cap and,
   separately, `verificationReserve` (wall-clock from the plan's check timeouts, cost from policy). The agent can
   never consume the verification reservation: the adapter stops the agent at its own cap. Once verification ran,
-  the attempt is charged its reserve, because verification has no metered cost source. Verification is never
+  the attempt is charged its reserve, in cost and in wall-clock, because verification has no metered cost source
+  and its results carry no measured time yet (R20). Verification is never
   reduced to fit a budget (`docs/implementation/cost-model.md:12`), and it is never run on a path that can no
   longer publish.
 
-**Agent outcome (R17, P3-PLAN2-HIGH-001).** The single table the core follows after `runAgent`:
+**Agent outcome (R17, R20, P3-PLAN2-HIGH-001).** The single table the core follows after `runAgent`. Rows are
+checked in order, and the first match wins:
 
 | Agent result | Inspect | Verify, commit, assurance, publish | Attempt terminal | Next |
 |---|---|---|---|---|
 | `AGENT_DONE`, reported usage within every cap | yes | yes, as designed | per the rest of the path | — |
+| `FAILED` / `BLOCKED`, or a cap stop that reports a failure class, where the class is not one the policy lists as replaceable (an unclassified failure included), overrun or not | no | no | `failed`, plus `recordOverrun` and an audited overrun incident if usage overran a cap | none: the task ends `FAILED` with that class |
 | `BUDGET_EXHAUSTED` (the adapter stopped the agent at a cap) | yes, to record evidence of the workspace state | **no** | `budget-exhausted` | a new attempt (`retry`, same lineage) if `BUDGET_CHECK` allows |
-| any status with reported usage above a cap the adapter did not stop at (cost or tool calls) | yes | **no** | `budget-exhausted`, plus `recordOverrun` and an audited overrun incident | `BUDGET_CHECK`, where the recorded overrun ends the task `BUDGET_EXHAUSTED` |
-| `FAILED` / `BLOCKED` (the agent's own failure) | no | no | `failed` | a retry only for a replaceable failure class |
+| any other result with reported usage above a cap the adapter did not stop at (cost or tool calls) | yes | **no** | `budget-exhausted`, plus `recordOverrun` and an audited overrun incident | `BUDGET_CHECK`, where the recorded overrun ends the task `BUDGET_EXHAUSTED` while attempts remain |
+| `FAILED` / `BLOCKED` with a replaceable failure class | no | no | `failed` | a retry if `BUDGET_CHECK` allows |
 | activity failure or heartbeat timeout (infrastructure, worker death) | no | no | `failed` | a retry only for a replaceable class, if `maxAttempts` and a fresh reservation allow; `workflow.recovered` (`attempt-replaced`) after a timeout |
+
+A non-replaceable failure beats a cap stop and an overrun because the exhaustion path can lead to a budget
+extension and a new attempt, which must never follow such a failure (R20). Out of attempts beats budget: after an
+exhausted attempt with no attempt left, `BUDGET_CHECK` ends the task `FAILED / attempts-exhausted`.
 
 Mandatory verification is never skipped on a path that publishes. It is not run on a path that can never publish.
 An agent that finishes `AGENT_DONE` having spent exactly its cap is within its cap and gets the full path, because
@@ -577,12 +589,13 @@ retry or repair):
 | Cause | Result |
 |---|---|
 | `maxAttempts` exhausted | `FAILED`, reason `repair-capacity-exhausted` when the planned attempt carries a repair lineage, else `attempts-exhausted`, whatever the budget says |
-| task cap short, budget-extension approval available | `WAITING_FOR_APPROVAL` with a `budget-extension` request; approve → reserve and continue with the same attempt plan and lineage; reject or expiry → `BUDGET_EXHAUSTED` |
-| task cap short, approval not available | `BUDGET_EXHAUSTED` |
+| task cap short, `maxBudgetExtensionUsd` set | `WAITING_FOR_APPROVAL` with a `budget-extension` request; approve → reserve and continue with the same attempt plan and lineage; reject or expiry → `BUDGET_EXHAUSTED` |
+| task cap short, `maxBudgetExtensionUsd` unset | `BUDGET_EXHAUSTED` |
 | run remainder, wall-clock or a recorded overrun | `BUDGET_EXHAUSTED`; no task-level approval extends these scopes |
 
 A budget-extension approval is available only when the policy datum `maxBudgetExtensionUsd` is set (R19). There is
-no default for it in code. While it is unset, every budget cause goes straight to `BUDGET_EXHAUSTED`.
+no default for it in code. While it is unset, every budget cause goes straight to `BUDGET_EXHAUSTED`. This is the
+only switch: "approvals disabled" for budget extensions means exactly "`maxBudgetExtensionUsd` unset" (R20).
 
 - Usage source: `AgentAttemptObservation.usage` is **provider-reported and untrusted**
   (`packages/ports/src/index.ts:49-57`). Wall-clock is measured by the harness. The ledger records `source`

@@ -426,7 +426,7 @@ although P3-PLAN-HIGH-004 still depended on the pending CR-10 text; the v3 freez
 > controller has since moved to Codex CLI 0.165.0. The gateway appends its own style instructions and tools to
 > every request, so the review holds "via this gateway" (R16). Raw output: `phase-03-plan-review-codex-v2.md`.
 > Reviewed snapshot: `98e92cf` · Verdict: **REQUEST_CHANGES** · Confidence: 0.97.
-> Binding input: reconciliation R15–R19. R17 and R19 settle the business behavior behind P3-PLAN2-HIGH-001…003
+> Binding input: reconciliation R15–R20. R17, R19 and R20 settle the business behavior behind P3-PLAN2-HIGH-001…003
 > and MED-005, and Lane A applies them exactly as written. Line numbers in quotes of the lock-check refer to
 > `98e92cf`.
 
@@ -489,13 +489,14 @@ attempt:
 
 - `maxAttempts` exhausted → `FAILED` (`repair-capacity-exhausted` for a repair lineage, else
   `attempts-exhausted`), whatever the budget says;
-- task cap short and a budget-extension approval available → `WAITING_FOR_APPROVAL`; approve → reserve and
-  continue with the same attempt plan and lineage; reject or expiry → `BUDGET_EXHAUSTED`;
-- task cap short and no approval available → `BUDGET_EXHAUSTED`;
+- task cap short and `maxBudgetExtensionUsd` set → `WAITING_FOR_APPROVAL`; approve → reserve and continue with
+  the same attempt plan and lineage; reject or expiry → `BUDGET_EXHAUSTED`;
+- task cap short and `maxBudgetExtensionUsd` unset → `BUDGET_EXHAUSTED`;
 - run remainder, wall-clock or a recorded overrun → `BUDGET_EXHAUSTED`; no task-level approval extends them.
 
 A budget-extension approval is available only while the policy datum `maxBudgetExtensionUsd` is set. There is no
-default in code (R19; architecture §10, §11; data model §4.2). J4 and H3 are amended.
+default in code (R19; architecture §10, §11; data model §4.2). That is the only switch: "approvals disabled"
+means "`maxBudgetExtensionUsd` unset" (R20). J4 and H3 are amended.
 
 **Where S2 changes (R19).** At `a133e32` a repair plan whose reservation failed for any reason other than the task
 cap ended `FAILED / repair-capacity-exhausted` (`packages/orchestration/src/task-core.ts:620-621`), and the code
@@ -503,8 +504,8 @@ default was `maxBudgetExtensionUsd: 50` (`packages/orchestration/src/defaults.ts
 routes every budget cause to `BUDGET_EXHAUSTED`, keeps `repair-capacity-exhausted` for `maxAttempts` only, and
 removes the default.
 
-**Validation.** H3, H4, J4. S2 core trace 2 (approvals available: approve keeps the lineage, reject ends
-`BUDGET_EXHAUSTED`; approvals disabled; `maxBudgetExtensionUsd` unset; run-remainder shortfall); S11 e2e.
+**Validation.** H3, H4, J4. S2 core trace 2 (`maxBudgetExtensionUsd` set: approve keeps the lineage, reject ends
+`BUDGET_EXHAUSTED`; `maxBudgetExtensionUsd` unset; run-remainder shortfall); S11 e2e.
 
 ### P3-PLAN2-HIGH-003 — The commit→PR critical section covered cancellable assurance and the repair loop — ACCEPTED (R17)
 
@@ -712,6 +713,34 @@ Temporal image in the gate log, preserved under `artifacts/phase-03/` (CR-14).
     waiting is S7's interpreter; the test-only `@asep/domain` devDependency.
   - Memory: lanes never touch the controller's memory directory (lane-contract addendum).
 
+### R20: controller answers to the S2 follow-up questions
+
+Lane A's S2 follow-up report (`5e9fb84`) raised four implementation choices. R20 settles them.
+
+- **Reversed: a non-replaceable failure class beats the exhaustion path.** At `5e9fb84` any agent result with an
+  overrun, or a cap stop, took the exhaustion path first (`packages/orchestration/src/task-core.ts:520`), so an
+  agent failure with a never-replaceable class that also overran ended `BUDGET_EXHAUSTED`. The exhaustion path can
+  lead to a budget extension and a new attempt, which must never follow such a failure. Commit `5b0afde` checks the
+  failure class first (`task-core.ts:522-527`): a `FAILED` or `BLOCKED` result, or a cap stop that reports a
+  failure class, whose class the policy does not list as replaceable (an unclassified failure included) is
+  abandoned, and the task ends `FAILED` with that class. The overrun is still recorded and audited as an incident.
+  Treating a cap stop that reports a non-replaceable class the same way applies R20's reason to the one other
+  result that reaches the exhaustion path; it is Lane A's reading and is flagged for the controller. Tests, written
+  first and red on `5e9fb84`: the four core traces "agent outcome: a non-replaceable failure beats the exhaustion
+  path (…)" and a new property in "generated task traces satisfy the orchestration safety invariants" (no attempt
+  follows a non-replaceable agent failure, and the task ends `FAILED` or `CANCELLED`). Architecture §4.1 and §10,
+  exits H8 and H10, and plan §11, §18 and §26 (S2) are amended.
+- **Accepted as implemented:**
+  - an inspection that fails on an exhausted attempt is a normal abandon (`failed`, retried only for a replaceable
+    class) (`task-core.ts:623-626`; architecture §4.1; exit H10);
+  - out of attempts beats budget: after an exhausted attempt with no attempt left the task ends
+    `FAILED / attempts-exhausted`, so H8 ends `BUDGET_EXHAUSTED` only while attempts remain (`task-core.ts:692-695`;
+    architecture §10; exit H8);
+  - verification wall-clock is charged at the reserved amount until verification results carry measured time
+    (`task-core.ts:403`; architecture §10).
+- **One switch.** "Approvals disabled" and "`maxBudgetExtensionUsd` unset" are the same condition. The wording is
+  merged in this log, the exit criteria (J4), architecture §4.1 and §10, and plan §11 and §26.
+
 ### Freeze gate (v3)
 
 - [x] Every lock-check finding dispositioned: 10/10 new, 4/4 v1 PARTIAL.
@@ -720,7 +749,7 @@ Temporal image in the gate log, preserved under `artifacts/phase-03/` (CR-14).
 - [x] Canonical docs updated: plan, architecture, data model, exit criteria, risk register, research register,
       threat model delta.
 - [x] S2's acceptance carries the four core traces the lock-check asked for; S11 carries the matching e2e.
-- [x] Reconciliation R15–R19 applied.
+- [x] Reconciliation R15–R20 applied.
 - [ ] CR-10 verbatim text pasted (open by design; G-LB, R18).
 
 **PLAN_STATUS:** LOCKED v3 (pending controller confirmation)

@@ -6,12 +6,12 @@
 > design, the exit criteria and the slice that proves it (v2, `98e92cf`). The controller then ran an independent
 > Codex lock-check of v2 (`phase-03-plan-review-codex-v2.md`, REQUEST_CHANGES 0.97). v3 adjudicates every new
 > finding and every v1 finding it marked PARTIAL (review log, section "Lock-check v2") and folds them in the same
-> way. The controller's shared-surface reconciliation v1 (R1–R19) is applied, and it wins wherever it disagrees
+> way. The controller's shared-surface reconciliation v1 (R1–R20) is applied, and it wins wherever it disagrees
 > with this plan.
 > One item stays open by design: the review-loop slot TypeScript (CR-10) is pasted verbatim from Lane B's locked
 > block `Review-loop slot contract (verbatim for S0)` when the controller hands over the fixed version (R18).
-> Only S2 is implemented before the Phase 2 rebase (R15): `a133e32`, then a follow-up commit that brings it in
-> line with v3.
+> Only S2 is implemented before the Phase 2 rebase (R15): `a133e32`, then follow-up commits that bring it in
+> line with v3 (`5e9fb84`) and with R20 (`5b0afde`).
 > Scope source: `docs/implementation/90-day-plan.md:24-31` (Days 31–45).
 
 ```text
@@ -287,15 +287,17 @@ admitTask                         (activity; injected admit hook, default admitR
 loop attempt n = 1..maxAttempts:
   budget reservation              (workflow core; agent cap + verification reserve, reserved separately; on
                                    failure, architecture §10 "Reservation failure": maxAttempts → FAILED;
-                                   task cap short → budget-extension approval if available; else BUDGET_EXHAUSTED)
+                                   task cap short → budget-extension approval if maxBudgetExtensionUsd is set;
+                                   else BUDGET_EXHAUSTED)
   ensureAttempt(n, kind, lineage) (natural key; lineage = repairBaseSha, parent, repair order; a retry copies the
                                    lineage of the attempt it replaces; failure → FAILED, never replaced)
   acquireLease                    (Phase 2 primitive; invariants L1–L3)
   prepareWorkspace                (registry CREATING → worktree at base → ACTIVE)
   storeAttemptInputs              (WorkOrder / ContextPack refs; lineage: buildRepairContextPack; ExecutionEnvelope)
   runAgent                        (engine retry = 1; per-request caps; heartbeats; lease renewed; container asep-agent-<attemptId>)
-    agent outcome, architecture §10:
+    agent outcome, architecture §10 (first matching row wins):
     AGENT_DONE within every cap   → the full path below
+    non-replaceable failure class → abandon (below) → task FAILED with that class; an overrun is still audited
     BUDGET_EXHAUSTED or overrun   → inspectWorkspace only → cleanup → recordUsage (+ recordOverrun) →
                                     recordAttemptOutcome(budget-exhausted) → next n (kind retry, same lineage)
     agent failure or infra error  → abandon (below)
@@ -374,7 +376,8 @@ Architecture §10:
 - per-request agent caps enforced by the rebased adapter (CR-25);
 - reservation-based hard caps at task and run level, with the verification budget reserved separately when an
   attempt starts, so agent spending can never consume it (R17);
-- one agent-outcome table: `AGENT_DONE` gets the full path; a cap stop or an overrun is inspected only and is
+- one agent-outcome table: `AGENT_DONE` gets the full path; a failure class that is not replaceable ends the task
+  `FAILED` even after a cap stop or an overrun (R20); otherwise a cap stop or an overrun is inspected only and is
   never verified, committed or published; an infrastructure error is replaced only if `maxAttempts` and a fresh
   reservation allow (exits H5, H8, H10);
 - one reservation-failure table: `maxAttempts` exhausted → `FAILED`; a task-cap shortfall → budget-extension
@@ -568,7 +571,7 @@ v1 → v2 slice mapping: v1 S1 → S0 (shared items) + S1; S2 → S2; S3 → S3;
 |---|---|---|---|---|
 | S0 | **Shared foundation**: every `[S0]` item of the reconciliation, exactly as specified there. (a) the fixed review-loop slot block (CR-10, verbatim Lane B block, R18) in `packages/application/src/review-loop/` (R16): the slot, Lane B's `DisabledAssuranceSlot`, the workspace resolver port and the framework-free conformance kit `review-loop-contract.ts`; (b) a minimal `NotConfiguredAssuranceSlot` in `packages/application/src/orchestration-activities/`; (c) `RunEventSink` + `RunEventConflictError` port, migration `0107_run_events` (unified DDL), PG adapter `adapters/persistence/src/run-events/**`; (d) `run-event` 1.2.0 superset (schema, fixtures, catalog, generated types); (e) the decision core adopts the block's names: its local slot types and terminal names are renamed to the block's (they stay core-local, because production source may type-import only `@asep/contracts`/`@asep/ports`), pinned by a type-level assignability check and the O5 table test (test-only `@asep/application` devDependency, like `@asep/domain`) | `feat(shared): land the review-slot contract, run-event sink and run-event 1.2.0` | G-P2, G-LB; first commit after the rebase | O1–O5, J2 (default slot), A5 (`0107` and the upgrade path), L3 |
 | S1 | Lane A contracts and ports: 3 new schemas + fixtures + snapshots + generated types; `TaskStatus` extension + domain transition table; ports CR-04, CR-07, CR-08, CR-09, CR-24, CR-26 types and error classes; principal types (CR-17); metrics dictionary entry; ADR 0017 | `feat(contracts): add durable-orchestration message contracts and ports` | after S0 | A1, A3, D1 (types compile), L5, domain table tests incl. the unchanged no-ACCEPTED invariant |
-| S2 | `@asep/orchestration`: reducer, activity option table, budget arithmetic (agent cap and verification reserve), the agent-outcome and reservation-failure tables, approval and control handling with the critical units, assurance-outcome routing incl. assurance-activity failure, repair lineage on retry, sequential in-memory interpreter; package-local purity self-check over production source. Core traces in the acceptance tables: (1) cap exhaustion and overrun vs H5/H9; (2) `REPAIR` with a failed reservation and approvals enabled, disabled and unavailable; (3) `REPAIR` → agent death → replacement keeping the lineage → round-2 assurance; (4) cancel during assurance and during the publication-approval wait | `feat(orchestration): add the deterministic workflow decision core` (`a133e32`) + `fix(orchestration): …` follow-up for v3 | may start before G-P2 | B2 (package-local), D5 (core), D7 (core), G7/G11/G12 (core), H1, H3/H4 (core), H5 (core), H8 (core), H10 (core), I6, J3 (core table), J4 (core), J5 (property), J7, J10 (core) |
+| S2 | `@asep/orchestration`: reducer, activity option table, budget arithmetic (agent cap and verification reserve), the agent-outcome and reservation-failure tables, approval and control handling with the critical units, assurance-outcome routing incl. assurance-activity failure, repair lineage on retry, sequential in-memory interpreter; package-local purity self-check over production source. Core traces in the acceptance tables: (1) cap exhaustion and overrun vs H5/H9; (2) `REPAIR` with a failed reservation: `maxBudgetExtensionUsd` set (approve, reject) or unset, and a run-remainder shortfall; (3) `REPAIR` → agent death → replacement keeping the lineage → round-2 assurance; (4) cancel during assurance and during the publication-approval wait; (5) a non-replaceable agent failure beats a cap stop or an overrun (R20) | `feat(orchestration): add the deterministic workflow decision core` (`a133e32`) + `fix(orchestration): …` follow-up for v3 | may start before G-P2 | B2 (package-local), D5 (core), D7 (core), G7/G11/G12 (core), H1, H3/H4 (core), H5 (core), H8 (core), H10 (core), I6, J3 (core table), J4 (core), J5 (property), J7, J10 (core) |
 | S3 | Migrations `0100`–`0102`, `0104`–`0106`; `adapters/persistence/src/orchestration/**` (ordinal, registry, approvals + outbox, ledger, projection); the workspace resolver over the lease table; invariant race itests against the Phase 2 fencing primitive | `feat(persistence): make orchestration state idempotent on the fenced lease primitive` | G-P2 | A5 (full set and the upgrade path), D11, E1–E5, E9, E13 (persistence part), E15 |
 | S4 | On the rebased adapters: Git worktree rehydration from the registry; `create` create-or-adopt (base or `repairBaseSha`); commit HEAD CAS; host-id guard; deterministic container names/labels; `ExecutionReaper`; per-call runner abort (CR-26); per-request agent caps (CR-25); orphan-container itest | `feat(workspace): make workspaces, sandboxes and agent caps restart-safe` | G-P2 | E6, E7, E8 (resolves research Q6), E14, H9 |
 | S5 | Forge PR-upsert convergence on the real GitHub adapter (CR-27) + honest HTTP double + contract test; `DurableLocalForge` semantics parity table | `fix(forge): reconcile a pull-request create that conflicts with an existing head` | G-P2 | E12 |
@@ -1248,7 +1251,7 @@ PLAN_V2_SHA: 98e92cf (Codex lock-check: REQUEST_CHANGES 0.97; 15 of 19 v1 findin
   new: 3 HIGH, 7 MEDIUM; all 10 new ACCEPTED, all 4 PARTIAL re-adjudicated and folded or open by design)
 BASE_SHA: 00a6889 (Phase 2 head, unaccepted; Phase 2 cycle 7 lands first)
 BASELINE: pnpm install --frozen-lockfile exit 0; pnpm verify:all exit 0 (548/548 canonical tests), observed in step 1
-RECONCILIATION: v1 (R1–R19) applied; S0 shared foundation added; S3–S13 gated on Phase 2 acceptance + rebase
+RECONCILIATION: v1 (R1–R20) applied; S0 shared foundation added; S3–S13 gated on Phase 2 acceptance + rebase
 OPEN_BY_DESIGN: CR-10 verbatim slot text, pasted on controller hand-off after Lane B's fixed block locks (R18)
 PLAN_FILES:
   - docs/implementation/phases/phase-03-plan.md
