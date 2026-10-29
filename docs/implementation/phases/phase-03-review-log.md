@@ -1,6 +1,7 @@
 # Phase 3 — Plan Review Disposition Log
 
-> Lane A adjudication of the independent Codex plan review (workflow step 3).
+> Lane A adjudication of the independent Codex plan review (workflow step 3), and of the Codex lock-check of the
+> v2 plan (section "Lock-check v2" at the end, which also records the v3 freeze gate).
 > Planner: Lane A (Claude). Reviewer: Codex `gpt-5.6-sol` via the kiro-proxy gateway, read-only, run by the
 > controller on 2026-10-29. Raw review: `phase-03-plan-review-codex-v1.md`.
 > Reviewed base: `80bb76a` · Verdict: **REQUEST_CHANGES** · Confidence: 0.98.
@@ -368,6 +369,9 @@ Folded in for the same reason as the findings: each is a real gap on the cited e
 
 These are information or requests. None is decided by Lane A alone.
 
+Status after reconciliation R15–R18: items 1, 2 and 3 are **resolved by R15**, and item 4 is pending under R18
+(section "Lock-check v2").
+
 1. **Lane B's directory claim for the sink.** Lane B's draft lists a run-event sink under
    `adapters/persistence/src/assurance/**` (`phase-04-plan.md` §18 at `a2a7b8a`). Under R4, Lane A lands the
    sink adapter in S0 at `adapters/persistence/src/run-events/**`. Please confirm Lane B withdraws its copy.
@@ -395,9 +399,9 @@ These are information or requests. None is decided by Lane A alone.
 | Source | Lane B plan, heading `Review-loop slot contract (verbatim for S0)` |
 | Lane B locked SHA | _pending controller hand-off_ |
 | Byte comparison | _pending_ |
-| Doc updates triggered (architecture §12, exit J1–J9) | _pending_ |
+| Doc updates triggered (architecture §12, exit J1–J10, the core's local names under exit O5) | _pending_ |
 
-## Freeze gate
+## Freeze gate (v2, superseded)
 
 - [x] Every finding dispositioned (19/19).
 - [x] 0 unresolved CRITICAL/HIGH (all 9 ACCEPTED and folded into design, exit criteria and slices).
@@ -409,4 +413,314 @@ These are information or requests. None is decided by Lane A alone.
       and R14.
 - [ ] CR-10 verbatim text pasted (open by design; G-LB).
 
-**PLAN_STATUS:** LOCKED v2 (pending controller confirmation)
+**PLAN_STATUS (v2):** LOCKED v2, superseded by v3 below. The lock-check showed that the second box was ticked
+although P3-PLAN-HIGH-004 still depended on the pending CR-10 text; the v3 freeze gate states that qualifier.
+
+---
+
+## Lock-check v2
+
+> Lane A adjudication of the independent Codex lock-check of plan v2.
+> Reviewer: Codex `gpt-6.1-sol` via the kiro-proxy gateway, read-only, run by the controller on 2026-10-29 with
+> Codex CLI 0.147.0. That CLI version warned that it fell back to default model metadata for `gpt-6.1-sol`; the
+> controller has since moved to Codex CLI 0.165.0. The gateway appends its own style instructions and tools to
+> every request, so the review holds "via this gateway" (R16). Raw output: `phase-03-plan-review-codex-v2.md`.
+> Reviewed snapshot: `98e92cf` · Verdict: **REQUEST_CHANGES** · Confidence: 0.97.
+> Binding input: reconciliation R15–R19. R17 and R19 settle the business behavior behind P3-PLAN2-HIGH-001…003
+> and MED-005, and Lane A applies them exactly as written. Line numbers in quotes of the lock-check refer to
+> `98e92cf`.
+
+### Summary
+
+The lock-check found 15 of the 19 v1 findings FOLDED and 4 PARTIAL (HIGH-004, MED-003, MED-004, LOW-001), and
+raised 10 new findings.
+
+| Group | Count | ACCEPTED | PARTIAL | REJECTED |
+|---|---|---|---|---|
+| New HIGH (P3-PLAN2-HIGH-001…003) | 3 | 3 | 0 | 0 |
+| New MEDIUM (P3-PLAN2-MED-001…007) | 7 | 7 | 0 | 0 |
+| v1 PARTIAL, re-adjudicated: HIGH | 1 | 1 | 0 | 0 |
+| v1 PARTIAL, re-adjudicated: MEDIUM | 2 | 2 | 0 | 0 |
+| v1 PARTIAL, re-adjudicated: LOW | 1 | 1 | 0 | 0 |
+| **Total** | **14** | **14** | **0** | **0** |
+
+P3-PLAN-HIGH-004 is accepted, and its remaining part (the verbatim slot block, its source SHA and the byte
+comparison) stays open by design until G-LB, because R18 hands the block over only after Lane B fixes it.
+
+**Tally correction.** Lane A's step-3 report said "19 accepted". The step-3 summary table above was right: 18
+ACCEPTED, 1 PARTIALLY_ACCEPTED (P3-PLAN-MED-006, whose declined part R7 overrides), no rejection. The report
+wording was wrong; no disposition changes.
+
+### P3-PLAN2-HIGH-001 — No single rule for budget exhaustion — ACCEPTED (R17)
+
+**Finding.** v2 sent "cap exceeded" straight to `ATTEMPT_ABANDONED`, CR-25/H9 required the adapter to return
+`BUDGET_EXHAUSTED`, and H5 still required every mandatory check after the budget ran out during the agent step
+(`phase-03-architecture.md:138`, `phase-03-plan.md:1052`, `phase-03-exit-criteria.md:320,325` at `98e92cf`).
+
+**Disposition.** ACCEPTED. R17 decides the behavior.
+
+**Locked change.**
+
+- The verification budget is reserved separately when an attempt starts, and agent spending can never consume it
+  (architecture §10 "Verification has its own reservation"; data model §4.2 `verificationReserve`).
+- One agent-outcome table (architecture §10 "Agent outcome"; §4.1 `AGENT_RUNNING`):
+  - `AGENT_DONE` → the full path;
+  - cap-triggered `BUDGET_EXHAUSTED` → inspect only, no verification, commit or publication, attempt terminal
+    `budget-exhausted`;
+  - reported usage above a cap the adapter did not stop at → the same, plus `recordOverrun` and an audited
+    overrun incident; the recorded overrun then ends the task `BUDGET_EXHAUSTED` at the next reservation (R19);
+  - infrastructure error → abandoned as replaceable; a `retry` only if `maxAttempts` and a fresh reservation
+    allow.
+- The attempt terminal `budget-exhausted` joins architecture §12's terminal table until the fixed block's
+  vocabulary replaces it (R18).
+
+**Validation.** H5 and H8 rewritten; H10 new (core table and e2e, paired with H9). S2 core trace 1; S11 e2e.
+
+### P3-PLAN2-HIGH-002 — `REPAIR` without budget had two required outcomes — ACCEPTED (R17, R19)
+
+**Finding.** Architecture and H3/H4 routed a failed reservation to a budget-extension approval, while J4 ended a
+`REPAIR` without budget at once in `FAILED / repair-capacity-exhausted`, with no exception for approvals
+(`phase-03-architecture.md:131,149`, `phase-03-exit-criteria.md:317,378` at `98e92cf`).
+
+**Disposition.** ACCEPTED. R17 separates the two limits; R19 refines the budget scopes.
+
+**Locked change.** The reservation-failure table (architecture §10; §4.1 `BUDGET_CHECK`), for every planned
+attempt:
+
+- `maxAttempts` exhausted → `FAILED` (`repair-capacity-exhausted` for a repair lineage, else
+  `attempts-exhausted`), whatever the budget says;
+- task cap short and a budget-extension approval available → `WAITING_FOR_APPROVAL`; approve → reserve and
+  continue with the same attempt plan and lineage; reject or expiry → `BUDGET_EXHAUSTED`;
+- task cap short and no approval available → `BUDGET_EXHAUSTED`;
+- run remainder, wall-clock or a recorded overrun → `BUDGET_EXHAUSTED`; no task-level approval extends them.
+
+A budget-extension approval is available only while the policy datum `maxBudgetExtensionUsd` is set. There is no
+default in code (R19; architecture §10, §11; data model §4.2). J4 and H3 are amended.
+
+**Where S2 changes (R19).** At `a133e32` a repair plan whose reservation failed for any reason other than the task
+cap ended `FAILED / repair-capacity-exhausted` (`packages/orchestration/src/task-core.ts:620-621`), and the code
+default was `maxBudgetExtensionUsd: 50` (`packages/orchestration/src/defaults.ts:42`). The S2 follow-up commit
+routes every budget cause to `BUDGET_EXHAUSTED`, keeps `repair-capacity-exhausted` for `maxAttempts` only, and
+removes the default.
+
+**Validation.** H3, H4, J4. S2 core trace 2 (approvals available: approve keeps the lineage, reject ends
+`BUDGET_EXHAUSTED`; approvals disabled; `maxBudgetExtensionUsd` unset; run-remainder shortfall); S11 e2e.
+
+### P3-PLAN2-HIGH-003 — The commit→PR critical section covered cancellable assurance and the repair loop — ACCEPTED (R17)
+
+**Finding.** Cancel semantics still completed one critical section from commit to PR, while v2 put a cancellable
+assurance round, the `REPAIR` loop and the publication approval inside that span
+(`phase-03-architecture.md:142,149,155,231,456`, `phase-03-risk-register.md:27` at `98e92cf`).
+
+**Disposition.** ACCEPTED. R17 decides the behavior.
+
+**Locked change.** Each reconciling operation is its own critical unit: (1) commit plus evidence binding,
+(2) push, (3) PR upsert (architecture §4.1, the §5 option table, §9 cancel row). A cancel inside a unit is
+processed when the unit has reconciled. Once a push has started, the PR upsert completes too, so the remote holds
+either no ASEP branch or the branch and its PR. Assurance rounds, repair planning and approval waits are
+cancellable at any time; an open approval request is closed with `cancelApprovalRequest` (R19). Risk PR3-18;
+threat T3-19.
+
+**Validation.** G7 rewritten; G11 new (cancel during assurance); G12 new (cancel during the publication-approval
+wait). S2 core trace 4; S11 e2e.
+
+### P3-PLAN2-MED-001 — S2's fitness acceptance depended on the unaccepted Phase 2 framework — ACCEPTED
+
+**Finding.** S2 had to deliver B2 in the shared forbidden-import suite, while CR-12 required the accepted Phase 2
+AST framework after the rebase (`phase-03-plan.md:524,843,850`, `phase-03-exit-criteria.md:64,67` at `98e92cf`;
+R8, R15).
+
+**Disposition.** ACCEPTED.
+
+**Locked change.** Two checkpoints (architecture §3; plan §25, CR-12, CR-13):
+
+- S2: a package-local self-check, `packages/orchestration/src/purity.test.ts` (`asep-suite:orchestration-purity`).
+  It does not touch `scripts/forbidden-imports.test.ts` or the shared rule framework.
+- S7, after G-P2: the same rule in `scripts/forbidden-imports.test.ts` on the accepted framework.
+
+The package-local suite stays registered after S7, because `REQUIRED_SUITES` is append-only (R10).
+
+**Validation.** B2 (split into the two checkpoints).
+
+### P3-PLAN2-MED-002 — The purity rule covered tests that need runtime imports — ACCEPTED
+
+**Finding.** B2 applied to all of `packages/orchestration/src/**` with `import type` only, but the required suites
+live there and use runtime imports (`phase-03-exit-criteria.md:67`, `phase-03-plan.md:858` at `98e92cf`; pattern
+`packages/domain/src/operational.test.ts:1-2`).
+
+**Disposition.** ACCEPTED.
+
+**Locked change.** The rule scans production source only: `src/**/*.ts` except `*.test.ts` and
+`src/test-support/**` (architecture §3). Production modules may import each other relatively. External imports
+stay `import type` from `@asep/contracts` and `@asep/ports` only, and the nondeterminism constructs stay banned.
+Tests may use `node:test`, `node:assert/strict` and the module under test. S2's fixtures move from
+`src/test-fixtures.ts`, which the `a133e32` check scanned as production source, to `src/test-support/`.
+
+**Validation.** B2: seeded violations fail, a valid construct passes, and the scanned file set excludes tests and
+test support.
+
+### P3-PLAN2-MED-003 — Per-slice gates had reverse dependencies — ACCEPTED
+
+**Finding.** S0 had to pass O1 with `NotConfiguredAssuranceSlot`, which S6 implemented, and S7 delivered a strict
+replay suite whose corpus only S8/S10/S11 produce (`phase-03-plan.md:522,528,529,543`,
+`phase-03-architecture.md:281`, `phase-03-exit-criteria.md:42` at `98e92cf`).
+
+**Disposition.** ACCEPTED.
+
+**Locked change.**
+
+- **Default slot.** S0 lands a minimal `NotConfiguredAssuranceSlot` in
+  `packages/application/src/orchestration-activities/`, so O1 holds in S0 and J2 is proven from S0. S6 only binds
+  it into the activity wrapper (plan §25, §26, CR-10).
+- **Replay bootstrap.** The replay suite becomes required in S8, the first slice with a real server, with its
+  seeded non-deterministic fixture, the first captured histories and `required-scenarios.json` listing exactly
+  those scenarios. S10 and S11 append scenarios with their histories in the same commit, and the suite fails if a
+  listed scenario lacks a history. S13 asserts that the list equals the full set (architecture §6.5; exit B5).
+  Nothing is skipped, the manifest is never empty once the suite exists, and the final B5 is unchanged. Risk
+  PR3-37.
+
+**Validation.** O1 and J2 in S0; B5 staged in S8, S10 and S11, final in S13.
+
+### P3-PLAN2-MED-004 — The callback injector sat outside the Temporal SDK boundary — ACCEPTED
+
+**Finding.** CR-16 added `@temporalio/client` to `workers/temporal-worker` for `AsyncCompletionClient`, which B1
+and architecture §3 forbid without a test exception (`phase-03-plan.md:937`, `phase-03-exit-criteria.md:64`,
+`phase-03-architecture.md:109` at `98e92cf`).
+
+**Disposition.** ACCEPTED.
+
+**Locked change.** `workers/temporal-worker` gets no `@temporalio/*` dependency (CR-16). The CX-35 injector and
+the CX-36 duplicate-delivery wrapper live in `adapters/temporal/src/test-support/` and export helpers whose
+signatures use no SDK type. The confinement rule's allowed scope includes that directory, with no test exception
+(architecture §3). Ownership: plan §31.
+
+**Validation.** F16 amended; F17; B1.
+
+### P3-PLAN2-MED-005 — A retry of a repair attempt had no lineage rule — ACCEPTED (R17)
+
+**Finding.** Abandonment turned the next attempt into `kind = retry`, but only `repair` attempts carried the repair
+base and ContextPack, so a retry could fall back to the task base (`phase-03-architecture.md:134,149,161,590`,
+`phase-03-data-model.md:108` at `98e92cf`).
+
+**Disposition.** ACCEPTED. R17 decides it.
+
+**Locked change.** Attempt kind and repair lineage are separate (architecture §4.1 "Attempt kind and repair
+lineage are separate", §12 "Repair"). A retry copies the lineage of the attempt it replaces: same `repairBaseSha`,
+repair order, round and prior adjudication. Data model §3: `attempts_lineage_shape` replaces
+`attempts_repair_shape`; a retry copies parent, repair order and `base_sha`, while round and prior adjudication
+live in workflow state. The repair-workspace ordering covers the whole lineage. Risk PR3-36.
+
+**Validation.** J4 amended with the trace `REPAIR` → agent death → replacement → assurance. S2 core trace 3; S11
+e2e.
+
+### P3-PLAN2-MED-006 — Drain-only stopped the workers before draining — ACCEPTED
+
+**Finding.** The procedure stopped the old workers and then waited for open workflows to finish, which nothing
+could then run (`phase-03-architecture.md:296,122` at `98e92cf`).
+
+**Disposition.** ACCEPTED.
+
+**Locked change.** Architecture §6.6: (1) stop new executions (API 503); (2) keep the old workers; (3) wait until
+no open workflow remains on the task queue; (4) stop the old workers; (5) start the new build and re-enable
+starts. Risk PR3-14; exit M1; runbook in S13.
+
+**Validation.** M1.
+
+### P3-PLAN2-MED-007 — The log still let measurement write operational `run_events` — ACCEPTED (R15)
+
+**Finding.** Escalation item 2 still offered a fabricated `runs` row for benchmark replays, or dropping the FK,
+after R15 had ruled both out (`phase-03-review-log.md:374`, `phase-03-data-model.md:283` at `98e92cf`).
+
+**Disposition.** ACCEPTED.
+
+**Locked change.** Escalation item 2 is closed as resolved by R15. The composite FK stays. Benchmark, replay and
+corpus measurement never write operational `run_events`; their outputs go to Lane B's measurement storage. Neither
+a fabricated run row nor dropping the FK remains an option. Data model §3.7 "Storage boundary"; threat T3-17.
+
+**Validation.** O2 gains the case "event for a run with no `runs` row in the tenant → rejected" (S0).
+
+### v1 findings the lock-check marked PARTIAL
+
+#### P3-PLAN-HIGH-004 — The slot did not match Phase 4 — ACCEPTED; verbatim part open by design until G-LB
+
+**Lock-check.** Semantics, repair base and terminal hook changed for real, but the TypeScript contract, its source
+SHA and the byte comparison were still pending.
+
+**Disposition.** ACCEPTED. The remaining part cannot be closed by Lane A: R18 hands the block over only after
+Lane B fixes it. v3 records what the fixed block brings and what S0 does with it (architecture §12; plan §20,
+CR-10):
+
+- location `packages/application/src/review-loop/` (R16);
+- two default slots: Lane A's `NotConfiguredAssuranceSlot` fails closed for any risk that requires review, and
+  Lane B's `DisabledAssuranceSlot` is the explicit opt-out;
+- the terminal vocabulary `verification-stopped` plus specific failure terminals;
+- the workspace resolver port, implemented by Lane A over the lease table (S3, exit E15: wrong tenant, wrong
+  lease, stale epoch);
+- the fixed logical time, the `ArtifactRef` envelope within 64 KiB, and `shadow` only on `PROCEED`.
+
+The lock-check's normalization note is folded as exit O5: S0 renames the core's local slot types and terminal
+names to the block's, and a table test drives the core with each locked outcome, including `repairBaseSha`, the
+repair order, `nextRound` and the adjudication lineage.
+
+**Freeze gate.** This is the one open item, and S0 cannot start without it (G-LB).
+
+#### P3-PLAN-MED-003 — Retention flag, value and read-back — ACCEPTED, folded
+
+The flag was observed on the pinned image in this step: `temporal operator namespace create --help` lists
+`--retention duration` (default `72h0m0s`), and the global `--output` accepts `json` (research register §2, Q9
+resolved). The gate creates its namespace with `--retention 24h` and reads it back (exit C10, new). Production
+uses `720h` unless the pre-deployment review decides otherwise, read back by the smoke (C9; architecture §16). The
+JSON field that carries the retention is **not verified**, because it needs a running server; S8 pins it from the
+gate's first real run.
+
+#### P3-PLAN-MED-004 — Replay corpus bootstrap and drain order — ACCEPTED, folded
+
+Both remaining parts are the new findings P3-PLAN2-MED-003 (bootstrap) and P3-PLAN2-MED-006 (drain order), folded
+above.
+
+#### P3-PLAN-LOW-001 — Pull and inspect output — ACCEPTED, folded
+
+C1 and M3 now require the full `docker pull` and `docker image inspect` RepoDigests output of every pinned
+Temporal image in the gate log, preserved under `artifacts/phase-03/` (CR-14).
+
+### Other lock-check observations folded
+
+- **Upgrade path.** S0 lands `0107` before S3's lower ids. The migrator checks a strictly ascending set
+  (`adapters/persistence/src/migrator.ts:45-52`) and visits every migration, applying those not yet recorded
+  (`:100-123`). A5 now exercises the real path: the Phase 2 head, then S0, then S3.
+- **Migration count.** Seven ids are used (`0100`–`0102`, `0104`–`0107`) and `0103` is intentionally unused. No
+  change.
+
+### Reconciliation R15–R19 applied
+
+- **R15.** S2 is the only slice before the rebase (`a133e32`) and appends only to the allowed registries; the
+  `run_events` FK stays with the measurement boundary (MED-007); the fixed logical time is in architecture §12.
+- **R16.** Slot location (plan §20, CR-10, §31; architecture §12); the gateway note in the lock-check's
+  provenance; the reviewer model.
+- **R17.** P3-PLAN2-HIGH-001…003 and MED-005, above.
+- **R18.** The fixed block before hand-off (G-LB) and its known content, under P3-PLAN-HIGH-004 above.
+- **R19.**
+  - Budget-scope refinement: architecture §10; exits H3, J4.
+  - Assurance-activity failure: shadow mode → audited `assurance-unavailable`, continue as `PROCEED`; gating mode
+    → `ESCALATE`; never `FAILED` (architecture §4.1, §12; data model §4.2 `governance.assuranceMode`; exit J10,
+    new; risk PR3-35; threat T3-18). At `a133e32` this ended the task `FAILED`
+    (`packages/orchestration/src/task-core.ts:561-562`); the S2 follow-up commit changes it.
+  - `maxBudgetExtensionUsd` has no default in code: architecture §10, §11; data model §4.2; risk PR3-38.
+  - Accepted as proposed: the `VERIFYING → BUDGET_EXHAUSTED` edge (data model §4.1, S1); `cancelApprovalRequest`
+    and `recordAudit` (architecture §5); admission-activity failure → `BLOCKED (admission-unavailable)` and
+    `ensureAttempt` failure → `FAILED` without replacement (architecture §4.1); lease renewal while paused or
+    waiting is S7's interpreter; the test-only `@asep/domain` devDependency.
+  - Memory: lanes never touch the controller's memory directory (lane-contract addendum).
+
+### Freeze gate (v3)
+
+- [x] Every lock-check finding dispositioned: 10/10 new, 4/4 v1 PARTIAL.
+- [x] 0 unresolved CRITICAL/HIGH, **except** the verbatim-text part of P3-PLAN-HIGH-004, which is open by design
+      until G-LB and blocks S0.
+- [x] Canonical docs updated: plan, architecture, data model, exit criteria, risk register, research register,
+      threat model delta.
+- [x] S2's acceptance carries the four core traces the lock-check asked for; S11 carries the matching e2e.
+- [x] Reconciliation R15–R19 applied.
+- [ ] CR-10 verbatim text pasted (open by design; G-LB, R18).
+
+**PLAN_STATUS:** LOCKED v3 (pending controller confirmation)

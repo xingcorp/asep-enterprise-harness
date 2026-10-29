@@ -1,10 +1,11 @@
-# Phase 3 — Research Register (LOCKED v2, pending controller confirmation)
+# Phase 3 — Research Register (LOCKED v3, pending controller confirmation)
 
 > Dependency and design research for Phase 3 "Durable orchestration" (90-day plan, Days 31–45).
 > Every external fact below was observed on **2026-10-29**: in workflow step 1 unless a row says otherwise, and
 > re-observed in step 3 where marked. Sources are listed in §9. Anything not observed directly is marked **not
 > verified** and has a decision rule that resolves it during implementation. v1 of this register is at
 > `80bb76a`. v2 adds the step-3 observations (P3-PLAN-LOW-001) and the reconciliation's decisions (R1, R14).
+> v3 adds the retention-flag observation made while folding the lock-check of v2 (Q9, P3-PLAN-MED-003).
 > Environment observed: Node **24.6.0**, pnpm **10.31.0**, TypeScript **7.0.2**, Docker server **29.6.1**
 > (Docker re-observed in step 3).
 
@@ -89,10 +90,15 @@ its sandbox, so Lane A re-ran the checks on the implementation host. Docker serv
 | `docker run --rm temporalio/temporal@sha256:ad4c82c9… --version` | `temporal version 1.9.1 (Server 1.32.0, UI 2.54.1)` (exit 0; container removed) |
 | `docker run --rm temporalio/temporal@sha256:ad4c82c9… server start-dev --help` | lists `--ip`, `--headless`, `-n, --namespace`, `-f, --db-filename`, `-p, --port`, `--http-port`, `--ui-ip`, `--ui-port`, `--sqlite-pragma` |
 | `docker image inspect temporalio/temporal@sha256:ad4c82c9…` | entrypoint `["temporal"]`; size 155421701 bytes |
+| `docker run --rm temporalio/temporal@sha256:ad4c82c9… operator namespace create --help` (v3) | lists `--retention duration   Time to preserve closed Workflows before deletion. (default 72h0m0s)` (exit 0; container removed) |
+| `docker run --rm temporalio/temporal@sha256:ad4c82c9… options` (v3) | global `--output, -o string   Non-logging data output format. Accepted values: text, json, jsonl, none. (default text)`; `operator namespace describe --help` itself lists only `--namespace-id` and points to `temporal options` |
 
 The `start-dev --help` output does not list a namespace-retention flag. Retention is set through
-`temporal operator namespace` at gate setup. The exact flag is **not verified** and is decided at S8 (Q9). These
-observations are from a developer host, not CI. S8 makes the gate print the `--version` line into its log, and M3
+`temporal operator namespace create --retention <duration>` at gate setup (Q9, observed in v3): the gate uses
+`--retention 24h`, and the namespace is read back with `temporal operator namespace describe --output json`
+(exit C10). The JSON field that carries the retention is **not verified**, because it needs a running server; S8
+pins it from the gate's first real run and the read-back test fails if the field is absent. These observations
+are from a developer host, not CI. S8 makes the gate print the `--version` line into its log, and M3
 preserves it, so the controller's CI run records the same evidence.
 
 **Gate decision.** The mandatory integration gate provisions `temporalio/temporal@sha256:ad4c82c9…` and runs
@@ -188,7 +194,7 @@ fails to bundle, `adapters/temporal` emits its workflow entry through a dedicate
 | Q6 | Does SIGKILL of the docker client orphan the container? | Verify at S4 (§6). |
 | Q7 | Will Phase 2 repairs change `SideEffectLog` fencing (the lease-handoff wedge)? | **Resolved by the controller (R1):** yes. Phase 2 HIGH-006 lands the lease-bound fenced takeover. Lane A withdrew CR-05/CR-06 as designs and states invariants instead (plan §30 CR-05). |
 | Q8 | What exactly does GitHub return when a PR already exists for a head? | Not verified (no live credentials). The adapter keys on HTTP `422` plus a re-list by head, never on message text (CR-27). The HTTP double returns `422` for a duplicate create. |
-| Q9 | Which `temporal operator namespace` flag sets retention on the dev server? | Verify at S8 from `--help` output of the pinned image, and record it here and in the runbook. |
+| Q9 | Which `temporal operator namespace` flag sets retention on the dev server? | **Resolved (v3, observed 2026-10-29 on the pinned image):** `temporal operator namespace create --retention <duration>` (default `72h0m0s`). The gate uses `24h` and reads it back (C10); production uses `720h` unless the pre-deployment review decides otherwise (architecture §16). The JSON field of the read-back is not verified; S8 pins it from a real run. |
 | Q10 | How does `AsyncCompletionClient` in 1.24.0 report a completion for a completed or superseded attempt? | Verify at S10. CX-35 asserts rejection and the history count, not an error class. |
 
 ## 9. Sources (accessed 2026-10-29)

@@ -1,8 +1,9 @@
-# Phase 3 — Data Model (LOCKED v2, pending controller confirmation)
+# Phase 3 — Data Model (LOCKED v3, pending controller confirmation)
 
 > Companion to `phase-03-plan.md`. PostgreSQL 17 (same digest-pinned image as Phase 2). Base `00a6889`; v1 of
-> this document is at `80bb76a`. v2 folds in the Codex plan review (`phase-03-review-log.md`) and the controller's
-> shared-surface reconciliation v1 (R1–R14), which wins where the two disagree.
+> this document is at `80bb76a`, v2 at `98e92cf`. v2 folded in the Codex plan review; v3 folds in the Codex
+> lock-check of v2 and the controller's reconciliation R15–R19 (`phase-03-review-log.md`). The reconciliation wins
+> where it and this document disagree.
 > Lane A migration range: **`0100`–`0199`** (lane contract). Migrations are append-only, checksummed and applied
 > in strictly ascending id order by the Phase 2 migrator, which allows gaps (`adapters/persistence/src/migrator.ts:45-51`).
 > Phase 2's `0001`–`0012` (`adapters/persistence/src/migrations.ts:425-438`) and the Phase 2 repairs in
@@ -96,8 +97,12 @@ alter table attempts
     references attempts (id, organization_id, project_id),
   add constraint attempts_repair_order_scoped_fk foreign key (repair_order_artifact_id, organization_id, project_id)
     references artifacts (id, organization_id, project_id),
-  add constraint attempts_repair_shape check (
-    (attempt_kind = 'repair') = (repair_order_artifact_id is not null and parent_attempt_id is not null));
+  -- Attempt kind and repair lineage are separate (R17): a repair attempt always carries a lineage, a retry
+  -- carries the lineage of the attempt it replaces (if any), and an initial attempt carries none.
+  add constraint attempts_lineage_shape check (
+    (repair_order_artifact_id is null) = (parent_attempt_id is null)
+    and (attempt_kind <> 'repair'  or repair_order_artifact_id is not null)
+    and (attempt_kind <> 'initial' or repair_order_artifact_id is null));
 -- backfill Phase 2 rows: attempt_number = row_number() over (partition by task_id order by started_at, id),
 --                        attempt_kind = 'initial'
 alter table attempts alter column attempt_number set not null,
@@ -109,9 +114,12 @@ create unique index attempts_task_ordinal on attempts (task_id, attempt_number);
   returns the existing row for `(task_id, attempt_number)`. A mismatched `kind`, parent, repair order or base on
   an existing ordinal raises `AttemptIdentityConflictError` (non-retryable). The natural key closes the
   engine-retry duplicate-row hazard; luck plays no part.
-- A repair attempt's existing `attempts.base_sha` column (`migrations.ts:109`) holds `repairBaseSha`: the prior
-  attempt's harness commit, as returned in the `REPAIR` outcome. Its evidence is honest about its own base. The
-  task's original base stays on `tasks.base_sha` and is passed to the assurance round as `taskBaseSha`.
+- A repair-lineage attempt's existing `attempts.base_sha` column (`migrations.ts:109`) holds `repairBaseSha`: the
+  parent attempt's harness commit, as returned in the `REPAIR` outcome. Its evidence is honest about its own base.
+  The task's original base stays on `tasks.base_sha` and is passed to the assurance round as `taskBaseSha`.
+- A `retry` that replaces a repair-lineage attempt has the same `parent_attempt_id`, `repair_order_artifact_id`
+  and `base_sha` as the attempt it replaces. The round and prior adjudication of the lineage travel in the
+  workflow state and in the next assurance request; they are not columns.
 
 ### 3.3 (withdrawn)
 
@@ -304,9 +312,16 @@ create trigger run_events_append_only
    `RunEventConflictError`.
 
 It never updates a row. The adapter lives in `adapters/persistence/src/run-events/**` (Lane A, S0), and both
-lanes inject it. Rollback of `0107` is a forward migration that drops the trigger, function and table. It is
-written only if the controller orders a rollback; no down-migration is run automatically (Phase 2 migrator
-rule).
+lanes inject it.
+
+**Storage boundary (R15, P3-PLAN2-MED-007).** `run_events` holds operational events of real runs only; the scoped
+run FK stays. Benchmark, replay and corpus measurement never write into `run_events`, never create a `runs` row
+to satisfy the FK, and never ask for the FK to be dropped. Their outputs go to Lane B's measurement storage
+(`metric_snapshots` or eval artifacts). The sink conformance (exit O2) includes an event whose run does not exist
+in the tenant, and it must be rejected.
+
+Rollback of `0107` is a forward migration that drops the trigger, function and table. It is written only if the
+controller orders a rollback; no down-migration is run automatically (Phase 2 migrator rule).
 
 ## 4. Contract changes (shared; CR-01 … CR-03)
 
@@ -319,10 +334,14 @@ Add `PAUSED`, `WAITING_FOR_APPROVAL`, `BUDGET_EXHAUSTED`. Transition table chang
 READY / EXECUTING / VERIFYING  → PAUSED, WAITING_FOR_APPROVAL      (in addition to Phase 2 edges)
 PAUSED                         → READY, EXECUTING, VERIFYING, BLOCKED, CANCELLED
 WAITING_FOR_APPROVAL           → READY, EXECUTING, VERIFYING, BLOCKED, BUDGET_EXHAUSTED, CANCELLED
-READY / EXECUTING              → BUDGET_EXHAUSTED
+READY / EXECUTING / VERIFYING  → BUDGET_EXHAUSTED
 BUDGET_EXHAUSTED               → (terminal)
 WAITING_FOR_HUMAN_REVIEW       → (terminal for the harness; unchanged; still no ACCEPTED/DONE)
 ```
+
+`VERIFYING → BUDGET_EXHAUSTED` is needed when a replacement attempt is refused for budget after the task already
+reached verification (for example an exhausted repair attempt whose retry fails its reservation). The S2 decision
+core emits it, and S1 adds it to the domain table (R19).
 
 The task stays `VERIFYING` across assurance and repair rounds, as Phase 4 requires (`phase-04-plan.md` §7 at
 `a2a7b8a`). No review-specific task status exists. `isTaskTerminal` gains `BUDGET_EXHAUSTED`. The Phase 2 table
@@ -342,10 +361,15 @@ workOrderRef: ArtifactRef            (WorkOrder already stored and validated)
 contextPackRef: ArtifactRef
 attemptBudget: Budget                (must equal WorkOrder.budget; checked by the first activity)
 taskBudget: { maxAttempts 1..10, maxCostUsd > 0, softCostUsd ≤ maxCostUsd, maxWallClockMinutes > 0 }
+verificationReserve: { costUsd ≥ 0, wallClockMinutes ≥ 0 }   (reserved separately at each attempt start, R17;
+                     wall-clock = the plan's check timeouts rounded up to minutes, cost from policy)
 runRemaining: { costUsd ≥ 0 }
 verification: { planId, checks: [{ id, level L0..L9, category, mandatory, commandId }] }   (no shell strings)
 governance: { publicationApprovalRequired, approvalTtlSeconds 60..604800, maxPauseHours 1..168,
-              requestedBy (ULID) }
+              assuranceMode: shadow|gating (shadow in Phases 3 and 4), requestedBy (ULID) }
+policy: { replaceableFailureClasses: [failure class], maxBudgetExtensionUsd?: > 0 }
+        (resolved from `policies/orchestration-policy.yaml` at submit time; the workflow never reads policy files.
+         An absent maxBudgetExtensionUsd makes budget-extension approval unavailable, R19.)
 ```
 
 `maxRepairCycles` from v1 is removed: the round limit belongs to Phase 4's review policy (`maxRounds`). Lane A

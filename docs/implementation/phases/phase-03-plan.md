@@ -1,18 +1,23 @@
-# Phase 3 — Durable Orchestration — Plan (LOCKED v2, pending controller confirmation)
+# Phase 3 — Durable Orchestration — Plan (LOCKED v3, pending controller confirmation)
 
-> Status: **LOCKED v2 (pending controller confirmation)**. Lane A wrote v1 (`80bb76a`) in workflow step 1. The
+> Status: **LOCKED v3 (pending controller confirmation)**. Lane A wrote v1 (`80bb76a`) in workflow step 1. The
 > controller ran the independent Codex plan review (`phase-03-plan-review-codex-v1.md`, REQUEST_CHANGES 0.98).
 > In step 3 Lane A adjudicated every finding in `phase-03-review-log.md` and folded each accepted one into the
-> design, the exit criteria and the slice that proves it. The controller's shared-surface reconciliation v1
-> (R1–R14) is applied, and it wins wherever it disagrees with this plan.
+> design, the exit criteria and the slice that proves it (v2, `98e92cf`). The controller then ran an independent
+> Codex lock-check of v2 (`phase-03-plan-review-codex-v2.md`, REQUEST_CHANGES 0.97). v3 adjudicates every new
+> finding and every v1 finding it marked PARTIAL (review log, section "Lock-check v2") and folds them in the same
+> way. The controller's shared-surface reconciliation v1 (R1–R19) is applied, and it wins wherever it disagrees
+> with this plan.
 > One item stays open by design: the review-loop slot TypeScript (CR-10) is pasted verbatim from Lane B's locked
-> block `Review-loop slot contract (verbatim for S0)` when the controller hands it over.
-> No implementation code, tests, migrations or configuration are written in this step.
+> block `Review-loop slot contract (verbatim for S0)` when the controller hands over the fixed version (R18).
+> Only S2 is implemented before the Phase 2 rebase (R15): `a133e32`, then a follow-up commit that brings it in
+> line with v3.
 > Scope source: `docs/implementation/90-day-plan.md:24-31` (Days 31–45).
 
 ```text
 BASE_SHA:        00a6889  (head of phase/02-single-agent-vertical-slice; Phase 2 NOT yet accepted)
 PLAN_V1_SHA:     80bb76a  (reviewed by Codex)
+PLAN_V2_SHA:     98e92cf  (lock-checked by Codex)
 TARGET_BRANCH:   phase/03-durable-orchestration (Lane A worktree)
 BASELINE_GATE:   pnpm install --frozen-lockfile → exit 0; pnpm verify:all → exit 0 (observed 2026-10-29 at
                  00a6889, in workflow step 1; §2)
@@ -22,7 +27,7 @@ IMPLEMENTATION:  starts only after the controller says "implement". Phase 2 is a
 
 Companion documents: `phase-03-architecture.md`, `phase-03-data-model.md`, `phase-03-exit-criteria.md`,
 `phase-03-risk-register.md`, `phase-03-research-register.md`, `phase-03-threat-model-delta.md`,
-`phase-03-review-log.md`, `phase-03-plan-review-codex-v1.md`.
+`phase-03-review-log.md`, `phase-03-plan-review-codex-v1.md`, `phase-03-plan-review-codex-v2.md`.
 
 ---
 
@@ -32,8 +37,10 @@ Companion documents: `phase-03-architecture.md`, `phase-03-data-model.md`, `phas
 |---|---|---|
 | 1 | Lane A | phase-03 docs, one docs commit (`80bb76a`) |
 | 2 | Controller | Codex read-only plan review → `phase-03-plan-review-codex-v1.md` |
-| 3 | Lane A (this step) | every finding adjudicated → `phase-03-review-log.md`; reconciliation applied; plan LOCKED v2 |
-| 4 | Lane A, after "implement" | one slice per commit (§26), on this branch only, in the §25 order |
+| 3 | Lane A | every finding adjudicated → `phase-03-review-log.md`; reconciliation applied; plan LOCKED v2 (`98e92cf`) |
+| 3a | Controller | Codex read-only lock-check of v2 → `phase-03-plan-review-codex-v2.md` |
+| 3b | Lane A (this step) | lock-check adjudicated and folded; R15–R19 applied; plan LOCKED v3; S2 brought in line |
+| 4 | Lane A, after "implement" | one slice per commit (§26), on this branch only, in the §25 order; S2 first (`a133e32`), as R15 allows |
 | 5 | Controller | independent gate run + Codex final audit; Lane A repairs |
 | 6 | Controller | merge on ACCEPT, in the order Phase 2 → Phase 3 → Phase 4 (R-ordering 4) |
 
@@ -275,30 +282,43 @@ POST /v1/approvals/:approvalId/decision          decision + outbox row → deliv
 ## 11. Task workflow sequence (the Phase 3 analogue of `phase-02-plan.md` §11)
 
 ```text
-admitTask                         (activity; injected admit hook, default admitRisk; DEFERRED → BLOCKED)
+admitTask                         (activity; injected admit hook, default admitRisk; DEFERRED → BLOCKED;
+                                   activity failure → BLOCKED admission-unavailable)
 loop attempt n = 1..maxAttempts:
-  budget reservation              (workflow core; may open budget-extension approval)
-  ensureAttempt(n, kind, base)    (natural key; repair: base = repairBaseSha, parent, repair order)
+  budget reservation              (workflow core; agent cap + verification reserve, reserved separately; on
+                                   failure, architecture §10 "Reservation failure": maxAttempts → FAILED;
+                                   task cap short → budget-extension approval if available; else BUDGET_EXHAUSTED)
+  ensureAttempt(n, kind, lineage) (natural key; lineage = repairBaseSha, parent, repair order; a retry copies the
+                                   lineage of the attempt it replaces; failure → FAILED, never replaced)
   acquireLease                    (Phase 2 primitive; invariants L1–L3)
   prepareWorkspace                (registry CREATING → worktree at base → ACTIVE)
-  storeAttemptInputs              (WorkOrder / ContextPack refs; repair: buildRepairContextPack; ExecutionEnvelope)
+  storeAttemptInputs              (WorkOrder / ContextPack refs; lineage: buildRepairContextPack; ExecutionEnvelope)
   runAgent                        (engine retry = 1; per-request caps; heartbeats; lease renewed; container asep-agent-<attemptId>)
+    agent outcome, architecture §10:
+    AGENT_DONE within every cap   → the full path below
+    BUDGET_EXHAUSTED or overrun   → inspectWorkspace only → cleanup → recordUsage (+ recordOverrun) →
+                                    recordAttemptOutcome(budget-exhausted) → next n (kind retry, same lineage)
+    agent failure or infra error  → abandon (below)
   inspectWorkspace                (overstep → abandon attempt, policy-violation)
-  runVerification                 (reap stale verify containers first; per-call cancellation)
+  runVerification                 (its own reservation; reap stale verify containers first; per-call cancellation)
   if verdict != PASS: recordAttemptOutcome(verification-failed) → cleanup → task FAILED; stop
-  commitAttempt                   (Phase 2 fence; HEAD CAS against base; evidence id allocated inside)
-  persistEvidence                 (createdAt = workflow time → retry-identical bytes; adoption as safety net)
-  assuranceRound                  (Lane B runAssuranceRound via the context adapter; Phase 3 default: PROCEED/not-required for R0/R1)
-    REPAIR   → recordAttemptOutcome(repair-requested) → next n (kind repair) or FAILED if no capacity
+  commitAttempt + persistEvidence (critical unit 1: Phase 2 fence; HEAD CAS against base; evidence id allocated
+                                   inside; createdAt = workflow time → retry-identical bytes; adoption as safety net)
+  assuranceRound                  (cancellable; Lane B runAssuranceRound via the context adapter; Phase 3 default:
+                                   PROCEED/not-required for R0/R1)
+    REPAIR   → recordAttemptOutcome(repair-requested) → next n (kind repair, new lineage)
     BLOCK    → recordAttemptOutcome(blocked) → quarantine → task BLOCKED; stop
     PROCEED | ESCALATE → continue (ESCALATE flags the PR)
-  publication approval            (only if the run requires it)
-  publishBranch                   (non-cancellable; fence; side-effect protocol; remote reconcile)
-  upsertPullRequest               (non-cancellable; fence; side-effect protocol; create-conflict reconcile)
+    activity fails → audit assurance-unavailable; shadow mode → PROCEED; gating mode → ESCALATE; never FAILED
+  publication approval            (only if the run requires it; a cancellable wait)
+  publishBranch                   (critical unit 2; fence; side-effect protocol; remote reconcile)
+  upsertPullRequest               (critical unit 3, always run once push started; fence; create-conflict reconcile)
   recordAttemptOutcome(proceeded | escalated)
   projectTaskState WAITING_FOR_HUMAN_REVIEW; emit task.completed; cleanup; done
 on abandon (pre-publication only): reapContainers → quarantineWorkspace → releaseLease →
-  recordAttemptOutcome(failed) → recordUsage → next n if replaceable
+  recordUsage → recordAttemptOutcome(failed) → next n (kind retry, same lineage) if replaceable
+on cancel: inside a critical unit → processed once it has reconciled (after push started: once the PR upsert
+  has too); anywhere else → at once; then reap → quarantine → release → recordAttemptOutcome(cancelled) → CANCELLED
 ```
 
 ## 12. Ports and adapters
@@ -341,7 +361,10 @@ reconciliation), plus cancellation and fence checks just before each external ca
 
 ## 17. Pause / resume / cancel
 
-Architecture §9. Cancellation reaches both the agent and the verification runner (CR-26, exit G10). The
+Architecture §9. Cancellation reaches both the agent and the verification runner (CR-26, exit G10). There is no
+single commit-to-PR critical section: each operation that needs reconciliation is its own critical unit (commit
+plus evidence binding, push, PR upsert), and a cancel inside a unit is processed once that unit has reconciled.
+Assurance rounds, repair planning and approval waits are cancellable at any time (R17; exits G7, G11, G12). The
 workflow audits accepted controls after acceptance.
 
 ## 18. Budgets
@@ -349,9 +372,16 @@ workflow audits accepted controls after acceptance.
 Architecture §10:
 
 - per-request agent caps enforced by the rebased adapter (CR-25);
-- reservation-based hard caps at task and run level;
-- soft-threshold events and approval-based extension;
-- verification never reduced.
+- reservation-based hard caps at task and run level, with the verification budget reserved separately when an
+  attempt starts, so agent spending can never consume it (R17);
+- one agent-outcome table: `AGENT_DONE` gets the full path; a cap stop or an overrun is inspected only and is
+  never verified, committed or published; an infrastructure error is replaced only if `maxAttempts` and a fresh
+  reservation allow (exits H5, H8, H10);
+- one reservation-failure table: `maxAttempts` exhausted → `FAILED`; a task-cap shortfall → budget-extension
+  approval when `maxBudgetExtensionUsd` is set (no default in code, R19); every other budget cause →
+  `BUDGET_EXHAUSTED` (exits H3, H4, J4);
+- soft-threshold events;
+- verification never reduced, and never run on a path that cannot publish.
 
 ## 19. Approvals
 
@@ -365,7 +395,7 @@ Architecture §11:
 ## 20. Review-loop slot (reconciled integration point for Lane B, R3)
 
 Architecture §12 describes the behavior. The binding types are CR-10 in §30: the verbatim Lane B block, landed
-in S0. Summary:
+in S0 at `packages/application/src/review-loop/` (R16). Summary:
 
 - **Position and outcomes.** One assurance round per attempt that passes verification, after evidence and
   before push. Outcomes are exactly `PROCEED | REPAIR | ESCALATE | BLOCK`. No round runs after a verification
@@ -379,13 +409,19 @@ in S0. Summary:
     redeliveries;
   - the `recordAttemptOutcome` activity at every terminal;
   - the injected `admit` hook;
-  - the repair attempt at `repairBaseSha` with a ContextPack from `buildRepairContextPack()`;
-  - the `NotConfiguredAssuranceSlot` default.
+  - the repair attempt at `repairBaseSha` with a ContextPack from `buildRepairContextPack()`, and a retry of a
+    repair attempt that keeps the whole lineage (R17);
+  - the `NotConfiguredAssuranceSlot` default, landed minimal in S0 and bound in S6. It fails closed for any risk
+    that requires review, and it is distinct from Lane B's `DisabledAssuranceSlot`, the explicit opt-out (R18);
+  - the workspace resolver port of the fixed block, implemented over the lease table (S3, exit E15);
+  - an assurance-activity failure: audited `assurance-unavailable`, then `PROCEED` in shadow mode or `ESCALATE`
+    in gating mode, never `FAILED` (R19, exit J10).
 - **Binding.** The worker composition root binds the slot. Integration imports Lane B's `assurance-root.ts`
   and swaps the binding, and workflow code does not change (R10).
 - **Proofs.** Lane B proves its implementation with its own sequential driver, as the lane contract requires.
   Lane A proves the composition with a scripted slot in S2 (core), S6 (activities) and S11 (real Temporal).
-  Both lanes run the S0 conformance kit. With Phase 4 in shadow mode, integration will observe `PROCEED` plus
+  Both lanes run the S0 conformance kit. When the fixed block lands, S0 renames the core's local slot types and
+  terminal names to the block's and proves the mapping (exit O5). With Phase 4 in shadow mode, integration will observe `PROCEED` plus
   recorded findings, but all four outcome paths are proven now.
 
 ---
@@ -395,7 +431,7 @@ in S0. Summary:
 | Layer | What | Where it runs |
 |---|---|---|
 | Pure core | reducer table tests, property tests (one PR per task, budget never exceeded, no ACCEPTED, cancel always cleans up, one `attempt.completed` per attempt, no publish after `REPAIR`/`BLOCK`) with a sequential in-memory interpreter | `pnpm test` |
-| Fitness | Temporal confinement, workflow/core purity, explicit activity options, no second driver in production entrypoints, no fault injector in production, real bundler test with a seeded failing fixture | `pnpm test` |
+| Fitness | Temporal confinement, workflow purity, core purity on production source (package-local in S2, shared rule from S7), explicit activity options, no second driver in production entrypoints, no fault injector in production, real bundler test with a seeded failing fixture | `pnpm test` |
 | Replay | manifest-listed histories replayed with `Worker.runReplayHistories`; required scenarios; a seeded non-deterministic fixture must fail | `pnpm test` (offline; native core-bridge, no server) |
 | Activity bridge | `MockActivityEnvironment`: heartbeat mapping, cancellation → `AbortSignal`, logical time, error → non-retryable mapping | `pnpm test` |
 | Activities | each activity invoked twice with identical input (PGlite + real temp Git) converges; crash-injected variants; `FAILED` lifecycle | `pnpm test` |
@@ -413,6 +449,8 @@ and asserts that (C7). It also:
 
 - prints the image's `temporal --version` line into the gate log (observed today: `temporal version 1.9.1
   (Server 1.32.0, UI 2.54.1)`);
+- prints the full `docker pull` and `docker image inspect` RepoDigests output of every pinned Temporal image (C1);
+- creates the namespace with `--retention 24h` and reads it back (C10);
 - waits for namespace readiness through `temporal operator namespace describe` executed **inside** that
   container, so the gate script needs no SDK import;
 - exports `ASEP_TEMPORAL_ADDRESS` / `ASEP_TEMPORAL_NAMESPACE`.
@@ -511,6 +549,15 @@ S2 (only slice allowed before G-P2) ──────────────�
   only types present at `00a6889` plus types local to `packages/orchestration`. S7 maps the generated workflow
   input types onto them, with a mapping test.
 - S3, S4 and S5 are independent of each other. S7 needs S2 and S6.
+- **S2 fitness checkpoints (P3-PLAN2-MED-001).** Before G-P2, S2 proves core purity with a package-local
+  self-check over production source (exit B2) and does not touch `scripts/forbidden-imports.test.ts`. The shared
+  rule lands in S7, on the accepted Phase 2 framework.
+- **Default slot in S0 (P3-PLAN2-MED-003).** S0 lands a minimal `NotConfiguredAssuranceSlot`, so O1 is provable in
+  S0. S6 only binds it into the activity wrapper.
+- **Replay corpus staging (P3-PLAN2-MED-003).** The replay suite becomes required in S8, the first slice with a
+  real Temporal server, together with its first captured histories and `required-scenarios.json`. S10 and S11
+  append scenarios with their histories in the same commit; S13 asserts the full list (architecture §6.5). No
+  slice skips the suite or runs it on an empty manifest.
 
 v1 → v2 slice mapping: v1 S1 → S0 (shared items) + S1; S2 → S2; S3 → S3; S4 → S4 (+ CR-25, CR-26);
 — → S5 (new, CR-27); S5 → S6; S6 → S7; S7 → S8; S8 → S9; S9 → S10; S10 → S11; — → S12 (new, smoke); S11 → S13.
@@ -519,20 +566,20 @@ v1 → v2 slice mapping: v1 S1 → S0 (shared items) + S1; S2 → S2; S3 → S3;
 
 | Slice | Deliverable | Commit | Gate | Acceptance checks (exit criteria) |
 |---|---|---|---|---|
-| S0 | **Shared foundation**: every `[S0]` item of the reconciliation, exactly as specified there. (a) the review-loop slot contract (CR-10, verbatim Lane B block) + the framework-free conformance kit `review-loop-contract.ts`; (b) `RunEventSink` + `RunEventConflictError` port, migration `0107_run_events` (unified DDL), PG adapter `adapters/persistence/src/run-events/**`; (c) `run-event` 1.2.0 superset (schema, fixtures, catalog, generated types) | `feat(shared): land the review-slot contract, run-event sink and run-event 1.2.0` | G-P2, G-LB; first commit after the rebase | O1–O4, A5 (`0107`), L3 |
+| S0 | **Shared foundation**: every `[S0]` item of the reconciliation, exactly as specified there. (a) the fixed review-loop slot block (CR-10, verbatim Lane B block, R18) in `packages/application/src/review-loop/` (R16): the slot, Lane B's `DisabledAssuranceSlot`, the workspace resolver port and the framework-free conformance kit `review-loop-contract.ts`; (b) a minimal `NotConfiguredAssuranceSlot` in `packages/application/src/orchestration-activities/`; (c) `RunEventSink` + `RunEventConflictError` port, migration `0107_run_events` (unified DDL), PG adapter `adapters/persistence/src/run-events/**`; (d) `run-event` 1.2.0 superset (schema, fixtures, catalog, generated types); (e) the decision core adopts the block's names: its local slot types and terminal names are renamed to the block's (they stay core-local, because production source may type-import only `@asep/contracts`/`@asep/ports`), pinned by a type-level assignability check and the O5 table test (test-only `@asep/application` devDependency, like `@asep/domain`) | `feat(shared): land the review-slot contract, run-event sink and run-event 1.2.0` | G-P2, G-LB; first commit after the rebase | O1–O5, J2 (default slot), A5 (`0107` and the upgrade path), L3 |
 | S1 | Lane A contracts and ports: 3 new schemas + fixtures + snapshots + generated types; `TaskStatus` extension + domain transition table; ports CR-04, CR-07, CR-08, CR-09, CR-24, CR-26 types and error classes; principal types (CR-17); metrics dictionary entry; ADR 0017 | `feat(contracts): add durable-orchestration message contracts and ports` | after S0 | A1, A3, D1 (types compile), L5, domain table tests incl. the unchanged no-ACCEPTED invariant |
-| S2 | `@asep/orchestration`: reducer, activity option table, budget arithmetic, approval and control handling, assurance-outcome routing, repair attempt planning, sequential in-memory interpreter; determinism fitness rules | `feat(orchestration): add the deterministic workflow decision core` | may start before G-P2 | B2, D5 (core), D7 (core), H1, I6, J3 (core table), J5 (property), J7 |
-| S3 | Migrations `0100`–`0102`, `0104`–`0106`; `adapters/persistence/src/orchestration/**` (ordinal, registry, approvals + outbox, ledger, projection); invariant race itests against the Phase 2 fencing primitive | `feat(persistence): make orchestration state idempotent on the fenced lease primitive` | G-P2 | A5, D11, E1–E5, E9, E13 (persistence part) |
+| S2 | `@asep/orchestration`: reducer, activity option table, budget arithmetic (agent cap and verification reserve), the agent-outcome and reservation-failure tables, approval and control handling with the critical units, assurance-outcome routing incl. assurance-activity failure, repair lineage on retry, sequential in-memory interpreter; package-local purity self-check over production source. Core traces in the acceptance tables: (1) cap exhaustion and overrun vs H5/H9; (2) `REPAIR` with a failed reservation and approvals enabled, disabled and unavailable; (3) `REPAIR` → agent death → replacement keeping the lineage → round-2 assurance; (4) cancel during assurance and during the publication-approval wait | `feat(orchestration): add the deterministic workflow decision core` (`a133e32`) + `fix(orchestration): …` follow-up for v3 | may start before G-P2 | B2 (package-local), D5 (core), D7 (core), G7/G11/G12 (core), H1, H3/H4 (core), H5 (core), H8 (core), H10 (core), I6, J3 (core table), J4 (core), J5 (property), J7, J10 (core) |
+| S3 | Migrations `0100`–`0102`, `0104`–`0106`; `adapters/persistence/src/orchestration/**` (ordinal, registry, approvals + outbox, ledger, projection); the workspace resolver over the lease table; invariant race itests against the Phase 2 fencing primitive | `feat(persistence): make orchestration state idempotent on the fenced lease primitive` | G-P2 | A5 (full set and the upgrade path), D11, E1–E5, E9, E13 (persistence part), E15 |
 | S4 | On the rebased adapters: Git worktree rehydration from the registry; `create` create-or-adopt (base or `repairBaseSha`); commit HEAD CAS; host-id guard; deterministic container names/labels; `ExecutionReaper`; per-call runner abort (CR-26); per-request agent caps (CR-25); orphan-container itest | `feat(workspace): make workspaces, sandboxes and agent caps restart-safe` | G-P2 | E6, E7, E8 (resolves research Q6), E14, H9 |
 | S5 | Forge PR-upsert convergence on the real GitHub adapter (CR-27) + honest HTTP double + contract test; `DurableLocalForge` semantics parity table | `fix(forge): reconcile a pull-request create that conflicts with an existing head` | G-P2 | E12 |
-| S6 | `packages/application/src/orchestration-activities/**`: every activity over `ActivityExecutionContext`; check ids resolved through `VerificationCommandCatalog` (CR-24); fencing on the Phase 2 primitive with the `FAILED` lifecycle; deterministic evidence time; assurance wrapper + context adapter + `NotConfiguredAssuranceSlot` + `recordAttemptOutcome` activity + admit hook; approval, budget, projection, control and run-event activities; double-invoke and crash-variant tests | `feat(application): expose step use cases as retry-safe activities` | G-P2 | B7, D6, E10, E11, E13 (activity part), J2, J8, J9 |
-| S7 | `adapters/temporal`: workflows (task, run, janitor), activity bridge, error mapping, `WorkflowEngine` client with the connection guard, worker factory, bundler test, manifest-gated replay test (seeded fixtures); `workers/temporal-worker` root binding the default slot; Temporal confinement fitness | `feat(temporal): run task and run workflows on Temporal` | after S2, S6 | A2, A6, B1, B3, B4, B5 (suite + seeded fixture), B6, B10, C5, C8, D3, D4, D9 (bridge part) |
-| S8 | Gate: digest-pinned Temporal in `run-integration.mjs` (loopback publish, version line), omit hook, negative test, new required itest IDs; `compose.yaml` Temporal fix; `DurableLocalForge`; first real end-to-end itest; first replay-corpus capture with manifest entries | `feat(integration): provision a digest-pinned Temporal server in the mandatory gate` | after S7 | A4, C1–C4, C6, C7, D2, D7 (e2e), L1 |
+| S6 | `packages/application/src/orchestration-activities/**`: every activity over `ActivityExecutionContext`; check ids resolved through `VerificationCommandCatalog` (CR-24); fencing on the Phase 2 primitive with the `FAILED` lifecycle; deterministic evidence time; assurance wrapper + context adapter + binding of the S0 `NotConfiguredAssuranceSlot` + `recordAttemptOutcome` activity + admit hook; approval, budget, projection, control and run-event activities; double-invoke and crash-variant tests | `feat(application): expose step use cases as retry-safe activities` | G-P2 | B7, D6, E10, E11, E13 (activity part), J2, J8, J9 |
+| S7 | `adapters/temporal`: workflows (task, run, janitor), activity bridge, error mapping, `WorkflowEngine` client with the connection guard, worker factory, bundler test, the test-support callback injector (CR-16); `workers/temporal-worker` root binding the default slot; Temporal confinement fitness and the shared core-purity rule in `scripts/forbidden-imports.test.ts` | `feat(temporal): run task and run workflows on Temporal` | after S2, S6 | A2, A6, B1, B2 (shared rule), B3, B4, B6, B10, C5, C8, D3, D4, D9 (bridge part) |
+| S8 | Gate: digest-pinned Temporal in `run-integration.mjs` (loopback publish, version line, pull/inspect output, namespace retention read-back), omit hook, negative test, new required itest IDs; `compose.yaml` Temporal fix; `DurableLocalForge`; first real end-to-end itest; the manifest-gated replay suite, now required, with its seeded non-deterministic fixture, the first captured histories and `required-scenarios.json` | `feat(integration): provision a digest-pinned Temporal server in the mandatory gate` | after S7 | A4, B5 (staged: S8 scenarios), C1–C4, C6, C7, C10, D2, D7 (e2e), L1 |
 | S9 | API routes + application use cases for executions/controls/approvals/view; principal resolver and capabilities; decision outbox + delivery relay + API chaos entry; production-root `WorkflowEngine` wiring; pilot-main and CLI dispatch via the engine; no-second-driver fitness | `feat(control-plane): drive executions, controls and approvals through the workflow engine` | after S8 | B8, B9, D1, D8, F19, G9, I2, K1–K7 |
-| S10 | Chaos matrix CX-01…CX-36, except CX-25 (S11) and CX-34 (S9), with `assertConvergence` and its negative self-test | `test(chaos): prove crash, duplicate-delivery and outage recovery on real backends` | after S9 (G-P2) | D9 (timing), D10, D12, F1–F18, I4, L2 (recovery rows), L4 |
-| S11 | Real-Temporal e2e for pause/resume/cancel (incl. mid-verification), budgets, approvals, and every assurance outcome with a scripted slot | `test(orchestration): prove controls, budgets, approvals and the assurance slot on Temporal` | after S9 | G1–G8, G10, H1–H8, I1, I3, I5, I7, J1, J3–J6, L2 |
+| S10 | Chaos matrix CX-01…CX-36, except CX-25 (S11) and CX-34 (S9), with `assertConvergence` and its negative self-test; captured replay scenarios appended with their histories | `test(chaos): prove crash, duplicate-delivery and outage recovery on real backends` | after S9 (G-P2) | B5 (staged: S10 scenarios), D9 (timing), D10, D12, F1–F18, I4, L2 (recovery rows), L4 |
+| S11 | Real-Temporal e2e for pause/resume/cancel (incl. mid-verification, during assurance and during the publication-approval wait), budgets (agent-outcome and reservation-failure tables, incl. `REPAIR` with a failed reservation), approvals, every assurance outcome and an assurance-activity failure with a scripted slot, and `REPAIR` → agent death → replacement keeping the lineage; captured replay scenarios appended | `test(orchestration): prove controls, budgets, approvals and the assurance slot on Temporal` | after S9 | B5 (staged: S11 scenarios), G1–G8, G10–G12, H1–H8, H10, I1, I3, I5, I7, J1, J3–J6, J10, L2 |
 | S12 | Production-shaped pre-deployment smoke: `temporalio/server` + `admin-tools` on PostgreSQL, real restart, happy path | `test(temporal): add a production-shaped pre-deployment smoke on PostgreSQL persistence` | after S8 | C9 |
-| S13 | `phase-03-report.md`, `phase-03-runbook.md`, preserved rehearsal logs, final replay corpus and manifest, docs index | `docs(phase-3): record durable-orchestration evidence and runbook` | last | A7, B5 (final manifest), M1–M3, N1–N5 |
+| S13 | `phase-03-report.md`, `phase-03-runbook.md` (drain-only order of architecture §6.6), preserved rehearsal logs, final replay corpus and manifest, docs index | `docs(phase-3): record durable-orchestration evidence and runbook` | last | A7, B5 (final: `required-scenarios.json` equals the full list), M1–M3, N1–N5 |
 
 Each slice runs these steps:
 
@@ -796,14 +843,25 @@ v1's `ReviewLoopPort`, `ReviewLoopTrigger`, `ReviewLoopRequest`, `ReviewLoopDeci
 `ReviewLoopUnavailableError` and the `AgentExecuteRequest.repairOrderRef` field are **withdrawn**
 (P3-PLAN-HIGH-004).
 
+**Location (R16).** The slot, Lane B's `DisabledAssuranceSlot` and the conformance kit live in
+`packages/application/src/review-loop/`, not in `packages/ports`: the slot returns `AdmissionResult` from
+`@asep/application`, and ports must not depend on application. Lane A still lands the files in S0.
+
 #### Review-loop slot contract (verbatim for S0)
 
 > **Text pending: controller hand-off.** Lane B writes the complete TypeScript under this exact heading in its
 > plan: `runAssuranceRound`, the step functions, `recordAttemptOutcome`, `admitWithAssurance`,
-> `buildRepairContextPack`, the request/response types and `AssuranceStepContext`. When Lane B locks, the
-> controller hands Lane A the final text. Lane A pastes it here byte-for-byte, records the source SHA in the
-> review log, and lands it in S0 with the framework-free conformance kit `review-loop-contract.ts`. Until then,
-> Lane B's draft (`phase-04-plan.md` §16 and `phase-04-architecture.md` §7 at `a2a7b8a`) is informative only.
+> `buildRepairContextPack`, the request/response types and `AssuranceStepContext`. Lane B fixes the block after
+> its own lock-check, and the controller hands Lane A the text only once that fixed version is locked (R18).
+> Lane A pastes it here byte-for-byte, records the source SHA in the review log, and lands it in S0 with the
+> framework-free conformance kit `review-loop-contract.ts`. Until then, Lane B's draft (`phase-04-plan.md` §16
+> and `phase-04-architecture.md` §7 at `a2a7b8a`, and its §18 location at `3201335`) is informative only.
+>
+> Known content of the fixed block (R18): two default slots with distinct jobs; the terminal vocabulary
+> `verification-stopped` plus specific failure terminals; a workspace resolver port
+> `resolve(scope, { attemptId, leaseId, fencingEpoch })`; the R15 fixed logical time with a byte-comparison
+> redelivery test; `ArtifactRef` for every large input within the 64 KiB envelope; `shadow` required only on
+> `PROCEED` in shadow mode.
 
 Lane A's commitments around that block (they do not restate or alter it):
 
@@ -819,8 +877,19 @@ Lane A's commitments around that block (they do not restate or alter it):
   shape). It defaults to `admitRisk`, with byte-identical behavior when absent. At integration it is bound to
   `admitWithAssurance(risk, capability)`.
 - **Repair.** A fresh workspace at `repairBaseSha`, a ContextPack from `buildRepairContextPack()`,
-  `round = nextRound` and `priorAdjudicationId = adjudicationId`.
-- **Default binding.** `NotConfiguredAssuranceSlot` (architecture §12) passes the conformance kit.
+  `round = nextRound` and `priorAdjudicationId = adjudicationId`. A `retry` that replaces a failed repair attempt
+  keeps the same lineage (R17).
+- **Default binding.** `NotConfiguredAssuranceSlot` (architecture §12) passes the conformance kit. S0 lands it
+  minimal in `packages/application/src/orchestration-activities/` (Lane A's directory), so O1 holds in S0; S6
+  binds it. It fails closed for any risk that requires review. Lane B's `DisabledAssuranceSlot` is the explicit
+  opt-out and is not a default Lane A binds.
+- **Workspace resolver.** Lane A implements the block's resolver port over the lease table (S3, exit E15): right
+  tenant, an `ACTIVE` lease held by the given lease id, the current fencing epoch, else fail closed. No workspace
+  comes from activity-local memory.
+- **Terminal vocabulary.** The block's terminals win. At hand-off Lane A updates architecture §12's terminal
+  table, exit J2 and the core's local terminal names (S0, exit O5).
+- **Assurance-activity failure.** Audited `assurance-unavailable`, then `PROCEED` in shadow mode or `ESCALATE` in
+  gating mode, never `FAILED` (R19, exit J10).
 - **Request fields.** The union both plans need, as the locked block gives them: `model`, `declaredComplete`,
   `priorAdjudicationId`, the idempotency key and the R1 claim/fencing identity.
 - **Attempt status projection.** Lane B's `UNDER_REVIEW`/`CHANGES_REQUESTED` are written only after Lane B's
@@ -843,12 +912,17 @@ Lane B withdraws `0201_run_events`. Owner: Lane A.
 Add the rules in `phase-03-architecture.md` §3, each with a seeded-violation self-check. They are written against
 the AST-based rule framework that the accepted Phase 2 lands, after the rebase (R8). Coverage:
 
-- forbid `@temporalio/*` in application packages;
+- core purity on the production source of `packages/orchestration` (the rule S2 proves package-locally);
+- forbid `@temporalio/*` everywhere except `adapters/temporal/**` (its `src/test-support/**` included), with no
+  test exception;
 - extend the composition-root coverage to `workers/temporal-worker`;
 - add the production-entrypoint import-graph rule (exit B8) and the `FaultInjector` rule (exit B9).
 
 Lane B's rules land in the same file. The registry is append-only per lane and unioned at merge (R10). Owner:
-Lane A (S2, S7, S9).
+Lane A, in two checkpoints (P3-PLAN2-MED-001). S2 does not touch this file: it carries the package-local
+self-check `packages/orchestration/src/purity.test.ts` (`asep-suite:orchestration-purity`, exit B2). S7 adds the
+core-purity, confinement and workflow-purity rules here, after G-P2; the package-local suite stays registered.
+S9 adds the B8 and B9 rules.
 
 ### CR-13 — Required unit suites (`scripts/lib/canonical-tests.mjs` `REQUIRED_SUITES`, append-only, R10)
 
@@ -857,6 +931,7 @@ asep-suite:assurance-slot-contract       packages/application/src/orchestration-
 asep-suite:run-event-sink                adapters/persistence/src/run-events/run-event-sink.test.ts                 (S0)
 asep-suite:orchestration-core            packages/orchestration/src/decide.test.ts
 asep-suite:orchestration-properties      packages/orchestration/src/invariants.test.ts
+asep-suite:orchestration-purity          packages/orchestration/src/purity.test.ts                                  (S2)
 asep-suite:orchestration-activities      packages/application/src/orchestration-activities/activities.test.ts
 asep-suite:orchestration-persistence     adapters/persistence/src/orchestration/orchestration-persistence.test.ts
 asep-suite:workspace-rehydration         adapters/git-worktree/src/rehydration.test.ts
@@ -864,7 +939,7 @@ asep-suite:command-runner-abort          adapters/command-runner/src/per-call-ab
 asep-suite:agent-budget-caps             adapters/agent-claude/src/budget-caps.test.ts
 asep-suite:forge-pr-upsert-concurrency   adapters/github-app/src/pr-upsert-concurrency.test.ts
 asep-suite:temporal-bundle               adapters/temporal/src/worker/bundle.test.ts
-asep-suite:temporal-replay               adapters/temporal/src/worker/replay.test.ts
+asep-suite:temporal-replay               adapters/temporal/src/worker/replay.test.ts                                (S8)
 asep-suite:temporal-activity-bridge      adapters/temporal/src/activity-bridge/bridge.test.ts
 asep-suite:temporal-activity-options     adapters/temporal/src/workflows/activity-options.test.ts
 asep-suite:temporal-connection-guard     adapters/temporal/src/client/connection-guard.test.ts
@@ -872,7 +947,7 @@ asep-suite:workflow-payload-hygiene      adapters/temporal/src/payload-hygiene.t
 asep-suite:orchestration-api             apps/control-plane-api/src/orchestration/orchestration-routes.test.ts
 ```
 
-Owner: Lane A.
+S2 has appended `orchestration-core`, `orchestration-properties` and `orchestration-purity` (R15). Owner: Lane A.
 
 ### CR-14 — Integration gate (`scripts/integration/**`)
 
@@ -884,9 +959,11 @@ Owner: Lane A.
     `temporalAdminTools: 'temporalio/admin-tools@sha256:9ef0dc5b063bf4ffd5c1512de72e0e73e225bd2c7006a18ce69bd592a8862a83'`
 - `run-integration.mjs` must:
   - provision the server and publish it on `127.0.0.1` only;
-  - log the `temporal --version` line;
+  - log the `temporal --version` line and the full `docker pull` and `docker image inspect` RepoDigests output of
+    every pinned Temporal image (C1, M3);
   - health-check with in-container `temporal operator namespace describe`;
-  - create the namespace with explicit retention;
+  - create the namespace with `temporal operator namespace create --retention 24h` and read the retention back,
+    failing on a mismatch (C10; flag verified on the pinned image, research register Q9);
   - pass `ASEP_TEMPORAL_ADDRESS`/`ASEP_TEMPORAL_NAMESPACE`;
   - honor `ASEP_ITEST_OMIT_BACKEND=temporal`;
   - always tear down in `finally`.
@@ -934,11 +1011,16 @@ adapters/temporal/package.json   dependencies:    @temporalio/workflow 1.24.0, @
                                                   @temporalio/worker 1.24.0, @temporalio/client 1.24.0,
                                                   @temporalio/common 1.24.0
                                   devDependencies: @temporalio/testing 1.24.0
-workers/temporal-worker/package.json  @temporalio/client 1.24.0 (AsyncCompletionClient for CX-35; test-only use)
+workers/temporal-worker/package.json  no @temporalio/* dependency (P3-PLAN2-MED-004)
 pnpm-lock.yaml                   regenerated; frozen install from a clean checkout must pass
 root package.json                ONLY IF research Q4 shows a native build script is required:
                                   "pnpm": { "onlyBuiltDependencies": ["<that one package>"] }
 ```
+
+The CX-35 callback injector (`AsyncCompletionClient`) and the CX-36 duplicate-delivery client wrapper live in
+`adapters/temporal/src/test-support/`, inside the only package allowed to import `@temporalio/*`. They export
+helpers whose signatures use no SDK type (task-token bytes as `Uint8Array`, plain result objects), so the worker
+chaos suites call them without importing the SDK and exit B1 needs no test exception (exit F16).
 
 No other new dependency. The honest GitHub HTTP double uses `node:http`. License gate expectations: research
 register §1.1 (`unionfs`). Owner: Lane A (S7).
@@ -1125,6 +1207,14 @@ Lane B's draft lists a run-event sink under `adapters/persistence/src/assurance/
 injects it. Lane B's claim `adapters/agent-claude/src/reviewer-credential-isolation.test.ts` does not overlap
 `budget-caps.test.ts`.
 
+`adapters/temporal/**` includes `src/test-support/**` (the SDK-specific test injectors, CR-16) and
+`test-histories/required-scenarios.json` (architecture §6.5). `packages/orchestration/**` includes
+`src/test-support/**` (the core's test fixtures, excluded from the purity scan).
+
+`packages/application/src/review-loop/**` is **not** claimed: Lane B owns its content (R16), and Lane A lands it
+byte-for-byte in S0. Lane A's `NotConfiguredAssuranceSlot` lives in its own
+`packages/application/src/orchestration-activities/**`.
+
 Everything else Lane A touches is an existing module and is listed in §30 (CR-01 … CR-27) rather than claimed.
 
 ---
@@ -1140,8 +1230,9 @@ Everything else Lane A touches is an existing module and is listed in §30 (CR-0
    29.6.1, re-observed in step 3). If it is absent at implementation time, the gate goes red. It never skips.
 3. **No live credentials** are needed for Phase 3 exit (Claude and GitHub stay doubles, with live opt-in as in
    Phase 2). This is not a blocker.
-4. **S0 needs Lane B's locked slot block** (G-LB). If Lane B's lock changes field names used in architecture
-   §12, the locked block wins, and Lane A updates §12 and J1–J9 in the paste commit's review-log entry.
+4. **S0 needs Lane B's fixed and locked slot block** (G-LB, R18). If it changes field names used in architecture
+   §12, the locked block wins, and Lane A updates §12, J1–J10 and the core's local names (O5) in the paste
+   commit's review-log entry.
 5. **Shadow mode in Phase 4 (user decision).** Lane A still implements and proves all four outcomes.
 
 No genuine blocker for locking the plan. Implementation is gated as in §25.
@@ -1151,12 +1242,14 @@ No genuine blocker for locking the plan. Implementation is gated as in §25.
 ## Output
 
 ```text
-PLAN_STATUS: LOCKED v2 (pending controller confirmation)
+PLAN_STATUS: LOCKED v3 (pending controller confirmation)
 PLAN_V1_SHA: 80bb76a (Codex reviewed: REQUEST_CHANGES 0.98; 1 CRITICAL, 8 HIGH, 9 MEDIUM, 1 LOW)
+PLAN_V2_SHA: 98e92cf (Codex lock-check: REQUEST_CHANGES 0.97; 15 of 19 v1 findings FOLDED, 4 PARTIAL;
+  new: 3 HIGH, 7 MEDIUM; all 10 new ACCEPTED, all 4 PARTIAL re-adjudicated and folded or open by design)
 BASE_SHA: 00a6889 (Phase 2 head, unaccepted; Phase 2 cycle 7 lands first)
 BASELINE: pnpm install --frozen-lockfile exit 0; pnpm verify:all exit 0 (548/548 canonical tests), observed in step 1
-RECONCILIATION: v1 (R1–R14) applied; S0 shared foundation added; S3–S13 gated on Phase 2 acceptance + rebase
-OPEN_BY_DESIGN: CR-10 verbatim slot text, pasted on controller hand-off after Lane B locks
+RECONCILIATION: v1 (R1–R19) applied; S0 shared foundation added; S3–S13 gated on Phase 2 acceptance + rebase
+OPEN_BY_DESIGN: CR-10 verbatim slot text, pasted on controller hand-off after Lane B's fixed block locks (R18)
 PLAN_FILES:
   - docs/implementation/phases/phase-03-plan.md
   - docs/implementation/phases/phase-03-architecture.md
@@ -1167,6 +1260,7 @@ PLAN_FILES:
   - docs/implementation/phases/phase-03-threat-model-delta.md
   - docs/implementation/phases/phase-03-review-log.md
   - docs/implementation/phases/phase-03-plan-review-codex-v1.md
+  - docs/implementation/phases/phase-03-plan-review-codex-v2.md
 NEW_DEPENDENCIES_PROPOSED (exact pins): @temporalio/{workflow,activity,worker,client,common} 1.24.0,
   @temporalio/testing 1.24.0 (dev)
 NEW_BACKEND_IMAGES: temporalio/temporal:1.9.1@sha256:ad4c82c97bd12b417d1ea942610dbcd511afb250c4d5ed26c694009533df447e (gate);

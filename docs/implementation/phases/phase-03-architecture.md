@@ -1,9 +1,10 @@
-# Phase 3 — Durable Orchestration — Architecture (LOCKED v2, pending controller confirmation)
+# Phase 3 — Durable Orchestration — Architecture (LOCKED v3, pending controller confirmation)
 
 > Companion to `phase-03-plan.md`. Base `00a6889` (head of `phase/02-single-agent-vertical-slice`, not yet
-> accepted); v1 of this document is at `80bb76a`. v2 folds in the Codex plan review (`phase-03-review-log.md`)
-> and the controller's shared-surface reconciliation v1 (R1–R14). Port signatures in §17 are design intent. The
-> binding text is plan §30 (shared-surface change requests) and, for the review-loop slot, the block
+> accepted); v1 of this document is at `80bb76a`, v2 at `98e92cf`. v2 folded in the Codex plan review; v3 folds
+> in the Codex lock-check of v2 (`phase-03-plan-review-codex-v2.md`) and the controller's reconciliation R15–R19
+> (`phase-03-review-log.md`, section "Lock-check v2"). Port signatures in §17 are design intent. The binding text
+> is plan §30 (shared-surface change requests) and, for the review-loop slot, the block
 > `Review-loop slot contract (verbatim for S0)` that Lane B locks and the controller hands over (plan §30, CR-10).
 
 ## 1. Thesis and authority split
@@ -84,8 +85,11 @@ workflows, sends control messages, records approval decisions and queries.
 
 ```text
 packages/orchestration   NEW  pure, deterministic workflow decision core
-                              -> import type only: @asep/contracts, @asep/ports
-                              -> NO runtime import of anything; NO node:*, Date, Math.random, timers
+                              production source (src/**, excluding *.test.ts and src/test-support/**):
+                              -> import type only from @asep/contracts, @asep/ports
+                              -> runtime imports only between its own modules (relative)
+                              -> NO external runtime dependency; NO node:*, Date, Math.random, timers
+                              tests and test support may use node:test, node:assert/strict and the module under test
 packages/application     EXTENDED  src/orchestration-activities/** (retry-safe activity implementations)
                               -> domain, contracts, ports, policy, observability (unchanged rule)
 adapters/temporal        NEW  the ONLY package that imports @temporalio/*
@@ -106,14 +110,24 @@ Forbidden-import rules added (CR-12). They are written against the rule framewor
 
 | Rule | Scope | Detects |
 |---|---|---|
-| `@temporalio/*` confined | every package except `adapters/temporal` | any import or require of `@temporalio/` |
+| `@temporalio/*` confined | every package except `adapters/temporal` (its `src/test-support/**` included) | any import or require of `@temporalio/` |
 | workflow purity | `adapters/temporal/src/workflows/**` | any non-type import except `@temporalio/workflow`, `@asep/orchestration` and relative workflow modules |
-| core purity | `packages/orchestration/src/**` | any non-`import type` import; uses of `Date`, `Math.random`, `setTimeout`, `setInterval`, `performance`, `process`, `crypto`, `require`, dynamic `import()` |
+| core purity | production source of `packages/orchestration` (`src/**/*.ts` except `*.test.ts` and `src/test-support/**`) | a non-relative import or re-export that is not `import type`/`export type` from `@asep/contracts` or `@asep/ports`; uses of `Date`, `Math.random`, `setTimeout`, `setInterval`, `setImmediate`, `queueMicrotask`, `performance`, `process`, `crypto`, `require`, `globalThis`, `WeakRef`, `FinalizationRegistry`, `eval`, `fetch`, dynamic `import()` |
 | bundler truth | `adapters/temporal` | real `bundleWorkflowCode()` with no `ignoreModules` succeeds. A seeded `node:fs` workflow fixture fails. |
 | no second driver | production entrypoints (`server-main`, `pilot-main`, `cli-main`, `workers/temporal-worker/src/main.ts`) | the import graph reaches `runVerticalSliceWorkflow`, `runVerticalSlice`, `governedExecution`, `completeToReview` or `executeTask` |
 | activity options explicit | `adapters/temporal/src/workflows/**` | a `proxyActivities` option set without `retry.maximumAttempts`, `startToCloseTimeout` or (for long activities) `heartbeatTimeout` (unit test over the exported option table) |
 | application stays engine-free | `packages/application/src/**` | `@temporalio/*` |
 | no fault injection in production | production entrypoints | the import graph reaches `FaultInjector` (exit B9) |
+
+The core-purity rule has two acceptance checkpoints (P3-PLAN2-MED-001, MED-002):
+
+1. **S2, before G-P2.** A self-contained purity check inside the package (`packages/orchestration/src/purity.test.ts`,
+   `asep-suite:orchestration-purity`). It does not touch the shared rule framework. It scans production source
+   only, carries seeded violations for each rule, and has self-checks that a valid construct passes and that
+   the production file set excludes tests and test support.
+2. **S7, after G-P2.** The same rule is written into `scripts/forbidden-imports.test.ts` on the accepted Phase 2
+   framework, with its own seeded violation. The package-local suite stays registered afterwards, because
+   `REQUIRED_SUITES` is append-only (R10), so the rule is enforced at every commit and both checks must pass.
 
 ## 4. Workflows
 
@@ -126,47 +140,66 @@ driver in S2, so the decision logic is proven without Temporal and then reused u
 
 ```text
 ADMITTING (admitTask: injected admit hook, default admitRisk) ──(DEFERRED)──▶ BLOCKED (terminal)
-   │ admitted
+   │ admitted            admitTask activity fails ──▶ BLOCKED (reason admission-unavailable)
    ▼
-BUDGET_CHECK ──(reservation fails, approvals enabled)──▶ AWAITING_APPROVAL(budget-extension)
-   │ reserved                                              │ approve → BUDGET_CHECK
-   ▼                                                       │ reject/expire → BUDGET_EXHAUSTED (terminal)
-ATTEMPT_STARTING  (ensureAttempt → acquireLease → prepareWorkspace(base = task baseSha, or repairBaseSha
-                   for a repair) → storeAttemptInputs (repair: ContextPack = buildRepairContextPack(...)))
+BUDGET_CHECK (reservation for the planned attempt; table "Reservation failure" in §10)
+   │ reserved           ──(maxAttempts exhausted)──▶ FAILED (attempts-exhausted; repair-capacity-exhausted for
+   │                                                  a repair lineage)
+   │                    ──(task cap short, budget-extension approvals available)──▶ AWAITING_APPROVAL(budget-extension)
+   │                                                  approve → BUDGET_CHECK (same attempt plan and lineage)
+   │                                                  reject/expiry → BUDGET_EXHAUSTED (terminal)
+   │                    ──(any other budget cause, or approvals unavailable)──▶ BUDGET_EXHAUSTED (terminal)
+   ▼
+ATTEMPT_STARTING  (ensureAttempt → acquireLease → prepareWorkspace(base = task baseSha, or the lineage's
+                   repairBaseSha) → storeAttemptInputs (repair lineage: ContextPack = buildRepairContextPack(...)))
+                   ensureAttempt fails ──▶ FAILED (attempt-registration-failed; never replaced, numbering stays contiguous)
    ▼
 AGENT_RUNNING  (runAgent: engine maximumAttempts = 1; heartbeats; lease renewed on each tick)
-   ▼ AGENT_DONE          ▶ non-AGENT_DONE / cap exceeded / timeout / worker death → ATTEMPT_ABANDONED
+   │ outcome table "Agent outcome" in §10:
+   │   AGENT_DONE within every cap                     ──▶ INSPECTING → VERIFYING → … (full path)
+   │   BUDGET_EXHAUSTED (adapter stopped at a cap),
+   │   or reported usage above a cap (overrun)         ──▶ INSPECTING only → ATTEMPT_EXHAUSTED
+   │   FAILED / BLOCKED (agent's own failure)          ──▶ ATTEMPT_ABANDONED(failure class)
+   │   activity failure / heartbeat timeout (infra)    ──▶ ATTEMPT_ABANDONED(failure class)
+   ▼
 INSPECTING     (inspectWorkspace)        ▶ overstep → ATTEMPT_ABANDONED(policy-violation)
    ▼
-VERIFYING      (runVerification)
-   ├─ PASS ─────▶ COMMITTING (commitAttempt) ▶ EVIDENCE (persistEvidence) ▶ ASSURANCE_ROUND
+VERIFYING      (runVerification; its budget was reserved separately at BUDGET_CHECK)
+   ├─ PASS ─────▶ COMMITTING (commitAttempt) ▶ EVIDENCE (persistEvidence)   [critical unit 1] ▶ ASSURANCE_ROUND
    └─ FAIL/ERROR ▶ VERIFICATION_STOP: recordAttemptOutcome('verification-failed') → cleanup → FAILED (terminal)
-ASSURANCE_ROUND (assuranceRound activity = Lane B runAssuranceRound) — outcome:
+ASSURANCE_ROUND (assuranceRound activity = Lane B runAssuranceRound; cancellable) — outcome:
    PROCEED  ─▶ PUBLICATION_GATE ─▶ PUBLISHING (PR body carries prBodySectionRef)
                ─▶ recordAttemptOutcome('proceeded') ─▶ REVIEW_HANDOFF
    ESCALATE ─▶ PUBLICATION_GATE ─▶ PUBLISHING (PR flagged "assurance not satisfied", prBodySectionRef)
                ─▶ recordAttemptOutcome('escalated') ─▶ REVIEW_HANDOFF
-   REPAIR   ─▶ recordAttemptOutcome('repair-requested') ─▶ BUDGET_CHECK (next attempt: kind repair,
-               base = repairBaseSha, round = nextRound, priorAdjudicationId = adjudicationId)
-               no attempts left → FAILED (reason repair-capacity-exhausted); nothing published
+   REPAIR   ─▶ recordAttemptOutcome('repair-requested') ─▶ BUDGET_CHECK (next attempt: kind repair, with the
+               repair lineage base = repairBaseSha, repair order, round = nextRound,
+               priorAdjudicationId = adjudicationId)
    BLOCK    ─▶ recordAttemptOutcome('blocked') → reap → quarantine → BLOCKED (terminal); nothing published
    anything else (unknown kind, missing field, REPAIR without repairBaseSha …) ─▶ audited
                review-slot.contract-violation → FAILED (terminal)
-PUBLICATION_GATE ──(publicationApprovalRequired)──▶ AWAITING_APPROVAL(publish-change)
+   the activity itself fails (retries exhausted or non-retryable) ─▶ audited assurance-unavailable, then
+               shadow mode: continue as PROCEED (no section ref); gating mode: continue as ESCALATE. Never FAILED.
+PUBLICATION_GATE ──(publicationApprovalRequired)──▶ AWAITING_APPROVAL(publish-change)   [cancellable wait]
    ▼
-PUBLISHING  (publishBranch → upsertPullRequest)   [non-cancellable critical section]
+PUBLISHING  (publishBranch [critical unit 2] → upsertPullRequest [critical unit 3])
    ▼
 REVIEW_HANDOFF (projectTaskState WAITING_FOR_HUMAN_REVIEW) ─▶ CLEANUP ─▶ done
 
-ATTEMPT_ABANDONED: reapContainers → quarantineWorkspace → releaseLease → recordAttemptOutcome('failed')
-   → BUDGET_CHECK (kind = retry) if the failure class is replaceable, attempts remain and no push record exists,
-   else FAILED. Replaceable classes (policy default, `policies/orchestration-policy.yaml`): environment, provider,
-   quota-rate-limit, tool, agent-loop-stall, artifact-loss, workflow-recovery-failure. Never replaceable:
-   policy-violation, false-completion, duplicate-side-effect (Phase 1 taxonomy, `policies/failure-taxonomy.yaml`).
-Any phase + cancel → CANCELLING (finish an open critical section, reap, quarantine, release,
-   recordAttemptOutcome('cancelled')) → CANCELLED.
+ATTEMPT_ABANDONED: reapContainers → quarantineWorkspace → releaseLease → recordUsage → recordAttemptOutcome('failed')
+   → BUDGET_CHECK (kind = retry, same repair lineage) if the failure class is replaceable, attempts remain and no
+   push record exists, else FAILED. Replaceable classes (policy data, `policies/orchestration-policy.yaml`):
+   environment, provider, quota-rate-limit, tool, agent-loop-stall, artifact-loss, workflow-recovery-failure.
+   Never replaceable: policy-violation, false-completion, duplicate-side-effect (Phase 1 taxonomy,
+   `policies/failure-taxonomy.yaml`).
+ATTEMPT_EXHAUSTED: reapContainers → quarantineWorkspace → releaseLease → recordUsage (+ recordOverrun and an
+   audited overrun incident when usage exceeded a cap) → recordAttemptOutcome('budget-exhausted')
+   → BUDGET_CHECK (kind = retry, same repair lineage). Nothing of the attempt is verified, committed or published.
+Any phase + cancel → CANCELLING (finish an open critical unit, and once a push has started also the PR upsert;
+   reap, quarantine, release, recordAttemptOutcome('cancelled')) → CANCELLED. Assurance, repair planning and
+   approval waits are interrupted at once.
 Any phase boundary + pause → PAUSED (lease renewed by timer; pause timeout → recordAttemptOutcome('cancelled')
-   → BLOCKED).
+   → BLOCKED). A pause never splits a critical unit, nor push from its PR upsert.
 ```
 
 **Verification stops end the task.** A failed or errored mandatory verification is a deterministic result, and
@@ -179,14 +212,24 @@ behavior, now durable.
 publication. So at most one attempt per task publishes, and the task has at most one remote ref and one PR.
 The core enforces this as a guard on the `startAttempt` command, and property tests check it.
 
-**Repair workspace ordering.** The parent attempt's workspace is cleaned only after the repair attempt's
-workspace is `ACTIVE`. Until then the parent's harness commit stays referenced by a live worktree, so
-`repairBaseSha` cannot be pruned from the shared mirror. `prepareWorkspace` checks the object exists before
-`git worktree add` and fails non-retryably otherwise.
+**Attempt kind and repair lineage are separate (R17, P3-PLAN2-MED-005).** `kind` says why the attempt exists:
+`initial`, `retry` (it replaces an abandoned or exhausted attempt) or `repair` (an assurance `REPAIR`). The
+repair lineage says what it builds on: `repairBaseSha`, the repair order, the round, the prior adjudication and
+the parent attempt whose harness commit is the base. A `repair` attempt always carries a lineage. A `retry`
+copies the lineage of the attempt it replaces, so a retry of a failed repair attempt starts from the same
+`repairBaseSha` with the same repair order, round and prior adjudication, and its assurance round continues the
+same lineage. An `initial` attempt has none.
+
+**Repair workspace ordering.** The parent attempt's workspace is cleaned only after the workspace of the first
+attempt in its lineage is `ACTIVE`. Until then the parent's harness commit stays referenced by a live worktree, so
+`repairBaseSha` cannot be pruned from the shared mirror. A replaced lineage attempt is quarantined, not deleted,
+so its worktree keeps the base reachable too. `prepareWorkspace` checks the object exists before
+`git worktree add` and fails non-retryably otherwise. The parent's lease is released when the `REPAIR` outcome is
+routed, because the repair attempt needs the single writer lease for the task branch.
 
 Terminal outcomes and their projected `TaskStatus`: review handoff → `WAITING_FOR_HUMAN_REVIEW` (terminal for
-the harness, as in Phase 2, for both `PROCEED` and `ESCALATE`); `FAILED`; `BLOCKED` (deferred risk, assurance
-`BLOCK`, publication rejected, pause timeout); `BUDGET_EXHAUSTED`; `CANCELLED`. No phase leads to `ACCEPTED` or
+the harness, as in Phase 2, for both `PROCEED` and `ESCALATE`); `FAILED`; `BLOCKED` (deferred risk, admission
+unavailable, assurance `BLOCK`, publication rejected, pause timeout); `BUDGET_EXHAUSTED`; `CANCELLED`. No phase leads to `ACCEPTED` or
 `DONE` (Phase 2 invariant I2 is preserved). The task stays `VERIFYING` through the assurance and repair rounds.
 
 ### 4.2 `runWorkflow` (one per Run; workflow ID `asep-run-<runId>`)
@@ -226,16 +269,17 @@ sets an explicit `retry`, `startToCloseTimeout` and, where marked, `heartbeatTim
 | `runAgent` | `agentStep` (`execute-task.ts:94`) with per-request caps (CR-25) | agent wall-clock + 5 min | 60 s | **1** | container `asep-agent-<attemptId>` (single run) | yes (aborts the provider; container reaped) |
 | `inspectWorkspace` | `inspectStep` (`execute-task.ts:124`) | 5 min | 30 s | 3 | read-only | yes |
 | `runVerification` | `verifyStep` (`pipeline-steps.ts:181`) with a per-call signal (CR-26) | Σ check timeouts + 5 min | 30 s | 2 (infrastructure errors only) | reap `asep-verify-<attemptId>-*` first | yes (process group killed, containers reaped by label) |
-| `commitAttempt` | `commitStep` (`pipeline-steps.ts:342`) + Phase 2 fence + HEAD CAS | 5 min | 30 s | 10 | side-effect `attemptId:commit` | **no** (non-cancellable scope) |
-| `persistEvidence` | `evidenceStep` (`pipeline-steps.ts:475`) | 5 min | 30 s | 10 | preallocated evidence id (adopt) | no |
+| `commitAttempt` | `commitStep` (`pipeline-steps.ts:342`) + Phase 2 fence + HEAD CAS | 5 min | 30 s | 10 | side-effect `attemptId:commit` | **no**: critical unit 1 (commit + evidence binding) |
+| `persistEvidence` | `evidenceStep` (`pipeline-steps.ts:475`) | 5 min | 30 s | 10 | preallocated evidence id (adopt) | **no**: critical unit 1 |
 | `assuranceRound` | Lane B `runAssuranceRound(deps, input, ctx)` via the context adapter (§12) | 30 min | 60 s | 3 | Lane B hash-derived ids + `review_records` claim on the Phase 2 primitive (R1) | yes |
 | `recordAttemptOutcome` | Lane B `recordAttemptOutcome({events}, input, ctx)` (Lane A default until integration, §12) | 30 s | — | 10 | deterministic event ids; `RunEventSink` conflict-by-bytes | no |
-| `publishBranch` | `pushStep` (`pipeline-steps.ts:609`) + Phase 2 fence | 5 min | 30 s | 20, backoff to 5 min | side-effect `attemptId:push`; remote ref | no |
-| `upsertPullRequest` | `upsertPrStep` (`pipeline-steps.ts:692`) + Phase 2 fence; adapter create-conflict reconcile (CR-27) | 5 min | 30 s | 20, backoff to 5 min | side-effect `attemptId:pr-upsert`; PR head | no |
+| `publishBranch` | `pushStep` (`pipeline-steps.ts:609`) + Phase 2 fence | 5 min | 30 s | 20, backoff to 5 min | side-effect `attemptId:push`; remote ref | **no**: critical unit 2; once started, unit 3 also runs |
+| `upsertPullRequest` | `upsertPrStep` (`pipeline-steps.ts:692`) + Phase 2 fence; adapter create-conflict reconcile (CR-27) | 5 min | 30 s | 20, backoff to 5 min | side-effect `attemptId:pr-upsert`; PR head | **no**: critical unit 3 |
 | `projectTaskState` / `projectAttemptState` | projection writer (§13) | 30 s | — | 50, backoff to 1 min | monotonic `projection_seq` | no |
-| `recordUsage` | budget ledger | 30 s | — | 10 | `(attempt_id, entry_kind)` key | no |
-| `openApprovalRequest` / `verifyApprovalDecision` / `expireApprovalRequest` | approvals repo | 30 s | — | 10 | `approval_requests.id` deterministic from workflow (§11) | no |
+| `recordUsage` | budget ledger: attempt usage, recorded overrun, granted extension | 30 s | — | 10 | `(attempt_id, entry_kind)` / `<approvalRequestId>:extension` key | no |
+| `openApprovalRequest` / `verifyApprovalDecision` / `expireApprovalRequest` / `cancelApprovalRequest` | approvals repo; `cancelApprovalRequest` closes an opened gate when the task ends without a decision, so a late decision gets 409 | 30 s | — | 10 | `approval_requests.id` deterministic from workflow (§11) | no (short gate writes; the wait between them is cancellable) |
 | `recordControl` | audit + `human.intervention` run event for an accepted control (§9) | 30 s | — | 10 | `requestId` | no |
+| `recordAudit` | audit row for a workflow-detected event: slot contract violation, assurance unavailable, unverified decision, soft threshold, overrun incident, pause timeout, cancel after publication | 30 s | — | 10 | `<workflowId>:<seq>` | no |
 | `renewLease` | Phase 2 lease primitive renewal (invariant L2, §7) | 30 s | — | 5 | lease identity | yes |
 | `reapContainers` | `ExecutionReaper.reap` (CR-08) | 2 min | — | 10 | label `asep.attempt` | no |
 | `quarantineWorkspace` / `cleanupWorkspace` / `releaseLease` | Phase 2 ports via registry | 2 min | — | 10 | idempotent by id | no |
@@ -291,10 +335,24 @@ P3-PLAN-MED-009).
 
    `pnpm test` replays every listed history offline with `Worker.runReplayHistories`. A seeded
    non-deterministic change to a fixture workflow proves the suite turns red.
+
+   **Bootstrap without a skip or an empty corpus (P3-PLAN2-MED-003).** Real histories exist only once the gate
+   runs a real Temporal server, which happens first in S8. So the replay suite becomes a required suite in S8,
+   not S7, and it is strict at every commit from then on:
+   - S8 lands the suite, the seeded non-deterministic fixture (its history captured from the gate server) and the
+     first captured scenarios, and creates `required-scenarios.json` listing exactly the scenarios it captured.
+   - Every later slice that captures a scenario (S10, S11) adds its histories, its manifest entries and its
+     `required-scenarios.json` entries in the same commit. The suite fails if a listed scenario lacks a history,
+     so the list can only grow with real evidence.
+   - S13 (final B5) asserts that `required-scenarios.json` equals the full list above. Nothing is skipped at any
+     commit, the manifest is never empty once the suite exists, and the final criterion is unchanged.
 6. **Deployment rule while Worker Versioning is deferred.** A worker build that changes workflow code ships only
    in one of two ways:
-   - **Drain-only.** Stop the old workers, let no open workflow remain on the task queue, then start the new
-     build.
+   - **Drain-only (P3-PLAN2-MED-006).** In this order: (1) stop starting new executions, so the API refuses new
+     task and run starts with 503 and no submission reaches the task queue; (2) keep the old workers running, so
+     the open workflows reach a terminal state on the code that started them; (3) wait until the command that
+     lists open workflows on the task queue returns none; (4) stop the old workers; (5) start the new build and
+     re-enable starts. Stopping the old workers first would leave open workflows with nobody to run them.
    - **Patched.** Every behavior change is behind `patched()`, and the replay corpus, including histories from
      the previous build, passes on the new build.
 
@@ -453,7 +511,7 @@ boundaries. Inbound forge webhooks do not exist; they were deferred in Phase 2 (
 | pause | Update `control` (`kind: pause`, `requestId`) via API | Takes effect at the next phase boundary. An in-flight activity is not interrupted. The workflow waits on `condition(() => !paused \|\| cancelRequested, pauseTimeout)` and runs a `renewLease` timer loop meanwhile. Projection becomes `PAUSED`. Repeating the same `requestId` is a no-op. Pausing a paused workflow returns `accepted: false` with reason `already-paused`. |
 | resume | Update `control` (`kind: resume`) | Clears the flag and continues from the recorded phase. Projection returns to the phase's status. |
 | pause timeout | durable timer (policy `maxPauseHours`, default 72) | → reap, quarantine, release, `recordAttemptOutcome('cancelled')`, `BLOCKED` (`reason: pause-timeout`), audit. |
-| cancel | Temporal workflow cancellation through the API | If a non-cancellable critical section (commit … PR) is open, it finishes first and its records complete, so cancellation never leaves `PENDING` records. During `runAgent` or `runVerification` the cancellation reaches the activity's `AbortSignal`. The provider or runner then kills its process group, and the cleanup scope reaps the attempt's containers by label. Then the cleanup scope quarantines the workspace, releases the lease and projects `CANCELLED`. A published PR is **left open** for a human (the harness never deletes remote refs; Phase 2 RefSafetyPolicy forbids deletion). Cancellation after publication is audited with the PR reference. |
+| cancel | Temporal workflow cancellation through the API | Each operation that needs reconciliation is its own **critical unit** (R17, P3-PLAN2-HIGH-003): (1) commit plus evidence binding, (2) push, (3) PR upsert. A cancel that arrives inside a unit is processed when that unit has reconciled and its records are complete, so cancellation never leaves `PENDING` records. A cancel before push starts ends the task with nothing published. A cancel after push has started completes push and then PR upsert, so the remote ends either with no ASEP branch or with the branch and its PR. Assurance rounds, repair planning and approval waits are not critical: a cancel interrupts them at once (the assurance activity receives it on its `AbortSignal`; an open approval request is closed with `cancelApprovalRequest`). During `runAgent` or `runVerification` the cancellation reaches the activity's `AbortSignal`. The provider or runner then kills its process group, and the cleanup scope reaps the attempt's containers by label. Then the cleanup scope quarantines the workspace, releases the lease and projects `CANCELLED`. A published PR is **left open** for a human (the harness never deletes remote refs; Phase 2 RefSafetyPolicy forbids deletion). Cancellation after publication is audited with the PR reference. |
 | run-level pause/resume/cancel | Update on `runWorkflow` | Forwarded to the active child (signal for pause/resume, scope cancellation for cancel). No new child starts while the run is paused. |
 
 Every control requires an authenticated principal with capability `executions:control` for the task's project
@@ -475,7 +533,7 @@ and the task is `CANCELLED`.
 | Level | Source | Enforced by | Hard rule |
 |---|---|---|---|
 | attempt | `WorkOrder.budget` (`maxTurns`, `maxToolCalls`, `maxCostUsd`, `maxWallClockMinutes`; all four required, `work-order.schema.json:36`) | the agent adapter, per request (CR-25), plus activity `startToClose` = wall-clock + grace | each cap is enforced before and during execution; a cap the adapter cannot enforce makes the attempt fail closed before start |
-| task | `task-workflow-input.taskBudget` (`maxAttempts`, `maxCostUsd`, `softCostUsd`, `maxWallClockMinutes`) | `taskWorkflow` core | **reservation:** an attempt starts only if `spent + attempt.maxCostUsd ≤ maxCostUsd + granted extensions` |
+| task | `task-workflow-input.taskBudget` (`maxAttempts`, `maxCostUsd`, `softCostUsd`, `maxWallClockMinutes`) and `verificationReserve` (`costUsd`, `wallClockMinutes`) | `taskWorkflow` core | **reservation:** an attempt starts only if `spent + attempt.maxCostUsd + verificationReserve.costUsd ≤ maxCostUsd + granted extensions`, the same sum fits the run remainder, and `spentWallClock + attempt.maxWallClockMinutes + verificationReserve.wallClockMinutes ≤ maxWallClockMinutes` |
 | run | `run-workflow-input.runBudget` (`maxCostUsd`, `softCostUsd`, `maxTasks`) | `runWorkflow` core | the child's task cap is `min(task cap, run remaining)` |
 | tenant / project / milestone | — | **deferred** | needs cross-run accounting, deferred with the fair scheduler (plan §4) |
 
@@ -492,16 +550,45 @@ and the task is `CANCELLED`.
   Exit H9 drives a fake stream past each cap.
 - Crossing a soft threshold emits `budget.threshold_crossed` (`thresholdKind: soft`) and an audit row. Work
   continues.
-- A failed hard reservation pauses into a `budget-extension` approval when the run allows approvals. Otherwise,
-  or on reject or expiry, the task ends `BUDGET_EXHAUSTED`.
-- **Verification is never reduced to fit a budget** (`docs/implementation/cost-model.md:12`). Budget checks run
-  only at `BUDGET_CHECK`, before an attempt starts. Once an agent attempt has run, verification, commit and
-  publication of that attempt are never skipped or shortened for budget reasons. Test H5 exhausts the budget
-  during the agent step and asserts verification still runs every mandatory check.
+- **Verification has its own reservation (R17).** When an attempt starts, the core reserves the agent cap and,
+  separately, `verificationReserve` (wall-clock from the plan's check timeouts, cost from policy). The agent can
+  never consume the verification reservation: the adapter stops the agent at its own cap. Once verification ran,
+  the attempt is charged its reserve, because verification has no metered cost source. Verification is never
+  reduced to fit a budget (`docs/implementation/cost-model.md:12`), and it is never run on a path that can no
+  longer publish.
+
+**Agent outcome (R17, P3-PLAN2-HIGH-001).** The single table the core follows after `runAgent`:
+
+| Agent result | Inspect | Verify, commit, assurance, publish | Attempt terminal | Next |
+|---|---|---|---|---|
+| `AGENT_DONE`, reported usage within every cap | yes | yes, as designed | per the rest of the path | — |
+| `BUDGET_EXHAUSTED` (the adapter stopped the agent at a cap) | yes, to record evidence of the workspace state | **no** | `budget-exhausted` | a new attempt (`retry`, same lineage) if `BUDGET_CHECK` allows |
+| any status with reported usage above a cap the adapter did not stop at (cost or tool calls) | yes | **no** | `budget-exhausted`, plus `recordOverrun` and an audited overrun incident | `BUDGET_CHECK`, where the recorded overrun ends the task `BUDGET_EXHAUSTED` |
+| `FAILED` / `BLOCKED` (the agent's own failure) | no | no | `failed` | a retry only for a replaceable failure class |
+| activity failure or heartbeat timeout (infrastructure, worker death) | no | no | `failed` | a retry only for a replaceable class, if `maxAttempts` and a fresh reservation allow; `workflow.recovered` (`attempt-replaced`) after a timeout |
+
+Mandatory verification is never skipped on a path that publishes. It is not run on a path that can never publish.
+An agent that finishes `AGENT_DONE` having spent exactly its cap is within its cap and gets the full path, because
+verification was reserved separately (exit H5).
+
+**Reservation failure (R17, R19, P3-PLAN2-HIGH-002).** At `BUDGET_CHECK`, for any planned attempt (initial,
+retry or repair):
+
+| Cause | Result |
+|---|---|
+| `maxAttempts` exhausted | `FAILED`, reason `repair-capacity-exhausted` when the planned attempt carries a repair lineage, else `attempts-exhausted`, whatever the budget says |
+| task cap short, budget-extension approval available | `WAITING_FOR_APPROVAL` with a `budget-extension` request; approve → reserve and continue with the same attempt plan and lineage; reject or expiry → `BUDGET_EXHAUSTED` |
+| task cap short, approval not available | `BUDGET_EXHAUSTED` |
+| run remainder, wall-clock or a recorded overrun | `BUDGET_EXHAUSTED`; no task-level approval extends these scopes |
+
+A budget-extension approval is available only when the policy datum `maxBudgetExtensionUsd` is set (R19). There is
+no default for it in code. While it is unset, every budget cause goes straight to `BUDGET_EXHAUSTED`.
+
 - Usage source: `AgentAttemptObservation.usage` is **provider-reported and untrusted**
   (`packages/ports/src/index.ts:49-57`). Wall-clock is measured by the harness. The ledger records `source`
-  per entry. If reported cost exceeds the reservation, that is recorded as an overrun event and the task budget
-  is treated as exhausted. Residual risk: a provider that under-reports cost is bounded only by the adapter's
+  per entry. Reported usage above a cap is an overrun: it is recorded (ledger entry `overrun` and an audit
+  incident), the attempt is treated exactly like a cap-triggered exhaustion, and the recorded overrun fails every
+  later reservation of the task. Residual risk: a provider that under-reports cost is bounded only by the adapter's
   stream-based cost cap and by wall-clock (PR3-16).
 
 ## 11. Approvals
@@ -509,7 +596,8 @@ and the task is `CANCELLED`.
 A durable, human-only gate. It reuses the Human-approval sequence (`docs/architecture/05-sequence-diagrams.md:36-54`)
 and keeps ADR 0014's named approval with rationale.
 
-- **Kinds in Phase 3:** `budget-extension`, and `publish-change` (required when the run's
+- **Kinds in Phase 3:** `budget-extension` (available only for a task-cap shortfall, and only while the policy
+  datum `maxBudgetExtensionUsd` is set; §10), and `publish-change` (required when the run's
   `publicationApprovalRequired` is true; set at run creation by a principal with `runs:govern`, and immutable
   afterwards). v1's `review-adjudication` kind is withdrawn: under the reconciled Phase 4 semantics, `ESCALATE`
   publishes a flagged PR for human review rather than waiting on a gate (R3).
@@ -535,6 +623,9 @@ and keeps ADR 0014's named approval with rationale.
   receipt. After acceptance the workflow runs `verifyApprovalDecision` before acting. It re-reads the
   PostgreSQL decision row and checks request, decision and principal, and that the principal is human (not an
   agent or service principal). A Temporal message alone can never release a gate (threat T3-02).
+- **Waiting is cancellable.** A cancel during an approval wait ends the task at once and closes the open request
+  with `cancelApprovalRequest`, so a later decision gets 409. The two short gate activities (`openApprovalRequest`,
+  `verifyApprovalDecision`) are idempotent writes and finish before the cancel is processed.
 - **Expiry** is a workflow timer, authoritative over `expires_at`. On expiry: `expireApprovalRequest`
   (idempotent), `approval.expired`, and the kind's reject path. A late decision gets HTTP 409, and the validator
   rejects it. Its delivery row ends `TARGET_CLOSED` or is rejected by the validator, and either way it is
@@ -549,9 +640,28 @@ The slot follows Phase 4's semantics. Lane A owns the workflow composition and t
 Lane B's code stays framework-free and never imports `@temporalio/*` or anything Lane A adds. The binding
 TypeScript is the block **`Review-loop slot contract (verbatim for S0)`**, which Lane B is writing in its plan.
 The controller hands Lane A the locked text, and Lane A pastes it verbatim into plan §30 (CR-10) and lands it
-in S0, together with the framework-free conformance kit (`review-loop-contract.ts`) that both lanes run. Field
-names below follow Lane B's draft (`phase-04-plan.md` §16 and `phase-04-architecture.md` §7 at `a2a7b8a`). If
-the locked block differs, the locked block wins.
+in S0, together with the framework-free conformance kit (`review-loop-contract.ts`) that both lanes run. The
+slot, Lane B's disabled slot and the kit live in `packages/application/src/review-loop/`, because the slot
+returns `AdmissionResult` from `@asep/application` and ports must not depend on application (R16). Lane B fixes
+the block after its own lock-check, and the controller hands it over only once that fixed version is locked
+(R18). Field names below follow Lane B's draft (`phase-04-plan.md` §16 and `phase-04-architecture.md` §7 at
+`a2a7b8a`). If the locked block differs, the locked block wins.
+
+What the fixed block is known to bring (R18), and what Lane A does with it:
+
+- **Two default slots with distinct jobs.** Lane A's `NotConfiguredAssuranceSlot` is the binding when no
+  assurance is configured; it fails closed for any risk that requires review. Lane B's `DisabledAssuranceSlot` is
+  the explicit, literal opt-out and returns `PROCEED` without events. Neither replaces the other.
+- **Terminal vocabulary.** The block's `recordAttemptOutcome` terminals win: `verification-stopped` plus specific
+  failure terminals. At hand-off Lane A updates the terminal table below, its prose and exit J2, and S0 renames
+  the decision core's local terminal names (plan §26, S0).
+- **Workspace resolver port.** A framework-free port in the application-local ports,
+  `resolve(scope, { attemptId, leaseId, fencingEpoch })`, which checks tenant, an `ACTIVE` lease held by that
+  lease id and the current epoch, and fails closed otherwise. Lane A implements it over the lease table (S3,
+  exit E15). No workspace comes from activity-local memory.
+- **Fixed logical time, ArtifactRef envelope, shadow fields.** The R15 `now()` invariant is written in the block
+  with a byte-comparison redelivery test; large inputs travel as `ArtifactRef` within the 64 KiB envelope; `shadow`
+  is required only on `PROCEED` in shadow mode.
 
 - **Where.** One assurance round runs after `persistEvidence` and before the publication gate and push. A
   verification stop does **not** run a round.
@@ -583,10 +693,13 @@ the locked block differs, the locked block wins.
   | `REPAIR` | a new attempt of kind `repair` (see "Repair" below) |
   | `BLOCK` | no push; task `BLOCKED` |
   | anything outside the contract | fails closed (audited, task `FAILED`) |
+  | the activity fails (retries exhausted, or a non-retryable error) | audited `assurance-unavailable`; shadow mode → continue as `PROCEED` with no section ref; gating mode → continue as `ESCALATE`. Never `FAILED` (R19). |
 
   With Phase 4 in shadow mode (user decision), integration will observe `PROCEED` plus recorded findings. All
   four paths are still implemented and proven with a scripted slot (exit J3), because later phases turn gating
-  on.
+  on. An assurance-infrastructure failure never blocks a task in shadow mode: the human PR review that every
+  Phase 2/3 task ends in remains the gate, and the PR states that assurance was unavailable (exit J10). The mode
+  is the task input's `governance.assuranceMode` (data model §4.2).
 - **Repair.** A repair attempt gets these inputs:
   - a fresh workspace at the outcome's `repairBaseSha` (the prior attempt's harness commit);
   - a ContextPack from `buildRepairContextPack(original, repairOrder)`, computed in `storeAttemptInputs` and
@@ -596,7 +709,8 @@ the locked block differs, the locked block wins.
   Its commit CAS expects `repairBaseSha`. Its evidence records `baseSha = repairBaseSha`, and the cumulative
   diff origin (`taskBaseSha`) travels in the next round's input. v1's "task base + apply parent diff"
   (`seedDiffRef`) is withdrawn. Repair is bounded by Lane A's `taskBudget.maxAttempts` and the budget
-  reservation, and by Phase 4's own `maxRounds` (which returns `ESCALATE max-repair-rounds`).
+  reservation (§10 "Reservation failure"), and by Phase 4's own `maxRounds` (which returns
+  `ESCALATE max-repair-rounds`). A retry that replaces a failed repair attempt keeps the whole lineage (§4.1).
 - **`recordAttemptOutcome()`** is called once at **every** attempt terminal, as an activity with deterministic
   event ids:
 
@@ -607,7 +721,8 @@ the locked block differs, the locked block wins.
   | after publication on `ESCALATE` | `escalated` |
   | on `REPAIR`, before the next attempt | `repair-requested` |
   | on `BLOCK` | `blocked` |
-  | abandonment (agent failure, cap exceeded, overstep, worker death) and any other non-review stop | `failed` |
+  | budget exhaustion: the adapter stopped the agent at a cap, or reported usage overran a cap (§10) | `budget-exhausted` |
+  | abandonment (agent failure, overstep, worker death) and any other non-review stop | `failed` |
   | cancel and pause timeout | `cancelled` |
 
   It is the only emitter of `attempt.declared_complete` and `attempt.completed`. So the false-completion metric
@@ -661,7 +776,9 @@ no push record exists; it never proceeds on a missing worktree. A test runs two 
   (`pipeline-steps.ts:870-877`).
 - **Audit actions** (CR-18): `workflow.start`, `workflow.pause`, `workflow.resume`, `workflow.cancel`,
   `approval.request`, `approval.decide`, `approval.deliver`, `approval.expire`, `budget.threshold`,
-  `budget.extend`, `side-effect.takeover`, `workspace.quarantine`, `review-slot.contract-violation`.
+  `budget.extend`, `budget.overrun`, `side-effect.takeover`, `workspace.quarantine`, `review-slot.contract-violation`,
+  `assurance-unavailable`, `approval.unverified`, `workflow.pause-timeout`, `workflow.cancel.after-publication`.
+  Workflow-detected events are written by the `recordAudit` activity (§5).
 - **RunEvents** (persisted through `RunEventSink` into `run_events`, validated against `run-event` 1.2.0, S0).
   - Lane A emits: `run.started`, `task.started`, `attempt.started`, `verification.completed`, `task.completed`,
     `run.completed`, `human.intervention`, `workflow.recovered` (with `recoveryKind`), `approval.requested`,
@@ -687,9 +804,13 @@ no push record exists; it never proceeds on a missing worktree. A test runs two 
   as opaque ULIDs, which resolve to a person only through PostgreSQL. Rationale text stays in PostgreSQL. The
   payload-hygiene suite fails on any schema string field without a `pattern`, `enum` or `format` constraint,
   and on any secret or PII hit in a committed history (exit B6).
-- **Retention.** The gate creates its namespace with an explicit retention period. The exact CLI flag is
-  verified at S8, and the runbook records it. The production retention value is a pre-deployment decision,
-  recorded in the runbook (M1).
+- **Retention (P3-PLAN-MED-003 follow-up).** The flag is verified on the pinned image (research register §2):
+  `temporal operator namespace create --retention <duration>` (default `72h0m0s`). The gate creates its namespace
+  with `--retention 24h`. That is enough for one gate run and the replay-corpus export. After creating it, the gate
+  reads the namespace back with `temporal operator namespace describe` inside the server container and fails if
+  the retention differs (exit C10). The production namespace uses `--retention 720h` (30 days) unless the
+  pre-deployment review sets another value, and the C9 smoke reads it back the same way. The value is recorded in
+  the runbook (M1). Durable audit evidence lives in PostgreSQL, not in history.
 - **Codec trigger.** A payload codec (encryption) is required **before** any change adds a workflow payload
   field that the hygiene rule does not classify as an id, hash, ref, number or closed enum. Until then no codec
   is used.

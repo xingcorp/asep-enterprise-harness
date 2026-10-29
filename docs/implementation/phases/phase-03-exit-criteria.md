@@ -1,8 +1,9 @@
-# Phase 3 — Exit Criteria (LOCKED v2, pending controller confirmation; machine-checkable)
+# Phase 3 — Exit Criteria (LOCKED v3, pending controller confirmation; machine-checkable)
 
 > Phase 3 is COMPLETE only when every MUST below passes from a clean checkout of the phase branch, as run by
-> the **controller** (lane contract step 5). Base `00a6889`; v1 at `80bb76a`. v2 folds in the Codex plan review
-> (`phase-03-review-log.md`) and the controller's reconciliation v1 (R1–R14).
+> the **controller** (lane contract step 5). Base `00a6889`; v1 at `80bb76a`, v2 at `98e92cf`. v2 folded in the
+> Codex plan review and reconciliation R1–R14; v3 folds in the Codex lock-check of v2 and reconciliation R15–R19
+> (`phase-03-review-log.md`, section "Lock-check v2").
 > Each MUST names the executable test that proves it: `file` + SUITE-ID. Files marked *(new)* do not exist yet.
 > They are created by the slice named in `phase-03-plan.md` §26. Unit suites run in `pnpm test`, and
 > `*.itest.ts` suites run in `pnpm test:integration` against **real** Temporal, PostgreSQL, MinIO, Docker and
@@ -26,8 +27,10 @@
       container or volume remains after the gate (`scripts/integration/run-integration.test.ts`,
       `asep-suite:integration-gate`).
 - [ ] A5. Migrations `0100`+ apply forward on a clean PostgreSQL, re-apply as a no-op, run under the advisory
-      lock with concurrent migrators, and an edited applied migration fails before later ones run. This extends
-      the Phase 2 migration tests (`adapters/persistence/src/orchestration/orchestration.itest.ts` *(new)*,
+      lock with concurrent migrators, and an edited applied migration fails before later ones run. The real
+      upgrade path is exercised too: a database at the accepted Phase 2 head, then S0 (`0107` only), then S3
+      (`0100`–`0102`, `0104`–`0106`, all lower than `0107`), ends with every migration applied exactly once and the
+      registry in ascending order. This extends the Phase 2 migration tests (`adapters/persistence/src/orchestration/orchestration.itest.ts` *(new)*,
       `asep-suite:pg-orchestration`).
 - [ ] A6. The license inventory is green, including all Temporal transitive dependencies. The allowlist is
       unchanged, and any single-package override cites upstream evidence (`scripts/license-inventory.sh` via
@@ -40,15 +43,19 @@
 ## O. Shared foundation (S0)
 
 - [ ] O1. The review-loop slot contract from S0 compiles exactly as the verbatim block that Lane B locked
-      (byte comparison recorded in the review log at paste time). The framework-free conformance kit
-      `review-loop-contract.ts` passes for Lane A's `NotConfiguredAssuranceSlot` and for a scripted slot that
-      returns each of the four outcomes
+      (byte comparison recorded in the review log at paste time), at `packages/application/src/review-loop/`
+      (R16). The framework-free conformance kit `review-loop-contract.ts` passes for Lane A's
+      `NotConfiguredAssuranceSlot`, which S0 itself lands in its minimal form (S6 only binds it into the activity
+      wrapper), for Lane B's `DisabledAssuranceSlot`, and for a scripted slot that returns each of the four
+      outcomes
       (`packages/application/src/orchestration-activities/assurance-slot.test.ts` *(new)*,
       `asep-suite:assurance-slot-contract`).
 - [ ] O2. `RunEventSink` conformance:
       - same `eventId` with identical canonical bytes → `{ appended: false }`;
       - same `eventId` with different bytes → `RunEventConflictError`;
-      - an event invalid for its declared `run-event` version → rejected before insert.
+      - an event invalid for its declared `run-event` version → rejected before insert;
+      - an event whose `run_id` has no `runs` row in the tenant → rejected (measurement storage boundary, data
+        model §3.7).
 
       Proven on PGlite (`adapters/persistence/src/run-events/run-event-sink.test.ts` *(new)*,
       `asep-suite:run-event-sink`) and on real PostgreSQL under a two-connection race
@@ -58,25 +65,39 @@
       (`asep-suite:pg-run-events`).
 - [ ] O4. `run-event` 1.2.0 contains Lane A's fields and Lane B's locked SR-C5 fields. Fixtures of both lanes
       validate, and the compat gate classifies the change as MINOR (`asep-suite:compat-gate`).
+- [ ] O5. Normalization boundary: after S0 renames the decision core's local slot types to the locked ones, a
+      table test drives the core with each locked outcome and asserts the routing, including `REPAIR`'s
+      `repairBaseSha`, repair order, `nextRound` and adjudication lineage reaching the next attempt and its
+      assurance request, and the locked terminal names reaching `recordAttemptOutcome`
+      (`packages/orchestration/src/decide.test.ts`, `asep-suite:orchestration-core`).
 
 ## B. Layering, determinism, single orchestrator
 
 - [ ] B1. `@temporalio/*` is imported only under `adapters/temporal/**`. A seeded violation fails
       (`scripts/forbidden-imports.test.ts`, `asep-suite:forbidden-imports`, on the rule framework the accepted
       Phase 2 lands, R8).
-- [ ] B2. `packages/orchestration/src/**` has only `import type` imports and none of the banned constructs
-      (`Date`, `Math.random`, timers, `performance`, `process`, `crypto`, `require`, dynamic `import()`). Seeded
-      violations fail (same suite).
+- [ ] B2. The production source of `packages/orchestration` (`src/**/*.ts` except `*.test.ts` and
+      `src/test-support/**`) has no external runtime dependency (only type imports from `@asep/contracts` and
+      `@asep/ports`, plus relative imports between its own modules) and none of the banned constructs (`Date`,
+      `Math.random`, timers, `performance`, `process`, `crypto`, `require`, `globalThis`, `eval`, `fetch`, dynamic
+      `import()`). Tests may use runtime imports. Seeded violations fail, a valid construct passes, and the scanned
+      file set excludes tests and test support. Two checkpoints (architecture §3):
+      - S2: package-local self-check (`packages/orchestration/src/purity.test.ts`, `asep-suite:orchestration-purity`);
+      - S7, after G-P2: the same rule in `scripts/forbidden-imports.test.ts` on the accepted Phase 2 framework
+        (`asep-suite:forbidden-imports`); the package-local suite stays registered (append-only registry, R10).
 - [ ] B3. `adapters/temporal/src/workflows/**` imports only `@temporalio/workflow`, `@asep/orchestration` and
       relative workflow modules at runtime. A seeded violation fails (same suite).
 - [ ] B4. A real `bundleWorkflowCode()` with **no** `ignoreModules` succeeds for the production workflows. A seeded
       workflow fixture importing `node:fs` makes the same test fail
       (`adapters/temporal/src/worker/bundle.test.ts` *(new)*, `asep-suite:temporal-bundle`).
 - [ ] B5. `adapters/temporal/test-histories/manifest.json` is non-empty. Every listed history exists and matches
-      its `historySha256`, and no unlisted history exists. Every required scenario of architecture §6.5 meets its
+      its `historySha256`, and no unlisted history exists. Every scenario in `required-scenarios.json` meets its
       minimum count. Every listed history replays without `DeterminismViolationError`. A seeded
       non-deterministic fixture workflow fails replay, and an empty manifest or a missing required scenario fails
-      the suite (`adapters/temporal/src/worker/replay.test.ts` *(new)*, `asep-suite:temporal-replay`).
+      the suite (`adapters/temporal/src/worker/replay.test.ts` *(new)*, `asep-suite:temporal-replay`). Bootstrap
+      (architecture §6.5): the suite becomes required in S8 with the scenarios S8 captures; S10 and S11 add theirs
+      with their histories in the same commit; the final check (S13) asserts that `required-scenarios.json` equals
+      the full list of architecture §6.5. No commit skips the suite or runs it on an empty manifest.
 - [ ] B6. Every workflow input, Update/Signal payload and result fixture validates against the CR-02 schemas. Each
       payload stays under 64 KB. Every string field in those schemas carries a `pattern`, `enum` or `format`; an
       unconstrained string fails. Every committed history passes the repo's secret and PII patterns and contains
@@ -96,7 +117,9 @@
 ## C. Mandatory integration gate and transport
 
 - [ ] C1. `pnpm test:integration` provisions `temporalio/temporal@sha256:ad4c82c9…` (digest-pinned) and waits for
-      namespace readiness. It prints the image's `temporal --version` line into the gate log. With
+      namespace readiness. It prints the image's `temporal --version` line into the gate log, and the `docker pull`
+      and `docker image inspect --format '{{json .RepoDigests}}'` output of every pinned Temporal image, so the
+      controller's CI run carries the digest evidence that the review sandbox could not produce. With
       `ASEP_ITEST_OMIT_BACKEND=temporal` the gate exits **non-zero**
       (`scripts/integration/gate-fail-closed.itest.ts`, `asep-suite:gate-fail-closed`).
 - [ ] C2. All CR-14 `REQUIRED_ITEST_SUITES` are enforced. A missing marker turns the gate red even on exit 0
@@ -120,7 +143,11 @@
       A missing image, a failed schema setup or a failed convergence exits non-zero
       (`workers/temporal-worker/src/smoke/prod-smoke.itest.ts` *(new)*, `asep-suite:temporal-prod-smoke`, run with
       `pnpm --filter @asep/temporal-worker smoke:prod`). It is not part of the per-commit gate. The controller
-      runs it before any deployment (R14).
+      runs it before any deployment (R14). It reads the production namespace retention back and fails on a
+      mismatch.
+- [ ] C10. The gate creates its namespace with `temporal operator namespace create --retention 24h` and reads it
+      back with `temporal operator namespace describe` inside the server container; a different retention fails
+      the gate (`asep-suite:integration-gate`).
 
 ## D. Workflows and activities
 
@@ -221,6 +248,10 @@ primitive** after the rebase. Lane A adds no parallel fencing mechanism.
       - an ambiguous transport outcome leaves the record `PENDING`.
 
       (`asep-suite:orchestration-activities`, `asep-suite:pg-orchestration`)
+- [ ] E15. The workspace resolver port from the S0 block, implemented over the lease table, resolves a workspace
+      only for the right tenant, an `ACTIVE` lease held by the given lease id, and the current fencing epoch. Wrong
+      tenant, wrong lease and stale epoch each fail closed (`asep-suite:orchestration-persistence`,
+      `asep-suite:pg-orchestration`).
 - [ ] E14. `CommandRunner.run` honours a per-call `AbortSignal`. Aborting mid-command kills the process group and
       returns a cancelled result. The runner-level and per-call signals compose
       (`adapters/command-runner/src/per-call-abort.test.ts` *(new)*, `asep-suite:command-runner-abort`).
@@ -264,7 +295,8 @@ Each row runs real worker **processes** against the real gate backends and ends 
       (`asep-suite:temporal-chaos-duplicates`).
 - [ ] F16. CX-35: **duplicate activity completion callbacks.** The test re-sends a completion for a recorded task
       token through `AsyncCompletionClient`, once after the genuine completion and once after a retry has
-      superseded the delivery. The server rejects both. History holds exactly one completion per scheduled
+      superseded the delivery. The SDK-specific injector lives in `adapters/temporal/src/test-support/`; the worker
+      chaos suite calls a helper whose signature exposes no SDK type, so B1 holds without a test exception. The server rejects both. History holds exactly one completion per scheduled
       activity, and convergence holds (`asep-suite:temporal-chaos-duplicates`).
 - [ ] F17. CX-36: **duplicate message delivery at the gRPC boundary.** The same `UpdateWorkflowExecution` request
       (same update id) and the same Signal are each sent twice by a test-only client wrapper. Exactly one
@@ -293,13 +325,20 @@ All in `workers/temporal-worker/src/e2e/controls.itest.ts` *(new)*, `asep-suite:
       `recordAttemptOutcome('cancelled')` recorded.
 - [ ] G5. Cancel before any side effect leaves no lease, workspace or container. Task `CANCELLED`.
 - [ ] G6. Cancel during the agent: container reaped, workspace quarantined, no commit.
-- [ ] G7. Cancel during the publication critical section: the section completes, no `PENDING` record remains, the
-      PR stays open and is referenced in the audit row, task `CANCELLED`.
+- [ ] G7. Critical units (architecture §9): a cancel inside commit plus evidence binding is processed after that
+      unit reconciles, with nothing pushed; a cancel after push has started completes push and PR upsert, no
+      `PENDING` record remains, the PR stays open and is referenced in the audit row; task `CANCELLED` in both.
 - [ ] G8. Run-level pause and cancel propagate to the active child, and no new child starts while paused.
 - [ ] G9. Controls need `executions:control` held by an authenticated principal: 401 unauthenticated, 403 without
       capability, 404 cross-tenant. The workflow audits every accepted control with the principal id, and a
       rejected control writes no accepted-control audit row
       (`apps/control-plane-api/src/orchestration/orchestration-routes.test.ts` *(new)*, `asep-suite:orchestration-api`).
+- [ ] G11. Cancel during the assurance round: the activity receives the cancellation, nothing is pushed, the
+      workspace is quarantined, the lease released, `recordAttemptOutcome('cancelled')` recorded, task `CANCELLED`
+      (core table in `asep-suite:orchestration-core`; real proof here).
+- [ ] G12. Cancel during the publication-approval wait: the task ends at once, the open request is closed with
+      `cancelApprovalRequest` (a later decision gets 409), nothing is pushed, task `CANCELLED` (core table in
+      `asep-suite:orchestration-core`; real proof here).
 - [ ] G10. Cancel during verification: the cancellation reaches the runner's per-call signal, the verification
       process group is gone, no `asep-verify-<attemptId>-*` container remains, no verification process is
       running, no commit exists and the task is `CANCELLED`.
@@ -310,23 +349,33 @@ Core properties in `packages/orchestration/src/invariants.test.ts` *(new)* (`ase
 End-to-end checks in `workers/temporal-worker/src/e2e/budgets-approvals.itest.ts` *(new)*
 (`asep-suite:temporal-budgets-approvals`).
 
-- [ ] H1. Reservation: no attempt starts if its `maxCostUsd` could exceed the task or run cap plus granted
-      extensions (property test over generated usage sequences + e2e).
+- [ ] H1. Reservation: no attempt starts unless its `maxCostUsd` plus the verification reserve fits the task cap
+      plus granted extensions and the run remainder, and its wall-clock plus the verification reserve fits the task
+      wall-clock (property test over generated usage sequences + e2e).
 - [ ] H2. Crossing the soft threshold emits `budget.threshold_crossed` (`soft`) and an audit row, and work
       continues.
-- [ ] H3. A failed hard reservation opens a `budget-extension` approval. Approval continues the task, and the
-      ledger gains a `human-granted` entry.
+- [ ] H3. A task-cap reservation failure opens a `budget-extension` approval when `maxBudgetExtensionUsd` is set.
+      Approval continues the task with the same attempt plan, and the ledger gains a `human-granted` entry. When
+      it is unset, or the cause is the run remainder, wall-clock or a recorded overrun, the task ends
+      `BUDGET_EXHAUSTED` with no approval (architecture §10 "Reservation failure").
 - [ ] H4. Reject or expiry → `BUDGET_EXHAUSTED`, with cleanup.
-- [ ] H5. With the budget exhausted during the agent step, verification still runs every mandatory check of that
-      attempt.
+- [ ] H5. Verification has its own reservation: an agent that finishes `AGENT_DONE` having spent exactly its cap
+      still gets every mandatory check, the commit, the assurance round and publication.
 - [ ] H6. The run budget spans tasks: the second task's cap is the run remainder.
 - [ ] H7. Ledger totals equal the workflow's totals at close (reconciliation assertion).
-- [ ] H8. Provider-reported cost above the reservation records an `overrun` entry and exhausts the task budget.
+- [ ] H8. Reported usage above a cap (cost or tool calls) records an `overrun` entry and an audited incident; the
+      attempt is inspected but never verified, committed or published, ends `budget-exhausted`, and the recorded
+      overrun ends the task `BUDGET_EXHAUSTED` at the next reservation.
 - [ ] H9. The agent adapter (rebased Phase 2 adapter + CR-25) enforces each request cap. A fake stream that
       exceeds `maxTurns`, `maxToolCalls`, `maxCostUsd` or `maxWallClockMinutes` is killed as soon as the cap is
       crossed and reports `BUDGET_EXHAUSTED`. `--max-turns` comes from the request. A cap the adapter cannot
       observe raises `AgentBudgetCapUnsupportedError` before the container starts
       (`adapters/agent-claude/src/budget-caps.test.ts` *(new)*, `asep-suite:agent-budget-caps`; real proof CX-26).
+- [ ] H10. Agent outcome table (architecture §10), core table plus e2e: a cap-triggered `BUDGET_EXHAUSTED` is
+      inspected only (no verification, commit or publication), the attempt ends `budget-exhausted`, and a new
+      `retry` attempt (same lineage) starts only if `maxAttempts` and a fresh reservation allow; otherwise the
+      reservation-failure table decides. Paired with H9, which proves the adapter reports the status
+      (`asep-suite:orchestration-core`, `asep-suite:temporal-budgets-approvals`).
 
 ## I. Approvals
 
@@ -359,8 +408,10 @@ Real-Temporal proofs in `workers/temporal-worker/src/e2e/assurance-slot.itest.ts
       before the publication gate. No round runs after a verification stop. The request carries every field of
       the S0 block, including `model`, `declaredComplete`, `priorAdjudicationId` (null iff round 1), the
       idempotency key and the claim identity.
-- [ ] J2. `NotConfiguredAssuranceSlot` gives `PROCEED`/`not-required` for R0 and R1, and throws
-      `AssuranceUnavailableError` for any other risk. It passes the S0 conformance kit (`asep-suite:assurance-slot-contract`).
+- [ ] J2. `NotConfiguredAssuranceSlot` gives `PROCEED`/`not-required` for R0 and R1 and fails closed
+      (`AssuranceUnavailableError`) for any risk that requires review. It is distinct from Lane B's
+      `DisabledAssuranceSlot`, the explicit opt-out (R18). It passes the S0 conformance kit
+      (`asep-suite:assurance-slot-contract`). Terminal names follow the locked block at hand-off.
 - [ ] J3. Outcome mapping:
       - `PROCEED` → publish → PR carrying the section → `WAITING_FOR_HUMAN_REVIEW`;
       - `ESCALATE` → publish → PR flagged "assurance not satisfied" → `WAITING_FOR_HUMAN_REVIEW`;
@@ -375,8 +426,13 @@ Real-Temporal proofs in `workers/temporal-worker/src/e2e/assurance-slot.itest.ts
       - `round = nextRound` and `priorAdjudicationId = adjudicationId`;
       - its evidence `baseSha` is `repairBaseSha`, and the next round's `taskBaseSha` is the task base.
 
-      With no attempt or budget left, the task ends `FAILED` (`repair-capacity-exhausted`) and nothing is
-      published.
+      Capacity (R17, R19): with `maxAttempts` exhausted the task ends `FAILED` (`repair-capacity-exhausted`)
+      whatever the budget says. With attempts left but a failed reservation, a task-cap shortfall opens a
+      `budget-extension` approval when one is available (approve → the repair attempt starts with the same lineage;
+      reject or expiry → `BUDGET_EXHAUSTED`); any other budget cause, or no approval available, ends the task
+      `BUDGET_EXHAUSTED`. Nothing is published in any of these cases. A `retry` that replaces a failed repair
+      attempt keeps the lineage: same `repairBaseSha`, repair order, round and prior adjudication, and its
+      assurance round continues them (trace `REPAIR` → agent death → replacement → assurance, core table + e2e).
 - [ ] J5. `recordAttemptOutcome` is called exactly once per attempt at every terminal in architecture §12. This
       holds across engine retries: one `attempt.completed` per attempt (property test in
       `asep-suite:orchestration-properties` + e2e).
@@ -387,6 +443,10 @@ Real-Temporal proofs in `workers/temporal-worker/src/e2e/assurance-slot.itest.ts
 - [ ] J8. The admission hook: without it, admission results are byte-identical to `admitRisk` for every risk
       level (Phase 2 admission suite unchanged). With it, the injected function decides, and a `DEFERRED` result
       blocks before any side effect (`asep-suite:orchestration-activities`).
+- [ ] J10. An assurance-activity failure (retries exhausted, or a non-retryable error) is audited as
+      `assurance-unavailable` and never ends the task `FAILED`: in shadow mode the attempt continues as `PROCEED`
+      (the PR states that assurance was unavailable), in gating mode as `ESCALATE` (R19) (core table in
+      `asep-suite:orchestration-core`; real proof in `asep-suite:temporal-assurance-slot`).
 - [ ] J9. The context adapter maps `signal` and `heartbeat`. `now()` returns the same value on every redelivery of
       one activity execution, and a redelivered round produces byte-identical run events
       (`asep-suite:orchestration-activities`).
@@ -422,7 +482,8 @@ Real-Temporal proofs in `workers/temporal-worker/src/e2e/assurance-slot.itest.ts
 ## M. Operational readiness
 
 - [ ] M1. `phase-03-runbook.md` covers:
-      - starting, stopping and draining workers;
+      - starting, stopping and draining workers, with drain-only in this order: stop new executions, keep the old
+        workers until no open workflow remains, then stop them and start the new build (architecture §6.6);
       - the two deployment procedures of architecture §6.6 (drain-only, or patched with the replay corpus)
         and the command that lists open workflows on the task queue;
       - stuck workflows and the approval backlog, including undelivered decision rows;
@@ -432,7 +493,8 @@ Real-Temporal proofs in `workers/temporal-worker/src/e2e/assurance-slot.itest.ts
       code runs on the migrated schema (the Phase 2 suites run against the migrated DB in
       `asep-suite:pg-orchestration`).
 - [ ] M3. The chaos suites' logs from the controller-run gate are preserved under `artifacts/phase-03/`, with the
-      exact commands to reproduce. They include the image digests and the `temporal --version` line.
+      exact commands to reproduce. They include the image digests, the full `docker pull` and `docker image
+      inspect` output of every pinned image (C1), and the `temporal --version` line.
 
 ## N. Completion protocol
 
