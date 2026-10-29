@@ -28,6 +28,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { mkdtemp, rm, mkdir, writeFile, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { join, resolve } from 'node:path';
 import {
   PgliteClient, migrate,
@@ -39,21 +40,35 @@ import {
 import {
   GitWorktreeManager, runGit, attemptBranch, safeRefspecFor,
 } from '@asep/git-worktree';
-import { TrustedCommandRunner, LocalUnsandboxedProvider } from '@asep/command-runner';
+import { TrustedCommandRunner, DockerSandboxProvider, LocalUnsandboxedProvider } from '@asep/command-runner';
 import {
-  admissionStep, agentStep, inspectStep, completeToReview,
+  admissionStep, agentStep, inspectStep, completeToReview, SandboxIsolationRequiredError,
   type VerificationCheckSpec,
 } from '@asep/application';
 import type {
   ArtifactStore, ForgeProvider, PullRequestRef, CodingAgentProvider,
-  AgentExecuteRequest, AgentAttemptObservation, CommandSpec,
+  AgentExecuteRequest, AgentAttemptObservation, CommandSpec, SandboxProvider,
 } from '@asep/ports';
 import type {
   TenantScope, RepositoryBindingId, AttemptId,
 } from '@asep/contracts';
 import type { TaskAggregate } from '@asep/domain';
+import { runVerticalSlice } from './vertical-slice.js';
 
 console.log('SUITE-ID: asep-suite:vertical-integration');
+
+// The verification sandbox: the real DockerSandboxProvider, driving the fake
+// docker client (scripts/testing/fake-docker.mjs), which runs each container's
+// command as a host process. The governed path accepts nothing but a handle
+// that claims isolation; the OS-enforced proof is the integration suites.
+async function fakeDockerSandbox(dir: string): Promise<DockerSandboxProvider> {
+  await mkdir(dir, { recursive: true });
+  const docker = join(dir, 'fake-docker');
+  const fake = fileURLToPath(new URL('../../../scripts/testing/fake-docker.mjs', import.meta.url));
+  await writeFile(docker, `#!/bin/sh\nexec "${process.execPath}" "${fake}" --state "${join(dir, 'docker-state')}" "$@"\n`,
+    { mode: 0o755 });
+  return new DockerSandboxProvider({ imageDigest: `alpine@sha256:${'a'.repeat(64)}`, dockerBinary: docker });
+}
 
 function sha256Hex(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex');
@@ -257,7 +272,7 @@ test('K1: full vertical slice reaches WAITING_FOR_HUMAN_REVIEW with a real PR + 
 
     // --- STEPS 4-9: verify → commit → evidence → push → PR → review ---------
     const runner = new TrustedCommandRunner(scope, artifacts);
-    const sandbox = new LocalUnsandboxedProvider();
+    const sandbox = await fakeDockerSandbox(join(dir, 'sandbox'));
     const forge = new LocalBareForgeProvider(wtPath, remoteBare);
 
     const statusCheck = (id: string): CommandSpec => ({
@@ -285,14 +300,6 @@ test('K1: full vertical slice reaches WAITING_FOR_HUMAN_REVIEW with a real PR + 
       planId: 'plan-R0',
       risk: 'R0',
       checks,
-      // This FAST seam test runs the verification commands on the host through
-      // LocalUnsandboxedProvider, so it must state the pilot waiver explicitly
-      // (disp. P2-FINAL-HIGH-002 / exit E8). The default is 'required', which
-      // REFUSES an unsandboxed provider — the authoritative K1 proof
-      // (vertical-slice.itest.ts) takes that default against a real Docker
-      // sandbox. Naming the waiver here is what keeps the unsandboxed path
-      // impossible to reach by accident anywhere else.
-      sandboxRequirement: 'waived-pilot-only',
       committer: manager,
       scope,
       workspace: ws.capability,
@@ -395,3 +402,63 @@ test('K1: full vertical slice reaches WAITING_FOR_HUMAN_REVIEW with a real PR + 
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+// The governed driver refuses a sandbox that does not claim OS isolation BEFORE
+// its first side effect: nothing is committed, recorded, pushed or opened. Two
+// shapes: the honest host provider (claims `false`) and a handle that says
+// nothing at all. No input to the driver relaxes this.
+const unclaimedSandboxes: ReadonlyArray<readonly [string, () => SandboxProvider]> = [
+  ['the honest host provider', () => new LocalUnsandboxedProvider()],
+  ['a provider whose handle is silent about isolation', () => ({
+    start: async (profile) => ({ sandboxId: 'silent', profile }),
+    stop: async () => undefined,
+  })],
+];
+
+for (const [label, make] of unclaimedSandboxes) {
+  test(`the vertical slice refuses ${label} before any side effect`, async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'asep-unclaimed-sandbox-'));
+    const client = await PgliteClient.create();
+    try {
+      await migrate(client);
+      const inner = make();
+      const starts: string[] = [];
+      const sandbox: SandboxProvider = {
+        start: async (profile, mount) => { starts.push(profile); return inner.start(profile, mount); },
+        stop: (h) => inner.stop(h),
+      };
+      const forgeCalls: string[] = [];
+      const forge: ForgeProvider = {
+        pushBranch: async () => { forgeCalls.push('push'); },
+        upsertPullRequest: async () => { forgeCalls.push('pr'); throw new Error('must not be reached'); },
+        resolveRef: async () => { forgeCalls.push('resolve'); return null; },
+        findPullRequest: async () => { forgeCalls.push('find'); return null; },
+      };
+      await assert.rejects(
+        () => runVerticalSlice({
+          client,
+          sandbox,
+          dir: join(dir, 'run'),
+          checkCommand: (wtPath) => ({
+            executable: 'git', args: ['-C', wtPath, 'status', '--porcelain'], cwd: wtPath,
+            environmentProfile: 'verification-no-network', timeoutMs: 60_000,
+            outputPolicy: { maxEvidenceBytes: 65_536, displayHeadBytes: 4096, displayTailBytes: 4096 },
+          }),
+          forge,
+        }),
+        SandboxIsolationRequiredError,
+      );
+      assert.deepEqual(starts, ['verification-no-network'],
+        'refused at the first probe, before any verification command is started');
+      assert.deepEqual(forgeCalls, [], 'the forge was never called');
+      const count = async (sql: string) => (await client.query(sql, [])).rows[0]!['n'];
+      assert.equal(await count('select count(*)::int as n from side_effect_records'), 0, 'no side effect was recorded');
+      assert.equal(await count('select count(*)::int as n from pull_requests'), 0, 'no pull request row');
+      assert.equal(await count('select count(*)::int as n from attempts where result_sha is not null'), 0,
+        'no attempt carries a result commit');
+    } finally {
+      await client.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+}

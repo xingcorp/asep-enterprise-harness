@@ -266,11 +266,10 @@ test('verifyStep FAILS CLOSED when a mandatory assurance level is missing from t
 // The review's finding was that an unsandboxed provider was honestly LABELLED
 // but never REFUSED, so the governed path could run verification commands
 // straight on the host. verifyStep now asserts the STARTED handle enforces
-// isolation before the first command, and the requirement defaults to
-// 'required' when the caller says nothing — so a new call site is protected
-// without being edited.
+// isolation before the first command, and no input relaxes that — so a new
+// call site is protected without being edited.
 
-test('E8: verifyStep REFUSES an unsandboxed provider by default (no requirement passed)', async () => {
+test('E8: verifyStep REFUSES an unsandboxed provider', async () => {
   const provider = unsandboxedProvider();
   let ran = 0;
   const inner = fakeRunner({});
@@ -290,7 +289,7 @@ test('E8: verifyStep REFUSES an unsandboxed provider by default (no requirement 
       checks: r0Checks(),
     }),
     /sandbox isolation is required/,
-    'an unsandboxed provider must be refused when nothing waives isolation',
+    'an unsandboxed provider must be refused',
   );
   // The refusal happens BEFORE any command runs — not after collecting output.
   assert.equal(ran, 0, 'no verification command may execute unsandboxed');
@@ -313,18 +312,21 @@ test('E8: verifyStep REFUSES a handle that is silent about isolation', async () 
   );
 });
 
-test('E8: the explicit pilot waiver ALLOWS an unsandboxed run (the gate is not blanket-deny)', async () => {
-  const res = await verifyStep({
+// The old waiver was an input field. Smuggling it back in through an untyped
+// object must change nothing: no input relaxes the requirement.
+test('E8: no input waives isolation — a smuggled legacy waiver field is ignored', async () => {
+  const provider = unsandboxedProvider();
+  const input = {
     runner: fakeRunner({}),
-    sandbox: unsandboxedProvider(),
+    sandbox: provider,
     mount,
     planId: 'plan-1',
-    risk: 'R0',
+    risk: 'R0' as const,
     checks: r0Checks(),
     sandboxRequirement: 'waived-pilot-only',
-  });
-  assert.equal(res.status, 'OK');
-  assert.equal(res.result.verdict, 'PASS');
+  };
+  await assert.rejects(() => verifyStep(input), /sandbox isolation is required/);
+  assert.equal(provider.stops(), 1);
 });
 
 test('E8: completeToReview REFUSES an unsandboxed provider before ANY side effect', async () => {

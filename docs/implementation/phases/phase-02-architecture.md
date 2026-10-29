@@ -98,6 +98,13 @@ Forbidden imports (extends `scripts/forbidden-imports.test.ts` with mutation sel
 | provider/model SDK types | never in domain/application/contracts/persisted records |
 | `node:http(s)`, `node:net` | never in domain/application |
 
+Isolation claims are guarded by the TypeScript checker, not by a regex (`scripts/lib/ts-guard.mjs`, suite `asep-suite:ts-guard`). The guard loads every package project through the TypeScript 7 API and walks the shipped source with types resolved:
+
+- **`isolation-claim`** — only `adapters/command-runner/src/sandbox.ts` (the Docker sandbox provider) may produce a value whose type claims `isolationEnforced` is anything but `false`. It sees the claim through const aliases, constant-folded computed keys, spreads (including a spread of an untyped value), shorthand, property and element writes, the `Object.assign` / `defineProperty` / `Reflect.set` family, class members, accessors, type assertions that pin a claim-carrying type onto a value without it, and `any` flowing into a claim-typed position.
+- **`retired-isolation-waiver`** — the removed sandbox and host-execution waivers cannot return: their identifiers, and any string that constant-folds to their tokens (across `+`, template literals and const aliases between modules), are refused in shipped source.
+
+The guard is a static net. A value computed at run time can still evade it, so the runtime check stays the enforcement point: the vertical-slice workflow probes the sandbox and refuses, before its first side effect, any handle that does not claim `isolationEnforced: true`, and `verifyStep` re-checks the handle it actually runs commands in. Neither check accepts an input that relaxes it.
+
 ## 5. Trust boundary map
 
 ```text

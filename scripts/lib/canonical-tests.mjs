@@ -92,6 +92,9 @@ export const REQUIRED_SUITES = Object.freeze({
   'asep-suite:acceptance-crypto': 'scripts/lib/acceptance-crypto.test.ts',
   'asep-suite:acceptance-marker': 'scripts/check-acceptance.test.ts',
   'asep-suite:forbidden-imports': 'scripts/forbidden-imports.test.ts',
+  // TypeScript-checker fitness guard: retired isolation waivers and isolation
+  // claims outside the Docker sandbox provider (exit E8/G3).
+  'asep-suite:ts-guard': 'scripts/ts-guard.test.ts',
   // Build-graph fitness: a project that imports a workspace package without
   // declaring the matching `references` entry passes on a warm tree and fails on
   // a clean checkout. Registered so the guard cannot be dropped silently.

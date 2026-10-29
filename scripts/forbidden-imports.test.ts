@@ -334,37 +334,9 @@ const ROOT_FORBIDDEN: ReadonlyArray<{ label: string; test: (src: string) => bool
         s,
       ),
   },
-  // Isolation waivers must be UNREACHABLE from shipped code (disp. P2-REREVIEW
-  // HIGH-002, exit E8/G3).
-  //
-  // THE FINDING. Two escape hatches exist so honest test suites can exercise the
-  // real spawn/stdout boundary on a host with no Docker:
-  // `sandboxRequirement: 'waived-pilot-only'` on the verification path, and
-  // `hostExecutionWaiver: HOST_EXECUTION_WAIVER` on the Claude adapter. Both are
-  // legitimate in tests and both are public API, so the review's objection stands:
-  // nothing stopped production code from passing one and silently dropping OS
-  // isolation.
-  //
-  // Deleting them would break the tests that must run unsandboxed, so instead
-  // this rule pins the property that matters — only a TEST may SUPPLY a waiver.
-  // Definition sites are unaffected: the rule matches a waiver being ASSIGNED or
-  // PASSED (`x: 'waived-pilot-only'`, `f(HOST_EXECUTION_WAIVER)`), not the type
-  // union, the const declaration, its re-export, or the constructor check that
-  // ENFORCES it. Test files are exempt via isTestSuite() as everywhere else.
-  {
-    label: 'sandbox/host isolation waiver supplied outside a test',
-    test: (s) =>
-      // `sandboxRequirement: 'waived-pilot-only'` — an object property.
-      /:\s*['"]waived-pilot-only['"]/.test(s) ||
-      // The literal handed to a call, in ANY argument position: `f('waived…')`
-      // and `f(handle, 'waived…')` alike. Matching only `(` would miss every
-      // waiver passed as a later argument — which is exactly how the real
-      // assertSandboxSatisfiesRequirement(handle, req) call site is shaped.
-      /[(,]\s*['"]waived-pilot-only['"]/.test(s) ||
-      // `hostExecutionWaiver: HOST_EXECUTION_WAIVER` (or the literal) being handed in.
-      /hostExecutionWaiver\s*:/.test(s) ||
-      /[:(,]\s*['"]pilot-only-no-agent-isolation['"]/.test(s),
-  },
+  // Isolation waivers and isolation claims are checked by the TypeScript
+  // fitness guard (scripts/lib/ts-guard.mjs, asep-suite:ts-guard), which
+  // resolves aliases, computed names and spreads a regex cannot see.
 ];
 
 // Strip line + block comments before scanning, so the detector matches actual
@@ -612,52 +584,5 @@ test('arch mutation self-test: a thin route that only parses + forwards to the u
     rootViolations(thinRoute),
     [],
     'a thin forwarding route was wrongly flagged as a composition-root violation',
-  );
-});
-
-// ---------------------------------------------------------------------------
-// E8/HIGH-002 — the isolation-waiver rule must actually FIRE. A gate that only
-// ever passes proves nothing, so these self-tests seed each waiver shape and
-// assert rejection, plus pin the two shapes that must stay ACCEPTED (declaring
-// the type/const is not supplying a waiver).
-// ---------------------------------------------------------------------------
-
-test('arch mutation self-test: a SUPPLIED isolation waiver is REJECTED outside tests', () => {
-  const label = 'sandbox/host isolation waiver supplied outside a test';
-
-  const seededSandboxProp = `await runVerticalSlice({ client, sandbox, sandboxRequirement: 'waived-pilot-only' });`;
-  assert.ok(
-    rootViolations(seededSandboxProp).includes(label),
-    'seeded sandboxRequirement waiver property not detected',
-  );
-
-  const seededSandboxArg = `assertSandboxSatisfiesRequirement(handle, 'waived-pilot-only');`;
-  assert.ok(
-    rootViolations(seededSandboxArg).includes(label),
-    'seeded waiver passed as an argument not detected',
-  );
-
-  const seededHostWaiver = `new ClaudeCodingProvider({ executable, hostExecutionWaiver: HOST_EXECUTION_WAIVER }, scope, artifacts);`;
-  assert.ok(
-    rootViolations(seededHostWaiver).includes(label),
-    'seeded hostExecutionWaiver not detected',
-  );
-});
-
-test('arch self-test: DECLARING the waiver type/const is NOT a violation', () => {
-  const label = 'sandbox/host isolation waiver supplied outside a test';
-
-  // The type union that names the waiver as a legal value.
-  const typeDecl = `export type SandboxRequirement = 'required' | 'waived-pilot-only';`;
-  assert.equal(
-    rootViolations(typeDecl).includes(label), false,
-    'declaring the SandboxRequirement union must stay accepted',
-  );
-
-  // Requiring isolation is the opposite of waiving it.
-  const requiresIsolation = `await runVerticalSlice({ client, sandbox, dir, checkCommand });`;
-  assert.equal(
-    rootViolations(requiresIsolation).includes(label), false,
-    'omitting the waiver (isolation required) must stay accepted',
   );
 });

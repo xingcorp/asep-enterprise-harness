@@ -110,16 +110,9 @@ export interface VerifyStepInput {
   readonly planId: string;
   readonly risk: RiskLevel;
   readonly checks: readonly VerificationCheckSpec[];
-  // Is OS-enforced sandbox isolation MANDATORY for this execution (disp.
-  // P2-FINAL-HIGH-002, exit E8)? Resolved by the composition root from the
-  // deployment environment and passed in, because the requirement is a
-  // deployment fact and this layer may not read process.env (exit B3).
-  //
-  // FAIL-CLOSED DEFAULT: an ABSENT value means 'required'. The review's finding
-  // was that nothing refused an unsandboxed provider; making the safe value the
-  // default means a caller must explicitly opt into the pilot waiver, and any
-  // new call site is protected without being edited.
-  readonly sandboxRequirement?: SandboxRequirement;
+  // OS-enforced sandbox isolation is MANDATORY (exit E8). There is no input
+  // that relaxes it: a sandbox whose handle does not claim `isolationEnforced:
+  // true` is refused before any command runs.
   // Per-command observability (disp. P2-FINAL-MED-003, exit J1). Each
   // verification command is a privileged boundary: it executes an argv inside the
   // sandbox and its raw output becomes evidence. `command.execute` was one of the
@@ -129,13 +122,7 @@ export interface VerifyStepInput {
   readonly observe?: ObserveBoundary;
 }
 
-// The two deployment postures for sandbox isolation. Declared HERE (application
-// layer) rather than imported from the command-runner adapter so the use case
-// carries no adapter dependency (exit B3); the adapter's resolver returns the
-// same two tokens.
-export type SandboxRequirement = 'required' | 'waived-pilot-only';
-
-// Isolation was mandatory but the started sandbox does not enforce it. Thrown
+// Isolation is mandatory, but the started sandbox does not enforce it. Thrown
 // rather than returned so no verification result can ever be produced from an
 // unsandboxed execution — there is no path where a caller reads a verdict and
 // ignores the breach.
@@ -189,15 +176,13 @@ export async function verifyStep(input: VerifyStepInput): Promise<VerifyStepResu
   const missing = [...mandatoryLevels].filter((l) => !coveredMandatory.has(l));
 
   const handle = await input.sandbox.start('verification-no-network', input.mount);
-  // E8/HIGH-002: assert the STARTED handle actually enforces isolation when the
-  // deployment requires it, BEFORE any command runs. The check reads the port's
-  // own `isolationEnforced` flag (declared on SandboxHandle, so no adapter type
-  // is imported) and treats an ABSENT flag as NOT enforced — unknown isolation is
-  // never a permission. On breach the sandbox is stopped and the step throws, so
-  // an unsandboxed provider substituted anywhere below the port can never produce
-  // a verification verdict.
-  const requirement: SandboxRequirement = input.sandboxRequirement ?? 'required';
-  if (requirement === 'required' && handle.isolationEnforced !== true) {
+  // E8: assert the STARTED handle actually enforces isolation BEFORE any command
+  // runs. The check reads the port's own `isolationEnforced` flag (declared on
+  // SandboxHandle, so no adapter type is imported) and treats an ABSENT flag as
+  // NOT enforced — unknown isolation is never a permission. On breach the sandbox
+  // is stopped and the step throws, so an unsandboxed provider substituted
+  // anywhere below the port can never produce a verification verdict.
+  if (handle.isolationEnforced !== true) {
     await input.sandbox.stop(handle);
     throw new SandboxIsolationRequiredError(handle.sandboxId, handle.profile);
   }
@@ -853,9 +838,6 @@ export interface CompleteToReviewInput {
   readonly planId: string;
   readonly risk: RiskLevel;
   readonly checks: readonly VerificationCheckSpec[];
-  // Sandbox posture (E8). Forwarded to verifyStep, where an ABSENT value means
-  // 'required' — so this driver is fail-closed by default too.
-  readonly sandboxRequirement?: SandboxRequirement;
   // Commit.
   readonly committer: GitCommitter;
   readonly scope: TenantScope;
@@ -939,7 +921,6 @@ export async function completeToReview(
     planId: input.planId,
     risk: input.risk,
     checks: input.checks,
-    ...(input.sandboxRequirement ? { sandboxRequirement: input.sandboxRequirement } : {}),
     // Forwarded so each verification command emits its own command.execute span
     // (MED-003). Absent → verifyStep runs commands directly, unchanged.
     ...(input.observe ? { observe: input.observe } : {}),

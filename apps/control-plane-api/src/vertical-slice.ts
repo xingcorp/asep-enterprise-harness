@@ -45,7 +45,7 @@ import {
 import { TrustedCommandRunner } from '@asep/command-runner';
 import {
   runVerticalSliceWorkflow, resumeAttemptToReview, leaseTtlForBudget,
-  type SliceWorkspaceBackend, type SandboxRequirement, type ResumeAttemptResult,
+  type SliceWorkspaceBackend, type ResumeAttemptResult,
 } from '@asep/application';
 import type {
   ForgeProvider, PullRequestRef, CodingAgentProvider, SandboxProvider,
@@ -65,16 +65,10 @@ export { seedMirror, FileWritingAgent, LocalBareForgeProvider } from '@asep/loca
 
 export interface VerticalSliceInput {
   readonly client: SqlClient;
-  // Injected sandbox: a real DockerSandboxProvider under the integration gate,
-  // an explicitly-labelled unsandboxed double in the fast seam test.
+  // Injected sandbox. It must enforce OS isolation: the use case refuses, before
+  // any side effect, a provider whose handle does not claim it (exit E8). There
+  // is no override.
   readonly sandbox: SandboxProvider;
-  // Sandbox posture (disp. P2-FINAL-HIGH-002, exit E8). ABSENT means the use
-  // case requires OS-enforced isolation and REFUSES an unsandboxed provider
-  // before any side effect. A caller that deliberately injects the honest
-  // no-isolation double (the fast seam test) must say so explicitly by passing
-  // 'waived-pilot-only' — the waiver is never implied by the provider it hands
-  // in, so a production root cannot obtain it by accident.
-  readonly sandboxRequirement?: SandboxRequirement;
   // Temp directory the root builds the mirror / worktrees / objects under.
   readonly dir: string;
   // Builds the two mandatory R0 verification commands for the worktree path.
@@ -367,7 +361,6 @@ export async function runVerticalSlice(input: VerticalSliceInput): Promise<Verti
     // registered, never a placeholder.
     runnerFor: ({ scope }) => new TrustedCommandRunner(scope, artifacts),
     sandbox: input.sandbox,
-    ...(input.sandboxRequirement ? { sandboxRequirement: input.sandboxRequirement } : {}),
     forge,
     tracer,
     audit: new SqlAuditSink(client),

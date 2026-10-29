@@ -52,7 +52,7 @@ import { governedExecution } from './governed-execution.js';
 import { completionObserver, fencedBy } from './completion-observer.js';
 import {
   completeToReview, SandboxIsolationRequiredError,
-  type VerificationCheckSpec, type SandboxRequirement,
+  type VerificationCheckSpec,
 } from './pipeline-steps.js';
 
 // --- repository ports (structural; the concrete repositories satisfy them) ----
@@ -192,11 +192,9 @@ export interface VerticalSliceWorkflowInput {
   // registered the organization + project — so the root injects a FACTORY
   // rather than a prebuilt runner bound to a placeholder scope.
   readonly runnerFor: (input: { scope: TenantScope }) => CommandRunner;
+  // Must enforce OS isolation (exit E8): the slice refuses, before any side
+  // effect, a provider whose handle does not claim `isolationEnforced: true`.
   readonly sandbox: SandboxProvider;
-  // Sandbox posture (disp. P2-FINAL-HIGH-002, exit E8). ABSENT means 'required',
-  // so the slice refuses to run verification under a provider that does not
-  // enforce OS isolation unless the caller explicitly passes the pilot waiver.
-  readonly sandboxRequirement?: SandboxRequirement;
   readonly forge: ForgeProvider;
 
   // Observability (MED-003): real emission on the real path when wired.
@@ -458,7 +456,6 @@ export async function runVerticalSliceWorkflow(
 
     // Probe the sandbox the verification commands will run in, so the caller can
     // assert OS-enforced isolation was genuinely in effect (HIGH-002).
-    const sandboxRequirement: SandboxRequirement = input.sandboxRequirement ?? 'required';
     const probe = await input.sandbox.start('verification-no-network', mount);
     const sandboxIsolationEnforced =
       (probe as { isolationEnforced?: boolean }).isolationEnforced === true;
@@ -468,7 +465,7 @@ export async function runVerticalSliceWorkflow(
     // run stops before any commit/push/PR, so an unsandboxed provider can never
     // reach the forge. verifyStep re-asserts it on the handle it actually uses, so
     // neither layer trusts the other's check.
-    if (sandboxRequirement === 'required' && !sandboxIsolationEnforced) {
+    if (!sandboxIsolationEnforced) {
       throw new SandboxIsolationRequiredError(probe.sandboxId, probe.profile);
     }
 
@@ -483,7 +480,6 @@ export async function runVerticalSliceWorkflow(
       planId: `plan-${input.risk}`,
       risk: input.risk,
       checks,
-      sandboxRequirement,
       committer: git.committer,
       scope,
       workspace: workspace.capability,

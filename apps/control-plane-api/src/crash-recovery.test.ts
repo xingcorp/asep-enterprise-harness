@@ -16,13 +16,14 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   PgliteClient, migrate, SqlSideEffectLog, SqlWorkspaceLeaseRepository, type SqlClient,
 } from '@asep/persistence';
-import { LocalUnsandboxedProvider } from '@asep/command-runner';
+import { DockerSandboxProvider } from '@asep/command-runner';
 import { runGit, attemptBranch } from '@asep/git-worktree';
 import { createBareRemote, LocalBareForgeProvider } from '@asep/local-doubles';
 import {
@@ -35,6 +36,19 @@ import type {
 import { runVerticalSlice, resumeVerticalSlice } from './vertical-slice.js';
 
 console.log('SUITE-ID: asep-suite:crash-recovery');
+
+// The verification sandbox: the real DockerSandboxProvider, driving the fake
+// docker client (scripts/testing/fake-docker.mjs), which runs each container's
+// command as a host process. The governed path accepts nothing but a handle
+// that claims isolation; the OS-enforced proof is the integration suites.
+async function fakeDockerSandbox(dir: string): Promise<DockerSandboxProvider> {
+  await mkdir(dir, { recursive: true });
+  const docker = join(dir, 'fake-docker');
+  const fake = fileURLToPath(new URL('../../../scripts/testing/fake-docker.mjs', import.meta.url));
+  await writeFile(docker, `#!/bin/sh\nexec "${process.execPath}" "${fake}" --state "${join(dir, 'docker-state')}" "$@"\n`,
+    { mode: 0o755 });
+  return new DockerSandboxProvider({ imageDigest: `alpine@sha256:${'a'.repeat(64)}`, dockerBinary: docker });
+}
 
 function checkCommandFor(wtPath: string): CommandSpec {
   return {
@@ -93,13 +107,12 @@ async function crashRun(at: CrashPoint | 'at-verify'): Promise<Crashed> {
   const failingCheck = (wtPath: string): CommandSpec => ({
     ...checkCommandFor(wtPath), args: ['-C', wtPath, 'no-such-subcommand'],
   });
+  // The authoritative run under a real Docker sandbox is crash-takeover.itest.ts.
+  const sandbox = await fakeDockerSandbox(join(dir, 'sandbox'));
   await assert.rejects(
     () => runVerticalSlice({
       client,
-      sandbox: new LocalUnsandboxedProvider(),
-      // The honest no-isolation double, named explicitly; the authoritative
-      // run under a real Docker sandbox is crash-takeover.itest.ts.
-      sandboxRequirement: 'waived-pilot-only',
+      sandbox,
       dir,
       checkCommand: at === 'at-verify' ? failingCheck : checkCommandFor,
       forge: crashingForge(inner, at === 'at-verify' ? 'after-push' : at),

@@ -7,9 +7,11 @@
 // turns the gate RED.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { PgliteClient, migrate, ContentAddressedArtifactStore, FilesystemObjectStore } from '@asep/persistence';
 import type { SqlClient } from '@asep/persistence';
 import { TrustedCommandRunner } from './command-runner.js';
@@ -18,7 +20,6 @@ import { resolveEnvironment, UnknownEnvironmentProfileError } from './environmen
 import {
   DockerSandboxProvider, LocalUnsandboxedProvider, SandboxUnavailableError,
   buildSandboxRunFlags, isDigestPinned,
-  resolveSandboxRequirement, assertSandboxSatisfiesRequirement, SandboxRequiredError,
   type SandboxHandleEx,
 } from './sandbox.js';
 import type { CommandSpec, SandboxHandle } from '@asep/ports';
@@ -341,83 +342,51 @@ test('F6: the local fallback is honestly labelled pilot-only, no isolation', asy
 });
 
 // ---------------------------------------------------------------------------
-// HIGH-002 (second defect) — the sandbox is MANDATORY, not optional.
-//
-// The review found that nothing made isolation required: a composition root
-// could hand in LocalUnsandboxedProvider and the governed path ran happily. The
-// requirement resolver is fail-closed and the production waiver is refused, so
-// an unsandboxed provider substituted anywhere below the port is caught at
-// runtime by assertSandboxSatisfiesRequirement().
+// The sandbox is mandatory, and there is no way to waive it: the public surface
+// carries no requirement resolver, no waiver token and no override. The governed
+// path refuses any handle that does not claim isolation (application tests),
+// and only DockerSandboxProvider may make that claim (ts-guard).
 // ---------------------------------------------------------------------------
 
-test('E8: an absent/unknown sandbox mode resolves to REQUIRED (fail closed)', () => {
-  assert.equal(resolveSandboxRequirement({}), 'required');
-  assert.equal(resolveSandboxRequirement({ ASEP_SANDBOX_MODE: '' }), 'required');
-  assert.equal(resolveSandboxRequirement({ ASEP_SANDBOX_MODE: 'anything-else' }), 'required');
-  // A near-miss must NOT be read as the waiver.
-  assert.equal(resolveSandboxRequirement({ ASEP_SANDBOX_MODE: 'pilot' }), 'required');
-  assert.equal(
-    resolveSandboxRequirement({ ASEP_SANDBOX_MODE: 'PILOT-UNSANDBOXED' }),
-    'required',
-    'the waiver token is exact and case-sensitive',
-  );
-});
-
-test('E8: the pilot waiver is honoured OUTSIDE production and REFUSED in production', () => {
-  assert.equal(
-    resolveSandboxRequirement({ ASEP_SANDBOX_MODE: 'pilot-unsandboxed' }),
-    'waived-pilot-only',
-  );
-  for (const deployment of ['production', 'PRODUCTION', ' Production ']) {
-    assert.throws(
-      () => resolveSandboxRequirement({
-        ASEP_SANDBOX_MODE: 'pilot-unsandboxed',
-        ASEP_DEPLOYMENT_MODE: deployment,
-      }),
-      SandboxRequiredError,
-      `the waiver must be refused when ASEP_DEPLOYMENT_MODE=${deployment}`,
-    );
+test('E8: the public surface offers no way to waive sandbox isolation', async () => {
+  const surface = Object.keys(await import('./index.js'));
+  for (const retired of [
+    'resolveSandboxRequirement', 'assertSandboxSatisfiesRequirement', 'SandboxRequiredError',
+  ]) {
+    assert.ok(!surface.includes(retired), `${retired} must not be exported`);
   }
 });
 
-test('E8: an unsandboxed handle FAILS CLOSED against a required requirement', async () => {
-  const local = await new LocalUnsandboxedProvider().start('verification-no-network', {
-    workspaceId: 'W'.repeat(26) as never,
-    readOnlyPaths: [], writablePaths: [],
-  });
-  assert.throws(
-    () => assertSandboxSatisfiesRequirement(local, 'required'),
-    SandboxRequiredError,
-    'a provider with no OS-enforced isolation cannot satisfy a required sandbox',
-  );
-  // The waived pilot path accepts it — the waiver is the ONLY way through.
-  assertSandboxSatisfiesRequirement(local, 'waived-pilot-only');
-});
-
-test('E8: an ABSENT isolationEnforced flag is treated as NOT enforced (no silent pass)', () => {
-  // A handle from a third provider that never declares the flag must not be
-  // read as isolated: unknown isolation is never a permission.
-  const silent: SandboxHandle = { sandboxId: 'unknown', profile: 'verification-no-network' };
-  assert.throws(
-    () => assertSandboxSatisfiesRequirement(silent, 'required'),
-    SandboxRequiredError,
-  );
-});
-
-test('E8: a handle that DOES enforce isolation satisfies the requirement', () => {
-  const enforced: SandboxHandleEx = {
-    sandboxId: 'docker-1',
-    profile: 'verification-no-network',
-    isolationEnforced: true,
-  };
-  assertSandboxSatisfiesRequirement(enforced, 'required'); // must not throw
-});
-
-test('E8: a near-miss of the waiver token is NOT the waiver', () => {
-  for (const mode of ['off', 'none', 'false', 'pilot-unsandboxed-x', 'unsandboxed']) {
-    assert.equal(
-      resolveSandboxRequirement({ ASEP_SANDBOX_MODE: mode }), 'required',
-      `mode '${mode}' must NOT waive isolation`,
-    );
+test('E8: a Docker handle runs commands through its configured docker client, inside the container', async () => {
+  const { client, store, scope, dir } = await harness();
+  try {
+    const state = join(dir, 'docker-state');
+    const docker = join(dir, 'docker');
+    const fake = fileURLToPath(new URL('../../../scripts/testing/fake-docker.mjs', import.meta.url));
+    await writeFile(docker, `#!/bin/sh\nexec "${process.execPath}" "${fake}" --state "${state}" "$@"\n`, { mode: 0o755 });
+    const wt = join(dir, 'wt');
+    await mkdir(wt);
+    const provider = new DockerSandboxProvider({ imageDigest: `alpine@sha256:${'a'.repeat(64)}`, dockerBinary: docker });
+    const handle = await provider.start('verification-no-network', {
+      workspaceId: 'W'.repeat(26) as never, readOnlyPaths: [], writablePaths: [wt],
+    });
+    assert.equal((handle as SandboxHandleEx).dockerBinary, docker);
+    const r = await new TrustedCommandRunner(scope, store).run({
+      executable: 'node', args: ['-e', 'process.stdout.write("in the container")'], cwd: wt,
+      environmentProfile: 'verification-no-network', timeoutMs: 30_000,
+      outputPolicy: { maxEvidenceBytes: 4096, displayHeadBytes: 100, displayTailBytes: 100 },
+    }, handle);
+    assert.equal(r.exitCode, 0);
+    assert.equal(new TextDecoder().decode((await store.get(scope, r.stdout)).content), 'in the container');
+    const runs = readFileSync(join(state, 'invocations.jsonl'), 'utf8').trim().split('\n')
+      .map((l) => JSON.parse(l) as { argv?: string[] }).filter((i) => i.argv?.[0] === 'run');
+    assert.equal(runs.length, 1, 'the command ran through docker, not on the host');
+    const argv = runs[0]!.argv!;
+    for (const flag of ['--network', 'none', '--read-only', '--cap-drop', 'ALL', '-w', wt]) {
+      assert.ok(argv.includes(flag), `docker run carries ${flag}`);
+    }
+  } finally {
+    await client.close();
+    await rm(dir, { recursive: true, force: true });
   }
 });

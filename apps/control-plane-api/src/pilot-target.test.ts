@@ -27,17 +27,31 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   PgliteClient, migrate, RepositoryBindingRepository,
 } from '@asep/persistence';
 import { runGit } from '@asep/git-worktree';
-import { LocalUnsandboxedProvider } from '@asep/command-runner';
+import { DockerSandboxProvider } from '@asep/command-runner';
 import type {
   CommandSpec, CodingAgentProvider, AgentExecuteRequest, AgentAttemptObservation,
 } from '@asep/ports';
 import { runVerticalSlice, seedMirror } from './vertical-slice.js';
 
 console.log('SUITE-ID: asep-suite:pilot-target');
+
+// The verification sandbox: the real DockerSandboxProvider, driving the fake
+// docker client (scripts/testing/fake-docker.mjs), which runs each container's
+// command as a host process. The governed path accepts nothing but a handle
+// that claims isolation; the OS-enforced proof is the integration suites.
+async function fakeDockerSandbox(dir: string): Promise<DockerSandboxProvider> {
+  await mkdir(dir, { recursive: true });
+  const docker = join(dir, 'fake-docker');
+  const fake = fileURLToPath(new URL('../../../scripts/testing/fake-docker.mjs', import.meta.url));
+  await writeFile(docker, `#!/bin/sh\nexec "${process.execPath}" "${fake}" --state "${join(dir, 'docker-state')}" "$@"\n`,
+    { mode: 0o755 });
+  return new DockerSandboxProvider({ imageDigest: `alpine@sha256:${'a'.repeat(64)}`, dockerBinary: docker });
+}
 
 // A file that ONLY the caller-supplied mirror carries. Its presence in the leased
 // worktree is what proves the driver honoured `repository.mirrorPath` instead of
@@ -127,11 +141,9 @@ test('HIGH-008/K2: a pilot target registers the REAL repository, including the n
 
     const result = await runVerticalSlice({
       client,
-      sandbox: new LocalUnsandboxedProvider(),
-      // The honest no-isolation double, named explicitly. The default is
-      // 'required'; this suite is about the target seams, and the authoritative
-      // isolation proof is vertical-slice.itest.ts under real Docker.
-      sandboxRequirement: 'waived-pilot-only',
+      // This suite is about the target seams; the authoritative isolation proof
+      // is vertical-slice.itest.ts under real Docker.
+      sandbox: await fakeDockerSandbox(join(dir, 'sandbox')),
       dir: join(dir, 'run'),
       checkCommand: checkCommandFor,
       repository: {
@@ -237,8 +249,7 @@ test('HIGH-008/K2: omitting the target keeps the SYNTHETIC default (both K1 proo
 
     const result = await runVerticalSlice({
       client,
-      sandbox: new LocalUnsandboxedProvider(),
-      sandboxRequirement: 'waived-pilot-only',
+      sandbox: await fakeDockerSandbox(join(dir, 'sandbox')),
       dir: join(dir, 'run'),
       checkCommand: checkCommandFor,
       // No repository / work / environment: the pre-existing behaviour.

@@ -53,7 +53,7 @@ export class TrustedCommandRunner implements CommandRunner {
     const inContainer = Array.isArray(ex.runFlags) && typeof ex.image === 'string';
     const [exe, argv] = inContainer
       ? [
-          'docker',
+          ex.dockerBinary ?? 'docker',
           [
             ...(ex.runFlags as readonly string[]),
             '-w', spec.cwd,

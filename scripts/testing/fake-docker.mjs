@@ -145,11 +145,13 @@ async function remove(rest) {
 const RUN_BOOLEAN = new Set(['--rm', '-i', '--interactive', '--read-only']);
 const RUN_VALUED = new Set([
   '--name', '--network', '--label', '--tmpfs', '--cap-drop', '--security-opt', '--pids-limit',
-  '--cpus', '--memory', '--user', '--mount', '-w', '--workdir', '-e', '--env',
+  '--cpus', '--memory', '--user', '--mount', '-w', '--workdir', '-e', '--env', '-v', '--volume',
 ]);
 
 async function run(rest) {
-  const flags = { labels: [], env: [], mounts: [], tmpfs: [], capDrop: [], securityOpt: [], bool: new Set() };
+  const flags = {
+    labels: [], env: [], mounts: [], volumes: [], tmpfs: [], capDrop: [], securityOpt: [], bool: new Set(),
+  };
   let i = 0;
   for (; i < rest.length; i++) {
     const a = rest[i];
@@ -164,6 +166,7 @@ async function run(rest) {
     if (a === '--label') flags.labels.push(v);
     else if (a === '-e' || a === '--env') flags.env.push(v);
     else if (a === '--mount') flags.mounts.push(v);
+    else if (a === '-v' || a === '--volume') flags.volumes.push(v);
     else if (a === '--tmpfs') flags.tmpfs.push(v);
     else if (a === '--cap-drop') flags.capDrop.push(v);
     else if (a === '--security-opt') flags.securityOpt.push(v);
@@ -174,8 +177,8 @@ async function run(rest) {
   if (!image) fail('"docker run" requires at least 1 argument.', 125);
   if (!DIGEST.test(image)) fail(`fake docker: image '${image}' is not digest-pinned`, 125);
   if (command.length === 0) fail('fake docker: no command (images carry no entrypoint here)', 125);
-  const name = flags.name;
-  if (!name) fail('fake docker: --name is required', 125);
+  // Like the daemon, an unnamed container gets a generated name.
+  const name = flags.name ?? `fake-${process.pid}-${Date.now().toString(36)}`;
   if (existsSync(containerFile(name))) {
     fail(`docker: Error response from daemon: Conflict. The container name "/${name}" is already in use.`, 125);
   }
@@ -198,6 +201,13 @@ async function run(rest) {
       fail(`docker: Error response from daemon: invalid mount config for type "bind": bind source path does not exist: ${src}`, 125);
     }
     map.push({ dst, src, readonly: kv.readonly === true || kv.ro === true });
+  }
+  // `-v src:dst[:ro|rw]`: like the daemon, a missing source is created.
+  for (const v of flags.volumes) {
+    const [src, dst, mode] = v.split(':');
+    if (!src || !dst) fail(`docker: invalid spec: ${v}`, 125);
+    if (!existsSync(src)) mkdirSync(src, { recursive: true });
+    map.push({ dst, src, readonly: mode === 'ro' });
   }
   for (const t of flags.tmpfs) {
     const dst = t.split(':')[0];

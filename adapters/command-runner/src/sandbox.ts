@@ -11,8 +11,13 @@
 //   LocalUnsandboxedProvider — an HONEST fallback for hosts without Docker
 //     (F6). It provides NO isolation and says so, in code and in its handle
 //     (`isolationEnforced: false`, profile suffixed `-PILOT-ONLY`). It exists so
-//     the command runner can be exercised end-to-end on a Docker-less host
-//     WITHOUT ever pretending to be a production sandbox.
+//     the command runner itself can be exercised on a Docker-less host; the
+//     governed path refuses it, because nothing there runs without a handle that
+//     claims isolation, and there is no override.
+//
+// DockerSandboxProvider is the ONLY place a handle may claim
+// `isolationEnforced: true`; the TypeScript fitness guard
+// (scripts/lib/ts-guard.mjs) fails the build on a claim made anywhere else.
 //
 // The command runner treats a SandboxHandle as an opaque execution context; the
 // no-network / resource guarantees are the sandbox's responsibility, so a real
@@ -38,11 +43,13 @@ export interface SandboxHandleEx extends SandboxHandle {
   readonly runFlags?: readonly string[];
   // The digest-pinned image the runner appends after its flags. undefined local.
   readonly image?: string;
+  // The docker client the runner invokes. undefined for local.
+  readonly dockerBinary?: string;
 }
 
-function dockerAvailable(): Promise<boolean> {
+function dockerAvailable(binary: string): Promise<boolean> {
   return new Promise((resolve) => {
-    execFile('docker', ['version', '--format', '{{.Server.Version}}'], (err) => {
+    execFile(binary, ['version', '--format', '{{.Server.Version}}'], (err) => {
       resolve(!err);
     });
   });
@@ -54,6 +61,10 @@ export interface DockerSandboxConfig {
   readonly cpus?: string;      // e.g. '1'
   readonly memory?: string;    // e.g. '512m'
   readonly pids?: number;      // e.g. 256
+  // The docker client binary. Defaults to `docker` on PATH. Tests point it at
+  // scripts/testing/fake-docker.mjs; the isolation claim is only as good as
+  // the client, so production leaves it unset.
+  readonly dockerBinary?: string;
 }
 
 export class SandboxUnavailableError extends Error {
@@ -133,7 +144,8 @@ export class DockerSandboxProvider implements SandboxProvider {
     profile: 'verification-no-network' | 'agent-restricted-egress',
     mount: WorkspaceMount,
   ): Promise<SandboxHandleEx> {
-    if (!(await dockerAvailable())) {
+    const dockerBinary = this.cfg.dockerBinary ?? 'docker';
+    if (!(await dockerAvailable(dockerBinary))) {
       // FAIL rather than skip / degrade (F5, disp. P2-PLAN-HIGH-009).
       throw new SandboxUnavailableError('docker CLI or daemon not reachable');
     }
@@ -147,7 +159,7 @@ export class DockerSandboxProvider implements SandboxProvider {
       ...(this.cfg.pids !== undefined ? { pids: this.cfg.pids } : {}),
     });
     // Back-compat prefix (flags + image) for the existing hardening assertions.
-    const prefix = ['docker', ...runFlags, this.cfg.imageDigest];
+    const prefix = [dockerBinary, ...runFlags, this.cfg.imageDigest];
     return {
       sandboxId: `docker-${mount.workspaceId}-${Date.now()}`,
       profile,
@@ -155,78 +167,12 @@ export class DockerSandboxProvider implements SandboxProvider {
       dockerRunPrefix: prefix,
       runFlags,
       image: this.cfg.imageDigest,
+      dockerBinary,
     };
   }
 
   async stop(_handle: SandboxHandle): Promise<void> {
     // --rm containers self-remove on exit; nothing persistent to tear down.
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Deployment-mode sandbox requirement (disp. P2-FINAL-HIGH-002, exit E8).
-//
-// The review's second HIGH-002 defect: nothing MADE the sandbox mandatory. Every
-// composition root could hand in LocalUnsandboxedProvider (or, for the agent, no
-// AgentSandboxConfig at all) and the governed path would run happily with no
-// isolation. The honest `isolationEnforced:false` label documented the hole; it
-// did not close it.
-//
-// The requirement is resolved from the environment and is FAIL-CLOSED:
-//   * absent / unrecognised config           → 'required'
-//   * ASEP_SANDBOX_MODE=pilot-unsandboxed    → waived, PILOT ONLY
-//   * …and that waiver is REJECTED outright when ASEP_DEPLOYMENT_MODE=production,
-//     so a production deployment can never opt out of isolation, however the env
-//     is set.
-// ---------------------------------------------------------------------------
-
-export type SandboxRequirement = 'required' | 'waived-pilot-only';
-
-export class SandboxRequiredError extends Error {
-  constructor(reason: string) {
-    super(`sandbox isolation is required: ${reason}`);
-    this.name = 'SandboxRequiredError';
-  }
-}
-
-const PILOT_WAIVER = 'pilot-unsandboxed';
-
-/**
- * Resolve whether OS-enforced sandbox isolation is mandatory for this process.
- * Defaults to 'required' for ANY input that does not carry the explicit pilot
- * waiver, and refuses the waiver entirely in production.
- */
-export function resolveSandboxRequirement(
-  env: Readonly<Record<string, string | undefined>>,
-): SandboxRequirement {
-  const mode = (env['ASEP_SANDBOX_MODE'] ?? '').trim();
-  const deployment = (env['ASEP_DEPLOYMENT_MODE'] ?? '').trim().toLowerCase();
-  if (mode !== PILOT_WAIVER) return 'required';
-  if (deployment === 'production') {
-    // A waiver present in a production environment is a configuration error, not
-    // a permission. Fail closed rather than silently downgrade isolation.
-    throw new SandboxRequiredError(
-      `ASEP_SANDBOX_MODE=${PILOT_WAIVER} is not permitted when ASEP_DEPLOYMENT_MODE=production`,
-    );
-  }
-  return 'waived-pilot-only';
-}
-
-/**
- * Assert a started sandbox actually satisfies the resolved requirement. Called
- * on the real path with the real handle, so an unsandboxed provider substituted
- * anywhere below the port is caught at runtime rather than trusted.
- */
-export function assertSandboxSatisfiesRequirement(
-  handle: SandboxHandle,
-  requirement: SandboxRequirement,
-): void {
-  if (requirement !== 'required') return;
-  const enforced = (handle as SandboxHandleEx).isolationEnforced === true;
-  if (!enforced) {
-    throw new SandboxRequiredError(
-      `sandbox '${handle.sandboxId}' (profile '${handle.profile}') does not enforce isolation`,
-    );
   }
 }
 

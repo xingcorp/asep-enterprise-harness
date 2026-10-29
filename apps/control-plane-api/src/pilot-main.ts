@@ -294,8 +294,8 @@ async function main(): Promise<void> {
       agentFor: seams.agentFor,
       forge: seams.forge,
       toolPolicy: PILOT_TOOL_POLICY,
-      // NOTE: no sandboxRequirement override — absent means 'required', so the
-      // slice refuses to proceed if OS isolation is not actually enforced.
+      // NOTE: the slice refuses a verification sandbox that does not enforce OS
+      // isolation, before any side effect; there is no override.
 
       // The REAL target. Without this the driver seeds a synthetic mirror and
       // registers the literal `acme/web`, so real credentials would push a seed
