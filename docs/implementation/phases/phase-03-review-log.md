@@ -1982,6 +1982,20 @@ input's pathname is refused, on both paths, with and without a cancel.
 - **The re-audit did not run `verify:all`** and did not use the lane's count; the controller's gate at `ac0a1bc` is the
   evidence for that snapshot.
 
+### S2 follow-up commits (v8)
+
+One finding per commit, on top of the docs commit `116266d`, invariant first. Each fix commit's new tests failed on the
+code before it, and removing or bending the fix again turned them red; the counts are of the decision-core test files
+(`decide.test.ts`, `invariants.test.ts`, and `purity.test.ts` where noted). `pnpm verify:all` passed after each commit.
+
+| Finding | Commit | Proof |
+|---|---|---|
+| P3-S2V7-MED-001 | `f25b0c5` | 6 of 304 tests were red before the fix: the reviewer's four names, `HEAD`, and the test that the rule gives `git check-ref-format --branch`'s answer for every name of the committed table (`test-support/git-branch-names.ts`). Removing the per-component check fails 8; the leading-dot component rule 3; the `.lock` component rule 3; the `HEAD` rule 2; the empty-component rule 4; the trailing-dot rule 2. Recording a wrong answer in the table turns the test-only git re-check red. |
+| P3-S2V7-MED-003 | `fff470c` | 31 of 339 tests were red before the fix: another repository at the binding's owner and name (the reviewer's `RENAME_SLUG_REUSE`) as branch, PR head and PR base on both paths, with and without a cancel; the binding repository renamed, transferred or re-cased (same id) reconciling with the move audited; and the id input rules. Comparing owner and name again fails 20; accepting the pathname beside the id 12; dropping the move audit 12; not validating the id 6; keeping the owner to lower case 1. |
+| P3-PLAN7-HIGH-001 (code part) | `42447e1` | 8 of 346 tests were red before the fix: a content repair of the attempt's PR on both paths and of PRs that are not the attempt's, each with and without a cancel, and both property suites (the oracle checks that the decision reading a result audits exactly the repaired PRs). Not auditing fails 8; auditing only a single-PR read 3; auditing after the incomplete close instead of before the decision 9. |
+| P3-PLAN7-MED-003 | `f4c837d` | 4 of 347 tests were red before the fix: a task bound to a repository other than the fixture's, whose publication requests must all name it, and the property oracle checking every publication request's repository and base. Hard-coding the upsert's repository or the reconciliation's fails the direct test. |
+| P3-S2V7-MED-002 | `b251777` | With the previous commit's tests, the reviewer's case-folded head branch left all 347 tests green and an owner-and-name comparison left both property suites green. With this commit the case-folded head branch fails 5 (the case-only rows on both paths, with and without a cancel, and the publication property on its own); the hard-coded reconciliation repository 3 (both property suites on their own); a hard-coded upsert repository 3; an owner-and-name comparison both property suites. |
+
 ### Freeze gate (v8)
 
 - [x] Every finding of the re-audit dispositioned: 8/8 new ACCEPTED; the PARTIAL P3-S2V6-MED-001 closed through
