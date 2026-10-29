@@ -1736,6 +1736,7 @@ const prOfAttempt = (number: number, overrides: Partial<ObservedPullRequest> = {
   baseBranch: TASK_BASE_BRANCH,
   state: 'open',
   merged: false,
+  contentRepaired: false,
   ...overrides,
 });
 const OTHER_SHA = 'f'.repeat(40);
@@ -2007,6 +2008,51 @@ for (const cancelled of [false, true]) {
     });
   }
 }
+
+// The reconciliation read rewrites a PR whose title or body diverged from the attempt's facts, and says so on that PR;
+// the core audits every repair it is told of, before and whatever it decides.
+const contentRepairs = (trace: TaskTrace) =>
+  effectsOf(trace.commands, 'audit').filter((a) => a.action === 'publication.content-repaired').map((a) => a.detail);
+
+for (const cancelled of [false, true]) {
+  const when = cancelled ? 'with a cancel pending' : 'without a cancel';
+  const during = cancelled ? cancelDuring('publishBranch') : () => [];
+
+  test(`publication: after a failed PR upsert, a content repair of the attempt's PR is audited, and the PR counts as upserted, ${when}`, () => {
+    const trace = runTaskSequentially(baseInput(), scripted({
+      upsertPullRequest: publicationFails('unknown'), reconcilePublication: reconciled(shaFor(1), [prOfAttempt(9, { contentRepaired: true })]),
+    }, { eventsDuring: during }));
+    assert.deepEqual(contentRepairs(trace), [{ workflowId: 'asep-task-task-1', attemptNumber: 1, prNumber: 9 }]);
+    assertPublished(trace, 9, cancelled);
+  });
+
+  test(`publication: after an unknown push, a content repair of the attempt's PR is audited, and the push is confirmed, ${when}`, () => {
+    const trace = runTaskSequentially(baseInput(), scripted({
+      publishBranch: publicationFails('unknown'), reconcilePublication: reconciled(shaFor(1), [prOfAttempt(9, { contentRepaired: true })]),
+    }, { eventsDuring: during }));
+    assert.deepEqual(contentRepairs(trace), [{ workflowId: 'asep-task-task-1', attemptNumber: 1, prNumber: 9 }]);
+    assertPublished(trace, 7, cancelled);
+  });
+
+  test(`publication: content repairs of PRs that are not the attempt's publication are audited before it ends publication-incomplete, ${when}`, () => {
+    const trace = runTaskSequentially(baseInput(), scripted({
+      upsertPullRequest: publicationFails('unknown'),
+      reconcilePublication: reconciled(shaFor(1), [prOfAttempt(9, { contentRepaired: true }), prOfAttempt(10, { contentRepaired: true })]),
+    }, { eventsDuring: during }));
+    assert.deepEqual(contentRepairs(trace).map((d) => d['prNumber']), [9, 10]);
+    const actions = effectsOf(trace.commands, 'audit').map((a) => a.action).filter((a) => a.startsWith('publication.'));
+    assert.deepEqual(actions, ['publication.content-repaired', 'publication.content-repaired', 'publication.incomplete']);
+    assertPublicationIncomplete(trace, true, cancelled, 'pull-requests-multiple');
+  });
+}
+
+test('publication: a read that repaired nothing audits no repair', () => {
+  const trace = runTaskSequentially(baseInput(), scripted({
+    upsertPullRequest: publicationFails('unknown'), reconcilePublication: reconciled(shaFor(1), [prOfAttempt(9)]),
+  }));
+  assertPublished(trace, 9, false);
+  assert.deepEqual(contentRepairs(trace), []);
+});
 
 test('publication identity: a reconciled read under the bound owner and name audits no move', () => {
   const trace = runTaskSequentially(baseInput(), scripted({

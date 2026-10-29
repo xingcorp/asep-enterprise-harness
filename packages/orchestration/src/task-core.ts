@@ -938,6 +938,16 @@ function pullRequestFinding(s: Draft, a: MutableAttempt, candidates: readonly Ob
 }
 
 /**
+ * The read rewrote these PRs' title and body from the attempt's immutable facts: a write at the forge, so every
+ * repair is audited, before and whatever the decision about the publication.
+ */
+function auditContentRepairs(step: Step, a: MutableAttempt, result: ReconciliationRead): void {
+  for (const pr of result.pullRequests) {
+    if (pr.contentRepaired) audit(step, 'publication.content-repaired', { attemptNumber: a.attemptNumber, prNumber: pr.number });
+  }
+}
+
+/**
  * Settle an unknown effect from what the remote holds. The remote is this
  * attempt's publication only when the branch is in the binding repository at
  * the attempt's commit and the PRs listed for it are none or exactly the
@@ -948,6 +958,7 @@ function pullRequestFinding(s: Draft, a: MutableAttempt, candidates: readonly Ob
 function publicationReconciled(step: Step, result: ReconciliationRead): void {
   const s = step.s;
   const a = attempt(s, publication(s).attemptNumber);
+  auditContentRepairs(step, a, result);
   const branch = branchFinding(s, a, result.branch);
   const pr = pullRequestFinding(s, a, result.pullRequests);
   if (!s.pushConfirmed) {

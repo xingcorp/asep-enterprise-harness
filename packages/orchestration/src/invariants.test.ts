@@ -143,9 +143,10 @@ const OTHER_REPOSITORY: ForgeRepository = { id: 9001, owner: 'attacker', name: '
 /**
  * The PRs a reconciliation read reports for the branch: mostly one, the attempt's own or one that differs in a single
  * respect (head SHA, head branch, base branch, base repository, a fork head, closed, merged), and sometimes a second
- * candidate beside it.
+ * candidate beside it. The read sometimes repaired a PR's content; that draw comes from its own stream (`remote`),
+ * so every other draw of a seed is unchanged.
  */
-function observedPrs(side: Rng, request: Extract<TaskRequest, { kind: 'reconcilePublication' }>, head: string | null): ObservedPullRequest[] {
+function observedPrs(side: Rng, remote: Rng, request: Extract<TaskRequest, { kind: 'reconcilePublication' }>, head: string | null): ObservedPullRequest[] {
   const own: ObservedPullRequest = {
     number: 11,
     headRepository: request.repository,
@@ -155,6 +156,7 @@ function observedPrs(side: Rng, request: Extract<TaskRequest, { kind: 'reconcile
     baseBranch: request.expectedBaseBranch,
     state: 'open',
     merged: false,
+    contentRepaired: false,
   };
   const variant = (): ObservedPullRequest => {
     switch (side.pick(['own', 'own', 'head', 'branch', 'base', 'base-repository', 'fork', 'closed', 'merged'] as const)) {
@@ -177,7 +179,8 @@ function observedPrs(side: Rng, request: Extract<TaskRequest, { kind: 'reconcile
     }
   };
   const first = variant();
-  return side.chance(0.12) ? [first, { ...variant(), number: 12 }] : [first];
+  const prs = side.chance(0.12) ? [first, { ...variant(), number: 12 }] : [first];
+  return prs.map((pr) => (remote.chance(0.15) ? { ...pr, contentRepaired: true } : pr));
 }
 
 /** A publication failure: it reports the push or PR as applied, absent or unknown, or reports nothing (unknown). */
@@ -192,7 +195,7 @@ type DecisionMessage = Extract<TaskMessage, { type: 'approvalDecisionReceived' }
 /** A generated environment, with the durable lease history it models: the grants that committed, per attempt. */
 type GeneratedEnvironment = TaskEnvironment & { readonly grants: ReadonlyMap<number, string> };
 
-function randomEnvironment(rng: Rng, side: Rng, input: TaskCoreInput): GeneratedEnvironment {
+function randomEnvironment(rng: Rng, side: Rng, remote: Rng, input: TaskCoreInput): GeneratedEnvironment {
   const approvalKinds = new Map<string, ApprovalKind>();
   // The lease history: a grant may commit although its acquisition failed or was aborted, and later, between a lookup
   // and the pre-lease write; a recorded terminal refuses any later grant, and a grant never disappears.
@@ -356,7 +359,7 @@ function randomEnvironment(rng: Rng, side: Rng, input: TaskCoreInput): Generated
           const head = rng.pick([request.expectedHeadSha, null, 'f'.repeat(40)]);
           const hasPr = head !== null ? rng.chance(0.5) : side.chance(0.15);
           const branch = head === null ? null : { repository: side.chance(0.08) ? OTHER_REPOSITORY : request.repository, headSha: head };
-          return { kind: 'reconcilePublication', branch, pullRequests: hasPr ? observedPrs(side, request, head) : [] };
+          return { kind: 'reconcilePublication', branch, pullRequests: hasPr ? observedPrs(side, remote, request, head) : [] };
         }
         case 'verifyApprovalDecision': {
           const sent = accepted.get(request.decisionId);
@@ -876,6 +879,12 @@ function checkPublicationEffects(input: TaskCoreInput, trace: TaskTrace, label: 
       }
       assert.ok(event.type === 'result' && event.result.kind === 'reconcilePublication', `${label}: reconciliation result`);
       const read = event.result;
+      // Every content repair the read reports is audited by the decision that reads it, whatever that decision is.
+      assert.deepEqual(
+        effectsOf(decision.commands, 'audit').filter((a) => a.action === 'publication.content-repaired').map((a) => a.detail['prNumber']),
+        read.pullRequests.filter((pr) => pr.contentRepaired).map((pr) => pr.number),
+        `${label}: every content repair is audited`,
+      );
       const own = isThisAttempts(publicationIdentity(input, trace, n), read);
       const afterPush = event.seq < upsertSeq;
       if (afterPush && own) {
@@ -1038,7 +1047,7 @@ function generate(seed: number): { input: TaskCoreInput; trace: TaskTrace; grant
   const rng = rngFor(seed);
   const side = rngFor(seed + 1_000_003);
   const input = randomInput(rng, side, rngFor(seed + 4_000_037));
-  const environment = randomEnvironment(rng, side, input);
+  const environment = randomEnvironment(rng, side, rngFor(seed + 6_000_011), input);
   return { input, trace: runTaskSequentially(input, environment), grants: environment.grants };
 }
 
@@ -1054,7 +1063,7 @@ function generatePublication(seed: number): { input: TaskCoreInput; trace: TaskT
   const rng = rngFor(seed + 2_000_003);
   const side = rngFor(seed + 3_000_017);
   const input = randomInput(rng, side, rngFor(seed + 5_000_011));
-  const random = randomEnvironment(rng, side, input);
+  const random = randomEnvironment(rng, side, rngFor(seed + 7_000_003), input);
   return {
     input,
     trace: runTaskSequentially(input, {

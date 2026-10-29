@@ -148,6 +148,7 @@ export function happyAnswer(request: TaskRequest): Answer {
           baseBranch: request.expectedBaseBranch,
           state: 'open',
           merged: false,
+          contentRepaired: false,
         }],
       };
   }

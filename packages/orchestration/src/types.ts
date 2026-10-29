@@ -451,6 +451,11 @@ export interface ObservedPullRequest {
   readonly baseBranch: string;
   readonly state: 'open' | 'closed';
   readonly merged: boolean;
+  /**
+   * The read found this PR's title or body different from the content the attempt's immutable facts give, and
+   * rewrote them; the core audits every repair, whatever it decides about the publication.
+   */
+  readonly contentRepaired: boolean;
 }
 
 /**
