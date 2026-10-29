@@ -70,16 +70,15 @@ export function attemptBranch(identity: AttemptRefIdentity): string {
 export interface SafeRefspec {
   readonly branch: string;
   readonly refspec: string;              // exact create/update, never a delete/force
-  readonly forceWithLeaseExpectedSha?: string;
 }
 
 /**
  * Validate a branch a caller wants to push and return the exact, safe refspec.
  * Rejects protected refs, malformed refs, and any branch outside the ASEP
- * namespace. Force is only ever expressible as --force-with-lease against a
- * recorded expected SHA (passed through here); a plain force is impossible.
+ * namespace. Force is only ever expressible as the compare-and-set lease of
+ * pushLeaseFor; a plain force is impossible.
  */
-export function safeRefspecFor(branch: string, expectedRemoteSha?: string): SafeRefspec {
+export function safeRefspecFor(branch: string): SafeRefspec {
   assertValidRefFormat(branch);
   if (PROTECTED_REFS.has(branch)) throw new RefSafetyError(`'${branch}' is a protected ref`);
   if (branch.startsWith('refs/tags/') || branch.startsWith('refs/heads/refs/')) {
@@ -93,8 +92,7 @@ export function safeRefspecFor(branch: string, expectedRemoteSha?: string): Safe
   // Exact create/update refspec: local branch → same-named remote branch. No
   // leading '+' (which would mean force). Deletion (':refs/…') is unrepresentable.
   const refspec = `${target}:${target}`;
-  const base: SafeRefspec = { branch, refspec };
-  return expectedRemoteSha ? { ...base, forceWithLeaseExpectedSha: expectedRemoteSha } : base;
+  return { branch, refspec };
 }
 
 // A full 40-hex Git object id. An abbreviated SHA is rejected: an ambiguous
@@ -115,15 +113,11 @@ const FULL_SHA = /^[0-9a-f]{40}$/;
  * Every guarantee of safeRefspecFor is preserved: the TARGET is still generated
  * under the ASEP namespace and run through the same validation, so a protected,
  * malformed, tag, or option-like destination stays unrepresentable, and force is
- * still only expressible as --force-with-lease against a recorded SHA.
+ * still only expressible as the lease of pushLeaseFor.
  */
-export function safeCommitRefspecFor(
-  commitSha: string,
-  branch: string,
-  expectedRemoteSha?: string,
-): SafeRefspec {
+export function safeCommitRefspecFor(commitSha: string, branch: string): SafeRefspec {
   // Reuse the single authority for target validation — no second policy here.
-  const safe = safeRefspecFor(branch, expectedRemoteSha);
+  const safe = safeRefspecFor(branch);
   if (!FULL_SHA.test(commitSha)) {
     throw new RefSafetyError(
       `'${commitSha}' is not a full 40-hex commit SHA; refusing to push an ambiguous object`,
@@ -132,8 +126,25 @@ export function safeCommitRefspecFor(
   // Source is an immutable object id, destination is the validated safe ref. No
   // leading '+', so this can never mean force; deletion is unrepresentable.
   const refspec = `${commitSha}:refs/heads/${safe.branch}`;
-  const base: SafeRefspec = { branch: safe.branch, refspec };
-  return expectedRemoteSha ? { ...base, forceWithLeaseExpectedSha: expectedRemoteSha } : base;
+  return { branch: safe.branch, refspec };
+}
+
+/**
+ * The compare-and-set a push of an attempt branch carries: git's
+ * `--force-with-lease=refs/heads/<branch>:<expected>`, where an empty expected
+ * value means the ref must not exist. The remote applies the update only while
+ * the ref still holds `expectedRemoteSha` (null: absent); a push of the commit
+ * the ref already holds is a no-op. So a stale writer's late push either changes
+ * nothing or is refused (`stale info`), never overwrites a newer value.
+ */
+export function pushLeaseFor(branch: string, expectedRemoteSha: string | null): string {
+  const safe = safeRefspecFor(branch);
+  if (expectedRemoteSha !== null && !FULL_SHA.test(expectedRemoteSha)) {
+    throw new RefSafetyError(
+      `'${expectedRemoteSha}' is not a full 40-hex commit SHA; refusing a lease on an ambiguous value`,
+    );
+  }
+  return `--force-with-lease=refs/heads/${safe.branch}:${expectedRemoteSha ?? ''}`;
 }
 
 export { PROTECTED_REFS, FULL_SHA as FULL_SHA_PATTERN };

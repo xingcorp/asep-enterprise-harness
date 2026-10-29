@@ -39,7 +39,7 @@ import {
   ContentAddressedEvidenceStore, SqlSideEffectLog, PullRequestRepository,
 } from '@asep/persistence';
 import {
-  GitWorktreeManager, runGit, attemptBranch, safeRefspecFor,
+  GitWorktreeManager, runGit, attemptBranch, safeRefspecFor, safeCommitRefspecFor, pushLeaseFor,
 } from '@asep/git-worktree';
 import {
   TrustedCommandRunner, DockerSandboxProvider, LocalUnsandboxedProvider, SandboxHandleNotProvenError,
@@ -111,9 +111,10 @@ class FileWritingAgent implements CodingAgentProvider {
   }
 }
 
-// Fake GitHub: a REAL push to a local bare remote (pushing the exact commit SHA
-// to the safe ASEP-namespaced ref — a detached worktree has no local branch to
-// push) + an in-memory idempotent PR upsert. NO merge capability exists.
+// Fake GitHub: a REAL compare-and-set push to a local bare remote (pushing the
+// exact commit SHA to the safe ASEP-namespaced ref — a detached worktree has no
+// local branch to push) + an in-memory idempotent PR upsert that keeps what it
+// is given. NO merge capability exists.
 class LocalBareForgeProvider implements ForgeProvider {
   pushes = 0;
   private readonly prs = new Map<string, PullRequestRef>();
@@ -127,14 +128,15 @@ class LocalBareForgeProvider implements ForgeProvider {
     repositoryBindingId: RepositoryBindingId;
     branch: string;
     commitSha: string;
-    expectedRemoteSha?: string;
+    expectedRemoteSha: string | null;
   }): Promise<void> {
     // Validate the branch through the same non-bypassable ref-safety policy the
     // real adapter uses — a protected/malformed target is unrepresentable.
-    const safe = safeRefspecFor(input.branch, input.expectedRemoteSha);
-    // Push the EXACT commit SHA to the remote branch (works from detached HEAD).
-    await runGit(['-C', this.worktreePath, 'push', this.remoteBarePath,
-      `${input.commitSha}:refs/heads/${safe.branch}`]);
+    const safe = safeCommitRefspecFor(input.commitSha, input.branch);
+    // Push the EXACT commit SHA to the remote branch (works from detached HEAD),
+    // only over the value the branch is expected to hold.
+    await runGit(['-C', this.worktreePath, 'push', pushLeaseFor(safe.branch, input.expectedRemoteSha),
+      this.remoteBarePath, safe.refspec]);
     this.pushes++;
   }
 
@@ -145,13 +147,15 @@ class LocalBareForgeProvider implements ForgeProvider {
     title: string;
     body: string;
   }): Promise<PullRequestRef> {
+    // Idempotent: the one PR for the head branch is updated, never duplicated.
     const existing = this.prs.get(input.headBranch);
-    if (existing) return existing; // idempotent: no duplicate PR
     const pr: PullRequestRef = {
-      number: ++this.prCounter,
-      url: `https://local.forge/pr/${this.prCounter}`,
+      number: existing?.number ?? ++this.prCounter,
+      url: existing?.url ?? `https://local.forge/pr/${this.prCounter}`,
       headBranch: input.headBranch,
       baseBranch: input.base,
+      title: input.title,
+      body: input.body,
     };
     this.prs.set(input.headBranch, pr);
     return pr;
@@ -322,8 +326,6 @@ test('K1: full vertical slice reaches WAITING_FOR_HUMAN_REVIEW with a real PR + 
       repositoryBindingId: binding.id,
       branch,
       base: 'main',
-      title: 'ASEP: add feature.txt',
-      body: 'Automated attempt reaching human review.',
       leaseId: lease.leaseId,
       task: taskAggregate,
     });

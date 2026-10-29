@@ -47,7 +47,7 @@ import type {
   SideEffectBeginInput,
   SideEffectCompleteInput,
 } from '@asep/ports';
-import { SideEffectFencingError } from '@asep/ports';
+import { SideEffectFencingError, pullRequestContent } from '@asep/ports';
 import type { TaskAggregate } from '@asep/domain';
 import {
   verifyStep,
@@ -56,9 +56,14 @@ import {
   evidenceDraft,
   pushStep,
   upsertPrStep,
+  reconcileBranchStep,
+  reconcilePullRequestStep,
+  pullRequestFactsOf,
+  RemoteBranchDivergedError,
   setReviewStep,
   completeToReview,
   EvidenceIdentityMismatchError,
+  type ObserveBoundary,
   type VerificationCheckSpec,
   type VerificationProvenance,
 } from './pipeline-steps.js';
@@ -617,10 +622,9 @@ class MemorySideEffectLog implements SideEffectLog {
     };
   }
 
-  // Every confirmation, in order; `epoch` is what the owner holds, and
-  // `takenOver` simulates a successor having taken the records over.
+  // Every confirmation, in order; `takenOver` simulates a successor having
+  // taken the records over.
   readonly confirmed: string[] = [];
-  epoch = 3;
   takenOver = false;
 
   async confirmOwner(_scope: TenantScope, input: SideEffectKey & { ownerToken: string }): Promise<{ fencingEpoch: number }> {
@@ -628,7 +632,7 @@ class MemorySideEffectLog implements SideEffectLog {
     if (!row || row.state !== 'PENDING') throw new SideEffectFencingError('nothing PENDING to act for');
     if (this.takenOver || row.owner !== input.ownerToken) throw new SideEffectFencingError('stale owner');
     this.confirmed.push(input.operation);
-    return { fencingEpoch: this.epoch };
+    return { fencingEpoch: 3 };
   }
 
   async fail(_scope: TenantScope, input: { operation: 'commit' | 'push' | 'pr-upsert'; repositoryBindingId: RepositoryBindingId; attemptId: AttemptId; ownerToken: string }): Promise<SideEffectRecord> {
@@ -662,23 +666,29 @@ class MemorySideEffectLog implements SideEffectLog {
 // so a test can exercise the HIGH-006 reconciliation paths: with an empty remote
 // the reconcile lookups answer null (the effect never landed → perform it), and
 // a seeded remote makes them answer with the real ref/PR (→ adopt, never
-// re-call). Counting pushes/upserts is what proves no duplicate side effect.
+// re-call). Counting pushes/upserts is what proves no duplicate side effect;
+// the recorded inputs are what each call asked the forge to write.
+type PushCall = Parameters<ForgeProvider['pushBranch']>[1];
+type UpsertCall = Parameters<ForgeProvider['upsertPullRequest']>[1];
+type FakeForge = ForgeProvider & {
+  pushes: number; upserts: number; pushCalls: PushCall[]; upsertCalls: UpsertCall[];
+};
 function fakeForge(
   pr: PullRequestRef,
   remote: { ref?: string | null; pr?: PullRequestRef | null } = {},
-): ForgeProvider & { pushes: number; upserts: number; epochs: number[] } {
-  let pushes = 0;
-  let upserts = 0;
-  const epochs: number[] = [];
+): FakeForge {
+  const pushCalls: PushCall[] = [];
+  const upsertCalls: UpsertCall[] = [];
   return {
-    get pushes() { return pushes; },
-    get upserts() { return upserts; },
-    epochs,
-    async pushBranch(_s: TenantScope, i: { fencingEpoch: number }) { pushes += 1; epochs.push(i.fencingEpoch); },
-    async upsertPullRequest(_s: TenantScope, i: { fencingEpoch: number }) { upserts += 1; epochs.push(i.fencingEpoch); return pr; },
+    get pushes() { return pushCalls.length; },
+    get upserts() { return upsertCalls.length; },
+    pushCalls,
+    upsertCalls,
+    async pushBranch(_s: TenantScope, i: PushCall) { pushCalls.push(i); },
+    async upsertPullRequest(_s: TenantScope, i: UpsertCall) { upsertCalls.push(i); return pr; },
     async resolveRef() { return remote.ref ?? null; },
     async findPullRequest() { return remote.pr ?? null; },
-  } as ForgeProvider & { pushes: number; upserts: number; epochs: number[] };
+  };
 }
 
 const prRef: PullRequestRef = {
@@ -686,6 +696,13 @@ const prRef: PullRequestRef = {
   url: 'https://forge.invalid/pr/7',
   headBranch: 'asep/attempt-1',
   baseBranch: 'main',
+};
+
+// What an attempt's PR is made of: its head and base, and the facts its
+// content is a function of.
+const prFacts = {
+  taskId, attemptId, headBranch: 'asep/attempt-1', base: 'main',
+  commitSha: 'd'.repeat(40), evidenceId: 'ev-1',
 };
 
 test('pushStep wraps the push in the two-phase protocol (begin → push → complete)', async () => {
@@ -709,14 +726,20 @@ test('pushStep wraps the push in the two-phase protocol (begin → push → comp
   assert.equal(row.state, 'COMPLETED');
 });
 
-test('push and PR are confirmed at the call and carry the owner\'s fencing epoch', async () => {
+test('push and PR are confirmed at the call; the push expects an absent branch, the PR carries only the facts', async () => {
   const log = new MemorySideEffectLog();
   const forge = fakeForge(prRef);
   const common = { forge, log, scope, repositoryBindingId: bindingId, attemptId, leaseId: 'lease-1' };
   await pushStep({ ...common, branch: 'asep/attempt-1', commitSha: 'd'.repeat(40) });
-  await upsertPrStep({ ...common, headBranch: 'asep/attempt-1', base: 'main', title: 't', body: 'b' });
+  await upsertPrStep({ ...common, ...prFacts });
   assert.deepEqual(log.confirmed, ['push', 'pr-upsert']);
-  assert.deepEqual(forge.epochs, [3, 3], 'each forge call carries the confirmed epoch');
+  assert.deepEqual(forge.pushCalls, [{
+    repositoryBindingId: bindingId, branch: 'asep/attempt-1', commitSha: 'd'.repeat(40), expectedRemoteSha: null,
+  }]);
+  const { title, body } = pullRequestContent(pullRequestFactsOf(prFacts));
+  assert.deepEqual(forge.upsertCalls, [{
+    repositoryBindingId: bindingId, headBranch: 'asep/attempt-1', base: 'main', title, body,
+  }]);
 });
 
 test('an executor whose records were taken over never reaches the forge or commits', async () => {
@@ -727,7 +750,7 @@ test('an executor whose records were taken over never reaches the forge or commi
   await assert.rejects(() => pushStep({ ...common, branch: 'asep/attempt-1', commitSha: 'd'.repeat(40) }),
     SideEffectFencingError);
   await assert.rejects(
-    () => upsertPrStep({ ...common, headBranch: 'asep/attempt-1', base: 'main', title: 't', body: 'b' }),
+    () => upsertPrStep({ ...common, ...prFacts }),
     SideEffectFencingError);
   assert.equal(forge.pushes + forge.upserts, 0, 'nothing reached the forge');
   let commits = 0;
@@ -758,8 +781,8 @@ test('upsertPrStep ADOPTS the recorded PR ref on retry (no duplicate PR)', async
   const log = new MemorySideEffectLog();
   const forge = fakeForge(prRef);
   const input = {
-    forge, log, scope, repositoryBindingId: bindingId, attemptId,
-    headBranch: 'asep/attempt-1', base: 'main', title: 't', body: 'b', leaseId: 'lease-1',
+    forge, log, scope, repositoryBindingId: bindingId,
+    ...prFacts, leaseId: 'lease-1',
   };
   const first = await upsertPrStep(input);
   assert.equal(first.adopted, false);
@@ -822,8 +845,8 @@ test('upsertPrStep RECONCILES a PENDING record and adopts an existing PR (HIGH-0
   // The PR already exists on the forge for this head branch.
   const forge = fakeForge(prRef, { pr: prRef });
   const input = {
-    forge, log, scope, repositoryBindingId: bindingId, attemptId,
-    headBranch: 'asep/attempt-1', base: 'main', title: 't', body: 'b', leaseId: 'lease-1',
+    forge, log, scope, repositoryBindingId: bindingId,
+    ...prFacts, leaseId: 'lease-1',
   };
   await log.begin(scope, {
     operation: 'pr-upsert', repositoryBindingId: bindingId, attemptId,
@@ -841,8 +864,8 @@ test('upsertPrStep PERFORMS the upsert when a PENDING record has no remote PR (H
   const log = new MemorySideEffectLog();
   const forge = fakeForge(prRef, { pr: null });
   const input = {
-    forge, log, scope, repositoryBindingId: bindingId, attemptId,
-    headBranch: 'asep/attempt-1', base: 'main', title: 't', body: 'b', leaseId: 'lease-1',
+    forge, log, scope, repositoryBindingId: bindingId,
+    ...prFacts, leaseId: 'lease-1',
   };
   await log.begin(scope, {
     operation: 'pr-upsert', repositoryBindingId: bindingId, attemptId,
@@ -867,6 +890,140 @@ test('reusing a side-effect key with a DIFFERENT fingerprint fails closed', asyn
     forge, log, scope, repositoryBindingId: bindingId, attemptId,
     branch: 'asep/attempt-1', commitSha: '9'.repeat(40), leaseId: 'lease-1',
   }), /fingerprint mismatch/);
+});
+
+test('pushStep refuses to publish over an attempt branch holding another commit', async () => {
+  const log = new MemorySideEffectLog();
+  const forge = fakeForge(prRef, { ref: 'e'.repeat(40) });
+  const input = {
+    forge, log, scope, repositoryBindingId: bindingId, attemptId,
+    branch: 'asep/attempt-1', commitSha: 'd'.repeat(40), leaseId: 'lease-1',
+  };
+  await log.begin(scope, {
+    operation: 'push', repositoryBindingId: bindingId, attemptId,
+    requestFingerprint: `push:${input.branch}@${input.commitSha}`,
+    ownerToken: 'lease-1', naturalKey: input.branch,
+  });
+  await assert.rejects(() => pushStep(input), RemoteBranchDivergedError);
+  assert.equal(forge.pushes, 0);
+  assert.equal([...log.rows.values()][0]!.state, 'PENDING', 'the record stays open for a takeover to repair');
+});
+
+// --- PR content and reconciliation after a takeover --------------------------
+
+test('a PR\'s content is the attempt\'s facts and nothing else', () => {
+  const facts = pullRequestFactsOf(prFacts);
+  assert.deepEqual(pullRequestContent(facts), {
+    title: 'ASEP task-1: attempt attempt-1',
+    body: [
+      'Automated ASEP attempt, waiting for human review.',
+      '',
+      'Task: task-1',
+      'Attempt: attempt-1',
+      `Commit: ${'d'.repeat(40)}`,
+      'Evidence: ev-1',
+      'Base: main',
+      '',
+    ].join('\n'),
+  });
+  // Every owner computing it from the same facts gets the same bytes.
+  assert.deepEqual(pullRequestContent({ ...facts }), pullRequestContent(facts));
+  // Each fact shows; nothing else (an owner, a lease, a clock) can.
+  for (const field of ['taskId', 'attemptId', 'commitSha', 'evidenceId', 'base'] as const) {
+    const other = pullRequestContent({ ...facts, [field]: `other-${field}` });
+    assert.notEqual(other.body, pullRequestContent(facts).body, field);
+  }
+  assert.deepEqual(Object.keys(pullRequestFactsOf({ ...prFacts, leaseId: 'lease-9' } as typeof prFacts)).sort(),
+    ['attemptId', 'base', 'commitSha', 'evidenceId', 'taskId']);
+});
+
+test('two owners of an attempt ask the forge for the same PR, byte for byte', async () => {
+  // A stale owner and its successor: different leases, different logs, the
+  // same attempt. Whatever either one writes last, the forge holds the same PR.
+  const writes: string[] = [];
+  for (const leaseId of ['lease-1', 'lease-2']) {
+    const forge = fakeForge(prRef);
+    await upsertPrStep({
+      forge, log: new MemorySideEffectLog(), scope, repositoryBindingId: bindingId, ...prFacts, leaseId,
+    });
+    writes.push(JSON.stringify(forge.upsertCalls));
+  }
+  assert.equal(writes[0], writes[1]);
+});
+
+function recordingObserve() {
+  const seen: { span: string; action: string; detail: Readonly<Record<string, unknown>> }[] = [];
+  const observe: ObserveBoundary = async (boundary, fn) => { seen.push(boundary); return fn(); };
+  return { seen, observe };
+}
+
+function remoteInput(forge: ForgeProvider, observe: ObserveBoundary) {
+  return {
+    forge, scope, repositoryBindingId: bindingId, branch: 'asep/attempt-1',
+    facts: pullRequestFactsOf(prFacts), observe,
+  };
+}
+
+test('reconcileBranchStep leaves a branch at the attempt\'s commit, and an absent one when told to', async () => {
+  const { seen, observe } = recordingObserve();
+  const atCommit = fakeForge(prRef, { ref: 'd'.repeat(40) });
+  assert.deepEqual(await reconcileBranchStep(remoteInput(atCommit, observe), 'repair'),
+    { found: 'd'.repeat(40), repaired: false });
+  const absent = fakeForge(prRef, { ref: null });
+  assert.deepEqual(await reconcileBranchStep(remoteInput(absent, observe), 'leave'), { found: null, repaired: false });
+  assert.equal(atCommit.pushes + absent.pushes, 0);
+  assert.equal(seen.length, 0, 'nothing to repair, nothing on record');
+});
+
+test('reconcileBranchStep puts a diverged branch back on the attempt\'s commit, compare-and-set, on record', async () => {
+  for (const found of ['e'.repeat(40), null]) {
+    const { seen, observe } = recordingObserve();
+    const forge = fakeForge(prRef, { ref: found });
+    assert.deepEqual(await reconcileBranchStep(remoteInput(forge, observe), 'repair'), { found, repaired: true });
+    assert.deepEqual(forge.pushCalls, [{
+      repositoryBindingId: bindingId, branch: 'asep/attempt-1', commitSha: 'd'.repeat(40), expectedRemoteSha: found,
+    }], 'the repair only lands over what was found');
+    assert.deepEqual(seen, [{
+      span: 'forge.push', action: 'forge.reconcile',
+      detail: { target: 'branch', branch: 'asep/attempt-1', found, commitSha: 'd'.repeat(40) },
+    }]);
+  }
+});
+
+test('reconcilePullRequestStep keeps a PR that already is the facts\' PR', async () => {
+  const { seen, observe } = recordingObserve();
+  const content = pullRequestContent(pullRequestFactsOf(prFacts));
+  const forge = fakeForge(prRef, { pr: { ...prRef, ...content } });
+  const res = await reconcilePullRequestStep(remoteInput(forge, observe));
+  assert.equal(res.repaired, false);
+  assert.equal(res.pr.number, 7);
+  assert.equal(forge.upserts, 0);
+  assert.equal(seen.length, 0);
+});
+
+test('reconcilePullRequestStep rewrites a missing or diverged PR from the facts, on record', async () => {
+  const content = pullRequestContent(pullRequestFactsOf(prFacts));
+  const cases: readonly (readonly [string, PullRequestRef | null])[] = [
+    ['absent', null],
+    ['other title', { ...prRef, ...content, title: 'written by someone else' }],
+    ['other body', { ...prRef, ...content, body: `${content.body}fencing-epoch: 2\n` }],
+    ['other base', { ...prRef, ...content, baseBranch: 'release' }],
+    ['no content read', prRef],
+  ];
+  for (const [name, found] of cases) {
+    const { seen, observe } = recordingObserve();
+    const forge = fakeForge(prRef, { pr: found });
+    const res = await reconcilePullRequestStep(remoteInput(forge, observe));
+    assert.equal(res.repaired, true, name);
+    assert.deepEqual(forge.upsertCalls, [{
+      repositoryBindingId: bindingId, headBranch: 'asep/attempt-1', base: 'main', ...content,
+    }], name);
+    assert.equal(seen.length, 1, name);
+    assert.equal(seen[0]!.span, 'forge.pull_request', name);
+    assert.equal(seen[0]!.action, 'forge.reconcile', name);
+    assert.equal((seen[0]!.detail['found'] as { number?: number } | null)?.number ?? null,
+      found === null ? null : 7, name);
+  }
 });
 
 // --- setReviewStep (I1/I2) --------------------------------------------------
@@ -920,8 +1077,6 @@ function driverInput(overrides: Partial<Parameters<typeof completeToReview>[0]> 
     repositoryBindingId: bindingId,
     branch: 'asep/attempt-1',
     base: 'main',
-    title: 't',
-    body: 'b',
     leaseId: 'lease-1',
     task: { id: taskId, status: 'VERIFYING', version: 3 } as TaskAggregate,
     ...overrides,
@@ -1013,7 +1168,7 @@ test('completeToReview is crash-safe: a full re-run adopts the push+PR (single r
   // transition was not yet persisted). The side effects must be adopted.
   const second = await completeToReview(shared);
   assert.equal(second.stoppedAt, 'complete');
-  const forge = shared.forge as ForgeProvider & { pushes: number; upserts: number };
+  const forge = shared.forge as FakeForge;
   assert.equal(forge.pushes, 1, 'exactly one push across both runs');
   assert.equal(forge.upserts, 1, 'exactly one PR upsert across both runs');
 });
@@ -1183,10 +1338,11 @@ function prStepWith(log: SideEffectLog) {
     scope,
     repositoryBindingId: bindingId,
     attemptId,
+    taskId,
     headBranch: 'asep/attempt/a1',
     base: 'main',
-    title: 't',
-    body: 'b',
+    commitSha: 'd'.repeat(40),
+    evidenceId: 'ev-1',
     leaseId: 'lease-1',
   });
 }

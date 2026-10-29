@@ -26,9 +26,9 @@ import {
 } from '@asep/persistence';
 import { DockerSandboxProvider } from '@asep/command-runner';
 import { runGit, attemptBranch } from '@asep/git-worktree';
-import { createBareRemote, LocalBareForgeProvider } from '@asep/local-doubles';
+import { createBareRemote, seedMirror, LocalBareForgeProvider } from '@asep/local-doubles';
 import {
-  SideEffectFencingError, LeaseLostError, evidenceBundleFrom,
+  SideEffectFencingError, LeaseLostError, evidenceBundleFrom, pullRequestContent,
   type CommandSpec, type ForgeProvider, type PullRequestRef,
 } from '@asep/ports';
 import type {
@@ -290,6 +290,88 @@ test('a crash after the push landed: the successor takes the push over, reconcil
     await assertConverged(c, r.commitSha!);
   } finally {
     await cleanup(c);
+  }
+});
+
+// A stale owner may still reach the forge after the takeover — here, after the
+// crash, something rewrote the attempt branch onto another commit and the PR
+// with other text. The successor puts both back to what the attempt's facts
+// say before the terminal state, and each repair is an audit row.
+test('a successor rewrites a diverged branch and PR from the attempt\'s facts, each repair on record', async () => {
+  const c = await crashRun('after-pr');
+  try {
+    const mirror = join(c.dir, 'mirror.git');
+    const commitSha = (await runGit(['-C', c.forgeRemote, 'rev-parse', `refs/heads/${c.branch}`])).stdout.trim();
+    const other = (await runGit([
+      '--git-dir', mirror, '-c', 'user.name=harness', '-c', 'user.email=harness@example.com', 'commit-tree', `${commitSha}^{tree}`, '-p', commitSha, '-m', 'not the attempt\'s',
+    ])).stdout.trim();
+    await runGit(['--git-dir', mirror, 'push', '-q', '--force', c.forgeRemote, `${other}:refs/heads/${c.branch}`]);
+    await c.forge.upsertPullRequest(c.scope, {
+      repositoryBindingId: c.bindingId, headBranch: c.branch, base: 'main',
+      title: 'rewritten by a stale writer', body: 'rewritten by a stale writer',
+    });
+
+    const r = await resume(c);
+    assert.equal(r.stoppedAt, 'complete', r.reason);
+    assert.equal(r.commitSha, commitSha);
+    assert.equal(r.branchRepaired, true);
+    assert.equal(r.prRepaired, true);
+    assert.equal(r.taskStatus, 'WAITING_FOR_HUMAN_REVIEW');
+    await assertConverged(c, commitSha);
+    const content = pullRequestContent({
+      taskId: c.taskId, attemptId: c.attemptId, commitSha, evidenceId: r.evidenceArtifactId!, base: 'main',
+    });
+    const [pr] = await c.forge.listPullRequests();
+    assert.deepEqual({ title: pr!.title, body: pr!.body, base: pr!.baseBranch }, { ...content, base: 'main' });
+
+    const repairs = await c.client.query(
+      `select detail from audit_events where attempt_id = $1 and action = 'forge.reconcile' order by occurred_at, id`,
+      [c.attemptId],
+    );
+    const details = repairs.rows.map((row) => row['detail'] as Record<string, unknown>);
+    assert.deepEqual(details.map((d) => d['target']).sort(), ['branch', 'pull-request']);
+    const branch = details.find((d) => d['target'] === 'branch')!;
+    assert.deepEqual(branch, { target: 'branch', branch: c.branch, found: other, commitSha });
+    const order = await c.client.query(
+      `select bool_and(r.occurred_at <= t.occurred_at) as before
+         from audit_events r, audit_events t
+        where r.attempt_id = $1 and r.action = 'forge.reconcile'
+          and t.attempt_id = $1 and t.action = 'task.status.transition' and t.detail->>'resumed' = 'true'`,
+      [c.attemptId],
+    );
+    assert.equal(order.rows[0]!['before'], true, 'every repair is on record before the terminal transition');
+  } finally {
+    await cleanup(c);
+  }
+});
+
+// The local forge double holds the push the way a real remote does: only over
+// the value the branch is expected to hold.
+test('the local bare forge takes a push only over the value the branch is expected to hold', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'asep-local-cas-'));
+  try {
+    const { mirror, baseSha } = await seedMirror(join(dir, 'seed'));
+    const other = (await runGit([
+      '--git-dir', mirror, '-c', 'user.name=harness', '-c', 'user.email=harness@example.com', 'commit-tree', `${baseSha}^{tree}`, '-p', baseSha, '-m', 'other',
+    ])).stdout.trim();
+    const remote = await createBareRemote(join(dir, 'forge.git'));
+    const forge = new LocalBareForgeProvider(remote);
+    forge.setWorktree(mirror);
+    const branch = attemptBranch({ runId: 'R'.repeat(26) as RunId, taskId: 'T'.repeat(26) as TaskId, attemptId: 'A'.repeat(26) as AttemptId });
+    const scope = { organizationId: 'O'.repeat(26) as OrganizationId, projectId: 'P'.repeat(26) as ProjectId };
+    const push = (commitSha: string, expectedRemoteSha: string | null) => forge.pushBranch(scope, {
+      repositoryBindingId: 'B'.repeat(26) as RepositoryBindingId, branch, commitSha, expectedRemoteSha,
+    });
+    const tip = async () => (await runGit(['-C', remote, 'rev-parse', `refs/heads/${branch}`])).stdout.trim();
+    await push(baseSha, null);
+    await push(baseSha, null);
+    assert.equal(await tip(), baseSha, 'the same commit again changes nothing');
+    await assert.rejects(() => push(other, null), /stale info/);
+    assert.equal(await tip(), baseSha);
+    await push(other, baseSha);
+    assert.equal(await tip(), other);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 });
 

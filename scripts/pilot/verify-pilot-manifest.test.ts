@@ -1577,7 +1577,7 @@ test('the verifier forge looks a PR up through the GitHub App adapter and report
   assert.deepEqual(listed, [{ owner: 'acme', repo: 'web', head: 'acme:asep/x', state: 'all' }]);
   assert.deepEqual([...db.calls[0]!.params].sort(), ['org-1', 'proj-1', 'rb-1'], 'the binding is read in the trace scope');
   await assert.rejects(
-    () => forge.pushBranch({ organizationId: 'org-1', projectId: 'proj-1' }, { repositoryBindingId: 'rb-1', branch: 'asep/x', commitSha: 'c'.repeat(40) }),
+    () => forge.pushBranch({ organizationId: 'org-1', projectId: 'proj-1' }, { repositoryBindingId: 'rb-1', branch: 'asep/x', commitSha: 'c'.repeat(40), expectedRemoteSha: null }),
     /never pushes/,
   );
 });

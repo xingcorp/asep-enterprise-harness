@@ -332,8 +332,6 @@ async function main(): Promise<void> {
         contextPack: { relevantFiles: env.allowedPaths },
         allowedPaths: env.allowedPaths,
         expectChangedFile: env.expectChangedFile,
-        prTitle: `ASEP: ${env.objective}`,
-        prBody: 'Automated ASEP attempt reaching human review.',
       },
       // Real provenance in the evidence bundle: the AGENT image that produced
       // the change, not the driver's placeholder digest.

@@ -63,14 +63,13 @@ export class GitHubAppForgePort implements ForgeProvider {
     private readonly resolver: ForgeBindingResolver,
   ) {}
 
-  // The fencing epoch is not forwarded: a git ref has no place to record it
-  // (see the port). The push was confirmed by the side-effect log just before.
+  // Compare-and-set (see the port): the adapter pushes with a lease on the
+  // value the branch is expected to hold.
   async pushBranch(scope: TenantScope, input: {
     repositoryBindingId: RepositoryBindingId;
     branch: string;
     commitSha: string;
-    fencingEpoch: number;
-    expectedRemoteSha?: string;
+    expectedRemoteSha: string | null;
   }): Promise<void> {
     const { repository, localRepoPath } = await this.resolver.resolve(
       scope, input.repositoryBindingId,
@@ -84,7 +83,7 @@ export class GitHubAppForgePort implements ForgeProvider {
       localWorktreePath: localRepoPath,
       branch: input.branch,
       commitSha: input.commitSha,
-      ...(input.expectedRemoteSha ? { expectedRemoteSha: input.expectedRemoteSha } : {}),
+      expectedRemoteSha: input.expectedRemoteSha,
     });
     // The port returns void: the caller's SideEffectLog already records the
     // branch as the natural key, so there is no ref for this layer to invent.
@@ -96,7 +95,6 @@ export class GitHubAppForgePort implements ForgeProvider {
     base: string;
     title: string;
     body: string;
-    fencingEpoch: number;
   }): Promise<PullRequestRef> {
     const { repository } = await this.resolver.resolve(scope, input.repositoryBindingId);
     const pr = await this.inner.upsertPullRequest({
@@ -105,7 +103,6 @@ export class GitHubAppForgePort implements ForgeProvider {
       base: input.base,
       title: input.title,
       body: input.body,
-      fencingEpoch: input.fencingEpoch,
     });
     // Narrow the adapter's result to the port's canonical ref shape.
     return {
@@ -146,14 +143,16 @@ export class GitHubAppForgePort implements ForgeProvider {
       headBranch: input.headBranch,
     });
     if (!pr) return null;
-    // A lookup carries the head commit GitHub reports, so a reader can check
-    // which commit the PR shows now.
+    // A lookup carries the head commit, title and body GitHub reports, so a
+    // reader can check what the PR shows now.
     return {
       number: pr.number,
       url: pr.url,
       headBranch: pr.headBranch,
       baseBranch: pr.baseBranch,
       ...(pr.headSha !== undefined ? { headSha: pr.headSha } : {}),
+      ...(pr.title !== undefined ? { title: pr.title } : {}),
+      ...(pr.body !== undefined ? { body: pr.body } : {}),
     };
   }
 

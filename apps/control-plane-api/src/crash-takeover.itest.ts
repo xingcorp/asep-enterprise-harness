@@ -24,10 +24,14 @@
 //
 // It also proves the IN-FLIGHT race on the same PostgreSQL: an executor that is
 // not dead but paused — between begin() and its forge call, or inside the call
-// — while its lease lapses and a successor takes its record over. The paused
-// executor must not act after the takeover: it is refused at its confirmation,
-// its PR update is refused by the epoch the successor wrote, and a late push
-// can only land the attempt's one commit again.
+// — while its lease lapses and a successor takes its records over. Paused
+// before its call, it is refused at its confirmation. Paused inside it, it
+// still reaches the forge — nothing recalls a call in flight, and GitHub has no
+// compare-and-set for a PR update — so what holds is what it can write: its PR
+// update writes the content of the attempt's facts, byte-identical to the
+// successor's; its late push of the attempt's commit changes nothing, and a
+// late push of any other commit is refused by the push's compare-and-set. It
+// can never record any of it.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -44,12 +48,12 @@ import {
   RunRepository, TaskRepository, AttemptRepository,
   type SqlClient, type SqlExecutor,
 } from '@asep/persistence';
-import { pushStep, upsertPrStep } from '@asep/application';
+import { pushStep, upsertPrStep, pullRequestFactsOf } from '@asep/application';
 import { DockerSandboxProvider } from '@asep/command-runner';
 import { runGit, attemptBranch } from '@asep/git-worktree';
 import { seedMirror, createBareRemote, LocalBareForgeProvider } from '@asep/local-doubles';
 import {
-  SideEffectFencingError, LeaseLostError, StaleFencingEpochError, fencingEpochOf,
+  SideEffectFencingError, LeaseLostError, pullRequestContent,
   type CommandSpec, type ForgeProvider, type PullRequestRef, type SideEffectLog, type Lease,
 } from '@asep/ports';
 import type {
@@ -417,7 +421,10 @@ function registerTests(): void {
           if ('denied' in l) throw new Error(`lease denied: ${l.reason}`);
           return l;
         };
-        return { branch, lease, common: { scope, repositoryBindingId: binding.id, attemptId: attempt.id } };
+        return {
+          branch, lease, taskId: task.id,
+          common: { scope, repositoryBindingId: binding.id, attemptId: attempt.id },
+        };
       };
       const waitOut = async (leaseId: string) => {
         for (const deadline = Date.now() + TTL + 10_000; ;) {
@@ -468,19 +475,27 @@ function registerTests(): void {
         assert.equal(zombieForgeCalls, 0, 'the paused executor never reached the forge');
       }
 
-      // --- 2. paused INSIDE its PR call, past its renewed lease: the forge
-      // refuses the stale epoch the successor already superseded.
+      // --- 2. paused INSIDE its PR call, past its renewed lease: it still writes
+      // the PR after the successor, and what it writes is the successor's PR,
+      // byte for byte, because both write the content of the attempt's facts.
       {
         const a = await freshAttempt();
         const zombie = await a.lease();
         const resume = gate();
         const paused = gate();
-        const pr = { headBranch: a.branch, base: 'main', title: 'ASEP', body: 'evidence' };
+        const pr = {
+          taskId: a.taskId, headBranch: a.branch, base: 'main', commitSha, evidenceId: 'E'.repeat(26),
+        };
         const zombiePr = upsertPrStep({
           ...a.common, ...pr, log, leaseId: zombie.leaseId,
           forge: {
             ...countingForge,
-            upsertPullRequest: async (sc, i) => { paused.open(); await resume.opened; return forge.upsertPullRequest(sc, i); },
+            upsertPullRequest: async (sc, i) => {
+              paused.open();
+              await resume.opened;
+              zombieForgeCalls += 1;
+              return forge.upsertPullRequest(sc, i);
+            },
           },
         });
         await paused.opened;
@@ -488,17 +503,27 @@ function registerTests(): void {
         const successor = await a.lease();
         const opened = await upsertPrStep({ ...a.common, ...pr, forge, log, leaseId: successor.leaseId });
         assert.equal(opened.adopted, false, 'nothing had reached the forge; the successor opened the PR');
+        const ofBranch = async () => (await forge.listPullRequests()).filter((p) => p.headBranch === a.branch);
+        const successors = JSON.stringify(await ofBranch());
+        const calls = zombieForgeCalls;
         resume.open();
-        await assert.rejects(zombiePr, StaleFencingEpochError);
-        const prs = (await forge.listPullRequests()).filter((p) => p.headBranch === a.branch);
+        await assert.rejects(zombiePr, SideEffectFencingError, 'the late executor cannot record its PR');
+        assert.equal(zombieForgeCalls, calls + 1, 'the late executor did reach the forge');
+        const prs = await ofBranch();
+        assert.equal(JSON.stringify(prs), successors, 'its late write left the successor\'s PR byte for byte');
         assert.equal(prs.length, 1, 'one PR');
-        assert.equal(fencingEpochOf(prs[0]!.body), successor.fencingEpoch, 'written by the newest owner, and only by it');
+        const content = pullRequestContent(pullRequestFactsOf({ ...a.common, ...pr }));
+        assert.equal(prs[0]!.title, content.title);
+        assert.equal(prs[0]!.body, content.body);
+        const record = await log.find(scope, { operation: 'pr-upsert', ...a.common });
+        assert.equal(record?.ownerToken, successor.leaseId);
       }
 
-      // --- 3. paused INSIDE its push call, past its renewed lease: the late push
-      // lands the attempt's one commit on its own branch again — nothing else —
-      // and its record stays the successor's.
-      {
+      // --- 3. paused INSIDE its push call, past its renewed lease: a late push
+      // of the attempt's commit changes nothing, and its record stays the
+      // successor's.
+      type PushCall = Parameters<ForgeProvider['pushBranch']>[1];
+      const pausedPush = async (late: (i: PushCall) => PushCall) => {
         const a = await freshAttempt();
         const zombie = await a.lease();
         const resume = gate();
@@ -507,7 +532,7 @@ function registerTests(): void {
           ...a.common, log, branch: a.branch, commitSha, leaseId: zombie.leaseId,
           forge: {
             ...countingForge,
-            pushBranch: async (sc, i) => { paused.open(); await resume.opened; return forge.pushBranch(sc, i); },
+            pushBranch: async (sc, i) => { paused.open(); await resume.opened; return forge.pushBranch(sc, late(i)); },
           },
         });
         await paused.opened;
@@ -515,9 +540,28 @@ function registerTests(): void {
         const successor = await a.lease();
         await pushStep({ ...a.common, forge, log, branch: a.branch, commitSha, leaseId: successor.leaseId });
         resume.open();
+        const tip = async () => (await runGit(['-C', remote, 'rev-parse', `refs/heads/${a.branch}`])).stdout.trim();
+        return { a, successor, zombiePush, tip };
+      };
+      {
+        const { a, successor, zombiePush, tip } = await pausedPush((i) => i);
         await assert.rejects(zombiePush, SideEffectFencingError, 'the late executor cannot record its push');
-        const tip = (await runGit(['-C', remote, 'rev-parse', `refs/heads/${a.branch}`])).stdout.trim();
-        assert.equal(tip, commitSha, 'the branch still holds the attempt\'s one commit');
+        assert.equal(await tip(), commitSha, 'the branch still holds the attempt\'s one commit');
+        const record = await log.find(scope, { operation: 'push', ...a.common });
+        assert.equal(record?.state, 'COMPLETED');
+        assert.equal(record?.ownerToken, successor.leaseId);
+      }
+
+      // --- 4. the same, but the late push carries another commit: the remote
+      // refuses it, because the branch no longer holds what the push expects.
+      {
+        const other = (await runGit([
+          '--git-dir', seeded.mirror, '-c', 'user.name=harness', '-c', 'user.email=harness@example.com', 'commit-tree', `${commitSha}^{tree}`, '-m', 'not the attempt\'s',
+        ])).stdout.trim();
+        assert.match(other, /^[0-9a-f]{40}$/);
+        const { a, successor, zombiePush, tip } = await pausedPush((i) => ({ ...i, commitSha: other }));
+        await assert.rejects(zombiePush, /stale info/, 'the remote refuses the late push');
+        assert.equal(await tip(), commitSha, 'the branch still holds the attempt\'s one commit');
         const record = await log.find(scope, { operation: 'push', ...a.common });
         assert.equal(record?.state, 'COMPLETED');
         assert.equal(record?.ownerToken, successor.leaseId);

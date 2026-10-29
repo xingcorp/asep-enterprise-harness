@@ -14,8 +14,9 @@ import type {
   RunId, TaskId, TaskStatus, RiskLevel, EvidenceBundle,
 } from '@asep/contracts';
 import type {
-  EvidenceStore, ForgeProvider, Lease, SideEffectLog, SideEffectRecord, WorkspaceLeaseRepository,
+  EvidenceStore, ForgeProvider, Lease, PullRequestRef, SideEffectLog, SideEffectRecord, WorkspaceLeaseRepository,
 } from '@asep/ports';
+import { pullRequestContent } from '@asep/ports';
 import { resumeAttemptToReview, type ResumeAttemptInput } from './resume-attempt.js';
 
 console.log('SUITE-ID: asep-suite:resume-attempt');
@@ -39,10 +40,14 @@ const bundle: EvidenceBundle = {
 // A world in which a resume would succeed: the commit and its evidence are
 // durable, the forge accepts everything. Each port call is recorded in `calls`.
 // `commitState` is the commit record as the dead executor left it; `landed` is
-// whether its commit is recorded under the attempt.
+// whether its commit is recorded under the attempt. `remote` is the forge's
+// branch and PR, which the forge double keeps as a forge would: a push is
+// compare-and-set, an upsert writes what it is given.
+interface Remote { ref: string | null; pr: PullRequestRef | null; afterUpsert?: (() => void) | undefined }
 function world(
   risk: RiskLevel, calls: string[],
   commitState: 'COMPLETED' | 'PENDING' | 'FAILED' | 'absent' = 'COMPLETED', landed = true,
+  remote: Remote = { ref: null, pr: null },
 ): ResumeAttemptInput {
   const lease: Lease = {
     leaseId: 'lease-2', repositoryBindingId, branch, attemptId,
@@ -87,18 +92,28 @@ function world(
     getEvidence: async () => { calls.push('evidence.get'); return bundle; },
   };
   const forge: ForgeProvider = {
-    pushBranch: async () => { calls.push('forge.push'); },
-    upsertPullRequest: async () => {
-      calls.push('forge.pr');
-      return { number: 7, url: 'https://example.invalid/pr/7', headBranch: branch, baseBranch: 'main' };
+    pushBranch: async (_s, i) => {
+      calls.push('forge.push');
+      if (remote.ref !== i.expectedRemoteSha && remote.ref !== i.commitSha) throw new Error('stale lease');
+      remote.ref = i.commitSha;
     },
-    resolveRef: async () => { calls.push('forge.resolve'); return null; },
-    findPullRequest: async () => { calls.push('forge.find'); return null; },
+    upsertPullRequest: async (_s, i) => {
+      calls.push('forge.pr');
+      remote.pr = {
+        number: 7, url: 'https://example.invalid/pr/7', headBranch: i.headBranch, baseBranch: i.base,
+        title: i.title, body: i.body,
+      };
+      const written = remote.pr;
+      remote.afterUpsert?.();
+      return written;
+    },
+    resolveRef: async () => { calls.push('forge.resolve'); return remote.ref; },
+    findPullRequest: async () => { calls.push('forge.find'); return remote.pr; },
   };
   let status: TaskStatus = 'VERIFYING';
   return {
     scope, repositoryBindingId, runId: 'run-1' as RunId, taskId, attemptId, baseSha, branch,
-    base: 'main', title: 't', body: 'b', leaseTtlMs: 60_000,
+    base: 'main', leaseTtlMs: 60_000,
     leases, sideEffects, evidence, forge,
     committer: {
       reconcile: async () => { calls.push('git.reconcile'); return landed ? { commitSha, evidenceId } : null; },
@@ -168,3 +183,67 @@ for (const state of ['absent', 'FAILED'] as const) {
     assert.ok(!calls.some((c) => c.startsWith('forge.') || c.startsWith('log.begin') || c === 'git.reconcile'));
   });
 }
+
+// A stale owner may reach the forge after the takeover. Whatever it left, the
+// resume ends with the branch and the PR the attempt's facts say, every repair
+// on record, before the task reaches its terminal state.
+
+const facts = { taskId, attemptId, commitSha, evidenceId, base: 'main' };
+
+function audited(): { actions: { action: string; detail: unknown }[]; input: Pick<ResumeAttemptInput, 'audit' | 'actor'> } {
+  const actions: { action: string; detail: unknown }[] = [];
+  return {
+    actions,
+    input: { actor: 'resume-test', audit: { record: async (e) => { actions.push({ action: e.action, detail: e.detail }); } } },
+  };
+}
+
+test('a resume puts an attempt branch holding another commit back on the attempt\'s commit, on record', async () => {
+  const calls: string[] = [];
+  const remote: Remote = { ref: 'e'.repeat(40), pr: null };
+  const { actions, input } = audited();
+  const r = await resumeAttemptToReview({ ...world('R0', calls, 'COMPLETED', true, remote), ...input });
+  assert.equal(r.stoppedAt, 'complete', r.reason);
+  assert.equal(r.branchRepaired, true);
+  assert.equal(remote.ref, commitSha);
+  const repairs = actions.filter((a) => a.action === 'forge.reconcile');
+  assert.deepEqual(repairs.map((a) => a.detail), [
+    { target: 'branch', branch, found: 'e'.repeat(40), commitSha },
+  ]);
+  assert.ok(calls.indexOf('task.status:WAITING_FOR_HUMAN_REVIEW') > calls.lastIndexOf('forge.resolve'),
+    'the branch is reconciled before the terminal state');
+});
+
+test('a resume rewrites a PR a late writer changed after its upsert, on record, before the terminal state', async () => {
+  const calls: string[] = [];
+  const remote: Remote = { ref: null, pr: null };
+  remote.afterUpsert = () => {
+    remote.afterUpsert = undefined;
+    remote.pr = { ...remote.pr!, title: 'a stale owner\'s title', body: 'a stale owner\'s body' };
+  };
+  const { actions, input } = audited();
+  const r = await resumeAttemptToReview({ ...world('R0', calls, 'COMPLETED', true, remote), ...input });
+  assert.equal(r.stoppedAt, 'complete', r.reason);
+  assert.equal(r.prRepaired, true);
+  const content = pullRequestContent(facts);
+  assert.equal(remote.pr?.title, content.title);
+  assert.equal(remote.pr?.body, content.body);
+  assert.equal(actions.filter((a) => a.action === 'forge.reconcile').length, 1);
+  assert.ok(calls.indexOf('task.status:WAITING_FOR_HUMAN_REVIEW') > calls.lastIndexOf('forge.pr'),
+    'the PR is repaired before the terminal state');
+});
+
+test('a resume over a remote that already is the facts\' repairs nothing', async () => {
+  const calls: string[] = [];
+  const content = pullRequestContent(facts);
+  const remote: Remote = {
+    ref: commitSha,
+    pr: { number: 7, url: 'https://example.invalid/pr/7', headBranch: branch, baseBranch: 'main', ...content },
+  };
+  const { actions, input } = audited();
+  const r = await resumeAttemptToReview({ ...world('R0', calls, 'COMPLETED', true, remote), ...input });
+  assert.equal(r.stoppedAt, 'complete', r.reason);
+  assert.equal(r.branchRepaired, false);
+  assert.equal(r.prRepaired, false);
+  assert.equal(actions.filter((a) => a.action === 'forge.reconcile').length, 0);
+});

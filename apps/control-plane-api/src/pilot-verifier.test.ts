@@ -192,8 +192,6 @@ async function slice(client: PgliteClient, r: Rig, realAgent: boolean): Promise<
       contextPack: { relevantFiles: [CHANGED_FILE] },
       allowedPaths: [CHANGED_FILE],
       expectChangedFile: CHANGED_FILE,
-      prTitle: `ASEP: add ${CHANGED_FILE}`,
-      prBody: 'Automated attempt.',
     },
   });
   assert.equal(result.taskStatus, 'WAITING_FOR_HUMAN_REVIEW', result.stoppedAt);

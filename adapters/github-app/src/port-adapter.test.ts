@@ -147,7 +147,7 @@ test('HIGH-008: the port pushes the EXACT harness commit from a detached worktre
       repositoryBindingId: BINDING,
       branch: attemptBranchStr,
       commitSha,
-      fencingEpoch: 1,
+      expectedRemoteSha: null,
     });
 
     // The resolver was consulted with the caller's scope.
@@ -157,6 +157,8 @@ test('HIGH-008: the port pushes the EXACT harness commit from a detached worktre
     const argv = captured[0]!;
     const expectedRefspec = `${commitSha}:refs/heads/${attemptBranchStr}`;
     assert.ok(argv.includes(expectedRefspec), `argv must carry ${expectedRefspec}, got ${JSON.stringify(argv)}`);
+    // The lease the port was given: the branch must not exist yet.
+    assert.ok(argv.includes(`--force-with-lease=refs/heads/${attemptBranchStr}:`), 'compare-and-set on an absent branch');
     assert.ok(!argv.some((a) => a.startsWith('+')), 'no force refspec');
     assert.ok(!argv.includes('--force'), 'no bare --force');
 
@@ -194,7 +196,7 @@ test('HIGH-008: ref safety is enforced through the port — no git, no token min
   const sha = 'a'.repeat(40);
   for (const bad of ['main', 'master', 'HEAD', 'refs/tags/v1', 'feature/x', '-oProxy', `asep/${id('R')}`]) {
     await assert.rejects(
-      () => port.pushBranch(scope, { repositoryBindingId: BINDING, branch: bad, commitSha: sha, fencingEpoch: 1 }),
+      () => port.pushBranch(scope, { repositoryBindingId: BINDING, branch: bad, commitSha: sha, expectedRemoteSha: null }),
       `port must reject push to '${bad}'`,
     );
   }
@@ -212,7 +214,7 @@ test('HIGH-008: an abbreviated/malformed commit SHA is rejected (no ambiguous ob
   for (const badSha of ['abc1234', '', 'z'.repeat(40), 'A'.repeat(40), `${'a'.repeat(40)} --upload-pack=evil`]) {
     await assert.rejects(
       () => port.pushBranch(scope, {
-        repositoryBindingId: BINDING, branch: attemptBranchStr, commitSha: badSha, fencingEpoch: 1,
+        repositoryBindingId: BINDING, branch: attemptBranchStr, commitSha: badSha, expectedRemoteSha: null,
       }),
       `port must reject commit sha '${badSha}'`,
     );
@@ -235,20 +237,20 @@ test('HIGH-008: a binding outside the caller scope is rejected before any forge 
   // Right binding id, WRONG tenant — the IDOR shape.
   await assert.rejects(
     () => port.pushBranch(otherScope, {
-      repositoryBindingId: BINDING, branch: attemptBranchStr, commitSha: sha, fencingEpoch: 1,
+      repositoryBindingId: BINDING, branch: attemptBranchStr, commitSha: sha, expectedRemoteSha: null,
     }),
     /scope violation/,
   );
   // Foreign binding id inside a legitimate scope.
   await assert.rejects(
     () => port.pushBranch(scope, {
-      repositoryBindingId: id('Z') as RepositoryBindingId, branch: attemptBranchStr, commitSha: sha, fencingEpoch: 1,
+      repositoryBindingId: id('Z') as RepositoryBindingId, branch: attemptBranchStr, commitSha: sha, expectedRemoteSha: null,
     }),
     /scope violation/,
   );
   await assert.rejects(
     () => port.upsertPullRequest(otherScope, {
-      repositoryBindingId: BINDING, headBranch: attemptBranchStr, base: 'main', title: 't', body: 'b', fencingEpoch: 1,
+      repositoryBindingId: BINDING, headBranch: attemptBranchStr, base: 'main', title: 't', body: 'b',
     }),
     /scope violation/,
   );
@@ -288,7 +290,7 @@ test('HIGH-008: PR upsert through the port is idempotent and returns the port re
 
   const args = {
     repositoryBindingId: BINDING, headBranch: attemptBranchStr,
-    base: 'main', title: 'Governed change', body: 'evidence', fencingEpoch: 1,
+    base: 'main', title: 'Governed change', body: 'evidence',
   };
   const first = await port.upsertPullRequest(scope, args);
   const second = await port.upsertPullRequest(scope, args);
@@ -328,6 +330,16 @@ test('a PR looked up through the port reports the commit its head points at', as
   assert.deepEqual(found, {
     number: 7, url: 'https://github.com/acme/web/pull/7', headBranch: attemptBranchStr, baseBranch: 'main', headSha,
   });
+  // And the title and body it holds, so a takeover can tell whether the PR is
+  // the attempt's facts' (a null body is an empty one).
+  Object.assign(prs[0]!, { title: 'T', body: null });
+  assert.deepEqual(
+    await port.findPullRequest(scope, { repositoryBindingId: BINDING, headBranch: attemptBranchStr }),
+    { number: 7, url: 'https://github.com/acme/web/pull/7', headBranch: attemptBranchStr, baseBranch: 'main', headSha, title: 'T', body: '' },
+  );
+  Object.assign(prs[0]!, { body: 'B' });
+  assert.equal((await port.findPullRequest(scope, { repositoryBindingId: BINDING, headBranch: attemptBranchStr }))?.body, 'B');
+  for (const k of ['title', 'body'] as const) delete (prs[0] as Record<string, unknown>)[k];
 
   delete (prs[0]!.head as { sha?: string }).sha;
   const unreported = await port.findPullRequest(scope, { repositoryBindingId: BINDING, headBranch: attemptBranchStr });
@@ -491,7 +503,7 @@ test('PR and ref lookups through the production resolver never ask for the local
   assert.equal(await port.findPullRequest(scope, { repositoryBindingId: BINDING, headBranch: attemptBranchStr }), null);
   assert.equal(located, 0, 'the lookup never located a repository');
   await assert.rejects(
-    () => port.pushBranch(scope, { repositoryBindingId: BINDING, branch: attemptBranchStr, commitSha: 'a'.repeat(40), fencingEpoch: 1 }),
+    () => port.pushBranch(scope, { repositoryBindingId: BINDING, branch: attemptBranchStr, commitSha: 'a'.repeat(40), expectedRemoteSha: null }),
     /no local repository here/,
     'a push still needs it, and fails closed without it',
   );

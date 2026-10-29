@@ -38,6 +38,11 @@ export const PRIVILEGED_ACTIONS = [
   // a privileged boundary in its own right, so it gets its own name rather than
   // borrowing one that means something else.
   'command.execute',
+  // Repairing the remote after a takeover: the attempt branch or its pull
+  // request no longer matched the attempt's facts, and was rewritten from them.
+  // A stale owner can still reach the forge after a takeover, so the successor
+  // reconciles before any terminal state, and every repair is on record.
+  'forge.reconcile',
 ] as const;
 
 export type PrivilegedAction = (typeof PRIVILEGED_ACTIONS)[number];

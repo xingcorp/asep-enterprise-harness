@@ -155,8 +155,6 @@ export interface VerticalSliceInput {
     readonly contextPack: Readonly<Record<string, unknown>>;
     readonly allowedPaths: readonly string[];
     readonly expectChangedFile: string;
-    readonly prTitle: string;
-    readonly prBody: string;
   };
 
   // Provenance recorded in the evidence bundle. ABSENT uses the synthetic
@@ -390,8 +388,6 @@ export async function runVerticalSlice(input: VerticalSliceInput): Promise<Verti
       lockfileHash: 'f'.repeat(64),
       nodeVersion: process.version,
     },
-    prTitle: input.work?.prTitle ?? 'ASEP: add feature.txt',
-    prBody: input.work?.prBody ?? 'Automated attempt reaching human review.',
     expectChangedFile: input.work?.expectChangedFile ?? 'feature.txt',
   });
 
@@ -456,8 +452,6 @@ export interface ResumeVerticalSliceInput {
   readonly baseSha: string;
   readonly branch: string;
   readonly base?: string;
-  readonly prTitle?: string;
-  readonly prBody?: string;
   readonly leaseTtlMs?: number;
   // A real ForgeProvider, or — absent — the local bare-repo double pushing from
   // `pushFrom` (the bare mirror the crashed run's worktrees shared, which holds
@@ -510,8 +504,6 @@ export async function resumeVerticalSlice(
     baseSha: input.baseSha,
     branch: input.branch,
     base: input.base ?? 'main',
-    title: input.prTitle ?? 'ASEP: add feature.txt',
-    body: input.prBody ?? 'Automated attempt reaching human review.',
     leaseTtlMs: input.leaseTtlMs ?? 60_000,
     leases: new SqlWorkspaceLeaseRepository(client),
     sideEffects: new SqlSideEffectLog(client),

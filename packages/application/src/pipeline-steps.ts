@@ -59,9 +59,10 @@ import type {
   SideEffectLog,
   SideEffectRecord,
   PullRequestResultRef,
+  PullRequestFacts,
 } from '@asep/ports';
 import {
-  parseSideEffectResultRef, SideEffectResultRefError, evidenceBundleFrom,
+  parseSideEffectResultRef, SideEffectResultRefError, evidenceBundleFrom, pullRequestContent,
 } from '@asep/ports';
 import { requiredLevels, type AssuranceLevel } from '@asep/policy';
 import { transitionTask, type TaskAggregate } from '@asep/domain';
@@ -706,6 +707,11 @@ export async function evidenceStep(input: EvidenceStepInput): Promise<EvidenceSt
 // token is the lease id; the natural key is the branch ref for reconciliation.
 // If a prior record already COMPLETED this exact effect, the push is adopted,
 // not replayed.
+//
+// The push itself is compare-and-set: it expects the attempt branch to be
+// absent, and writes the attempt's one commit. A late push by a stale owner of
+// that same commit changes nothing; a push of anything else over it is refused
+// by the remote.
 // ---------------------------------------------------------------------------
 
 export interface PushStepInput {
@@ -717,7 +723,16 @@ export interface PushStepInput {
   readonly branch: string;
   readonly commitSha: string;
   readonly leaseId: string;              // fencing token
-  readonly expectedRemoteSha?: string;
+}
+
+// The attempt branch holds a commit that is not the attempt's. Nothing the
+// harness writes puts it there, so the push step refuses to publish over it;
+// a takeover repairs it from the facts (reconcileBranchStep), on record.
+export class RemoteBranchDivergedError extends Error {
+  constructor(branch: string, found: string, commitSha: string) {
+    super(`attempt branch ${branch} holds ${found}, not the attempt's commit ${commitSha} — refusing to publish over it`);
+    this.name = 'RemoteBranchDivergedError';
+  }
 }
 
 export interface PushStepResult {
@@ -776,12 +791,16 @@ export async function pushStep(input: PushStepInput): Promise<PushStepResult> {
       });
       return { step: 'push', status: 'OK', pushed: false, adopted: true };
     }
-    // Ref absent, or pointing elsewhere → the push for THIS commit did not
-    // land; performing it below is safe (pushBranch still enforces ref safety).
+    // Pointing elsewhere → not this attempt's push; refuse rather than publish
+    // over it. Absent → the push for THIS commit did not land; performing it
+    // below is safe (pushBranch still enforces ref safety and the lease).
+    if (remoteSha !== null) throw new RemoteBranchDivergedError(input.branch, remoteSha, input.commitSha);
   }
-  // Fenced at the call: an executor whose record was taken over while it was
-  // paused is refused here and never reaches the forge.
-  const { fencingEpoch } = await input.log.confirmOwner(input.scope, {
+  // Ownership is confirmed just before the call: an executor whose record was
+  // taken over while it was paused before this point is refused here. One that
+  // stalls inside the call is held by the lease: the branch must still be
+  // absent, or already hold this very commit.
+  await input.log.confirmOwner(input.scope, {
     operation: 'push',
     repositoryBindingId: input.repositoryBindingId,
     attemptId: input.attemptId,
@@ -791,8 +810,7 @@ export async function pushStep(input: PushStepInput): Promise<PushStepResult> {
     repositoryBindingId: input.repositoryBindingId,
     branch: input.branch,
     commitSha: input.commitSha,
-    fencingEpoch,
-    ...(input.expectedRemoteSha ? { expectedRemoteSha: input.expectedRemoteSha } : {}),
+    expectedRemoteSha: null,
   });
   await input.log.complete(input.scope, {
     operation: 'push',
@@ -810,6 +828,10 @@ export async function pushStep(input: PushStepInput): Promise<PushStepResult> {
 // two-phase protocol (exit C7). Semantic key (repositoryBindingId, attemptId,
 // 'pr-upsert'); natural key the head branch. On adoption the recorded PR ref is
 // returned rather than opening a duplicate.
+//
+// The PR's title and body are pullRequestContent of the attempt's immutable
+// facts — never caller-supplied text — so every owner of the attempt writes
+// the same PR, and a stale owner's late write changes nothing.
 // ---------------------------------------------------------------------------
 
 export interface UpsertPrStepInput {
@@ -817,12 +839,25 @@ export interface UpsertPrStepInput {
   readonly log: SideEffectLog;
   readonly scope: TenantScope;
   readonly repositoryBindingId: RepositoryBindingId;
+  readonly taskId: TaskId;
   readonly attemptId: AttemptId;
   readonly headBranch: string;
   readonly base: string;
-  readonly title: string;
-  readonly body: string;
+  // The verified harness commit and the evidence id its trailer names.
+  readonly commitSha: string;
+  readonly evidenceId: string;
   readonly leaseId: string;
+}
+
+/** The facts an attempt's pull request presents. */
+export function pullRequestFactsOf(input: {
+  readonly taskId: TaskId; readonly attemptId: AttemptId; readonly commitSha: string;
+  readonly evidenceId: string; readonly base: string;
+}): PullRequestFacts {
+  return {
+    taskId: input.taskId, attemptId: input.attemptId, commitSha: input.commitSha,
+    evidenceId: input.evidenceId, base: input.base,
+  };
 }
 
 export interface UpsertPrStepResult {
@@ -912,21 +947,22 @@ export async function upsertPrStep(input: UpsertPrStepInput): Promise<UpsertPrSt
     }
     // No PR for this head branch → the upsert did not land; safe to perform.
   }
-  // Fenced at the call, and the epoch goes with it: the forge refuses to
-  // update a PR a newer owner already wrote.
-  const { fencingEpoch } = await input.log.confirmOwner(input.scope, {
+  // Ownership is confirmed just before the call. GitHub has no compare-and-set
+  // for a PR, so an owner that stalls inside the call can still write after a
+  // takeover — the same content, because the content is the facts'.
+  await input.log.confirmOwner(input.scope, {
     operation: 'pr-upsert',
     repositoryBindingId: input.repositoryBindingId,
     attemptId: input.attemptId,
     ownerToken: input.leaseId,
   });
+  const { title, body } = pullRequestContent(pullRequestFactsOf(input));
   const pr = await input.forge.upsertPullRequest(input.scope, {
     repositoryBindingId: input.repositoryBindingId,
     headBranch: input.headBranch,
     base: input.base,
-    title: input.title,
-    body: input.body,
-    fencingEpoch,
+    title,
+    body,
   });
   await input.log.complete(input.scope, {
     operation: 'pr-upsert',
@@ -937,6 +973,96 @@ export async function upsertPrStep(input: UpsertPrStepInput): Promise<UpsertPrSt
     naturalKey: input.headBranch,
   });
   return { step: 'upsert-pr', status: 'OK', pr, adopted: false };
+}
+
+// ---------------------------------------------------------------------------
+// Reconciliation after a takeover. A stale owner may still reach the forge, so
+// before any terminal state the successor reads the attempt branch and its PR
+// and makes them what the attempt's facts say: the branch at the attempt's
+// commit, the PR open on it with pullRequestContent of the facts and the base.
+// Each repair is a privileged effect of its own ('forge.reconcile'), recorded
+// with what was found. The branch is repaired with a compare-and-set on the
+// value found, so a writer racing the repair is refused, not overwritten.
+// ---------------------------------------------------------------------------
+
+export interface ReconcileRemoteInput {
+  readonly forge: ForgeProvider;
+  readonly scope: TenantScope;
+  readonly repositoryBindingId: RepositoryBindingId;
+  readonly branch: string;
+  readonly facts: PullRequestFacts;
+  readonly observe: ObserveBoundary;
+}
+
+export interface ReconcileBranchResult {
+  readonly found: string | null;
+  readonly repaired: boolean;
+}
+
+/**
+ * Put the attempt branch back on the attempt's commit when it holds another
+ * one. `absent` says what an absent branch means: 'repair' publishes the
+ * commit; 'leave' leaves it to the push step, whose record it is.
+ */
+export async function reconcileBranchStep(
+  input: ReconcileRemoteInput, absent: 'repair' | 'leave',
+): Promise<ReconcileBranchResult> {
+  const found = await input.forge.resolveRef(input.scope, {
+    repositoryBindingId: input.repositoryBindingId, branch: input.branch,
+  });
+  if (found === input.facts.commitSha || (found === null && absent === 'leave')) {
+    return { found, repaired: false };
+  }
+  await input.observe(
+    {
+      span: 'forge.push', action: 'forge.reconcile',
+      detail: { target: 'branch', branch: input.branch, found, commitSha: input.facts.commitSha },
+    },
+    () => input.forge.pushBranch(input.scope, {
+      repositoryBindingId: input.repositoryBindingId,
+      branch: input.branch,
+      commitSha: input.facts.commitSha,
+      expectedRemoteSha: found,
+    }),
+  );
+  return { found, repaired: true };
+}
+
+export interface ReconcilePullRequestResult {
+  readonly pr: PullRequestRef;
+  readonly repaired: boolean;
+}
+
+/** Make the attempt's PR exist with the facts' content and base. */
+export async function reconcilePullRequestStep(input: ReconcileRemoteInput): Promise<ReconcilePullRequestResult> {
+  const content = pullRequestContent(input.facts);
+  const found = await input.forge.findPullRequest(input.scope, {
+    repositoryBindingId: input.repositoryBindingId, headBranch: input.branch,
+  });
+  if (found !== null && found.title === content.title && found.body === content.body
+    && found.baseBranch === input.facts.base) {
+    return { pr: found, repaired: false };
+  }
+  const pr = await input.observe(
+    {
+      span: 'forge.pull_request', action: 'forge.reconcile',
+      detail: {
+        target: 'pull-request', headBranch: input.branch, base: input.facts.base,
+        found: found === null ? null : {
+          number: found.number, baseBranch: found.baseBranch,
+          titleMatches: found.title === content.title, bodyMatches: found.body === content.body,
+        },
+      },
+    },
+    () => input.forge.upsertPullRequest(input.scope, {
+      repositoryBindingId: input.repositoryBindingId,
+      headBranch: input.branch,
+      base: input.facts.base,
+      title: content.title,
+      body: content.body,
+    }),
+  );
+  return { pr, repaired: true };
 }
 
 // ---------------------------------------------------------------------------
@@ -1004,10 +1130,7 @@ export interface CompleteToReviewInput {
   readonly repositoryBindingId: RepositoryBindingId;
   readonly branch: string;
   readonly base: string;
-  readonly title: string;
-  readonly body: string;
   readonly leaseId: string;
-  readonly expectedRemoteSha?: string;
   // Task to advance on success.
   readonly task: TaskAggregate;
   // Keeps the record of where a PASSED verification ran (see
@@ -1163,7 +1286,6 @@ export async function completeToReview(
     branch: input.branch,
     commitSha: commit.commitSha,
     leaseId: input.leaseId,
-    ...(input.expectedRemoteSha ? { expectedRemoteSha: input.expectedRemoteSha } : {}),
     }),
   );
   if (push.status === 'STOP') {
@@ -1181,11 +1303,12 @@ export async function completeToReview(
     log: input.log,
     scope: input.scope,
     repositoryBindingId: input.repositoryBindingId,
+    taskId: input.taskId,
     attemptId: input.attemptId,
     headBranch: input.branch,
     base: input.base,
-    title: input.title,
-    body: input.body,
+    commitSha: commit.commitSha,
+    evidenceId: committedEvidenceId,
     leaseId: input.leaseId,
     }),
   );

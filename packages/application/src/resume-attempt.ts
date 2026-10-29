@@ -19,6 +19,13 @@
 //      that already COMPLETED is adopted as a fact.
 //   3. The dead owner is refused from then on: its lease can never be revived,
 //      and the log only lets the current, live owner finish a record.
+//   4. It may still reach the forge: an executor paused inside a forge call
+//      keeps going when it wakes, and GitHub has no compare-and-set for a PR
+//      update. What it can write is held by construction — its push is a
+//      compare-and-set of the attempt's one commit, its PR content a pure
+//      function of the attempt's facts — and before any terminal state the
+//      successor reconciles the branch and the PR with those facts, repairing a
+//      divergence on record ('forge.reconcile').
 //
 // ADMISSION FIRST. A resume publishes (push, PR) just as a fresh run does, so
 // it is gated the same way: the task's risk is read from the authoritative task
@@ -46,7 +53,10 @@ import type {
 import type { SpanTracer, AuditSink } from '@asep/observability';
 import { completionObserver, fencedBy } from './completion-observer.js';
 import { admitRisk } from './risk-admission.js';
-import { pushStep, upsertPrStep, evidenceStep, settleCommitStep } from './pipeline-steps.js';
+import {
+  pushStep, upsertPrStep, evidenceStep, settleCommitStep, reconcileBranchStep, reconcilePullRequestStep,
+  pullRequestFactsOf, type ReconcileRemoteInput,
+} from './pipeline-steps.js';
 import type { SlicePullRequestPort } from './vertical-slice-workflow.js';
 
 // --- repository ports (structural; the concrete repositories satisfy them) ----
@@ -91,8 +101,6 @@ export interface ResumeAttemptInput {
   readonly baseSha: string;
   readonly branch: string;
   readonly base: string;
-  readonly title: string;
-  readonly body: string;
   // No agent runs under this lease, so it only has to outlive the forge calls.
   readonly leaseTtlMs: number;
 
@@ -129,6 +137,11 @@ export interface ResumeAttemptResult {
   // performed by this resume.
   readonly pushAdopted?: boolean;
   readonly prAdopted?: boolean;
+  // Whether reconciliation found the branch or the PR diverged from the
+  // attempt's facts and rewrote it from them (each on record as
+  // 'forge.reconcile').
+  readonly branchRepaired?: boolean;
+  readonly prRepaired?: boolean;
   readonly taskStatus?: TaskStatus;
 }
 
@@ -267,6 +280,19 @@ async function resumeUnderLease(
   const evidenceRef: ArtifactRef = evidence.ref;
 
   // --- push + PR: take over, reconcile, then act only if needed ----------------
+  const remote: ReconcileRemoteInput = {
+    forge: input.forge,
+    scope,
+    repositoryBindingId: input.repositoryBindingId,
+    branch: input.branch,
+    facts: pullRequestFactsOf({
+      taskId: input.taskId, attemptId: input.attemptId, commitSha, evidenceId, base: input.base,
+    }),
+    observe,
+  };
+  // A branch holding another commit is put back first, so the push record
+  // settles on the attempt's commit; an absent one is the push step's to make.
+  const before = await reconcileBranchStep(remote, 'leave');
   const push = await observe(
     { span: 'forge.push', action: 'forge.push', detail: { branch: input.branch, commitSha } },
     () => pushStep({
@@ -290,15 +316,25 @@ async function resumeUnderLease(
       log: input.sideEffects,
       scope,
       repositoryBindingId: input.repositoryBindingId,
+      taskId: input.taskId,
       attemptId: input.attemptId,
       headBranch: input.branch,
       base: input.base,
-      title: input.title,
-      body: input.body,
+      commitSha,
+      evidenceId,
       leaseId: lease.leaseId,
     }),
   );
-  const pr = upsert.pr;
+
+  // --- before any terminal state: the remote is what the facts say ------------
+  // A stale owner may have written to the forge after the records moved here;
+  // whatever it left, the branch and the PR are made the facts' again.
+  const branch = await reconcileBranchStep(remote, 'repair');
+  const reconciled = await reconcilePullRequestStep(remote);
+  const pr = reconciled.pr;
+  if (pr.number !== upsert.pr.number) {
+    throw new Error(`the attempt's PR is #${pr.number} on the forge, not the recorded #${upsert.pr.number} — refusing to guess which is the attempt's`);
+  }
 
   // --- the authoritative transitions, idempotently ------------------------------
   let taskStatus: TaskStatus = task.status;
@@ -345,6 +381,8 @@ async function resumeUnderLease(
     prBaseBranch: pr.baseBranch,
     pushAdopted: push.adopted,
     prAdopted: upsert.adopted,
+    branchRepaired: before.repaired || branch.repaired,
+    prRepaired: reconciled.repaired,
     taskStatus,
   };
 }

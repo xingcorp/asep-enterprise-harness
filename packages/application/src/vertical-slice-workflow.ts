@@ -234,8 +234,8 @@ export interface VerticalSliceWorkflowInput {
   readonly allowedPaths: readonly string[];
   readonly identity: { readonly name: string; readonly email: string };
   readonly environment: EvidenceBundle['environment'];
-  readonly prTitle: string;
-  readonly prBody: string;
+  // The PR's title and body are not inputs: they are pullRequestContent of the
+  // attempt's facts, so whoever writes the PR writes the same one.
 
   // The file trusted inspection MUST observe as changed. The agent's own report
   // is untrusted, so the workflow fails closed when the harness-derived change
@@ -516,8 +516,6 @@ export async function runVerticalSliceWorkflow(
       repositoryBindingId: binding.id,
       branch,
       base: input.binding.defaultBaseBranch,
-      title: input.prTitle,
-      body: input.prBody,
       leaseId,
       task: { id: task.id, status: 'VERIFYING', version: taskVersion },
       // Where each check ran and what the plan required, as an artifact of the

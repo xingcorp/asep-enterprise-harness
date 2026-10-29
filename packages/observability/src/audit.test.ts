@@ -31,6 +31,9 @@ test('J4: the closed privileged-action set covers every external side effect + t
     'artifact.put',
     'evidence.put',
     'task.status.transition',
+    'command.execute',
+    // A takeover's repair of the attempt branch or its PR is a forge write too.
+    'forge.reconcile',
   ]) {
     assert.ok(
       (PRIVILEGED_ACTIONS as readonly string[]).includes(required),

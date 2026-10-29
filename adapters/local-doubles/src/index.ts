@@ -19,12 +19,11 @@
 
 import { mkdir, writeFile, readFile, rename } from 'node:fs/promises';
 import { join } from 'node:path';
-import { runGit, safeRefspecFor } from '@asep/git-worktree';
+import { runGit, safeCommitRefspecFor, pushLeaseFor } from '@asep/git-worktree';
 import type {
   CodingAgentProvider, AgentExecuteRequest, AgentAttemptObservation,
   ForgeProvider, PullRequestRef,
 } from '@asep/ports';
-import { StaleFencingEpochError, withFencingMarker, fencingEpochOf } from '@asep/ports';
 import type {
   TenantScope, RepositoryBindingId,
 } from '@asep/contracts';
@@ -92,8 +91,9 @@ export class FileWritingAgent implements CodingAgentProvider {
  * harness process dying, and a crash-recovery proof is only honest if the
  * successor process sees what its predecessor really left behind.
  *
- * Like the GitHub adapter, an upsert writes the fencing epoch into the PR body
- * and refuses to update a PR a newer epoch already wrote.
+ * Like the GitHub adapter, a push is compare-and-set (a real
+ * `--force-with-lease` the bare remote enforces), and an upsert writes exactly
+ * the title, body and base it is given.
  */
 export interface LocalPullRequest extends PullRequestRef {
   readonly title: string;
@@ -130,20 +130,20 @@ export class LocalBareForgeProvider implements ForgeProvider {
     return this.readPrs();
   }
 
-  // The epoch is not recorded: a git ref has no place for it (see the port).
+  // Compare-and-set, as the port requires: the remote takes the commit only
+  // while the branch holds the expected value (absent for null).
   async pushBranch(_scope: TenantScope, input: {
     repositoryBindingId: RepositoryBindingId;
     branch: string;
     commitSha: string;
-    fencingEpoch: number;
-    expectedRemoteSha?: string;
+    expectedRemoteSha: string | null;
   }): Promise<void> {
     if (this.worktreePath === null) throw new Error('worktree path not wired');
     // Validate through the same non-bypassable ref-safety policy the real
     // adapter uses — a protected/malformed target is unrepresentable.
-    const safe = safeRefspecFor(input.branch, input.expectedRemoteSha);
-    await runGit(['-C', this.worktreePath, 'push', this.remoteBarePath,
-      `${input.commitSha}:refs/heads/${safe.branch}`]);
+    const safe = safeCommitRefspecFor(input.commitSha, input.branch);
+    await runGit(['-C', this.worktreePath, 'push', pushLeaseFor(safe.branch, input.expectedRemoteSha),
+      this.remoteBarePath, safe.refspec]);
     this.pushes++;
   }
 
@@ -153,20 +153,13 @@ export class LocalBareForgeProvider implements ForgeProvider {
     base: string;
     title: string;
     body: string;
-    fencingEpoch: number;
   }): Promise<PullRequestRef> {
     const prs = await this.readPrs();
-    const body = withFencingMarker(input.body, input.fencingEpoch);
     const at = prs.findIndex((p) => p.headBranch === input.headBranch);
     if (at >= 0) {
-      // Idempotent: the one PR for the head branch is updated, never duplicated —
-      // unless a newer owner wrote it, in which case this caller is stale.
+      // Idempotent: the one PR for the head branch is updated, never duplicated.
       const existing = prs[at]!;
-      const current = fencingEpochOf(existing.body);
-      if (current !== null && current > input.fencingEpoch) {
-        throw new StaleFencingEpochError(`PR #${existing.number}`, current, input.fencingEpoch);
-      }
-      const updated: LocalPullRequest = { ...existing, title: input.title, body };
+      const updated: LocalPullRequest = { ...existing, baseBranch: input.base, title: input.title, body: input.body };
       await this.writePrs(prs.map((p, i) => (i === at ? updated : p)));
       return refOf(updated);
     }
@@ -177,7 +170,7 @@ export class LocalBareForgeProvider implements ForgeProvider {
       headBranch: input.headBranch,
       baseBranch: input.base,
       title: input.title,
-      body,
+      body: input.body,
     };
     await this.writePrs([...prs, pr]);
     return refOf(pr);
@@ -200,8 +193,8 @@ export class LocalBareForgeProvider implements ForgeProvider {
     return sha && /^[0-9a-f]{40}$/.test(sha) ? sha : null;
   }
 
-  // The PR plus the commit its head branch points at on the remote NOW, like a
-  // forge that reports a PR's live head.
+  // The PR, its title and body, and the commit its head branch points at on
+  // the remote NOW, like a forge that reports a PR's live state.
   async findPullRequest(scope: TenantScope, input: {
     repositoryBindingId: RepositoryBindingId;
     headBranch: string;
@@ -211,7 +204,8 @@ export class LocalBareForgeProvider implements ForgeProvider {
     const headSha = await this.resolveRef(scope, {
       repositoryBindingId: input.repositoryBindingId, branch: input.headBranch,
     });
-    return headSha === null ? refOf(pr) : { ...refOf(pr), headSha };
+    const shown = { ...refOf(pr), title: pr.title, body: pr.body };
+    return headSha === null ? shown : { ...shown, headSha };
   }
 }
 

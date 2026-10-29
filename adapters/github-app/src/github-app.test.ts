@@ -19,7 +19,7 @@ import type {
   InstallationAuth, OctokitLike, RepositoryForgeConfig, GitRunner,
 } from './index.js';
 import { runGit } from '@asep/git-worktree';
-import { StaleFencingEpochError, fencingEpochOf } from '@asep/ports';
+import { pullRequestContent } from '@asep/ports';
 
 console.log('SUITE-ID: asep-suite:github-app');
 
@@ -30,6 +30,10 @@ const repository: RepositoryForgeConfig = { identity, repositoryId: REPO_ID };
 // A ULID-shaped id (Crockford base32, 26 chars) so attempt-branch validation passes.
 const id = (c: string) => c.repeat(26);
 const attemptBranchStr = `asep/${id('R')}/${id('T')}/${id('P')}`;
+// The attempt's commit, as a push names it, and another full SHA.
+const COMMIT = 'c'.repeat(40);
+const SHA = 'a'.repeat(40);
+const firstPush = { commitSha: COMMIT, expectedRemoteSha: null };
 
 // ---------------------------------------------------------------------------
 // H1/H2 — JIT token minting: opaque, scoped to the exact repo + minimum perms,
@@ -92,23 +96,42 @@ const throwingOctokit = (): OctokitLike => ({
   },
 });
 
-test('H3: only the exact namespaced refspec is handed to git (argv capture)', async () => {
+test('H3: only the exact commit, onto the exact namespaced ref, under a lease, is handed to git (argv capture)', async () => {
   const captured: string[][] = [];
   const runner: GitRunner = async (args) => { captured.push([...args]); return { stdout: '', stderr: '', exitCode: 0 }; };
   const creds = new GitHubAppCredentialProvider({ appId: 1, privateKey: 'PEM', installationId: 9 }, fakeAuth());
   const forge = new GitHubAppForgeProvider(creds, throwingOctokit, ['github.com'], runner);
 
-  await forge.pushBranch({ repository, localWorktreePath: '/tmp/wt', branch: attemptBranchStr });
+  await forge.pushBranch({ repository, localWorktreePath: '/tmp/wt', branch: attemptBranchStr, ...firstPush });
+  await forge.pushBranch({
+    repository, localWorktreePath: '/tmp/wt', branch: attemptBranchStr, commitSha: COMMIT, expectedRemoteSha: SHA,
+  });
 
-  assert.equal(captured.length, 1);
-  const argv = captured[0]!;
+  assert.equal(captured.length, 2);
   const target = `refs/heads/${attemptBranchStr}`;
-  // The refspec is the exact create/update spec, never a force (+) or delete (:).
-  assert.ok(argv.includes(`${target}:${target}`), 'exact namespaced refspec must be present');
-  assert.ok(!argv.some((a) => a.startsWith('+')), 'no force refspec');
-  assert.ok(!argv.some((a) => a === '--force'), 'no bare --force');
-  // The URL is https + carries no raw token in a form other than scrubbed userinfo.
-  assert.ok(argv.some((a) => a.startsWith('https://')), 'https transport URL present');
+  for (const [argv, expected] of [[captured[0]!, ''], [captured[1]!, SHA]] as const) {
+    // The refspec is the exact commit onto the exact ref, never a force (+) or delete (:).
+    assert.ok(argv.includes(`${COMMIT}:${target}`), 'exact commit and namespaced ref must be present');
+    // Compare-and-set: the remote takes it only while the ref holds `expected`
+    // (empty: absent).
+    assert.deepEqual(argv.filter((a) => a.startsWith('--force-with-lease')), [`--force-with-lease=${target}:${expected}`]);
+    assert.ok(!argv.some((a) => a.startsWith('+')), 'no force refspec');
+    assert.ok(!argv.some((a) => a === '--force' || a === '-f'), 'no bare --force');
+    // The URL is https + carries no raw token in a form other than scrubbed userinfo.
+    assert.ok(argv.some((a) => a.startsWith('https://')), 'https transport URL present');
+  }
+});
+
+test('H3: an abbreviated commit or lease value is refused before any git call', async () => {
+  const runner: GitRunner = async () => { throw new Error('git must not run for an ambiguous value'); };
+  const creds = new GitHubAppCredentialProvider({ appId: 1, privateKey: 'PEM', installationId: 9 }, fakeAuth());
+  const forge = new GitHubAppForgeProvider(creds, throwingOctokit, ['github.com'], runner);
+  for (const [commitSha, expectedRemoteSha] of [['abc1234', null], [COMMIT, 'abc1234'], [COMMIT, '']] as const) {
+    await assert.rejects(
+      () => forge.pushBranch({ repository, localWorktreePath: '/tmp/wt', branch: attemptBranchStr, commitSha, expectedRemoteSha }),
+      /not a full 40-hex commit SHA/,
+    );
+  }
 });
 
 test('H3: protected/foreign/malformed branches are rejected before any git call', async () => {
@@ -117,7 +140,7 @@ test('H3: protected/foreign/malformed branches are rejected before any git call'
   const forge = new GitHubAppForgeProvider(creds, throwingOctokit, ['github.com'], runner);
   for (const bad of ['main', 'master', 'HEAD', 'refs/tags/v1', 'feature/x', '-oProxy', `asep/${id('R')}`]) {
     await assert.rejects(
-      () => forge.pushBranch({ repository, localWorktreePath: '/tmp/wt', branch: bad }),
+      () => forge.pushBranch({ repository, localWorktreePath: '/tmp/wt', branch: bad, ...firstPush }),
       `should reject push to '${bad}'`,
     );
   }
@@ -135,6 +158,7 @@ test('H3/E1: a real local bare push lands exactly on the namespaced ref', async 
     await writeFile(join(wt, 'f.txt'), 'hello\n');
     await runGit(['-C', wt, 'add', '-A']);
     await runGit(['-C', wt, '-c', 'user.name=harness', '-c', 'user.email=harness@example.com', 'commit', '-m', 'work']);
+    const commitSha = (await runGit(['-C', wt, 'rev-parse', 'HEAD'])).stdout.trim();
 
     // A runner that rewrites the constructed https URL to the local bare path,
     // preserving the EXACT refspec argv the provider chose (the safety property).
@@ -145,13 +169,71 @@ test('H3/E1: a real local bare push lands exactly on the namespaced ref', async 
     const creds = new GitHubAppCredentialProvider({ appId: 1, privateKey: 'PEM', installationId: 9 }, fakeAuth());
     const forge = new GitHubAppForgeProvider(creds, throwingOctokit, ['github.com'], runner);
 
-    const { ref } = await forge.pushBranch({ repository, localWorktreePath: wt, branch: attemptBranchStr });
+    const { ref } = await forge.pushBranch({
+      repository, localWorktreePath: wt, branch: attemptBranchStr, commitSha, expectedRemoteSha: null,
+    });
     assert.equal(ref, `refs/heads/${attemptBranchStr}`);
 
     // The bare remote now has exactly that ref and nothing on main.
     const refs = (await runGit(['-C', bare, 'for-each-ref', '--format=%(refname)'])).stdout.trim().split('\n').filter(Boolean);
     assert.deepEqual(refs, [`refs/heads/${attemptBranchStr}`]);
     assert.ok(!refs.includes('refs/heads/main'), 'must not have pushed to main');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// A stale owner may still reach the forge after a takeover; the push is what
+// holds it. Driven against a REAL bare remote, so the remote, not this adapter,
+// applies the compare-and-set.
+test('a push is compare-and-set at the remote: a late push of the same commit changes nothing, of another is refused', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'asep-forge-cas-'));
+  try {
+    const bare = join(dir, 'remote.git');
+    await runGit(['init', '--bare', '-q', '-b', 'main', bare]);
+    const wt = join(dir, 'wt');
+    await mkdir(wt, { recursive: true });
+    await runGit(['-C', wt, 'init', '-q', '-b', 'work']);
+    const commit = async (file: string): Promise<string> => {
+      await writeFile(join(wt, file), `${file}\n`);
+      await runGit(['-C', wt, 'add', '-A']);
+      await runGit(['-C', wt, '-c', 'user.name=harness', '-c', 'user.email=harness@example.com', 'commit', '-q', '-m', file]);
+      return (await runGit(['-C', wt, 'rev-parse', 'HEAD'])).stdout.trim();
+    };
+    const attempt = await commit('attempt.txt');
+    const other = await commit('other.txt');
+    const runner: GitRunner = async (args, opts) => runGit(args.map((a) => (a.startsWith('https://') ? bare : a)), opts);
+    const forge = new GitHubAppForgeProvider(
+      new GitHubAppCredentialProvider({ appId: 1, privateKey: 'PEM', installationId: 9 }, fakeAuth()),
+      throwingOctokit, ['github.com'], runner,
+    );
+    const push = (commitSha: string, expectedRemoteSha: string | null) => forge.pushBranch({
+      repository, localWorktreePath: wt, branch: attemptBranchStr, commitSha, expectedRemoteSha,
+    });
+    const tip = async () => (await runGit(
+      ['-C', bare, 'rev-parse', '--verify', '-q', `refs/heads/${attemptBranchStr}`], { allowNonZero: true },
+    )).stdout.trim();
+
+    // The successor publishes the attempt's commit over an absent branch.
+    await push(attempt, null);
+    assert.equal(await tip(), attempt);
+    // The stale owner's late push of that same commit, expecting absent: a no-op.
+    await push(attempt, null);
+    assert.equal(await tip(), attempt);
+    // A late push of any other commit, expecting absent: refused by the remote.
+    await assert.rejects(() => push(other, null), (err: unknown) => {
+      assert.ok(err instanceof ForgePushError, String(err));
+      assert.match(err.message, /stale info/);
+      return true;
+    });
+    // …and expecting a value the branch never held: refused too.
+    await assert.rejects(() => push(other, 'e'.repeat(40)), /stale info/);
+    assert.equal(await tip(), attempt, 'the branch still holds the attempt\'s commit');
+    // A repair names what it found, so it lands only over that.
+    await push(other, attempt);
+    assert.equal(await tip(), other);
+    await assert.rejects(() => push(attempt, null), /stale info/);
+    assert.equal(await tip(), other);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -173,7 +255,7 @@ test('H7: a host outside the allowlist is rejected before minting or pushing', a
     repositoryId: REPO_ID,
   };
   await assert.rejects(
-    () => forge.pushBranch({ repository: evil, localWorktreePath: '/tmp/wt', branch: attemptBranchStr }),
+    () => forge.pushBranch({ repository: evil, localWorktreePath: '/tmp/wt', branch: attemptBranchStr, ...firstPush }),
     /not in the configured allowlist/,
   );
   assert.equal(minted, false, 'token must not be minted for a rejected host');
@@ -184,27 +266,33 @@ test('H7: a host outside the allowlist is rejected before minting or pushing', a
 // H6 — driven at the transport (REST) boundary, not mocked application logic.
 // ---------------------------------------------------------------------------
 
-interface FakePr { number: number; html_url: string; head: { ref: string }; base: { ref: string }; body?: string }
+interface FakePr { number: number; html_url: string; head: { ref: string }; base: { ref: string }; title?: string; body?: string }
 
+// An in-memory GitHub pulls API. Reads hand back copies, as a transport would;
+// a create for a head that already has a PR is refused, as GitHub refuses it.
 function fakeOctokit(store: { prs: FakePr[]; nextNumber: number; calls: string[] }): (token: string) => OctokitLike {
+  const copy = (pr: FakePr): FakePr => structuredClone(pr);
   return () => ({
     pulls: {
       list: async ({ head }) => {
         store.calls.push('list');
         const ref = head.split(':')[1];
-        return { data: store.prs.filter((p) => p.head.ref === ref) };
+        return { data: store.prs.filter((p) => p.head.ref === ref).map(copy) };
       },
-      create: async ({ head, base, body }) => {
+      create: async ({ head, base, title, body }) => {
         store.calls.push('create');
-        const pr: FakePr = { number: store.nextNumber++, html_url: `https://github.com/acme/web/pull/${store.nextNumber - 1}`, head: { ref: head }, base: { ref: base }, body };
+        if (store.prs.some((p) => p.head.ref === head)) {
+          throw { status: 422, message: `Validation Failed: A pull request already exists for acme:${head}.` };
+        }
+        const pr: FakePr = { number: store.nextNumber++, html_url: `https://github.com/acme/web/pull/${store.nextNumber - 1}`, head: { ref: head }, base: { ref: base }, title, body };
         store.prs.push(pr);
-        return { data: pr };
+        return { data: copy(pr) };
       },
-      update: async ({ pull_number, body }) => {
+      update: async ({ pull_number, title, body, base }) => {
         store.calls.push('update');
         const pr = store.prs.find((p) => p.number === pull_number)!;
-        pr.body = body;
-        return { data: pr };
+        Object.assign(pr, { title, body, base: { ref: base } });
+        return { data: copy(pr) };
       },
     },
   });
@@ -215,34 +303,85 @@ test('H4/H6: PR upsert creates on first call and updates on the second (idempote
   const creds = new GitHubAppCredentialProvider({ appId: 1, privateKey: 'PEM', installationId: 9 }, fakeAuth());
   const forge = new GitHubAppForgeProvider(creds, fakeOctokit(store), ['github.com']);
 
-  const first = await forge.upsertPullRequest({ repository, headBranch: attemptBranchStr, base: 'main', title: 'T1', body: 'B1', fencingEpoch: 1 });
+  const first = await forge.upsertPullRequest({ repository, headBranch: attemptBranchStr, base: 'main', title: 'T1', body: 'B1' });
   assert.equal(first.number, 7);
   assert.equal(first.headBranch, attemptBranchStr);
 
-  const second = await forge.upsertPullRequest({ repository, headBranch: attemptBranchStr, base: 'main', title: 'T2', body: 'B2', fencingEpoch: 1 });
+  const second = await forge.upsertPullRequest({ repository, headBranch: attemptBranchStr, base: 'release', title: 'T2', body: 'B2' });
   assert.equal(second.number, 7, 'same PR — no duplicate created');
   assert.equal(store.prs.length, 1, 'exactly one PR exists');
   assert.deepEqual(store.calls, ['list', 'create', 'list', 'update']);
+  // Exactly what it was given, and nothing of its own.
+  assert.deepEqual(
+    { title: store.prs[0]!.title, body: store.prs[0]!.body, base: store.prs[0]!.base.ref },
+    { title: 'T2', body: 'B2', base: 'release' },
+  );
 });
 
-test('a PR upsert records its fencing epoch, and a stale owner cannot rewrite a newer owner\'s PR', async () => {
-  const store = { prs: [] as FakePr[], nextNumber: 7, calls: [] as string[] };
-  const creds = new GitHubAppCredentialProvider({ appId: 1, privateKey: 'PEM', installationId: 9 }, fakeAuth());
-  const forge = new GitHubAppForgeProvider(creds, fakeOctokit(store), ['github.com']);
-  const upsert = (body: string, fencingEpoch: number) => forge.upsertPullRequest({
-    repository, headBranch: attemptBranchStr, base: 'main', title: 'T', body, fencingEpoch,
-  });
+// GitHub has no compare-and-set for a PR update, so an owner paused inside the
+// transport — between reading the PR and writing it — still writes after a
+// newer owner. What makes that harmless is that both write the content of the
+// attempt's facts. This is the reviewer's interleaving, held exactly between
+// pulls.list() and the write.
+const facts = { taskId: id('T'), attemptId: id('P'), commitSha: COMMIT, evidenceId: id('E'), base: 'main' };
 
-  await upsert('zombie', 1);
-  assert.equal(fencingEpochOf(store.prs[0]!.body), 1);
-  // The successor takes over and writes under epoch 2…
-  await upsert('successor', 2);
-  assert.equal(fencingEpochOf(store.prs[0]!.body), 2);
-  assert.match(store.prs[0]!.body!, /^successor/);
-  // …and the zombie, resuming with epoch 1, is refused without writing.
-  await assert.rejects(() => upsert('zombie again', 1), StaleFencingEpochError);
-  assert.match(store.prs[0]!.body!, /^successor/, 'the newer owner\'s PR is untouched');
-  assert.deepEqual(store.calls, ['list', 'create', 'list', 'update', 'list']);
+// Owner 1's transport, held after its read until `release`; owner 2 shares the store.
+function heldAfterRead(store: { prs: FakePr[]; nextNumber: number; calls: string[] }) {
+  let release!: () => void;
+  const released = new Promise<void>((res) => { release = res; });
+  let read!: () => void;
+  const hasRead = new Promise<void>((res) => { read = res; });
+  const inner = fakeOctokit(store);
+  const octokit = (token: string): OctokitLike => {
+    const real = inner(token);
+    return {
+      pulls: {
+        list: async (params) => { const r = await real.pulls.list(params); read(); await released; return r; },
+        create: real.pulls.create,
+        update: real.pulls.update,
+      },
+    };
+  };
+  return { octokit, hasRead, release };
+}
+
+const ownerForge = (octokit: (token: string) => OctokitLike) => new GitHubAppForgeProvider(
+  new GitHubAppCredentialProvider({ appId: 1, privateKey: 'PEM', installationId: 9 }, fakeAuth()), octokit, ['github.com'],
+);
+const upsertFacts = (forge: GitHubAppForgeProvider) => forge.upsertPullRequest({
+  repository, headBranch: attemptBranchStr, base: facts.base, ...pullRequestContent(facts),
+});
+
+test('owner 1 reads the PR, owner 2 updates it, owner 1 updates it: the PR is byte-identical to owner 2\'s', async () => {
+  const store = { prs: [] as FakePr[], nextNumber: 7, calls: [] as string[] };
+  // The PR as the attempt's first owner opened it.
+  await upsertFacts(ownerForge(fakeOctokit(store)));
+  const held = heldAfterRead(store);
+  const owner1 = upsertFacts(ownerForge(held.octokit));
+  await held.hasRead;
+  await upsertFacts(ownerForge(fakeOctokit(store)));
+  const afterOwner2 = JSON.stringify(store.prs);
+  held.release();
+  await owner1;
+  assert.equal(JSON.stringify(store.prs), afterOwner2, 'owner 1\'s late write changed nothing');
+  assert.deepEqual(store.calls, ['list', 'create', 'list', 'list', 'update', 'update']);
+  assert.equal(store.prs[0]!.title, pullRequestContent(facts).title);
+  assert.equal(store.prs[0]!.body, pullRequestContent(facts).body);
+});
+
+test('owner 1 reads no PR, owner 2 opens it, owner 1 tries to open it: still owner 2\'s one PR', async () => {
+  const store = { prs: [] as FakePr[], nextNumber: 7, calls: [] as string[] };
+  const held = heldAfterRead(store);
+  const owner1 = upsertFacts(ownerForge(held.octokit));
+  await held.hasRead;
+  await upsertFacts(ownerForge(fakeOctokit(store)));
+  const afterOwner2 = JSON.stringify(store.prs);
+  held.release();
+  await assert.rejects(owner1, (err: unknown) => {
+    assert.equal((err as { status?: number }).status, 422, 'GitHub refuses a second PR for the head');
+    return true;
+  });
+  assert.equal(JSON.stringify(store.prs), afterOwner2);
   assert.equal(store.prs.length, 1);
 });
 
@@ -273,7 +412,7 @@ test('H1: a token appearing in a git failure is scrubbed from the thrown error',
   const creds = new GitHubAppCredentialProvider({ appId: 1, privateKey: 'PEM', installationId: 9 }, fakeAuth(token));
   const forge = new GitHubAppForgeProvider(creds, throwingOctokit, ['github.com'], runner);
   await assert.rejects(
-    () => forge.pushBranch({ repository, localWorktreePath: '/tmp/wt', branch: attemptBranchStr }),
+    () => forge.pushBranch({ repository, localWorktreePath: '/tmp/wt', branch: attemptBranchStr, ...firstPush }),
     (err: unknown) => {
       assert.ok(err instanceof ForgePushError);
       assert.ok(!err.message.includes(token), 'token must be scrubbed from the error');
@@ -354,7 +493,7 @@ test('MED-002: push re-mints a fresh token when the first is revoked mid-operati
   const creds = new GitHubAppCredentialProvider({ appId: 1, privateKey: 'PEM', installationId: 9 }, auth);
   const forge = new GitHubAppForgeProvider(creds, throwingOctokit, ['github.com'], runner);
 
-  const { ref } = await forge.pushBranch({ repository, localWorktreePath: '/tmp/wt', branch: attemptBranchStr });
+  const { ref } = await forge.pushBranch({ repository, localWorktreePath: '/tmp/wt', branch: attemptBranchStr, ...firstPush });
   assert.equal(ref, `refs/heads/${attemptBranchStr}`);
   assert.equal(gitCalls, 2, 'the push was retried once after the revoked token');
   assert.equal(minted.length, 2, 'a FRESH token was minted for the retry');
@@ -368,7 +507,7 @@ test('MED-002: push fails closed with ForgeAuthExpiredError after the re-mint bu
   const creds = new GitHubAppCredentialProvider({ appId: 1, privateKey: 'PEM', installationId: 9 }, auth);
   const forge = new GitHubAppForgeProvider(creds, throwingOctokit, ['github.com'], runner);
   await assert.rejects(
-    () => forge.pushBranch({ repository, localWorktreePath: '/tmp/wt', branch: attemptBranchStr }),
+    () => forge.pushBranch({ repository, localWorktreePath: '/tmp/wt', branch: attemptBranchStr, ...firstPush }),
     ForgeAuthExpiredError,
   );
   // Initial attempt + MAX_REMINT_ATTEMPTS retries.
@@ -383,7 +522,7 @@ test('MED-002: a NON-auth push failure fails fast without re-minting', async () 
   const creds = new GitHubAppCredentialProvider({ appId: 1, privateKey: 'PEM', installationId: 9 }, auth);
   const forge = new GitHubAppForgeProvider(creds, throwingOctokit, ['github.com'], runner);
   await assert.rejects(
-    () => forge.pushBranch({ repository, localWorktreePath: '/tmp/wt', branch: attemptBranchStr }),
+    () => forge.pushBranch({ repository, localWorktreePath: '/tmp/wt', branch: attemptBranchStr, ...firstPush }),
     ForgePushError,
   );
   assert.equal(gitCalls, 1, 'a non-auth failure is not retried');
@@ -414,7 +553,7 @@ test('MED-002: PR upsert re-mints on a revoked credential and does NOT open a du
   const creds = new GitHubAppCredentialProvider({ appId: 1, privateKey: 'PEM', installationId: 9 }, auth);
   const forge = new GitHubAppForgeProvider(creds, octokitFor, ['github.com']);
 
-  const pr = await forge.upsertPullRequest({ repository, headBranch: attemptBranchStr, base: 'main', title: 'T', body: 'B', fencingEpoch: 1 });
+  const pr = await forge.upsertPullRequest({ repository, headBranch: attemptBranchStr, base: 'main', title: 'T', body: 'B' });
   assert.equal(pr.number, 5, 'the PR was created after the credential recovery');
   assert.equal(store.prs.length, 1, 'exactly one PR exists — no duplicate from the retry');
   assert.ok(minted.length >= 2, 'a fresh token was minted for the retry');
@@ -450,7 +589,6 @@ function recordingAuth(log: MintLog, opts: { expiredFirst?: boolean } = {}): Ins
   };
 }
 
-const SHA = 'a'.repeat(40);
 
 test('git HTTPS authentication failures are recognised as credential expiry', () => {
   assert.equal(isAuthExpiryError(new Error(GIT_AUTH_FAILURE)), true);
@@ -555,9 +693,9 @@ test('every forge operation re-mints once on expiry and bypasses the token cache
     run: (f: GitHubAppForgeProvider) => Promise<unknown>;
     git: boolean;
   }> = [
-    { name: 'pushBranch', git: true, run: (f) => f.pushBranch({ repository, localWorktreePath: '/tmp/wt', branch: attemptBranchStr }) },
+    { name: 'pushBranch', git: true, run: (f) => f.pushBranch({ repository, localWorktreePath: '/tmp/wt', branch: attemptBranchStr, ...firstPush }) },
     { name: 'resolveRef', git: true, run: (f) => f.resolveRef({ repository, branch: attemptBranchStr }) },
-    { name: 'upsertPullRequest', git: false, run: (f) => f.upsertPullRequest({ repository, headBranch: attemptBranchStr, base: 'main', title: 'T', body: 'B', fencingEpoch: 1 }) },
+    { name: 'upsertPullRequest', git: false, run: (f) => f.upsertPullRequest({ repository, headBranch: attemptBranchStr, base: 'main', title: 'T', body: 'B' }) },
     { name: 'findPullRequest', git: false, run: (f) => f.findPullRequest({ repository, headBranch: attemptBranchStr }) },
   ];
   for (const op of ops) {

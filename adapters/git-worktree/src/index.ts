@@ -15,7 +15,7 @@ export { buildCloneUrl, rejectRawRemoteUrl, RemoteIdentityError } from './remote
 
 export type { AttemptRefIdentity, SafeRefspec } from './ref-safety.js';
 export {
-  attemptBranch, safeRefspecFor, safeCommitRefspecFor, RefSafetyError, PROTECTED_REFS,
+  attemptBranch, safeRefspecFor, safeCommitRefspecFor, pushLeaseFor, RefSafetyError, PROTECTED_REFS,
   FULL_SHA_PATTERN,
 } from './ref-safety.js';
 

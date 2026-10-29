@@ -349,47 +349,67 @@ export interface PullRequestRef {
   // the call. Absent when the forge does not report one; a reader that needs
   // it (the pilot verifier's live check) treats absence as a failure.
   readonly headSha?: string;
+  // The PR's title and body as the forge holds them now, reported by a lookup
+  // (findPullRequest) so a takeover can compare them with what the attempt's
+  // facts say they must be.
+  readonly title?: string;
+  readonly body?: string;
 }
 
-// FENCING THE FORGE CALLS. Each publishing call carries the fencing epoch of
-// the side-effect owner that confirmed itself (SideEffectLog.confirmOwner)
-// immediately before it, so an executor paused between begin() and the call —
-// a zombie whose record a successor has since taken over — is refused:
-//   - upsertPullRequest records the epoch it writes under in the PR and refuses
-//     (StaleFencingEpochError) to update a PR last written under a NEWER epoch;
-//   - pushBranch has no field on a git ref to record an epoch in. It is fenced
-//     by the confirmation just before it, and a late push is harmless by
-//     construction: an attempt has exactly one commit and the push is
-//     non-force, so it can only write that same commit to the attempt's own
-//     branch.
-export class StaleFencingEpochError extends Error {
-  constructor(what: string, current: number, offered: number) {
-    super(`${what} was last written under fencing epoch ${current}; refusing epoch ${offered} (stale owner, fail closed)`);
-    this.name = 'StaleFencingEpochError';
-  }
+// PUBLICATION UNDER TAKEOVER. A stale owner — an executor paused inside a forge
+// call while its lease lapsed and a successor took its records over — may
+// still reach the forge: no lease check or marker before a call can recall a
+// call already in flight, and GitHub offers no compare-and-set for a pull
+// request update. So the forge is not fenced. What holds instead:
+//   - a push is compare-and-set: pushBranch writes the attempt's one commit
+//     only over the value the branch is expected to hold (null: absent), so a
+//     stale owner's late push is a no-op (same commit) or refused;
+//   - a PR's content is a pure function of the attempt's immutable facts
+//     (pullRequestContent), so a stale owner's late create or update writes
+//     byte-identical content;
+//   - a takeover reconciles the branch and the PR with those facts before any
+//     terminal state, and repairs a divergence with an audit entry.
+
+/** The immutable facts of an attempt a pull request presents. */
+export interface PullRequestFacts {
+  readonly taskId: string;
+  readonly attemptId: string;
+  // The verified harness commit the PR head must be.
+  readonly commitSha: string;
+  readonly evidenceId: string;
+  // The branch the PR targets.
+  readonly base: string;
 }
 
-// The marker a forge keeps in a PR body: the epoch the body was written under.
-const FENCING_MARKER = /<!-- asep-fencing-epoch: (\d+) -->/;
-
-export function withFencingMarker(body: string, epoch: number): string {
-  if (!Number.isSafeInteger(epoch) || epoch < 1) throw new RangeError(`invalid fencing epoch ${epoch}`);
-  return `${body.replace(FENCING_MARKER, '').trimEnd()}\n\n<!-- asep-fencing-epoch: ${epoch} -->\n`;
-}
-
-/** The epoch a PR body was last written under, or null when it carries none. */
-export function fencingEpochOf(body: string | null | undefined): number | null {
-  const m = FENCING_MARKER.exec(body ?? '');
-  return m ? Number(m[1]) : null;
+/**
+ * The title and body of an attempt's pull request: a pure function of its
+ * facts, with nothing that depends on which owner writes it or when.
+ */
+export function pullRequestContent(facts: PullRequestFacts): { readonly title: string; readonly body: string } {
+  return {
+    title: `ASEP ${facts.taskId}: attempt ${facts.attemptId}`,
+    body: [
+      'Automated ASEP attempt, waiting for human review.',
+      '',
+      `Task: ${facts.taskId}`,
+      `Attempt: ${facts.attemptId}`,
+      `Commit: ${facts.commitSha}`,
+      `Evidence: ${facts.evidenceId}`,
+      `Base: ${facts.base}`,
+      '',
+    ].join('\n'),
+  };
 }
 
 export interface ForgeProvider {
+  // Compare-and-set: the branch must hold `expectedRemoteSha` (null: it must
+  // not exist), or already hold `commitSha`, for the push to land; otherwise it
+  // is refused and nothing changes.
   pushBranch(scope: TenantScope, input: {
     repositoryBindingId: RepositoryBindingId;
     branch: string;
     commitSha: string;
-    fencingEpoch: number;
-    expectedRemoteSha?: string;
+    expectedRemoteSha: string | null;
   }): Promise<void>;
   upsertPullRequest(scope: TenantScope, input: {
     repositoryBindingId: RepositoryBindingId;
@@ -397,7 +417,6 @@ export interface ForgeProvider {
     base: string;
     title: string;
     body: string;
-    fencingEpoch: number;
   }): Promise<PullRequestRef>;
   // --- crash-recovery reconciliation (disp. P2-FINAL-HIGH-006, exit C7) ------
   //
@@ -686,9 +705,12 @@ export class SideEffectFencingError extends Error {}
 //     still live, and never rewrite a COMPLETED record.
 //   - confirmOwner() is called immediately before the external call: it
 //     succeeds only for the current owner of a PENDING record while its lease
-//     is live, renews that lease, and returns the epoch the call is made under.
-//     An executor whose record was taken over while it was paused is refused
-//     here (SideEffectFencingError) and never reaches the outside world.
+//     is live, renews that lease, and returns the owner's epoch (a record of
+//     who acted; the forge call does not carry it).
+//     An executor whose record was taken over while it was paused before this
+//     call is refused here (SideEffectFencingError). One that confirmed and
+//     then stalled inside the call can still reach the forge after a takeover:
+//     see PUBLICATION UNDER TAKEOVER for what holds then.
 //   - find() reads a record without claiming it.
 export interface SideEffectLog {
   begin(scope: TenantScope, input: SideEffectBeginInput): Promise<SideEffectRecord>;

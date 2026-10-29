@@ -166,8 +166,6 @@ test('HIGH-008/K2: a pilot target registers the REAL repository, including the n
         contextPack: { relevantFiles: ['docs/pilot.md'] },
         allowedPaths: ['docs/pilot.md'],
         expectChangedFile: 'docs/pilot.md',
-        prTitle: 'ASEP: add docs/pilot.md',
-        prBody: 'Automated attempt.',
       },
       environment: {
         imageDigest: 'ghcr.io/asep/agent@sha256:' + '1'.repeat(64),

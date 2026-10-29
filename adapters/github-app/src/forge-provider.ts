@@ -4,11 +4,12 @@
 // exact repository right before each bounded operation and discarded after.
 //
 // Non-bypassable safety enforced here BY CONSTRUCTION:
-//   H3/CRIT-001  every push ref is produced by safeRefspecFor(); a caller can
+//   H3/CRIT-001  every push ref is produced by safeCommitRefspecFor() and
+//                carries the pushLeaseFor() compare-and-set; a caller can
 //                never supply a raw ref, so a push to main/master/HEAD/tag/
 //                option-like/force target is impossible. Only the exact
-//                `refs/heads/asep/<run>/<task>/<attempt>` create/update refspec
-//                is ever handed to git.
+//                commit onto `refs/heads/asep/<run>/<task>/<attempt>`, under
+//                its lease, is ever handed to git.
 //   H7/HIGH-007  the remote URL is CONSTRUCTED from a validated forge identity
 //                (buildCloneUrl), never accepted raw. The JIT token is injected
 //                via the URL userinfo only for the single push child process and
@@ -16,15 +17,18 @@
 //   H1/H2        the token is opaque, minted per op, never persisted; the app
 //                private key stays in the credential provider.
 //   H4           pushBranch is called only after verification (the driver's
-//                responsibility); upsertPullRequest is idempotent
-//                (find-by-head-branch → update, else create).
+//                responsibility) and is compare-and-set: it writes the
+//                attempt's commit only over the value the branch is expected to
+//                hold (--force-with-lease). upsertPullRequest is idempotent
+//                (find-by-head-branch → update, else create) and writes exactly
+//                the title, body and base it is given — nothing of its own —
+//                so two writers with the same facts leave the same PR.
 //   H5           NO merge method is wired anywhere in this adapter.
 
 import {
-  runGit as defaultRunGit, buildCloneUrl, safeRefspecFor, safeCommitRefspecFor,
+  runGit as defaultRunGit, buildCloneUrl, safeRefspecFor, safeCommitRefspecFor, pushLeaseFor,
 } from '@asep/git-worktree';
 import type { ForgeIdentity } from '@asep/git-worktree';
-import { StaleFencingEpochError, withFencingMarker, fencingEpochOf } from '@asep/ports';
 import type { GitHubAppCredentialProvider } from './credential-provider.js';
 import { isExpired } from './credential-provider.js';
 
@@ -157,7 +161,7 @@ export interface PullsApi {
     repo: string;
     head: string;          // `owner:branch`
     state: 'open' | 'closed' | 'all';
-  }): Promise<{ data: ReadonlyArray<{ number: number; html_url: string; head: { ref: string; sha?: string }; base: { ref: string }; body?: string | null }> }>;
+  }): Promise<{ data: ReadonlyArray<{ number: number; html_url: string; head: { ref: string; sha?: string }; base: { ref: string }; title?: string; body?: string | null }> }>;
   create(params: {
     owner: string;
     repo: string;
@@ -172,6 +176,7 @@ export interface PullsApi {
     pull_number: number;
     title: string;
     body: string;
+    base: string;
   }): Promise<{ data: { number: number; html_url: string; head: { ref: string; sha?: string }; base: { ref: string } } }>;
   // NOTE: deliberately NO `merge` method — H5, no merge capability exists.
 }
@@ -191,13 +196,16 @@ export interface PushInput {
   readonly repository: RepositoryForgeConfig;
   readonly localWorktreePath: string; // where the harness commit lives
   readonly branch: string;            // MUST be an ASEP attempt branch
-  readonly expectedRemoteSha?: string;// enables --force-with-lease, never plain force
-  // The EXACT harness commit to publish (disp. P2-FINAL-HIGH-008). When present
-  // the refspec pushes this immutable object id to the safe namespaced ref, so
-  // the bytes landing on the remote are exactly the commit verification and
-  // evidence were bound to — and a detached worktree (which has no local branch
-  // of that name) can still be pushed. Omitted → legacy local-branch refspec.
-  readonly commitSha?: string;
+  // The EXACT harness commit to publish (disp. P2-FINAL-HIGH-008). The refspec
+  // pushes this immutable object id to the safe namespaced ref, so the bytes
+  // landing on the remote are exactly the commit verification and evidence
+  // were bound to — and a detached worktree (which has no local branch of that
+  // name) can still be pushed.
+  readonly commitSha: string;
+  // The value the branch must hold for the push to land, null when it must not
+  // exist yet: the push is compare-and-set (--force-with-lease), never a plain
+  // or bare force.
+  readonly expectedRemoteSha: string | null;
 }
 
 export interface PullRequestResult {
@@ -207,11 +215,15 @@ export interface PullRequestResult {
   readonly baseBranch: string;
   // The commit GitHub reports the PR head at, when it reports one.
   readonly headSha?: string;
+  // The title and body GitHub holds, when it reports them.
+  readonly title?: string;
+  readonly body?: string;
 }
 
 // The adapter's result for a PR as GitHub returned it.
 function prResult(pr: {
   number: number; html_url: string; head: { ref: string; sha?: string }; base: { ref: string };
+  title?: string; body?: string | null;
 }): PullRequestResult {
   return {
     number: pr.number,
@@ -219,6 +231,8 @@ function prResult(pr: {
     headBranch: pr.head.ref,
     baseBranch: pr.base.ref,
     ...(typeof pr.head.sha === 'string' && /^[0-9a-f]{40}$/.test(pr.head.sha) ? { headSha: pr.head.sha } : {}),
+    ...(typeof pr.title === 'string' ? { title: pr.title } : {}),
+    ...(typeof pr.body === 'string' ? { body: pr.body } : pr.body === null ? { body: '' } : {}),
   };
 }
 
@@ -228,9 +242,6 @@ export interface UpsertPrInput {
   readonly base: string;
   readonly title: string;
   readonly body: string;
-  // The side-effect owner's fencing epoch, written into the PR body. An update
-  // of a PR whose body carries a newer epoch is refused.
-  readonly fencingEpoch: number;
 }
 
 // Scrub anything that looks like the JIT token or userinfo from a string before
@@ -309,27 +320,23 @@ export class GitHubAppForgeProvider {
   }
 
   // Push the harness commit to the EXACT ASEP-namespaced ref. The refspec is
-  // produced by safeRefspecFor so no other target is representable (H3). The
-  // token is minted JIT, injected only into this one git child, and scrubbed
-  // from any error text (H1/H2/H7).
+  // produced by safeCommitRefspecFor so no other target is representable (H3).
+  // The push is compare-and-set: the remote applies it only while the branch
+  // holds the expected value. The token is minted JIT, injected only into this
+  // one git child, and scrubbed from any error text (H1/H2/H7).
   async pushBranch(input: PushInput): Promise<{ ref: string }> {
-    // (1) Build the ONLY safe refspec. Throws on any protected/malformed target.
-    // Done ONCE, before any mint, so a bad ref never mints a token (H3).
-    // With an explicit commitSha the source is that immutable object id; the
-    // DESTINATION is validated by the same single authority either way.
-    const safe = input.commitSha
-      ? safeCommitRefspecFor(input.commitSha, input.branch, input.expectedRemoteSha)
-      : safeRefspecFor(input.branch, input.expectedRemoteSha);
+    // (1) Build the ONLY safe refspec and its lease. Throws on any protected or
+    // malformed target, an abbreviated commit or lease value. Done ONCE, before
+    // any mint, so a bad ref never mints a token (H3). The source is the
+    // immutable commit id; the destination is validated by the single authority.
+    const safe = safeCommitRefspecFor(input.commitSha, input.branch);
+    const lease = pushLeaseFor(safe.branch, input.expectedRemoteSha);
 
     // (2) Construct the transport URL from validated identity (never raw).
     const baseUrl = buildCloneUrl(input.repository.identity, this.allowedHosts);
 
-    // (3) Build the push argv. --force-with-lease ONLY when an expected SHA was
-    // recorded; otherwise a plain, non-force create/update. Never a bare --force.
-    const pushArgsTemplate = ['push'];
-    if (safe.forceWithLeaseExpectedSha) {
-      pushArgsTemplate.push(`--force-with-lease=${safe.branch}:${safe.forceWithLeaseExpectedSha}`);
-    }
+    // (3) The push argv: always the lease, never a plain or bare --force.
+    const pushArgsTemplate = ['push', lease];
 
     // One bounded recovery loop; the token is injected only into this
     // one git child. A credential failure is rethrown raw so the loop re-mints;
@@ -351,8 +358,12 @@ export class GitHubAppForgeProvider {
     });
   }
 
-  // Idempotent PR upsert: find an open PR by head branch and UPDATE it, else
-  // CREATE (H4). No merge is ever attempted (H5). Token minted JIT, opaque.
+  // Idempotent PR upsert: find the PR by head branch and UPDATE it, else
+  // CREATE (H4). It writes exactly the title, body and base it is given. GitHub
+  // has no compare-and-set for a PR update, so this read-then-write cannot
+  // exclude another writer; what makes a late writer harmless is that every
+  // writer of an attempt's PR writes the same content (pullRequestContent). No
+  // merge is ever attempted (H5). Token minted JIT, opaque.
   async upsertPullRequest(input: UpsertPrInput): Promise<PullRequestResult> {
     const { identity, repositoryId } = input.repository;
     const owner = identity.githubOwner;
@@ -372,24 +383,15 @@ export class GitHubAppForgeProvider {
         state: 'all',
       });
       const match = existing.data.find((pr) => pr.head.ref === input.headBranch);
-      const body = withFencingMarker(input.body, input.fencingEpoch);
 
       if (match) {
-        // FENCING: a PR a newer owner already wrote is not this caller's to
-        // rewrite. (GitHub offers no compare-and-set on a PR, so two owners
-        // racing inside this read-then-update could still interleave; the
-        // side-effect log's confirmation narrows that to an owner whose
-        // renewed lease outlived a takeover.)
-        const current = fencingEpochOf(match.body);
-        if (current !== null && current > input.fencingEpoch) {
-          throw new StaleFencingEpochError(`PR #${match.number}`, current, input.fencingEpoch);
-        }
         const updated = await octokit.pulls.update({
           owner,
           repo,
           pull_number: match.number,
           title: input.title,
-          body,
+          body: input.body,
+          base: input.base,
         });
         return prResult(updated.data);
       }
@@ -400,7 +402,7 @@ export class GitHubAppForgeProvider {
         head: input.headBranch,
         base: input.base,
         title: input.title,
-        body,
+        body: input.body,
       });
       return prResult(created.data);
     });
