@@ -8,7 +8,9 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { RunId, TaskId } from '@asep/contracts';
@@ -51,6 +53,7 @@ import {
   scripted,
   shaFor,
 } from './test-support/fixtures.js';
+import { GIT_BRANCH_NAMES } from './test-support/git-branch-names.js';
 import type {
   FailureClass,
   ObservedPullRequest,
@@ -250,12 +253,17 @@ test('budget precision: the input rules reject money that is not exact, not posi
   ]);
 });
 
-// The base branch is a Git branch name (R31's ref-name rules); the reviewer's four bases come first.
+// The base branch is a Git branch name (Git's ref-name rules for a branch); the reviewers' bases come first.
 const REFUSED_BASE_BRANCHES: readonly (readonly [string, unknown])[] = [
   ['undefined', undefined],
   ['null', null],
   ['the empty string', ''],
   ['main..evil', 'main..evil'],
+  ['a name with a leading slash', '/main'],
+  ['a name starting with a dot', '.hidden'],
+  ['a path component starting with a dot', 'release/.hidden'],
+  ['a path component ending in .lock', 'a.lock/b'],
+  ['HEAD', 'HEAD'],
   ['a name with a leading dash', '-main'],
   ['a name with a space', 'release 1'],
   ['a name with a control character', 'release\u0001'],
@@ -286,6 +294,32 @@ for (const [name, baseBranch] of REFUSED_BASE_BRANCHES) {
 test('input rules: valid branch names other than main pass as the base branch', () => {
   for (const baseBranch of ['main', 'release/2026.10', 'develop', 'feature/x-1', 'refs/heads/main', 'v1.2-rc', 'a@b', 'r'.repeat(255)]) {
     assert.deepEqual(taskInputErrors(baseInput({ baseBranch })), [], baseBranch);
+  }
+});
+
+test('input rules: the base branch rule gives git check-ref-format --branch\'s answer for every name of the committed table', () => {
+  for (const { name, git } of GIT_BRANCH_NAMES) {
+    const errors = taskInputErrors(baseInput({ baseBranch: name }));
+    assert.equal(errors.length === 0 ? 'valid' : 'invalid', git, `${JSON.stringify(name)}: ${JSON.stringify(errors)}`);
+  }
+});
+
+test('input rules: git still answers the committed branch-name table as recorded', (t) => {
+  // Outside any repository, so `--branch` cannot expand `@{-N}` to a previous branch of the checkout.
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'asep-git-ref-')));
+  try {
+    const env = { ...process.env, GIT_CEILING_DIRECTORIES: dirname(dir) };
+    const probe = spawnSync('git', ['--version'], { cwd: dir, env });
+    if (probe.error !== undefined || probe.status !== 0) {
+      t.diagnostic('git is not available here; the committed table stands as the oracle');
+      return;
+    }
+    for (const { name, git } of GIT_BRANCH_NAMES) {
+      const answer = spawnSync('git', ['check-ref-format', '--branch', name], { cwd: dir, env });
+      assert.equal(answer.status === 0 ? 'valid' : 'invalid', git, JSON.stringify(name));
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 

@@ -21,15 +21,24 @@ function softCapErrors(errors: string[], path: string, softUsd: number, capPath:
 
 const BRANCH_NAME_MAX_LENGTH = 255;
 
-/** Why a value is not a Git branch name under the ref-name rules the input boundary applies, or null. */
+/**
+ * Why a value is not a Git branch name, or null: Git's ref-name rules for a branch (`git check-ref-format --branch`),
+ * applied to the whole name and to each `/`-separated component, plus the input boundary's own length bound.
+ */
 function branchNameProblem(name: unknown): string | null {
   if (typeof name !== 'string' || name.length === 0) return 'a non-empty string';
   if (name.length > BRANCH_NAME_MAX_LENGTH) return `at most ${BRANCH_NAME_MAX_LENGTH} characters`;
   if (name.startsWith('-')) return 'no leading "-"';
+  if (name === 'HEAD') return 'not "HEAD"';
   if (/[\u0000- \u007f]/.test(name)) return 'no control or space character';
   if (/[~^:?*[\\]/.test(name)) return 'none of ~ ^ : ? * [ \\';
-  for (const part of ['..', '@{', '//']) if (name.includes(part)) return `no "${part}"`;
-  for (const end of ['/', '.', '.lock']) if (name.endsWith(end)) return `not ending in "${end}"`;
+  for (const part of ['..', '@{']) if (name.includes(part)) return `no "${part}"`;
+  if (name.endsWith('.')) return 'not ending in "."';
+  for (const component of name.split('/')) {
+    if (component === '') return 'no empty path component (a leading or trailing "/", or "//")';
+    if (component.startsWith('.')) return 'no path component starting with "."';
+    if (component.endsWith('.lock')) return 'no path component ending in ".lock"';
+  }
   return null;
 }
 
