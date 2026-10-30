@@ -438,6 +438,103 @@ test('the publication path scanner fails closed', () => {
   }
 });
 
+/** A scratch root holding the publication gate and the lists it reads, with a runner for the gate. */
+function publicationScratch(prefix: string) {
+  const scratch = mkdtempSync(join(tmpdir(), prefix));
+  for (const file of ['scripts/check-publication.sh', 'scripts/lib/secret-patterns.sh', LEAK_PATTERNS_FILE]) {
+    mkdirSync(dirname(join(scratch, file)), { recursive: true });
+    cpSync(join(ROOT, file), join(scratch, file));
+  }
+  // `pathFirst` puts a directory first on the gate's PATH, set by the shell that starts it.
+  const run = (args: readonly string[], pathFirst: string | null = null) => {
+    const gate = [join(scratch, 'scripts/check-publication.sh'), ...args];
+    const argv = pathFirst === null ? gate : ['-c', 'PATH="$0:$PATH" exec bash "$@"', pathFirst, ...gate];
+    return spawnSync('bash', argv, { cwd: scratch, input: '' });
+  };
+  return { scratch, run };
+}
+
+test('the publication history scan fails closed', () => {
+  // The key is assembled at runtime, and no output of the gate may repeat it.
+  const key = 'AKIA' + 'IOSFODNN7EXAMPLE';
+  const { scratch, run } = publicationScratch('asep-history-closed-');
+  try {
+    const scan = (pathFirst: string | null = null) => run(['--scan-history'], pathFirst);
+    const printed = (r: ReturnType<typeof run>) => r.stdout.toString('utf8') + r.stderr.toString('utf8');
+    const git = (...args: string[]) => {
+      const r = spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', '-c', 'commit.gpgsign=false', ...args], { cwd: scratch });
+      assert.equal(r.status, 0, `git ${args.join(' ')}`);
+    };
+    const commit = (message: string) => {
+      git('add', '-A');
+      git('commit', '-q', '--no-verify', '-m', message);
+    };
+
+    // No commit is no history; the gate's own files are exempt, a key in them included.
+    git('init', '-q');
+    assert.equal(scan().status, 0, 'a repository without commits');
+    commit('the gate');
+    assert.equal(scan().status, 0, 'the gate and its lists');
+    appendFileSync(join(scratch, 'scripts/lib/secret-patterns.sh'), `# ${key}\n`);
+    commit('a key in the secret pattern list');
+    assert.equal(scan().status, 0, 'a key in an exempt file');
+
+    // A key that only history holds is found, by commit and file, even beside text that names an
+    // exempt file, and neither the scan nor the full gate prints it.
+    writeFileSync(join(scratch, 'notes.txt'), `see :scripts/check-publication.sh:1: ${key}\n`);
+    commit('a key in a note');
+    rmSync(join(scratch, 'notes.txt'));
+    commit('the note removed');
+    const found = scan();
+    assert.equal(found.status, 1, 'a key in history only');
+    assert.match(found.stdout.toString('utf8'), /^ {2}[0-9a-f]{40}:notes\.txt:1$/m);
+    assert.equal(printed(found).includes(key), false, 'the scan never prints the key');
+    const full = run([]);
+    assert.equal(full.status, 1, 'the full gate');
+    assert.match(full.stderr.toString('utf8'), /git-history: FAIL — secret material found in history/);
+    assert.equal(printed(full).includes(key), false, 'the full gate never prints the key');
+
+    // A listing, a scan or a filter that fails is never a clean history, alone or in the full gate.
+    const resolved = (command: string) => spawnSync('bash', ['-c', `command -v ${command}`]).stdout.toString('utf8').trim();
+    const stubs: readonly (readonly [string, string, string])[] = [
+      ['git rev-list fails', 'git', `#!/bin/sh\n[ "$1" = rev-list ] && exit 128\nexec '${resolved('git')}' "$@"\n`],
+      ['git grep fails', 'git', `#!/bin/sh\n[ "$1" = grep ] && exit 128\nexec '${resolved('git')}' "$@"\n`],
+      ['the exemption filter fails', 'grep', `#!/bin/sh\nfor a; do [ "$a" = -v ] && exit 2; done\nexec '${resolved('grep')}' "$@"\n`],
+    ];
+    for (const [i, [label, command, script]] of stubs.entries()) {
+      const bin = join(scratch, `bin-${i}`);
+      mkdirSync(bin);
+      writeFileSync(join(bin, command), script, { mode: 0o755 });
+      assert.equal(scan(bin).status, 2, label);
+      const failed = run([], bin);
+      assert.equal(failed.status, 1, `${label}: the full gate`);
+      assert.match(failed.stderr.toString('utf8'), /git-history: FAIL — the history scan could not complete/, `${label}: the full gate`);
+    }
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test('the path scanner takes -- as the end of its options', () => {
+  const { scratch, run } = publicationScratch('asep-leak-dashdash-');
+  const privatePath = `${'/Us' + 'ers/'}someone/workspace`;
+  try {
+    const status = (...files: string[]) => run(['--scan-paths', ...files]).status;
+    writeFileSync(join(scratch, 'clean.txt'), 'publishable\n');
+    writeFileSync(join(scratch, 'leak.txt'), `home = ${privatePath}\n`);
+    assert.equal(status('--', 'clean.txt'), 0, 'a clean file after --');
+    assert.equal(status('--', 'leak.txt'), 1, 'a file with a hit after --');
+    assert.equal(status('--'), 2, 'no file after --');
+    // Only the first -- ends the options: a file named -- is scanned when it follows it.
+    writeFileSync(join(scratch, '--'), `home = ${privatePath}\n`);
+    assert.equal(status('--'), 2, 'no file after --, beside a file named --');
+    assert.equal(status('--', '--'), 1, 'a file named --');
+    assert.equal(status('--', 'clean.txt', '--'), 1, 'a file named -- later in the list');
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
 test('a publication gate that does not complete aborts collection', () => {
   const encode = (text: string) => new TextEncoder().encode(text);
   const [a, b] = ['a'.repeat(64), 'b'.repeat(64)];

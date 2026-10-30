@@ -14,12 +14,16 @@
 # Usage:
 #   scripts/check-publication.sh             # run full publication gate
 #   scripts/check-publication.sh --self-test # prove abs-path scanner catches canary
-#   scripts/check-publication.sh --scan-paths FILE...
+#   scripts/check-publication.sh --scan-paths [--] FILE...
 #                                            # abs-path scan of FILEs only: exit 0 clean,
-#                                            # 1 with hits, 2 when it cannot scan
+#                                            # 1 with hits, 2 when it cannot scan; one
+#                                            # leading -- ends the options
 #   scripts/check-publication.sh --scan-tracked
 #                                            # abs-path scan of the tracked files only,
 #                                            # with the same exit codes
+#   scripts/check-publication.sh --scan-history
+#                                            # secret scan of every commit only, with the
+#                                            # same exit codes
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -168,26 +172,99 @@ check_license() {
   echo "  LICENSE: present (Apache-2.0)"
 }
 
-check_history_secrets() {
-  # Scan the full git history (all blobs across all commits) for the SAME
-  # high-signal secret patterns the working-tree scanner uses. The pattern set
-  # is sourced from the single shared lib so HEAD and history can never diverge
-  # (P1-FINAL-HIGH-003 — previously history was missing sk-[A-Za-z0-9]{20,}).
+# The scanner scripts and the shared pattern lib contain the secret patterns by
+# definition, so a history hit in one of them is exempt. Matched against a whole
+# `<commit>:<path>:<count>` line of `git grep -c`.
+HISTORY_EXEMPT_REGEX='^[0-9a-f]+:(scripts/secret-scan\.sh|scripts/check-publication\.sh|scripts/lib/secret-patterns\.sh):[0-9]+$'
+
+scan_history() {
+  # Scan every blob of every commit for the SAME high-signal secret patterns the
+  # working-tree scanner uses, sourced from the single shared lib so HEAD and
+  # history can never diverge. Prints `  <commit>:<path>:<count>` per file with a
+  # hit, never the matched text. Returns scan_leaks' codes: 0 if any hit, 1 if
+  # the history is clean, and 2 when the scan cannot be trusted: listing the
+  # commits, grepping them or filtering the exemptions failed.
   # shellcheck source=scripts/lib/secret-patterns.sh
   source "$REPO_ROOT/scripts/lib/secret-patterns.sh"
-  local grep_pat="$SECRET_PATTERNS_ALT"
-  # git grep across every commit object. Exempt the scanner scripts and the
-  # shared pattern lib themselves (they contain the patterns by definition).
-  local hits
-  if hits="$(git grep -nE "$grep_pat" $(git rev-list --all) 2>/dev/null \
-      | grep -vE ':(scripts/secret-scan\.sh|scripts/check-publication\.sh|scripts/lib/secret-patterns\.sh):' || true)"; then
-    if [ -n "$hits" ]; then
-      echo "  git-history: FAIL — secret material found in history:" >&2
-      echo "$hits" | head -n 20 >&2
-      return 1
-    fi
+  local listing matches kept rev rc=0
+  local revs=()
+  listing="$(mktemp "${TMPDIR:-/tmp}/asep-history-revs.XXXXXX")" || return 2
+  if ! git rev-list --all >"$listing"; then
+    echo "check-publication: cannot list the commits" >&2
+    rm -f "$listing"
+    return 2
   fi
-  echo "  git-history: clean (no secret material across all commits)"
+  while IFS= read -r rev; do
+    revs+=("$rev")
+  done <"$listing"
+  rm -f "$listing"
+  # No commit is no history; git grep without a commit would read the work tree.
+  if [ "${#revs[@]}" -eq 0 ]; then
+    return 1
+  fi
+  matches="$(mktemp "${TMPDIR:-/tmp}/asep-history-hit.XXXXXX")" || return 2
+  git grep -c -E -e "$SECRET_PATTERNS_ALT" "${revs[@]}" -- >"$matches" 2>/dev/null || rc=$?
+  case "$rc" in
+    0) ;;
+    1)
+      rm -f "$matches"
+      return 1
+      ;;
+    *)
+      echo "check-publication: git grep failed (status $rc) on the history" >&2
+      rm -f "$matches"
+      return 2
+      ;;
+  esac
+  kept="$(mktemp "${TMPDIR:-/tmp}/asep-history-kept.XXXXXX")" || {
+    rm -f "$matches"
+    return 2
+  }
+  rc=0
+  grep -v -E -e "$HISTORY_EXEMPT_REGEX" -- "$matches" >"$kept" 2>/dev/null || rc=$?
+  rm -f "$matches"
+  case "$rc" in
+    0)
+      while IFS= read -r rev; do
+        echo "  ${rev}"
+      done <"$kept"
+      rm -f "$kept"
+      return 0
+      ;;
+    1)
+      rm -f "$kept"
+      return 1
+      ;;
+    *)
+      echo "check-publication: filtering the history hits failed (status $rc)" >&2
+      rm -f "$kept"
+      return 2
+      ;;
+  esac
+}
+
+check_history_secrets() {
+  local report rc=0
+  report="$(mktemp "${TMPDIR:-/tmp}/asep-history-report.XXXXXX")" || {
+    echo "  git-history: FAIL — the history scan could not complete" >&2
+    return 1
+  }
+  scan_history >"$report" || rc=$?
+  case "$rc" in
+    0)
+      echo "  git-history: FAIL — secret material found in history:" >&2
+      head -n 20 "$report" >&2
+      rm -f "$report"
+      return 1
+      ;;
+    1) echo "  git-history: clean (no secret material across all commits)" ;;
+    *)
+      echo "  git-history: FAIL — the history scan could not complete" >&2
+      rm -f "$report"
+      return 1
+      ;;
+  esac
+  rm -f "$report"
 }
 
 check_dep_licenses() {
@@ -212,11 +289,19 @@ main() {
   local rc=0
   if [ "${1:-}" = "--scan-paths" ]; then
     shift
+    # One leading -- ends the options, so a file named like an option can follow it.
+    if [ "$#" -gt 0 ] && [ "$1" = "--" ]; then
+      shift
+    fi
     scan_leaks "$@" || rc=$?
     return "$(scan_exit_code "$rc")"
   fi
   if [ "${1:-}" = "--scan-tracked" ]; then
     scan_tracked || rc=$?
+    return "$(scan_exit_code "$rc")"
+  fi
+  if [ "${1:-}" = "--scan-history" ]; then
+    scan_history || rc=$?
     return "$(scan_exit_code "$rc")"
   fi
 
