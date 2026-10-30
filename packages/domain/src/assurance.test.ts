@@ -269,31 +269,37 @@ test('only a human disposes of a SARIF finding', () => {
   assert.equal(applyFindingDisposition(sarifFinding(), input('RESOLUTION_VERIFIED', HUMAN)).state, 'VERIFIED');
 
   // Independent statement: on a SARIF finding no reviewer and no harness rule verifies, refutes,
-  // waives, accepts or claims, whether or not it is grounded. The harness may only reopen it.
+  // waives, accepts or claims, whether or not it is grounded and from every state the lifecycle
+  // lets that disposition leave; a human records each. The harness may only reopen it.
   const rules: readonly HarnessRule[] = ['citation-unresolvable', 'closure-without-change', 'deterministic-recheck', 'waiver-expired'];
   const machines: readonly DispositionActor[] = [independentReviewer, raiser, scanner, ...rules.map((rule) => ({ kind: 'harness-rule', rule }) as const)];
-  const closing = ['RESOLUTION_VERIFIED', 'REJECTED_WITH_EVIDENCE', 'WAIVED', 'ACCEPTED', 'RESOLUTION_CLAIMED'] as const;
+  const leaves: readonly (readonly [FindingDispositionKind, readonly FindingLifecycleState[], FindingLifecycleState])[] = [
+    ['RESOLUTION_VERIFIED', ['OPEN', 'ACKNOWLEDGED', 'FIXED'], 'VERIFIED'],
+    ['REJECTED_WITH_EVIDENCE', ['OPEN', 'ACKNOWLEDGED', 'FIXED'], 'REFUTED'],
+    ['WAIVED', ['OPEN', 'ACKNOWLEDGED', 'FIXED'], 'WAIVED'],
+    ['ACCEPTED', ['OPEN', 'REFUTED', 'ADJUDICATED'], 'ACKNOWLEDGED'],
+    ['RESOLUTION_CLAIMED', ['OPEN', 'ACKNOWLEDGED', 'FIXED'], 'FIXED'],
+  ];
   for (const grounded of [true, false]) {
-    for (const actor of machines) {
-      for (const kind of closing) {
-        const resolution = kind === 'RESOLUTION_VERIFIED' && actor.kind === 'reviewer' ? groundedInDelta : null;
-        rejectsWith(
-          () => applyFindingDisposition(sarifFinding({ grounded }), input(kind, actor, { resolution })),
-          'actor-not-permitted',
-        );
+    for (const [kind, from, to] of leaves) {
+      for (const state of from) {
+        const finding = sarifFinding({ grounded, state });
+        for (const actor of machines) {
+          const resolution = kind === 'RESOLUTION_VERIFIED' && actor.kind === 'reviewer' ? groundedInDelta : null;
+          rejectsWith(() => applyFindingDisposition(finding, input(kind, actor, { resolution })), 'actor-not-permitted');
+        }
+        assert.equal(applyFindingDisposition(finding, input(kind, HUMAN)).state, to, `${kind} from ${state}`);
       }
     }
   }
-  // The review's probe: an ungrounded SARIF finding is not refuted as an unresolvable citation.
-  rejectsWith(
-    () => applyFindingDisposition(sarifFinding({ grounded: false }), input('REJECTED_WITH_EVIDENCE', { kind: 'harness-rule', rule: 'citation-unresolvable' })),
-    'actor-not-permitted',
-  );
-  // A human records any of them, grounded or not, and a lapsed waiver still reopens it.
-  const humanTo = { RESOLUTION_VERIFIED: 'VERIFIED', REJECTED_WITH_EVIDENCE: 'REFUTED', WAIVED: 'WAIVED', ACCEPTED: 'ACKNOWLEDGED', RESOLUTION_CLAIMED: 'FIXED' } as const;
-  for (const grounded of [true, false]) {
-    for (const kind of closing) assert.equal(applyFindingDisposition(sarifFinding({ grounded }), input(kind, HUMAN)).state, humanTo[kind], kind);
-  }
+  // The review's probes: an ungrounded SARIF finding is not refuted as an unresolvable citation,
+  // neither while it is open nor after a human accepted it.
+  const ungrounded = sarifFinding({ grounded: false });
+  const harnessRefutes = input('REJECTED_WITH_EVIDENCE', { kind: 'harness-rule', rule: 'citation-unresolvable' });
+  rejectsWith(() => applyFindingDisposition(ungrounded, harnessRefutes), 'actor-not-permitted');
+  const accepted = applyFindingDisposition(ungrounded, input('ACCEPTED', HUMAN));
+  assert.equal(accepted.state, 'ACKNOWLEDGED');
+  rejectsWith(() => applyFindingDisposition(accepted, harnessRefutes), 'actor-not-permitted');
   const waived = applyFindingDisposition(sarifFinding(), input('WAIVED', HUMAN));
   const lapsed = applyFindingDisposition(waived, input('REOPENED', { kind: 'harness-rule', rule: 'waiver-expired' }, { at: '2026-11-06T10:00:00.000Z' }));
   assert.equal(lapsed.state, 'OPEN');
