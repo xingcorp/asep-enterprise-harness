@@ -1,0 +1,107 @@
+diff --git a/adapters/persistence/src/object-store.ts b/adapters/persistence/src/object-store.ts
+index 9881183..56234b1 100644
+--- a/adapters/persistence/src/object-store.ts
++++ b/adapters/persistence/src/object-store.ts
+@@ -102,3 +102,102 @@ export class FilesystemObjectStore implements ObjectStore {
+     }
+   }
+ }
++
++// S3-compatible object store (MinIO in the integration gate, S3 in prod parity),
++// disp. P2-REREVIEW-MED-NEW-001. The prior gate only HEALTH-CHECKED MinIO and
++// then ran every artifact test on the filesystem backend — so a broken S3
++// PUT/GET/create-only path could never turn the gate red. This adapter drives
++// the SAME ObjectStore contract against a real bucket so the artifact suite
++// exercises MinIO for real.
++//
++// Create-only (D7): a PutObject with `IfNoneMatch: '*'` fails with
++// PreconditionFailed / 412 when the key already exists, so a second write to an
++// existing key NEVER overwrites. A byte-identical re-write is treated as a
++// benign idempotent no-op (matching the filesystem backend) by comparing the
++// stored bytes when the conditional put is refused; different bytes at an
++// existing key throw ObjectExistsError.
++import {
++  S3Client, PutObjectCommand, GetObjectCommand, HeadObjectCommand,
++} from '@aws-sdk/client-s3';
++
++export interface S3ObjectStoreConfig {
++  readonly endpoint: string;
++  readonly region: string;
++  readonly accessKeyId: string;
++  readonly secretAccessKey: string;
++  readonly bucket: string;
++}
++
++function isS3Status(err: unknown, status: number): boolean {
++  const meta = (err as { $metadata?: { httpStatusCode?: number } }).$metadata;
++  const name = (err as { name?: string }).name ?? '';
++  return meta?.httpStatusCode === status
++    || (status === 412 && name === 'PreconditionFailed')
++    || (status === 404 && (name === 'NotFound' || name === 'NoSuchKey'));
++}
++
++async function streamToBytes(body: unknown): Promise<Uint8Array> {
++  // The AWS SDK v3 Node stream exposes an async iterator of Buffer chunks.
++  const chunks: Buffer[] = [];
++  for await (const chunk of body as AsyncIterable<Uint8Array>) {
++    chunks.push(Buffer.from(chunk));
++  }
++  return new Uint8Array(Buffer.concat(chunks));
++}
++
++export class S3ObjectStore implements ObjectStore {
++  private readonly client: S3Client;
++  private readonly bucket: string;
++
++  constructor(cfg: S3ObjectStoreConfig) {
++    this.bucket = cfg.bucket;
++    this.client = new S3Client({
++      endpoint: cfg.endpoint,
++      region: cfg.region,
++      credentials: { accessKeyId: cfg.accessKeyId, secretAccessKey: cfg.secretAccessKey },
++      // MinIO requires path-style addressing (no virtual-hosted-style buckets).
++      forcePathStyle: true,
++    });
++  }
++
++  async putIfAbsent(key: string, bytes: Uint8Array): Promise<void> {
++    try {
++      await this.client.send(new PutObjectCommand({
++        Bucket: this.bucket,
++        Key: key,
++        Body: bytes,
++        IfNoneMatch: '*',
++      }));
++    } catch (err) {
++      // Key already exists: converge on the create-only contract by byte compare
++      // — identical bytes are an idempotent retry, different bytes a collision.
++      if (isS3Status(err, 412)) {
++        const existing = await this.get(key);
++        if (Buffer.compare(Buffer.from(existing), Buffer.from(bytes)) === 0) return;
++        throw new ObjectExistsError(key);
++      }
++      throw err;
++    }
++  }
++
++  async get(key: string): Promise<Uint8Array> {
++    try {
++      const out = await this.client.send(new GetObjectCommand({ Bucket: this.bucket, Key: key }));
++      if (!out.Body) throw new ObjectNotFoundError(key);
++      return await streamToBytes(out.Body);
++    } catch (err) {
++      if (isS3Status(err, 404)) throw new ObjectNotFoundError(key);
++      throw err;
++    }
++  }
++
++  async exists(key: string): Promise<boolean> {
++    try {
++      await this.client.send(new HeadObjectCommand({ Bucket: this.bucket, Key: key }));
++      return true;
++    } catch (err) {
++      if (isS3Status(err, 404)) return false;
++      throw err;
++    }
++  }
++}

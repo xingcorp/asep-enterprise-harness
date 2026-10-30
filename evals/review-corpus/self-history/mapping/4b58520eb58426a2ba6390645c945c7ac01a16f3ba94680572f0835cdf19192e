@@ -1,0 +1,63 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 7868f9b..be92d63 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -43,3 +43,58 @@ jobs:
+       # clean-tree assertion — so there is nothing to keep in sync by hand.
+       - name: Full verification gate (pnpm verify:all)
+         run: pnpm verify:all
++
++  # ---------------------------------------------------------------------------
++  # REQUIRED integration gate (disp. P2-FINAL-HIGH-001).
++  #
++  # The review's core finding was that `verify:all` is a SHALLOW gate: it never
++  # provisioned PostgreSQL / an object store / a Docker sandbox, so every claim
++  # that depended on a real backend (C3/C5 multi-connection, F4 network
++  # isolation, K1/K4) was green-by-absence. This job is the deep gate.
++  #
++  # It is a FIRST-CLASS REQUIRED JOB, not a conditional or continue-on-error
++  # step: no `if:`, no `continue-on-error`, and it does NOT depend on `verify`,
++  # so it always runs and its failure always fails the workflow. The gate script
++  # itself refuses to skip — absent docker or an unhealthy backend exits
++  # non-zero (proven end-to-end by scripts/integration/gate-fail-closed.itest.ts,
++  # which spawns the real gate CLI with a backend deliberately omitted).
++  #
++  # Backends are provisioned BY DIGEST from scripts/integration/images.mjs, kept
++  # byte-identical to compose.yaml by an executable parity test, so CI and a
++  # developer's `pnpm infra:up` run the same immutable builds.
++  integration:
++    runs-on: ubuntu-latest
++    # ubuntu-latest runners ship a working Docker daemon; the gate provisions and
++    # tears down its own digest-pinned containers, so no `services:` block (which
++    # cannot express the sandbox's --network none runs) is used.
++    steps:
++      - name: Checkout
++        uses: actions/checkout@v4
++
++      - name: Enable corepack
++        run: corepack enable
++
++      - name: Setup Node 24
++        uses: actions/setup-node@v4
++        with:
++          node-version: 24
++          cache: pnpm
++
++      - name: Install (frozen lockfile)
++        run: pnpm install --frozen-lockfile
++
++      # Fail fast and LOUDLY if the runner has no usable Docker, rather than
++      # letting the suites be skipped. The gate re-checks this itself; this step
++      # exists so the failure names the cause in one line.
++      - name: Assert a real Docker daemon is present (never skip)
++        run: |
++          set -euo pipefail
++          docker version
++          docker run --rm --network none alpine@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b true
++          echo "docker OK: sandbox can run with --network none"
++
++      # Provisions digest-pinned PostgreSQL + MinIO, health-checks both, then
++      # runs every *.itest.ts suite against the REAL backends and verifies each
++      # required suite actually reported its marker.
++      - name: Integration gate (real PostgreSQL + MinIO + Docker sandbox)
++        run: pnpm test:integration

@@ -1,0 +1,71 @@
+diff --git a/apps/control-plane-api/src/principal-resolver.ts b/apps/control-plane-api/src/principal-resolver.ts
+index 2c73f38..e7c581b 100644
+--- a/apps/control-plane-api/src/principal-resolver.ts
++++ b/apps/control-plane-api/src/principal-resolver.ts
+@@ -17,7 +17,7 @@
+ 
+ import type { OrganizationId, ProjectId } from '@asep/contracts';
+ import type { ProjectRepository } from '@asep/persistence';
+-import type { PrincipalResolver } from './auth.js';
++import type { OperatorPrincipal, PrincipalResolver } from './auth.js';
+ 
+ // A single credential binding: an opaque token authenticates as exactly one
+ // organization. Kept minimal on purpose — the reference resolver holds these in
+@@ -27,11 +27,32 @@ export interface TokenBinding {
+   readonly organizationId: OrganizationId;
+ }
+ 
++// A PLATFORM-operator credential (disp. P2-FINAL-HIGH-004). Organization
++// creation sits ABOVE the tenancy tree, so it cannot be authorised by a
++// TenantScope; it is authorised by an operator credential carrying an explicit
++// capability. Held as server state exactly like the tenant bindings.
++export interface OperatorBinding {
++  readonly token: string;
++  readonly principalId: string;
++  readonly capabilities: readonly string[];
++}
++
+ export class RepositoryPrincipalResolver implements PrincipalResolver {
+   private readonly tokens: Map<string, OrganizationId>;
++  private readonly operators: Map<string, OperatorPrincipal>;
+ 
+-  constructor(private readonly projects: ProjectRepository, bindings: readonly TokenBinding[] = []) {
++  constructor(
++    private readonly projects: ProjectRepository,
++    bindings: readonly TokenBinding[] = [],
++    operators: readonly OperatorBinding[] = [],
++  ) {
+     this.tokens = new Map(bindings.map((b) => [b.token, b.organizationId]));
++    this.operators = new Map(
++      operators.map((o) => [
++        o.token,
++        { principalId: o.principalId, capabilities: [...o.capabilities] },
++      ]),
++    );
+   }
+ 
+   // Register/replace a credential binding. Server-side only — there is no HTTP
+@@ -40,10 +61,23 @@ export class RepositoryPrincipalResolver implements PrincipalResolver {
+     this.tokens.set(token, organizationId);
+   }
+ 
++  // Register/replace a PLATFORM-operator credential. Server-side only, for the
++  // same reason: no HTTP path grants a capability.
++  bindOperator(token: string, principalId: string, capabilities: readonly string[]): void {
++    this.operators.set(token, { principalId, capabilities: [...capabilities] });
++  }
++
+   async organizationForToken(token: string): Promise<OrganizationId | undefined> {
+     return this.tokens.get(token);
+   }
+ 
++  // Tenant tokens and operator tokens are DISJOINT principal classes: this map
++  // is consulted alone, so an org-scoped tenant credential never resolves to an
++  // operator and therefore can never create an organization.
++  async operatorForToken(token: string): Promise<OperatorPrincipal | undefined> {
++    return this.operators.get(token);
++  }
++
+   // Authoritative membership check via the persistence seam: a token for org A
+   // cannot select a project under org B (fails closed to false → 401).
+   async projectBelongsToOrg(org: OrganizationId, project: ProjectId): Promise<boolean> {

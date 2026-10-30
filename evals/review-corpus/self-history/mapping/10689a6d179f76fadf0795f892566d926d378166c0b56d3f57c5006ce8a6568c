@@ -1,0 +1,65 @@
+diff --git a/apps/control-plane-api/src/vertical-integration.test.ts b/apps/control-plane-api/src/vertical-integration.test.ts
+index bac28a9..2208d89 100644
+--- a/apps/control-plane-api/src/vertical-integration.test.ts
++++ b/apps/control-plane-api/src/vertical-integration.test.ts
+@@ -34,7 +34,7 @@ import {
+   OrganizationRepository, ProjectRepository, RepositoryBindingRepository,
+   RunRepository, TaskRepository, AttemptRepository, SqlWorkspaceLeaseRepository,
+   ContentAddressedArtifactStore, FilesystemObjectStore,
+-  ContentAddressedEvidenceStore, SqlSideEffectLog,
++  ContentAddressedEvidenceStore, SqlSideEffectLog, PullRequestRepository,
+ } from '@asep/persistence';
+ import {
+   GitWorktreeManager, runGit, attemptBranch, safeRefspecFor,
+@@ -284,6 +284,29 @@ test('K1: full vertical slice reaches WAITING_FOR_HUMAN_REVIEW with a real PR +
+       task: taskAggregate,
+     });
+ 
++    // --- persist the AUTHORITATIVE transitions (HIGH-008) -------------------
++    // The driver produced the trusted facts; now persist them so I1/K3 are
++    // asserted on real DB rows, not transient objects. resultSha is the harness
++    // commit SHA; the evidence ref is attached to the attempt via the scoped
++    // composite FK; the task advances to the harness ceiling; the PR row is
++    // upserted carrying the scoped evidence ref.
++    const prs = new PullRequestRepository(client);
++    let attemptVersion = attempt.version;
++    attemptVersion = await attempts.setResultSha(scope, attempt.id, attemptVersion, result.commitSha!);
++    attemptVersion = await attempts.attachEvidence(scope, attempt.id, attemptVersion, result.evidence!.ref);
++    await tasks.updateStatus(scope, task.id, task.version, 'WAITING_FOR_HUMAN_REVIEW');
++    const prRow = await prs.upsert(scope, {
++      repositoryBindingId: binding.id,
++      attemptId: attempt.id,
++      forge: 'github',
++      number: result.pr!.number,
++      headBranch: result.pr!.headBranch,
++      baseBranch: result.pr!.baseBranch,
++      url: result.pr!.url,
++      state: 'OPEN',
++      evidenceRef: result.evidence!.ref,
++    });
++
+     // --- assert the whole slice landed on real state ------------------------
+     assert.equal(result.stoppedAt, 'complete', 'the pipeline reached the review gate');
+     assert.equal(result.task?.status, 'WAITING_FOR_HUMAN_REVIEW', 'harness ceiling (I1/I2)');
+@@ -319,6 +342,21 @@ test('K1: full vertical slice reaches WAITING_FOR_HUMAN_REVIEW with a real PR +
+     assert.equal(taskRow.runId, run.id, 'task → run');
+     const runRow = await runs.getScoped(scope, run.id);
+     assert.equal(runRow.repositoryBindingId, binding.id, 'run → repository binding');
++
++    // HIGH-008: the authoritative transitions are PERSISTED, not transient.
++    // result_sha is the harness commit SHA on the attempt row.
++    assert.equal(attemptRow.resultSha, result.commitSha, 'attempt.result_sha == harness commit SHA (D8, persisted)');
++    // The attempt's evidence link resolves to the real evidence artifact, in scope.
++    assert.equal(attemptRow.evidenceArtifactId, result.evidence!.ref.artifactId, 'attempt → evidence artifact (persisted)');
++    assert.equal(attemptRow.evidenceSha256, result.evidence!.ref.sha256, 'attempt evidence sha256 pinned (persisted)');
++    // The task landed on the harness ceiling in the DB (I1/I2).
++    assert.equal(taskRow.status, 'WAITING_FOR_HUMAN_REVIEW', 'task.status persisted at the harness ceiling');
++    // The PR row persists PR → evidence and PR → attempt on real state.
++    const prBack = await prs.getByBranch(scope, binding.id, branch);
++    assert.equal(prBack.id, prRow.id, 'the PR row round-trips');
++    assert.equal(prBack.number, result.pr!.number, 'PR number persisted');
++    assert.equal(prBack.attemptId, attempt.id, 'PR → attempt (persisted)');
++    assert.equal(prBack.evidenceArtifactId, result.evidence!.ref.artifactId, 'PR → evidence artifact (persisted)');
+   } finally {
+     await client.close();
+     await rm(dir, { recursive: true, force: true });

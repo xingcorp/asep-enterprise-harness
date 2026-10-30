@@ -1,0 +1,19 @@
+diff --git a/adapters/persistence/package.json b/adapters/persistence/package.json
+index 83fe945..c1b866f 100644
+--- a/adapters/persistence/package.json
++++ b/adapters/persistence/package.json
+@@ -12,9 +12,12 @@
+   "dependencies": {
+     "@asep/contracts": "workspace:*",
+     "@asep/ports": "workspace:*",
+-    "@asep/domain": "workspace:*"
++    "@asep/domain": "workspace:*",
++    "@asep/observability": "workspace:*",
++    "pg": "8.22.0"
+   },
+   "devDependencies": {
+-    "@electric-sql/pglite": "0.5.4"
++    "@electric-sql/pglite": "0.5.4",
++    "@types/pg": "8.20.0"
+   }
+ }

@@ -1,0 +1,101 @@
+{
+  "annotationsVersion": "self-history-annotations/v1",
+  "categoryTable": "corpus-categories/v1",
+  "findings": {
+    "P1-CYCLE4-MED-001": {
+      "goldCategory": "TEST_QUALITY",
+      "rationale": "The canonical test command's glob misses the top-level acceptance regression tests, so the gate never runs them.",
+      "defectClass": "gate-config"
+    },
+    "P1-FINAL-HIGH-003": {
+      "goldCategory": "SECURITY",
+      "rationale": "The PII scanner's allowlist skips a whole line that holds a placeholder address, so a real address beside it passes.",
+      "defectClass": "code"
+    },
+    "P2-FINAL-HIGH-001": {
+      "goldCategory": "EVIDENCE_INTEGRITY",
+      "rationale": "The integration gate passes without provisioning or health-checking the real backends and pins no image digest.",
+      "defectClass": "gate-config"
+    },
+    "P2-FINAL-HIGH-002": {
+      "goldCategory": "SECURITY",
+      "rationale": "The agent sandbox is optional and mounts the worktree read-write, so the agent can write the repository's git metadata.",
+      "defectClass": "code"
+    },
+    "P2-FINAL-HIGH-003": {
+      "goldCategory": "CORRECTNESS",
+      "rationale": "Risk admission runs after the lease and the workspace exist, so a refused task has already caused side effects.",
+      "defectClass": "code"
+    },
+    "P2-FINAL-HIGH-004": {
+      "goldCategory": "SECURITY",
+      "rationale": "Requests can act for another tenant, and organization creation needs no authentication.",
+      "defectClass": "code"
+    },
+    "P2-FINAL-HIGH-005": {
+      "goldCategory": "CORRECTNESS",
+      "rationale": "Authoritative references are stored without foreign keys or checksum checks, so records can point at the wrong or a missing object.",
+      "defectClass": "code"
+    },
+    "P2-FINAL-HIGH-006": {
+      "goldCategory": "CORRECTNESS",
+      "rationale": "A side effect recorded as pending is replayed after a crash instead of being reconciled, so commits, pushes or pull requests repeat.",
+      "defectClass": "code"
+    },
+    "P2-FINAL-HIGH-007": {
+      "goldCategory": "SECURITY",
+      "rationale": "A commit the agent creates on a detached head is not detected, because only created refs and git-directory writes are checked.",
+      "defectClass": "code"
+    },
+    "P2-FINAL-HIGH-008": {
+      "goldCategory": "ARCHITECTURE",
+      "rationale": "No production composition root exists: the shared driver hard-codes test doubles instead of injecting the real adapters.",
+      "defectClass": "code"
+    },
+    "P2-FINAL-HIGH-009": {
+      "goldCategory": "EVIDENCE_INTEGRITY",
+      "rationale": "The pilot manifest verifier trusts self-declared data, so a fabricated complete manifest passes.",
+      "defectClass": "gate-config"
+    },
+    "P2-FINAL-MED-001": {
+      "goldCategory": "TEST_QUALITY",
+      "rationale": "The persistence tests run on one in-process connection, so they cannot show PostgreSQL's concurrency and advisory-lock behaviour.",
+      "defectClass": "test-adequacy"
+    },
+    "P2-FINAL-MED-002": {
+      "goldCategory": "CORRECTNESS",
+      "rationale": "An already expired token is used, and every HTTP 403 is treated as an expired credential.",
+      "defectClass": "code"
+    },
+    "P2-FINAL-MED-003": {
+      "goldCategory": "SPEC",
+      "rationale": "Most of the required spans have no runtime call site, so the audit trail misses them.",
+      "defectClass": "code"
+    },
+    "P2-FINAL-MED-004": {
+      "goldCategory": "ARCHITECTURE",
+      "rationale": "The app layer calls repositories and sequences the workflow directly, and the import scanner misses the pattern.",
+      "defectClass": "code"
+    },
+    "P2-FINAL-MED-005": {
+      "goldCategory": "EVIDENCE_INTEGRITY",
+      "rationale": "The phase report claims more than its evidence shows and names a head SHA other than the one reviewed.",
+      "defectClass": "claim-integrity"
+    },
+    "P2-FINAL-MED-006": {
+      "goldCategory": "TEST_QUALITY",
+      "rationale": "The pilot rehearsal is a tabletop document whose faults have no executable test.",
+      "defectClass": "test-adequacy"
+    },
+    "P2-REREVIEW-MED-NEW-001": {
+      "goldCategory": "TEST_QUALITY",
+      "rationale": "The object-store backend is only health-checked; no artifact path stores or reads through it in the gate.",
+      "defectClass": "test-adequacy"
+    },
+    "P2-REREVIEW-MED-NEW-002": {
+      "goldCategory": "EVIDENCE_INTEGRITY",
+      "rationale": "The real-backend vertical-slice suite is not a required suite, so removing it leaves the gate green.",
+      "defectClass": "gate-config"
+    }
+  }
+}

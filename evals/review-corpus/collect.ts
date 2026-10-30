@@ -6,9 +6,9 @@
 // the item depends on the controller's private bundle, the next review cycle's confirmation,
 // the cited locations, and content-addressed excerpts of the cited files at the reviewed and
 // post-fix trees. It records only provenance-level exclusions (plan-defect,
-// reviewed-tree-unknown, excerpt-unpublishable). Packet-dependent
-// eligibility, the manifest and corpusSha256 are frozen only after the corpus protocol is
-// confirmed (docs/implementation/phases/phase-04-plan.md §7.5, §7.8; data model §7.1).
+// reviewed-tree-unknown, excerpt-unpublishable). The freeze rules, the manifest and
+// corpusSha256 are freeze.ts's (docs/implementation/phases/phase-04-plan.md §7.5, §7.8;
+// data model §7.1).
 //
 // Regenerate the committed data from the repository root:
 //
@@ -533,6 +533,13 @@ export class GitReader {
   historyKeys(sha: string): ReadonlySet<string> {
     const out = this.text(['log', '--format=%aI%x09%s', sha]);
     return new Set(out.split('\n').filter(Boolean));
+  }
+
+  /** The bytes of `git diff <flags> from to` over every file; the command must succeed. */
+  diff(flags: readonly string[], from: string, to: string): Uint8Array {
+    const out = this.probe(['diff', ...flags, from, to]);
+    if (out === null) fail(`git diff ${from.slice(0, 7)} ${to.slice(0, 7)} failed`);
+    return new Uint8Array(out);
   }
 }
 

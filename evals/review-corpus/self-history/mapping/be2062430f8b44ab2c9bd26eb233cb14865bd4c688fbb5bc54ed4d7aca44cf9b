@@ -1,0 +1,35 @@
+diff --git a/scripts/lib/canonical-tests.mjs b/scripts/lib/canonical-tests.mjs
+index 2a84839..e2a0bef 100644
+--- a/scripts/lib/canonical-tests.mjs
++++ b/scripts/lib/canonical-tests.mjs
+@@ -128,6 +128,30 @@ export const REQUIRED_SUITES = Object.freeze({
+   // (ten genuine tasks, real provider, unique work orders, resolvable traces).
+   // Registered so a dropped/renamed pilot gate turns the gate RED.
+   'asep-suite:pilot-manifest': 'scripts/pilot/verify-pilot-manifest.test.ts',
++  // HIGH-001 integration-gate negative tests: prove the gate goes RED (never a
++  // silent skip) when a backend is absent, an image is not digest-pinned,
++  // discovery finds nothing, or a required itest marker is missing. The
++  // fail-closed logic runs under the fast unit runner; the live-backend proof is
++  // the *.itest.ts suites under scripts/integration/run-integration.mjs.
++  'asep-suite:integration-gate': 'scripts/integration/run-integration.test.ts',
++  // HIGH-003 governed-execution: proves the TOP-LEVEL use case runs admission
++  // BEFORE any lease/workspace/agent/inspect side effect — R2..R4 defer with
++  // every downstream port spy at exactly zero calls. Registered so a dropped or
++  // renamed admission-ordering suite turns the gate RED.
++  'asep-suite:governed-execution': 'packages/application/src/governed-execution.test.ts',
++  // MED-006 executable pilot rehearsal: the five injected faults run against
++  // REAL mechanisms (PGlite DB restart / side-effect reconciliation, filesystem
++  // object-store outage, real lease TTL-sweep) and assert the documented
++  // recovery decision on real state. Registered so a dropped/renamed rehearsal
++  // suite turns the gate RED.
++  'asep-suite:pilot-rehearsal': 'adapters/persistence/src/pilot-rehearsal.test.ts',
++  // HIGH-008 forge port conformance: the ONE type that both `implements
++  // ForgeProvider` and drives the GitHub App adapter. Proves the real adapter is
++  // reachable through the application port (pushing the EXACT harness commit
++  // from a detached worktree to a real bare remote), that ref safety and tenant
++  // scoping hold through the seam, and that no merge capability exists.
++  // Registered so a dropped/renamed conformance suite turns the gate RED.
++  'asep-suite:forge-port-adapter': 'adapters/github-app/src/port-adapter.test.ts',
+ });
+ 
+ /** The machine-readable marker a suite prints at module load: `SUITE-ID: <id>`. */
