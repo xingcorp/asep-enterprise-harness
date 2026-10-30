@@ -1424,3 +1424,210 @@ gate's real PostgreSQL and registers no tests (`bcbafc1`).
 
 The blank line at the end of this file is gone; `git diff --check` over the
 cycle exits 0.
+
+## Final review cycle 10 dispositions
+
+> Reviewer: Codex `gpt-6.1-sol`, re-review cycle 10 at `5dd2300`
+> (`phase-02-final-rereview-codex-v10.md`), verdict **REQUEST_CHANGES** @ 0.98.
+> The controller's decisions on it (reconciliation R39) were applied as
+> stated. Repairs: repair cycle 11, on `phase/02-single-agent-vertical-slice`
+> from `5dd2300`. Every disposition, repair, test and mutation check below
+> was made and verified by the implementer only; none has been independently
+> reviewed. A mutation check applies each mutant to the source, rebuilds,
+> runs the named suites and reverts the mutant; "killed" means at least one
+> named test failed or was cancelled by its own timeout (a mutant that does
+> not compile is not counted).
+
+### What the review accepted, and what it did not
+
+The review marked **RESOLVED**: CYCLE9-HIGH-002 (both controller integration
+runs green at `5dd2300`), CYCLE9-MED-002, CYCLE9-LOW-001, the resume-base
+mutation, the schema reference convention and R26. It found **PARTIAL**:
+CYCLE9-HIGH-001, CYCLE9-MED-001, HIGH-006, MED-005, CYCLE7-HIGH-003,
+CYCLE8-HIGH-003 and the timeout work, and raised CYCLE10-HIGH-001
+(completion checked one PR and returned another), CYCLE10-HIGH-002 (the
+removal bound measured a client's return, not the container's absence),
+CYCLE10-MED-001 (the documents promised a closed PR is never edited; a
+surviving `state: 'open'` mutation), CYCLE10-MED-002 (the 72 s attribution
+of the 80.8 s run had no evidence) and CYCLE10-MED-003 (an ambiguous network
+create skipped its cleanup). Per R39 the declared limitations (2), (3) and
+(4) are accepted as Phase 2 limits: the failure written from the persisted
+`PENDING` status without a domain transition check, a PR closed after its
+task reached review, and the hung-agent test's setup inside its 45 s budget
+as a test condition, not a product SLA.
+
+### Summary
+
+| ID | Disposition | Commits |
+|---|---|---|
+| CYCLE10-HIGH-001 | ACCEPTED — completion and resume read the PR back after its record and bind it to the record; the probes are tests | `2cbf335` |
+| CYCLE10-HIGH-002 | ACCEPTED — removal reported only once shown gone, within a named bound; the 91 s case is a red test; runner itest bounded | `3fbfb9b` |
+| CYCLE10-MED-001 | ACCEPTED — update payload key set asserted; the fake applies `state` and `base`; the human interleavings are tests; residual race stated | `6ad22d3` |
+| CYCLE10-MED-002 | ACCEPTED — the 72 s attribution withdrawn; the split is not recorded | `53f966f` |
+| CYCLE10-MED-003 | ACCEPTED — named and labelled before every create, swept whatever the answer | `4159b19` |
+| Limitations (2), (3), (4) | accepted as Phase 2 limits (R39) | report |
+| MED-005 | report updated | docs commit + sentinel |
+
+Also: `399a634` adds the cycle-10 transcript with its provenance note.
+
+### CYCLE10-HIGH-001 — completion checked one PR and returned another — ACCEPTED
+
+**Invariant:** what completion returns, and the workflow and the resume
+persist, is the PR the forge showed after the attempt's `pr-upsert` record,
+checked against that record — never the upsert's answer or the record
+itself. A different PR on the branch, a mismatch, or a change between the
+upsert and that read ends `FAILED / publication-incomplete` with an audit
+entry.
+**Change (`2cbf335`):**
+- `publicationGap(observed, recorded, facts)`: the PR shown for the branch
+  must be the recorded one (number, url, head branch, base branch), open,
+  unmerged, on the attempt's base (`pullRequestGap`), and its head commit
+  must be the attempt's commit; nothing shown, another PR, a head commit the
+  forge did not report, or another commit is a gap.
+- `reconcilePullRequestStep` takes the record (`recorded`), checks before
+  any write, writes only to the recorded, reviewable PR (title and body from
+  the facts, audited `forge.reconcile`), reads it back after a write and
+  returns that observation. It no longer creates a missing PR.
+- `completeToReview` runs it after the upsert (fresh and adopted alike) and
+  returns the observation as `pr`, the record as `recorded`, and stops
+  `upsert-pr` with the gap. `resumeAttemptToReview` runs it with the record
+  in place of its number check (which threw) and persists the observation.
+- The workflow fails the task on any gap, with or without a PR shown. The
+  audit detail gains `recorded: {number, url, headBranch, baseBranch}` and
+  `found.headSha`; `found` is `null` when nothing was shown.
+**Tests:**
+- `CYCLE10_REAL_ADAPTER_REPLACEMENT` through the GitHub adapter, its port and
+  the real run and resume (`crash-recovery.test.ts`, "a successor that finds
+  another PR on the attempt's branch fails the task and writes nothing"):
+  the executor dies after PR #1 is recorded; a human closes #1 and opens #2
+  on the same head; the successor adopts #1 from its record, the forge shows
+  #2: `publication-incomplete`, task `FAILED`, GitHub writes only the
+  original `create`, both PRs as left, no PR row, the audit row names #2 as
+  found and #1 as recorded. The same at the resume level and the pipeline
+  level (`resume-attempt.test.ts`, `pipeline-steps.test.ts`).
+- `CYCLE10_FRESH_PR_CHANGED_DURING_RECORD`: a log whose `complete('pr-upsert')`
+  lets a human close, merge, retarget or move the PR stops completion with
+  the gap (`pipeline-steps.test.ts`); through the adapter and port, a PR a
+  human closes, merges or retargets right after it is opened fails the run
+  with the exact audit detail and no PR row, and a PR the forge no longer
+  shows fails it with `found: null` (`crash-recovery.test.ts`).
+- Completion returns the very observation it checked, not the upsert's
+  answer; `publicationGap` cases (number, url, head, base, state, head commit
+  wrong or unreported); reconcile writes nothing to another PR and creates
+  none; a PR closed between the repair's write and its read-back is a gap
+  with that observation returned. Forge doubles report a PR's head commit
+  as GitHub does (the branch tip, learned from the pushes).
+**Mutation check:** 12 mutants, all killed: completion returns the upsert's
+answer; number, url, head branch or recorded base not bound (4); head commit
+not bound; an unreported head commit accepted; no read-back after a repair;
+identity checked only after the write; completion reads only the upsert's
+answer; the workflow fails the task only when a PR was shown; the resume
+persists despite another PR.
+**Limitation:** the forge may update a PR's head commit asynchronously after
+a push; a read that lands before GitHub has caught up is a gap, failing the
+task closed rather than completing it.
+
+### CYCLE10-HIGH-002 — the removal bound measured the client, not the container — ACCEPTED
+
+**Invariant:** a container is reported removed only once the daemon shows it
+gone, and only within a named bound; a removal not shown in time is a
+failure of the attempt or the run, and a timing assertion sees it.
+**Change (`3fbfb9b`):**
+- `removeContainerShownGone(docker, name, until)` (`@asep/command-runner`):
+  `docker rm -f`, then `docker inspect --type container`, which must answer
+  "No such container" — after a successful or a failed rm; tried again while
+  time is left, no try started past `until`, every call cut at what is left
+  (`DockerCall` takes a per-call timeout). `removeLabelledContainers` takes a
+  deadline the same way.
+- Agent: `AGENT_REMOVAL_BOUND_MS` (one docker-call timeout) after the client
+  ended, never past `AGENT_STOP_BOUND_MS` (kill plus removal, still 60 s)
+  after a stop (`agentRemovalDeadline`). `agent-removed` is emitted only once
+  shown gone; otherwise the container is a leftover and the attempt fails
+  closed.
+- Runner: `COMMAND_REMOVAL_BOUND_MS` (one docker-call timeout) after the
+  client ended; `removed` is emitted only when `docker ps -a` lists no
+  container with its label; otherwise `SandboxTeardownError`.
+- The fake docker emulates `inspect --type container`.
+**Tests:**
+- The reviewer's `CYCLE10_REMOVAL_ORACLE`, as a deterministic double: the
+  removal path on virtual time, through the product's deadline and removal
+  helper, with the kill cut at 30 s and the container gone only at 91 s
+  (slow retries of 5 s, and fast ones): no `agent-removed`, and the stop-bound
+  assertion is red; a removal reported at 91 s is red too; one gone at 45 s
+  is shown, reported and green (`agent-claude.test.ts`). The same deadline
+  behaviour for both helpers (`command-runner.test.ts`).
+- A daemon that keeps the agent while answering its rm with success: never
+  reported removed, attempt `FAILED`. One whose inspect never answers: fails
+  at the bound. One whose rm errs after removing: shown gone, reported. The
+  removal is reported after the inspect, not the rm. The runner's refused
+  and hung removals: no `removed`, `SandboxTeardownError`, the hung one at
+  its bound.
+- Integration: `sandbox-exec.itest.ts` bounds `exited → removed` by
+  `COMMAND_REMOVAL_BOUND_MS` and `stop → removed` by the stop and removal
+  bounds, each plus the 2 s allowance; `agent-sandbox.itest.ts` bounds the
+  killed-client case by `AGENT_REMOVAL_BOUND_MS`, and its stop-bound
+  assertion now runs to the proven moment.
+**Mutation check:** 8 mutants, all killed: provider reports removal without
+proof; a successful rm counts as proof; provider removal without a deadline
+(cancelled by the test's timeout); deadline ignores the stop bound; by-name
+calls not cut at the deadline; runner reports removal without proof; runner
+removal without a deadline (cancelled by the test's timeout); label removal
+ignores its deadline.
+
+### CYCLE10-MED-001 — "never edited" was more than the adapter can promise — ACCEPTED
+
+**Invariant:** the harness never reopens or retargets a PR — its update
+carries the PR's name, title and body and nothing else; it does not write a
+PR it reads closed, merged or on another base. A human acting between that
+read and the write still receives the title/body write: a residual
+read/write race GitHub offers no compare-and-set to close (R30).
+**Change (`6ad22d3`):** the fake pulls API applies `state` and `base` when an
+update carries them (a merged PR cannot be reopened) and records each
+update. Adapter and local-double comments, data model, threat model (T2-17
+and its summary), runbook §3.4 and the report state the residual race; the
+completion read after it (CYCLE10-HIGH-001) fails the task. The cycle-9
+dispositions above keep their original wording as the record of that cycle.
+**Tests:** the update's key set is exactly `owner, repo, pull_number, title,
+body`, on the plain update and in each interleaving; a human closes, merges
+or retargets the PR between `pulls.list()` and `pulls.update()`: the PR is
+neither reopened nor retargeted, no second PR is opened, and the title and
+body land on it as the human left it (`github-app.test.ts`).
+**Mutation check:** 3 mutants, all killed: the reviewer's `...{ state: 'open' }`
+in the update; a `base` in the update; any other extra field.
+
+### CYCLE10-MED-002 — the 72 s attribution — ACCEPTED
+
+Withdrawn (`53f966f`). The cycle-9 section above now says the 80.8 s is the
+whole test, fixture setup and cleanup included, that the per-phase split is
+not recorded and cannot be verified, and that the status does not show the
+setup finished before the deadline (`network connect` runs after the proxy is
+ready and can run past it). The report says the same.
+
+### CYCLE10-MED-003 — an ambiguous network create skipped its cleanup — ACCEPTED
+
+**Invariant:** every network and container the harness asks the daemon for
+is named and labelled before it is asked for, and is removed by that name
+and swept by that label whatever the create answers; only a client that
+never started asked for nothing.
+**Change (`4159b19`):** the agent network is marked created before
+`network create`; a create whose client never started is not; a failed
+create says why; the teardown's `network rm` of a network that was never
+made is not a teardown note. Every other create of the class: the egress
+proxy is marked created before its client is spawned (it was set right
+after, synchronously); the agent container already was; the command
+runner's verification container is named and labelled before its client and
+is now removed also when the client errs after it started (previously only
+on `close`); the integration gate's backends are named before `docker run`
+and removed by name in `finally` (unchanged); no volume is created anywhere;
+the agent itest's own upstream network, model container, host service and
+probe network are removed by name when their create fails.
+**Tests:** a create that errs, or whose client is cut at its timeout, after
+the daemon made the network: removed by name, swept by label, nothing left,
+no false note; a refused create: swept, no false note; a docker binary that
+cannot start still fails with its own reason (`agent-claude.test.ts`).
+**Mutation check:** 3 mutants, all killed: the network marked created only
+after a confirmed create (the old code); an unstarted client counted as a
+create; a missing network reported not removed. Not mutation-checked: the
+runner's removal after a client error (no test seam produces a client
+`error` after a successful spawn), the proxy flag's order (equivalent: it
+was already set synchronously at spawn), and the itest fixtures.
