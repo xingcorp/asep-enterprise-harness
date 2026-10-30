@@ -174,6 +174,7 @@ interface Harness {
 async function harness(opts: {
   echoKey?: boolean; workOrder?: unknown; refuseRemoval?: boolean; hangKill?: boolean;
   keepAgent?: boolean; agentRmErrs?: boolean; hangInspect?: boolean;
+  netCreate?: 'hangs-after' | 'errs-after' | 'refused';
 } = {}): Promise<Harness> {
   // Real paths: the provider resolves the worktree with realpath(3).
   const dir = await realpath(await mkdtemp(join(tmpdir(), 'claude-provider-')));
@@ -186,8 +187,11 @@ async function harness(opts: {
   // with `hangKill` for one whose `docker kill` of the agent never answers,
   // with `keepAgent` for one that cannot stop the agent and answers its
   // removal with success while keeping it, and with `agentRmErrs` for one that
-  // removes the agent but answers its removal with an error, and with
-  // `hangInspect` for one that never answers whether a container exists.
+  // removes the agent but answers its removal with an error, with
+  // `hangInspect` for one that never answers whether a container exists, and
+  // with `netCreate` for one that creates the agent network and then never
+  // answers ('hangs-after') or answers with an error ('errs-after'), or
+  // refuses to create it ('refused').
   const fake = `"${process.execPath}" "${FAKE_DOCKER}" --state "${state}" "$@"`;
   await writeFile(docker, [
     '#!/bin/sh',
@@ -202,6 +206,13 @@ async function harness(opts: {
       `case "$1 $2 $3" in "rm -f asep-agent-"*) ${fake} >/dev/null; echo "Error response from daemon: lost the answer" >&2; exit 1;; esac`,
     ] : []),
     ...(opts.hangInspect ? ['case "$1" in inspect) exec sleep 600;; esac'] : []),
+    ...(opts.netCreate === 'hangs-after' ? [`case "$1 $2" in "network create") ${fake} >/dev/null; exec sleep 600;; esac`] : []),
+    ...(opts.netCreate === 'errs-after' ? [
+      `case "$1 $2" in "network create") ${fake} >/dev/null; echo "Error response from daemon: lost the answer" >&2; exit 1;; esac`,
+    ] : []),
+    ...(opts.netCreate === 'refused' ? [
+      'case "$1 $2" in "network create") echo "Error response from daemon: refused" >&2; exit 1;; esac',
+    ] : []),
     `exec ${fake}`,
     '',
   ].join('\n'), { mode: 0o755 });
@@ -1037,6 +1048,38 @@ test('G3: an agent removal the daemon cannot show within its bound fails the att
     await h.close();
   }
 });
+
+// A create the client cannot confirm may still have been made: the network is
+// named and labelled before it is asked for and swept by both whatever the
+// answer.
+const netCreateCases = {
+  'errs-after': 'errs after the daemon made the network',
+  'hangs-after': 'times out after the daemon made the network',
+  refused: 'the daemon refused',
+} as const;
+for (const netCreate of ['errs-after', 'hangs-after', 'refused'] as const) {
+  test(`a network create that ${netCreateCases[netCreate]} leaves nothing behind and no false teardown note`, { timeout: 120_000 }, async () => {
+    const h = await harness({ netCreate });
+    try {
+      const obs = await (await h.provider('ok')).execute(request(h));
+      assert.equal(obs.status, 'FAILED', obs.knownLimitations.join('; '));
+      assert.match(obs.summary, /did not start: docker network create failed/);
+      assert.deepEqual(h.lifecycle.map((e) => e.phase), ['started', 'torn-down'], 'nothing past the network was started');
+      // The client's own log: the refusing daemon answers before the fake records the call.
+      const asked = readFileSync(join(h.dir, 'client-pids'), 'utf8').split('\n')
+        .find((l) => / network create /.test(` ${l.split(' ').slice(1).join(' ')} `))!;
+      const net = asked.trim().split(' ').at(-1)!;
+      assert.match(net, /^asep-agent-net-/);
+      assert.ok(argvOf(h.invocations()).some((a) => a[0] === 'network' && a[1] === 'rm' && a[2] === net), 'removed by its name');
+      assert.ok(argvOf(h.invocations()).some((a) => a[0] === 'network' && a[1] === 'ls' && a.includes(`label=asep.attempt=${ATTEMPT}`)),
+        'and swept by its label');
+      assert.doesNotMatch(obs.knownLimitations.join(' '), /could not be shown removed|not removed/);
+      assertTornDown(h);
+    } finally {
+      await h.close();
+    }
+  });
+}
 
 test('G3: the agent removal deadline is its bound after the client ended, never past the stop bound', () => {
   assert.equal(agentRemovalDeadline({ exitedAt: 1_000 }), 1_000 + AGENT_REMOVAL_BOUND_MS);

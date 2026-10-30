@@ -139,21 +139,31 @@ async function world(): Promise<World> {
   const logs = join(dir, 'model-log');
   await mkdir(logs);
   const modelLog = join(logs, 'requests.jsonl');
-  await mustDocker(['network', 'create', '--internal', upstreamNet]);
   const uid = `${process.getuid!()}:${process.getgid!()}`;
-  await mustDocker([
-    'run', '-d', '--rm', '--name', modelName, '--network', upstreamNet, '--user', uid,
-    '--mount', `type=bind,src=${TESTING},dst=${TESTING},readonly`,
-    '--mount', `type=bind,src=${logs},dst=${logs}`,
-    NODE, 'node', join(TESTING, 'fake-model-api.mjs'), '--listen', '0.0.0.0:8080', '--log', modelLog,
-  ]);
-  for (let i = 0; i < 100 && !(existsSync(modelLog) && readFileSync(modelLog, 'utf8').includes('listening')); i++) {
-    await new Promise((r) => setTimeout(r, 100));
+  // Named before they are asked for: a create that fails or times out may
+  // still have made them, so they are removed by name whatever the answer.
+  let modelIp: string;
+  try {
+    await mustDocker(['network', 'create', '--internal', upstreamNet]);
+    await mustDocker([
+      'run', '-d', '--rm', '--name', modelName, '--network', upstreamNet, '--user', uid,
+      '--mount', `type=bind,src=${TESTING},dst=${TESTING},readonly`,
+      '--mount', `type=bind,src=${logs},dst=${logs}`,
+      NODE, 'node', join(TESTING, 'fake-model-api.mjs'), '--listen', '0.0.0.0:8080', '--log', modelLog,
+    ]);
+    for (let i = 0; i < 100 && !(existsSync(modelLog) && readFileSync(modelLog, 'utf8').includes('listening')); i++) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    assert.ok(readFileSync(modelLog, 'utf8').includes('listening'), 'the fake model API came up');
+    modelIp = await mustDocker([
+      'inspect', '-f', `{{(index .NetworkSettings.Networks "${upstreamNet}").IPAddress}}`, modelName,
+    ]);
+  } catch (err) {
+    await docker(['rm', '-f', modelName]);
+    await docker(['network', 'rm', upstreamNet]);
+    await rm(dir, { recursive: true, force: true });
+    throw err;
   }
-  assert.ok(readFileSync(modelLog, 'utf8').includes('listening'), 'the fake model API came up');
-  const modelIp = await mustDocker([
-    'inspect', '-f', `{{(index .NetworkSettings.Networks "${upstreamNet}").IPAddress}}`, modelName,
-  ]);
 
   // Every docker invocation the provider makes is logged — argv and client
   // environment — then handed to the real client with exec (signals intact).
@@ -327,26 +337,34 @@ function request(workOrderRef: ArtifactRef, contextPackRef: ArtifactRef, over: P
 async function hostService(): Promise<{ port: number; stop(): Promise<void> }> {
   const name = `asep-itest-hostsvc-${randomUUID().slice(0, 8)}`;
   const port = 40_000 + Math.floor(Math.random() * 20_000);
-  await mustDocker([
-    'run', '-d', '--rm', '--name', name, '--network', 'host', NODE, 'node', '-e',
-    // A client that drops the connection must not take the service down.
-    `require('net').createServer((s) => { s.on('error', () => {}); s.end('host\\n'); })` +
-      `.listen(${port}, '0.0.0.0', () => console.log('listening'))`,
-  ]);
-  for (let i = 0; i < 100; i++) {
-    if ((await docker(['logs', name])).stdout.includes('listening')) break;
-    await new Promise((r) => setTimeout(r, 100));
+  const stop = async (): Promise<void> => { await docker(['rm', '-f', name]); };
+  // Named before it is asked for, and removed by that name if it does not come up.
+  try {
+    await mustDocker([
+      'run', '-d', '--rm', '--name', name, '--network', 'host', NODE, 'node', '-e',
+      // A client that drops the connection must not take the service down.
+      `require('net').createServer((s) => { s.on('error', () => {}); s.end('host\\n'); })` +
+        `.listen(${port}, '0.0.0.0', () => console.log('listening'))`,
+    ]);
+    for (let i = 0; i < 100; i++) {
+      if ((await docker(['logs', name])).stdout.includes('listening')) break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    assert.match((await docker(['logs', name])).stdout, /listening/, 'the host service came up');
+  } catch (err) {
+    await stop();
+    throw err;
   }
-  assert.match((await docker(['logs', name])).stdout, /listening/, 'the host service came up');
-  return { port, stop: async () => { await docker(['rm', '-f', name]); } };
+  return { port, stop };
 }
 
 // Whether a container on a network made with `flags` reaches the host service
 // through that network's gateway.
 async function reachesHostThroughGateway(flags: readonly string[], port: number): Promise<string> {
   const net = `asep-itest-ctl-${randomUUID().slice(0, 8)}`;
-  await mustDocker(['network', 'create', ...flags, net]);
+  // Removed by its name below even when the create fails or times out.
   try {
+    await mustDocker(['network', 'create', ...flags, net]);
     const shown = JSON.parse(await mustDocker(['network', 'inspect', '--format', '{{json .}}', net]));
     const gateway = (shown.IPAM?.Config ?? []).map((c: { Gateway?: string }) => c.Gateway).find(Boolean);
     if (!gateway) return 'no-gateway';

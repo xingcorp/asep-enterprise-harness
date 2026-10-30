@@ -355,18 +355,21 @@ function appendBounded(c: Captured, chunk: Buffer, max: number): void {
   c.bytes += part.byteLength;
 }
 
+// `started` is whether the client process was started at all: one that failed
+// to spawn asked the daemon for nothing.
 function runDocker(
   bin: string, args: readonly string[], timeoutMs = DOCKER_CALL_TIMEOUT_MS,
-): Promise<{ code: number | null; stdout: string; stderr: string }> {
+): Promise<{ code: number | null; stdout: string; stderr: string; started: boolean }> {
   return new Promise((resolve) => {
     const child = spawn(bin, args, { env: dockerClientEnv(), shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
+    const started = child.pid !== undefined;
     const out: Captured = { text: '', bytes: 0 };
     const err: Captured = { text: '', bytes: 0 };
     const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs);
     child.stdout.on('data', (d: Buffer) => appendBounded(out, d, MAX_STDERR_BYTES));
     child.stderr.on('data', (d: Buffer) => appendBounded(err, d, MAX_STDERR_BYTES));
-    child.on('error', (e) => { clearTimeout(timer); resolve({ code: -1, stdout: '', stderr: e.message }); });
-    child.on('close', (code) => { clearTimeout(timer); resolve({ code, stdout: out.text, stderr: err.text }); });
+    child.on('error', (e) => { clearTimeout(timer); resolve({ code: -1, stdout: '', stderr: e.message, started }); });
+    child.on('close', (code) => { clearTimeout(timer); resolve({ code, stdout: out.text, stderr: err.text, started }); });
   });
 }
 
@@ -654,14 +657,22 @@ export class ClaudeCodingProvider implements CodingAgentProvider {
       }
 
       // --- the internal network, isolated from the host --------------------
+      // Its name and label are fixed before it is asked for. A create the
+      // client cannot confirm — an error, or a client cut at its timeout — may
+      // still have been made by the daemon, so the teardown removes it by that
+      // name and sweeps that label whatever the answer.
+      created.network = true;
       const net = await runDocker(this.docker, [
         'network', 'create', ...AGENT_NETWORK_FLAGS, '--label', `asep.attempt=${req.attemptId}`, network,
       ]);
       if (net.code !== 0) {
-        setup('FAILED', `docker network create failed: ${net.stderr.trim().slice(0, 300)}`);
+        // A client that never started asked the daemon for nothing.
+        if (!net.started) created.network = false;
+        const why = net.stderr.trim().slice(0, 300)
+          || (net.code === null ? 'its client was cut at the docker-call timeout' : `exit ${net.code}`);
+        setup('FAILED', `docker network create failed: ${why}`);
         return;
       }
-      created.network = true;
       // A daemon that accepted the options but did not apply them must not get
       // an agent: confirm from its own description, before anything attaches.
       const shown = await runDocker(this.docker, ['network', 'inspect', '--format', '{{json .}}', network]);
@@ -682,12 +693,14 @@ export class ClaudeCodingProvider implements CodingAgentProvider {
       mark('network-ready');
 
       // --- the egress proxy, credential on stdin ----------------------------
+      // Named and labelled before it is asked for, so the teardown removes it
+      // whatever its client answers.
+      created.proxy = true;
       const proxyReady = await new Promise<string | undefined>((resolve) => {
         const child = spawn(this.docker, proxyArgs, {
           env: dockerClientEnv(), shell: false, stdio: ['pipe', 'pipe', 'pipe'],
         });
         proxyChild = child;
-        created.proxy = true;
         let out = '';
         let settled = false;
         const finish = (v: string | undefined): void => {
@@ -765,8 +778,12 @@ export class ClaudeCodingProvider implements CodingAgentProvider {
         if (left !== undefined) rec.leftovers.push(left);
       }
       if (created.network) {
+        // A create that never took leaves nothing to remove; the label sweep
+        // below shows what is left either way.
         const r = await runDocker(this.docker, ['network', 'rm', network]);
-        if (r.code !== 0) rec.teardown.push(`network ${network} not removed: ${r.stderr.trim().slice(0, 200)}`);
+        if (r.code !== 0 && !/not found/i.test(r.stderr)) {
+          rec.teardown.push(`network ${network} not removed: ${r.stderr.trim().slice(0, 200)}`);
+        }
         const left = await removeLabelledNetworks(docker, `asep.attempt=${req.attemptId}`);
         if (left !== undefined) rec.leftovers.push(left);
       }

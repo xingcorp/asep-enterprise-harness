@@ -157,7 +157,10 @@ export class TrustedCommandRunner implements CommandRunner {
       ? async () => { await docker(['kill', container]); }
       : async () => undefined;
 
-    const result = await new Promise<{
+    // Whether a client process was started at all: a client that failed to
+    // spawn made no container; one that started may have, however it ends.
+    let spawned = false;
+    const ran = new Promise<{
       exitCode: number | null; signal: string | null; timedOut: boolean;
     }>((resolve, reject) => {
       // shell:false is the default for spawn with an argv; we set it explicitly
@@ -172,6 +175,7 @@ export class TrustedCommandRunner implements CommandRunner {
         detached: true,
         stdio: ['ignore', 'pipe', 'pipe'],
       });
+      spawned = child.pid !== undefined;
       this.mark('spawned');
 
       let timedOut = false;
@@ -234,11 +238,25 @@ export class TrustedCommandRunner implements CommandRunner {
       });
     });
 
-    // However the client ended, the container goes with it: removed by label
-    // and shown gone within its bound, or the run fails closed below. Only a
-    // container shown gone is reported removed.
-    const left = await removeContainer();
-    if (container !== undefined && left === undefined) this.mark('removed');
+    let result: Awaited<typeof ran>;
+    let clientError: { readonly error: unknown } | undefined;
+    try {
+      result = await ran;
+    } catch (error) {
+      clientError = { error };
+      result = { exitCode: null, signal: null, timedOut: false };
+    }
+
+    // However the client ended — on its own, killed, or with an error once it
+    // had started — the container goes with it: removed by label and shown
+    // gone within its bound, or the run fails closed below. Only a container
+    // shown gone is reported removed.
+    const left = spawned ? await removeContainer() : undefined;
+    if (container !== undefined && spawned && left === undefined) this.mark('removed');
+    if (clientError !== undefined) {
+      if (left !== undefined) throw new SandboxTeardownError(`verification container ${container}`, left);
+      throw clientError.error;
+    }
 
     // Store raw output as immutable artifacts BEFORE returning (D5). This
     // happens for every run, success or fail, so evidence exists before any
