@@ -17,7 +17,9 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync, type ChildProcess } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { readFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -26,7 +28,7 @@ import { discoverTestFiles, REQUIRED_SUITES, suiteMarker, missingRequiredSuites,
 // @ts-expect-error — .mjs helpers have no type declarations; we test their runtime contract.
 import { runCanonicalTests } from './run-canonical-tests.mjs';
 // @ts-expect-error — .mjs helpers have no type declarations; we test their runtime contract.
-import { endProcess, identityOf, stillRunning } from './lib/process-registry.mjs';
+import { endProcess, identityOf, shownGone, spawnRecorded, stillRunning, unregister } from './lib/process-registry.mjs';
 
 // Machine-readable suite marker (kept consistent with the other suites, though
 // this file is not itself in the required set).
@@ -36,6 +38,13 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(HERE, '..');
 const REGISTRY_MODULE = pathToFileURL(join(HERE, 'lib', 'process-registry.mjs')).href;
 const SUITES_MODULE = pathToFileURL(join(HERE, 'lib', 'canonical-tests.mjs')).href;
+
+// A leader of its own group that starts a member of that group with the token
+// it is given (its first argument), prints the member's pid, and exits: a
+// group that cannot be shown to be the one recorded with the leader's token.
+const LEADER_WITH_A_STRANGER = "const c = require('node:child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60_000)'], "
+  + "{ stdio: 'ignore', env: { PATH: process.env.PATH, ASEP_PROCESS_TOKEN: process.argv[1] } }); "
+  + "process.stdout.write(c.pid + '\\n'); setTimeout(() => process.exit(0), 100);";
 
 // A test file that leaves a process of its own group running, recorded in the
 // registry its runner handed it, as a fake container whose test died would,
@@ -55,10 +64,7 @@ import { spawnRecorded } from ${JSON.stringify(REGISTRY_MODULE)};
 import { REQUIRED_SUITES, suiteMarker } from ${JSON.stringify(SUITES_MODULE)};
 for (const id of Object.keys(REQUIRED_SUITES)) console.log(suiteMarker(id));
 const memberToken = randomUUID();
-const script = ${JSON.stringify(
-    "const c = require('node:child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60_000)'], "
-    + "{ stdio: 'ignore', env: { PATH: process.env.PATH, ASEP_PROCESS_TOKEN: process.argv[1] } }); "
-    + "process.stdout.write(c.pid + '\\n'); setTimeout(() => process.exit(0), 100);")};
+const script = ${JSON.stringify(LEADER_WITH_A_STRANGER)};
 const { child, entry } = ${unproven}
   ? spawnRecorded(process.execPath, ['-e', script, memberToken], { detached: true, stdio: ['ignore', 'pipe', 'ignore'] })
   : spawnRecorded(process.execPath, ['-e', 'setTimeout(() => {}, 60_000)'], { detached: true, stdio: 'ignore' });
@@ -128,6 +134,58 @@ test('a process of the run that cannot be shown to be the one recorded fails the
     assert.equal(stillRunning(pid), true, 'and what could not be shown ours was not signalled');
   } finally {
     endLeft(pidFile);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// A test file that starts nothing and stands in for every required suite.
+const STARTS_NOTHING = `
+import { REQUIRED_SUITES, suiteMarker } from ${JSON.stringify(SUITES_MODULE)};
+for (const id of Object.keys(REQUIRED_SUITES)) console.log(suiteMarker(id));
+`;
+
+test('a leftover of an earlier run that cannot be shown gone fails the run, and one that is ended does not', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'asep-runner-registry-'));
+  const root = join(dir, 'registry');
+  const fixture = join(dir, 'starts-nothing.test.mjs');
+  writeFileSync(fixture, STARTS_NOTHING);
+  // A run whose runner died: its owner is a process that has exited.
+  const dead = spawnSync(process.execPath, ['-e', '']).pid;
+  const earlierRun = (name: string, entry: { pid: number }) => {
+    mkdirSync(join(root, name), { recursive: true });
+    writeFileSync(join(root, name, 'owner.json'), JSON.stringify({ pid: dead, startedAt: 'Thu Jan  1 00:00:00 1970' }));
+    writeFileSync(join(root, name, `${entry.pid}.json`), JSON.stringify(entry));
+  };
+  type Entry = { pid: number; token: string };
+  const plain = spawnRecorded(process.execPath, ['-e', 'setTimeout(() => {}, 60_000)'], { detached: true, stdio: 'ignore' }) as {
+    child: { unref(): void }; entry: Entry;
+  };
+  plain.child.unref();
+  const memberToken = randomUUID();
+  const leader = spawnRecorded(process.execPath, ['-e', LEADER_WITH_A_STRANGER, memberToken], {
+    detached: true, stdio: ['ignore', 'pipe', 'ignore'],
+  }) as { child: ChildProcess; entry: Entry };
+  const member = await new Promise<number>((resolve) => {
+    leader.child.stdout!.once('data', (d: Buffer) => resolve(Number(d.toString('utf8').trim())));
+  });
+  await new Promise((resolve) => leader.child.once('exit', resolve));
+  try {
+    earlierRun('ended-run', plain.entry);
+    const passed = runOn(fixture, root);
+    assert.equal(passed.code, 0, passed.stderr);
+    assert.ok(passed.stderr.includes(`  - pid ${plain.entry.pid} of run ended-run: ended\n`), passed.stderr);
+    assert.equal(stillRunning(plain.entry.pid), false);
+
+    earlierRun('unproven-run', leader.entry);
+    const failed = runOn(fixture, root);
+    assert.equal(failed.code, 1, `the run fails: ${failed.stderr}`);
+    assert.ok(failed.stderr.includes(`  - pid ${leader.entry.pid} of run unproven-run: unknown\n`), failed.stderr);
+    assert.equal(stillRunning(member), true, 'what could not be shown ours was not signalled');
+    assert.equal(existsSync(join(root, 'unproven-run', `${leader.entry.pid}.json`)), true, 'and its record stays');
+  } finally {
+    const stranger = identityOf(member, { token: memberToken });
+    if (stranger !== undefined) endProcess(stranger);
+    for (const entry of [plain.entry, leader.entry]) if (shownGone(endProcess(entry))) unregister(entry.pid);
     rmSync(dir, { recursive: true, force: true });
   }
 });

@@ -22,9 +22,9 @@
 //   7. keep the processes the tests start in a run-scoped registry outside the
 //      test processes (lib/process-registry.mjs): before the tests, end what
 //      earlier runs whose runner is gone left behind; after them, end what this
-//      run left. Both are reported; one of this run that cannot be shown gone
-//      — it runs on, or cannot be shown to be the process recorded — fails the
-//      run.
+//      run left. Both are reported; one that cannot be shown gone — it runs
+//      on, or cannot be shown to be the process recorded — fails the run,
+//      whether this run or an earlier one left it.
 //
 // Usage:
 //   node scripts/run-canonical-tests.mjs      # the canonical test command
@@ -114,8 +114,8 @@ export function runCanonicalTests(opts = {}) {
   );
 
   // (6) Propagate the child's exact exit code. A signal death (code === null)
-  // becomes a non-zero failure, and so does a process of this run that could
-  // not be ended.
+  // becomes a non-zero failure, and so does a recorded process, of this run
+  // or an earlier one, that could not be shown gone.
   let code = typeof child.status === 'number' ? child.status : 1;
   if (registry.stuck && code === 0) code = 1;
 
@@ -144,14 +144,15 @@ export function runCanonicalTests(opts = {}) {
 // recorded processes were still running, and every record with what became of
 // it ('gone': its process had already ended; 'not-ours': its pid is another
 // process's now; 'unknown': it could not be shown to be the process recorded,
-// or gone); and whether a process of this run was not shown gone.
+// or gone); and whether one, of this run or an earlier one, was not shown
+// gone.
 function describeLeftovers(earlier, left) {
   const running = (records) => records.filter((e) => e.outcome === 'ended' || e.outcome === 'still-running').length;
   const line = (e) => `  - pid ${e.pid}${e.owner ? ', the runner' : ''}${e.run !== undefined ? ` of run ${e.run}` : ''}`
     + `: ${e.outcome}\n`;
   const text = `canonical-tests: process registry: found running ${running(earlier)} process(es) of earlier runs `
     + `and ${running(left)} of this run\n${[...earlier, ...left].map(line).join('')}`;
-  return { text, stuck: left.some((e) => !shownGone(e.outcome)) };
+  return { text, stuck: [...earlier, ...left].some((e) => !shownGone(e.outcome)) };
 }
 
 const invokedDirectly =
