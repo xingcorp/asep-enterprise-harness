@@ -1793,15 +1793,15 @@ process.stdin.resume();
 // When the process `pid` — not a child of this one — was first seen gone,
 // looking every 10 ms for at most `ms`; undefined if it was still there.
 async function goneWithin(pid: number, ms: number): Promise<number | undefined> {
-  const end = Date.now() + ms;
+  const end = performance.now() + ms;
   for (;;) {
     try {
       process.kill(pid, 0);
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ESRCH') return Date.now();
+      if ((err as NodeJS.ErrnoException).code === 'ESRCH') return performance.now();
       throw err;
     }
-    if (Date.now() > end) return undefined;
+    if (performance.now() > end) return undefined;
     await new Promise((r) => setTimeout(r, 10));
   }
 }
@@ -1841,7 +1841,7 @@ test('the egress proxy stops serving and exits once the process that started it 
     register(proxyEntry);
     assert.equal((await proxyRequest(started.port, 'POST', '/v1/messages')).status, 200, 'it serves while its starter lives');
 
-    const killedAt = Date.now();
+    const killedAt = performance.now();
     starter.kill('SIGKILL');
     const bound = PROXY_EXIT_BOUND_MS + SCHEDULING_ALLOWANCE_MS;
     const goneAt = await goneWithin(started.pid, bound + 5_000);

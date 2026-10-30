@@ -285,13 +285,13 @@ test('C3 (multi-conn): a successor sweep waits for a transaction that wrote unde
       // A direct write, so only the trigger's lock is in play.
       await tx.query(`update side_effect_records set natural_key = 'k' where attempt_id = $1 and operation = 'push'`, [attemptId]);
       await new Promise((r) => setTimeout(r, 1_500));
-      committedAt = Date.now();
+      committedAt = performance.now();
     });
     await new Promise((r) => setTimeout(r, 1_000));
     const successor = await new SqlWorkspaceLeaseRepository(b).acquire(scope, {
       repositoryBindingId: binding, branch, attemptId, ttlMs: 60_000,
     });
-    const grantedAt = Date.now();
+    const grantedAt = performance.now();
     await writer;
     assert.ok('leaseId' in successor);
     assert.ok(committedAt > 0 && grantedAt >= committedAt,

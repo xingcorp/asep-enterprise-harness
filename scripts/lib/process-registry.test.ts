@@ -409,8 +409,8 @@ test('a group whose leader exited before it was recorded is recorded by the star
   let entry: Entry | undefined;
   try {
     const exited = () => spawnSync('ps', ['-o', 'stat=', '-p', String(leader.pid)], { encoding: 'utf8' }).stdout.trim().startsWith('Z');
-    const until = Date.now() + 10_000;
-    while (!exited() && Date.now() < until) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+    const until = performance.now() + 10_000;
+    while (!exited() && performance.now() < until) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
     assert.ok(exited(), 'the leader has exited, and waits to be reaped');
     entry = identityOf(leader.pid!, { token, group: true }) as Entry;
     register(entry);
@@ -472,8 +472,8 @@ test('a process that cannot be recorded is not left running', () => {
   try {
     assert.deepEqual(readdirSync(dir), ['ps-fails'], 'nothing was recorded');
     const shown = () => spawnSync('ps', ['-A', '-ww', '-o', 'args='], { encoding: 'utf8' }).stdout.includes(tag);
-    const end = Date.now() + 5_000;
-    while (shown() && Date.now() < end) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+    const end = performance.now() + 5_000;
+    while (shown() && performance.now() < end) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
     assert.equal(shown(), false, 'the process was killed');
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -780,6 +780,16 @@ test('no test drops the run\'s registry: one of its own is added with nestRegist
     assert.ok(testSources().some(([file, lines]) => file === a.file && lines.some((l) => l.includes(a.match))),
       `${a.file}: '${a.match}' is no longer there; drop it from the list`);
   }
+});
+
+test('tests time their waits on the monotonic clock, never on the wall clock', () => {
+  // A moment of the wall clock kept (to time a wait or a span by), returned, or
+  // compared with. The wall clock may still date a record, stamp a log line or
+  // name a resource.
+  const wallClockMoment = /(?<!=)[<>]=?\s*Date\.now\(\)|(?<![=!<>])=\s*Date\.now\(\)|(?<![\w$.])Date\.now\(\)\s*[<>]|return\s+Date\.now\(\)/;
+  const found = testSources().flatMap(([file, lines]) => lines.flatMap((line, i) => (
+    !comment(line) && wallClockMoment.test(line) ? [`${file}:${i + 1}: ${line.trim()}`] : [])));
+  assert.deepEqual(found, [], 'time a wait with performance.now(), which no change to the wall clock moves');
 });
 
 test('every process a test starts is recorded in the run\'s registry, or the list here says why it need not be', () => {

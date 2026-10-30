@@ -60,9 +60,9 @@ async function endClient(client: ChildProcess): Promise<void> {
 async function startContainer(state: string, name: string, env: Record<string, string> = {}): Promise<Started> {
   const client = runClient(['--state', state, 'run', '--name', name, IMAGE, process.execPath, ...HOLD], env, 'ignore');
   const file = join(state, 'containers', `${name}.json`);
-  const end = Date.now() + 30_000;
+  const end = performance.now() + 30_000;
   while (!existsSync(file)) {
-    if (Date.now() > end) throw new Error(`container ${name} did not start within 30 s`);
+    if (performance.now() > end) throw new Error(`container ${name} did not start within 30 s`);
     await new Promise((r) => setTimeout(r, 20));
   }
   const record = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>;

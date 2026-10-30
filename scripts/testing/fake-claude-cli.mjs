@@ -105,7 +105,7 @@ if (prompt.trim() === '') {
 const sessionId = SCENARIO === 'tagged' ? `sess-${basename(process.cwd())}` : randomUUID();
 const model = opts['--model'] ?? 'claude-default';
 const grantedTools = list('--tools');
-const started = Date.now();
+const started = performance.now();
 let turns = 0;
 const emit = (ev) => process.stdout.write(`${JSON.stringify(ev)}\n`);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -140,7 +140,7 @@ function toolResult(id, content) {
 function result(over = {}) {
   emit({
     type: 'result', subtype: 'success', is_error: false, api_error_status: null,
-    duration_ms: Date.now() - started, duration_api_ms: 5, num_turns: Math.max(turns, 1),
+    duration_ms: Math.round(performance.now() - started), duration_api_ms: 5, num_turns: Math.max(turns, 1),
     result: 'did the thing', stop_reason: 'end_turn', session_id: sessionId,
     total_cost_usd: 0.0123,
     usage: {
