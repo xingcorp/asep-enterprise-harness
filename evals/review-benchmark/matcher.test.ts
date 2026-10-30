@@ -9,14 +9,28 @@ const gold = (id: string, goldCategory: GoldItem['goldCategory'], ...locations: 
   goldCategory,
   locations: locations.map(([file, lineStart, lineEnd]) => ({ file, lineStart, lineEnd })),
 });
-const finding = (id: string, category: MatchableFinding['category'], file: string | null, lineStart: number | null, lineEnd = lineStart, grounded = true): MatchableFinding => ({
-  id,
+/** A finding of chunk `c` unless stated; its fingerprint stands in for the runtime one. */
+const finding = (
+  fingerprint: string,
+  category: MatchableFinding['category'],
+  file: string | null,
+  lineStart: number | null,
+  lineEnd = lineStart,
+  grounded = true,
+  chunk = 'c',
+): MatchableFinding => ({
+  chunk,
+  fingerprint,
   grounded,
   category,
   file,
   lineStart,
   lineEnd,
 });
+
+/** A finding's identity in a result, and an expected match. */
+const ref = (fingerprint: string, chunk = 'c') => ({ chunk, fingerprint });
+const match = (goldId: string, fingerprint: string, distance: number, chunk = 'c') => ({ goldId, chunk, fingerprint, distance });
 
 test('the category table and tolerance are the protocol constants', () => {
   // Stated independently from plan §7.8, table corpus-categories/v1.
@@ -62,8 +76,8 @@ test('strict needs a compatible category; lenient needs only the path', () => {
 test('matching is one-to-one, nearest first, and the rest is duplicate or unlabelled', () => {
   // Two findings near one gold item: the nearer matches, the other is a duplicate.
   const one = matchFindings([gold('G', 'CORRECTNESS', ['src/a.ts', 100, 110])], [finding('far', 'CORRECTNESS', 'src/a.ts', 118), finding('near', 'CORRECTNESS', 'src/a.ts', 104)], 'strict');
-  assert.deepEqual(one.matches, [{ goldId: 'G', findingId: 'near', distance: 0 }]);
-  assert.deepEqual([one.duplicate, one.unlabelled, one.unmatchedGold], [['far'], [], []]);
+  assert.deepEqual(one.matches, [match('G', 'near', 0)]);
+  assert.deepEqual([one.duplicate, one.unlabelled, one.unmatchedGold], [[ref('far')], [], []]);
 
   // One finding near two gold items goes to the nearer; the other gold item stays unmatched.
   const two = matchFindings(
@@ -71,28 +85,28 @@ test('matching is one-to-one, nearest first, and the rest is duplicate or unlabe
     [finding('f', 'CORRECTNESS', 'src/a.ts', 107)],
     'strict',
   );
-  assert.deepEqual(two.matches, [{ goldId: 'B', findingId: 'f', distance: 1 }]);
+  assert.deepEqual(two.matches, [match('B', 'f', 1)]);
   assert.deepEqual(two.unmatchedGold, ['A']);
 
-  // Equal distances: the gold item id decides, then the finding id.
+  // Equal distances: the gold item id decides, then the fingerprint.
   const tie = matchFindings(
     [gold('B', 'CORRECTNESS', ['src/a.ts', 100, 100]), gold('A', 'CORRECTNESS', ['src/a.ts', 100, 100])],
     [finding('y', 'CORRECTNESS', 'src/a.ts', 100), finding('x', 'CORRECTNESS', 'src/a.ts', 100)],
     'strict',
   );
   assert.deepEqual(tie.matches, [
-    { goldId: 'A', findingId: 'x', distance: 0 },
-    { goldId: 'B', findingId: 'y', distance: 0 },
+    match('A', 'x', 0),
+    match('B', 'y', 0),
   ]);
-  // The gold id is compared before the finding id: A takes y, its only partner, before B takes x.
+  // The gold id is compared before the fingerprint: A takes y, its only partner, before B takes x.
   const order = matchFindings(
     [gold('B', 'EVIDENCE_INTEGRITY', ['src/a.ts', 100, 100]), gold('A', 'TEST_QUALITY', ['src/a.ts', 100, 100])],
     [finding('x', 'SPEC', 'src/a.ts', 100), finding('y', 'TEST_QUALITY', 'src/a.ts', 100)],
     'strict',
   );
   assert.deepEqual(order.matches, [
-    { goldId: 'A', findingId: 'y', distance: 0 },
-    { goldId: 'B', findingId: 'x', distance: 0 },
+    match('A', 'y', 0),
+    match('B', 'x', 0),
   ]);
 
   // A multi-location gold item matches through its nearest location; an unrelated finding is unlabelled.
@@ -101,10 +115,10 @@ test('matching is one-to-one, nearest first, and the rest is duplicate or unlabe
     [finding('b', 'SECURITY', 'src/b.ts', 57), finding('c', 'SECURITY', 'src/c.ts', 1), finding('u', 'SECURITY', 'src/a.ts', 11, 11, false)],
     'strict',
   );
-  assert.deepEqual(multi.matches, [{ goldId: 'M', findingId: 'b', distance: 2 }]);
-  assert.deepEqual([multi.duplicate, multi.unlabelled, multi.ungrounded], [[], ['c'], ['u']]);
+  assert.deepEqual(multi.matches, [match('M', 'b', 2)]);
+  assert.deepEqual([multi.duplicate, multi.unlabelled, multi.ungrounded], [[], [ref('c')], [ref('u')]]);
   const nearest = matchFindings([gold('N', 'SECURITY', ['src/a.ts', 20, 22], ['src/a.ts', 10, 12])], [finding('f', 'SECURITY', 'src/a.ts', 15)], 'strict');
-  assert.deepEqual(nearest.matches, [{ goldId: 'N', findingId: 'f', distance: 3 }]);
+  assert.deepEqual(nearest.matches, [match('N', 'f', 3)]);
 
   // The result does not depend on the order of either list.
   const golds = [gold('A', 'CORRECTNESS', ['src/a.ts', 100, 102]), gold('B', 'SPEC', ['src/a.ts', 108, 109])];
@@ -112,4 +126,28 @@ test('matching is one-to-one, nearest first, and the rest is duplicate or unlabe
   const forward = matchFindings(golds, findings, 'strict');
   assert.deepEqual(matchFindings([...golds].reverse(), [...findings].reverse(), 'strict'), forward);
   assert.throws(() => matchFindings(golds, [findings[0]!, findings[0]!], 'strict'), /twice/);
+});
+
+test('ties break on the gold item id, then the fingerprint, and the chunk last', () => {
+  // The review's probe: gold A cites two files, gold B one of them; finding 'a' sits in chunk c2, finding 'b' in
+  // chunk c1. By fingerprint, A takes 'a' and B takes 'b': both are rediscovered. Ordering by the pooled id
+  // (chunk first) would give A 'b' and leave B unmatched.
+  const probe = matchFindings(
+    [gold('A', 'CORRECTNESS', ['src/a.ts', 10, 10], ['src/b.ts', 10, 10]), gold('B', 'CORRECTNESS', ['src/b.ts', 10, 10])],
+    [finding('a', 'CORRECTNESS', 'src/a.ts', 10, 10, true, 'c2'), finding('b', 'CORRECTNESS', 'src/b.ts', 10, 10, true, 'c1')],
+    'strict',
+  );
+  assert.deepEqual(probe.matches, [match('A', 'a', 0, 'c2'), match('B', 'b', 0, 'c1')]);
+  assert.deepEqual(probe.unmatchedGold, []);
+
+  // One fingerprint in two chunks: the chunk decides, last.
+  const chunks = matchFindings(
+    [gold('G', 'CORRECTNESS', ['src/a.ts', 10, 10])],
+    [finding('f', 'CORRECTNESS', 'src/a.ts', 10, 10, true, 'c2'), finding('f', 'CORRECTNESS', 'src/a.ts', 10, 10, true, 'c1')],
+    'strict',
+  );
+  assert.deepEqual([chunks.matches, chunks.duplicate], [[match('G', 'f', 0, 'c1')], [ref('f', 'c2')]]);
+
+  // A finding's identity is its chunk and fingerprint together.
+  assert.throws(() => matchFindings([], [finding('f', 'CORRECTNESS', 'src/a.ts', 1), finding('f', 'SPEC', 'src/b.ts', 2)], 'strict'), /twice/);
 });

@@ -6,13 +6,14 @@
 // finding in its file; a file-less finding never matches. Strict needs a location match and a
 // compatible category (table corpus-categories/v1); lenient needs only the path. Matching is
 // one-to-one: candidate pairs are ordered by line distance (0 when the ranges overlap, else the
-// gap), then gold item id, then finding id, and assigned greedily; a multi-location gold item
-// matches through its nearest location. An unmatched finding that had a candidate is a
-// `duplicate`; any other is `unlabelled`, never a false positive. Ungrounded findings never
-// match and are listed apart.
+// gap), then gold item id, then finding fingerprint, with the chunk as the last key only, and
+// assigned greedily; a multi-location gold item matches through its nearest location. An
+// unmatched finding that had a candidate is a `duplicate`; any other is `unlabelled`, never a
+// false positive. Ungrounded findings never match and are listed apart.
 //
-// The finding id is the pooled identity `(chunk, fingerprint)`; the runtime grounding and
-// fingerprint that produce it are bound once the evals package is bound to the runtime code.
+// A finding's identity is the pair `(chunk, fingerprint)`, pooled over a cycle's chunks; the
+// runtime grounding and fingerprint that produce it are bound once the evals package is bound
+// to the runtime code.
 
 import type { GoldCategory } from '../review-corpus/freeze.js';
 
@@ -45,9 +46,13 @@ export interface GoldItem {
   readonly locations: readonly GoldLocation[];
 }
 
-export interface MatchableFinding {
-  /** The pooled identity, `<chunk>#<fingerprint>`. */
-  readonly id: string;
+/** A finding's pooled identity: the chunk that showed it and its fingerprint. */
+export interface FindingRef {
+  readonly chunk: string;
+  readonly fingerprint: string;
+}
+
+export interface MatchableFinding extends FindingRef {
   readonly grounded: boolean;
   readonly category: FindingCategory;
   readonly file: string | null;
@@ -55,22 +60,25 @@ export interface MatchableFinding {
   readonly lineEnd: number | null;
 }
 
-export interface Match {
+export interface Match extends FindingRef {
   readonly goldId: string;
-  readonly findingId: string;
   readonly distance: number;
 }
 
 export interface MatchResult {
   /** In assignment order. */
   readonly matches: readonly Match[];
-  readonly duplicate: readonly string[];
-  readonly unlabelled: readonly string[];
-  readonly ungrounded: readonly string[];
+  readonly duplicate: readonly FindingRef[];
+  readonly unlabelled: readonly FindingRef[];
+  readonly ungrounded: readonly FindingRef[];
   readonly unmatchedGold: readonly string[];
 }
 
 const byText = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+const byRef = (a: FindingRef, b: FindingRef): number => byText(a.fingerprint, b.fingerprint) || byText(a.chunk, b.chunk);
+const refOf = (f: FindingRef): FindingRef => ({ chunk: f.chunk, fingerprint: f.fingerprint });
+/** One key per identity; a JSON pair, so no separator inside a field can join two identities. */
+const keyOf = (f: FindingRef): string => JSON.stringify([f.chunk, f.fingerprint]);
 
 /** The line distance of a finding to a gold location, or null when the location does not match. */
 function locationDistance(location: GoldLocation, f: MatchableFinding, variant: MatchVariant): number | null {
@@ -99,7 +107,7 @@ function pairDistance(g: GoldItem, f: MatchableFinding, variant: MatchVariant): 
 export function matchFindings(gold: readonly GoldItem[], findings: readonly MatchableFinding[], variant: MatchVariant): MatchResult {
   for (const [what, ids] of [
     ['gold item', gold.map((g) => g.id)],
-    ['finding', findings.map((f) => f.id)],
+    ['finding', findings.map(keyOf)],
   ] as const) {
     const seen = new Set<string>();
     for (const id of ids) {
@@ -111,27 +119,27 @@ export function matchFindings(gold: readonly GoldItem[], findings: readonly Matc
   for (const g of gold) {
     for (const f of findings) {
       const distance = pairDistance(g, f, variant);
-      if (distance !== null) candidates.push({ goldId: g.id, findingId: f.id, distance });
+      if (distance !== null) candidates.push({ goldId: g.id, chunk: f.chunk, fingerprint: f.fingerprint, distance });
     }
   }
-  candidates.sort((a, b) => a.distance - b.distance || byText(a.goldId, b.goldId) || byText(a.findingId, b.findingId));
+  candidates.sort((a, b) => a.distance - b.distance || byText(a.goldId, b.goldId) || byRef(a, b));
 
   const matches: Match[] = [];
   const goldUsed = new Set<string>();
   const findingUsed = new Set<string>();
   for (const c of candidates) {
-    if (goldUsed.has(c.goldId) || findingUsed.has(c.findingId)) continue;
+    if (goldUsed.has(c.goldId) || findingUsed.has(keyOf(c))) continue;
     matches.push(c);
     goldUsed.add(c.goldId);
-    findingUsed.add(c.findingId);
+    findingUsed.add(keyOf(c));
   }
-  const hadCandidate = new Set(candidates.map((c) => c.findingId));
-  const rest = findings.filter((f) => !findingUsed.has(f.id));
+  const hadCandidate = new Set(candidates.map(keyOf));
+  const rest = findings.filter((f) => !findingUsed.has(keyOf(f)));
   return {
     matches,
-    duplicate: rest.filter((f) => f.grounded && hadCandidate.has(f.id)).map((f) => f.id).sort(byText),
-    unlabelled: rest.filter((f) => f.grounded && !hadCandidate.has(f.id)).map((f) => f.id).sort(byText),
-    ungrounded: rest.filter((f) => !f.grounded).map((f) => f.id).sort(byText),
+    duplicate: rest.filter((f) => f.grounded && hadCandidate.has(keyOf(f))).map(refOf).sort(byRef),
+    unlabelled: rest.filter((f) => f.grounded && !hadCandidate.has(keyOf(f))).map(refOf).sort(byRef),
+    ungrounded: rest.filter((f) => !f.grounded).map(refOf).sort(byRef),
     unmatchedGold: gold.filter((g) => !goldUsed.has(g.id)).map((g) => g.id).sort(byText),
   };
 }

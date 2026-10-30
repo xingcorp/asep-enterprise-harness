@@ -39,7 +39,7 @@ type Expected = Readonly<Record<'matched' | 'duplicate' | 'unlabelled', readonly
  * themselves are rebuilt.
  */
 function scripted(output: ScriptedOutput, side: string): MatchableFinding[] {
-  return output.findings.map((f) => ({ id: `${side}#${f.key}`, grounded: true, category: f.category, file: f.file, lineStart: f.lineStart, lineEnd: f.lineEnd }));
+  return output.findings.map((f) => ({ chunk: side, fingerprint: f.key, grounded: true, category: f.category, file: f.file, lineStart: f.lineStart, lineEnd: f.lineEnd }));
 }
 
 test('golden historical item maps its locations and matches as specified on both sides', () => {
@@ -76,9 +76,9 @@ test('golden historical item maps its locations and matches as specified on both
       const findings = scripted(json<ScriptedOutput>(`${GOLDEN}/outputs/${side}/${name}.json`), side);
       for (const variant of ['strict', 'lenient'] as const) {
         const result = matchFindings(gold, findings, variant);
-        const keys = (ids: readonly string[]) => ids.map((id) => id.slice(side.length + 1)).sort();
+        const keys = (refs: readonly { readonly fingerprint: string }[]) => refs.map((r) => r.fingerprint).sort();
         assert.deepEqual(
-          { matched: keys(result.matches.map((m) => m.findingId)), duplicate: keys(result.duplicate), unlabelled: keys(result.unlabelled) },
+          { matched: keys(result.matches), duplicate: keys(result.duplicate), unlabelled: keys(result.unlabelled) },
           expected[side][name]![variant],
           `${side} ${name} ${variant}`,
         );
