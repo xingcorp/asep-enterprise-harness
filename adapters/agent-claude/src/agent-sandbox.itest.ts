@@ -50,6 +50,7 @@ import {
 import {
   PgliteClient, migrate, ContentAddressedArtifactStore, FilesystemObjectStore,
 } from '@asep/persistence';
+import { monotonicNow } from '@asep/command-runner';
 import type { AgentExecuteRequest } from '@asep/ports';
 import type {
   OrganizationId, ProjectId, TenantScope, WorkspaceId, AttemptId, ArtifactRef,
@@ -304,7 +305,7 @@ function wallClockDue(t: Timeline): number {
 }
 
 // The stop was for `reason`, acted on no earlier than `due` (timers and
-// Date.now() may disagree by a few ms) and no later than the scheduling
+// the lifecycle clock may disagree by a few ms) and no later than the scheduling
 // allowance after it, and the agent container was removed within the
 // product's stop bound after the stop.
 function assertStoppedInTime(t: Timeline, reason: 'timeout' | 'aborted', due: number): void {
@@ -564,7 +565,7 @@ test('SIGKILLing the agent and proxy docker clients mid-run leaves no container 
     const execution = (await provider(w, s, 'hang', lifecycle)).execute(req);
     await until('the agent container to be running', () => running(req.attemptId, 'agent'));
     assert.equal(await running(req.attemptId, 'egress-proxy'), true);
-    const killedAt = Date.now();
+    const killedAt = monotonicNow();
     process.kill(w.runClientPid('agent'), 'SIGKILL');
     process.kill(w.runClientPid('egress-proxy'), 'SIGKILL');
     const obs = await execution;
@@ -596,7 +597,7 @@ test('a cancelled attempt leaves no container or network behind', async () => {
     const lifecycle: AgentLifecycleEvent[] = [];
     const execution = (await provider(w, s, 'hang', lifecycle)).execute(req);
     await until('the agent container to be running', () => running(req.attemptId, 'agent'));
-    const cancelledAt = Date.now();
+    const cancelledAt = monotonicNow();
     ac.abort();
     const obs = await execution;
     console.log('cancelled agent timeline:', showTimeline(lifecycle));

@@ -23,7 +23,8 @@ import {
   type SandboxHandleEx,
 } from './sandbox.js';
 import {
-  SandboxTeardownError, removeLabelledContainers, removeContainerShownGone, type DockerCall, type TeardownClock,
+  SandboxTeardownError, removeLabelledContainers, removeContainerShownGone, monotonicNow,
+  type DockerCall, type TeardownClock,
 } from './container-teardown.js';
 import { SandboxHandleNotProvenError } from './command-runner.js';
 import { spawn } from 'node:child_process';
@@ -600,6 +601,28 @@ test('the runner tells each moment of a timed-out run in order, and an observer 
   }
 });
 
+test('a wall clock set back during a run does not move the moments the runner reports', async () => {
+  const { client, store, scope, dir } = await harness();
+  const wall = Date.now;
+  try {
+    const d = await fakeDaemon(dir);
+    const seen: CommandLifecycleEvent[] = [];
+    // Set back a minute as soon as the client is spawned, as an NTP step can.
+    const r = await new TrustedCommandRunner(scope, store, undefined, (e) => {
+      seen.push(e);
+      if (e.phase === 'spawned') Date.now = () => wall() - 60_000;
+    }).run(spec({ ...LONG, cwd: d.wt, timeoutMs: 1_000 }), await dockerHandle(d));
+    assert.equal(r.timedOut, true);
+    const late = seen[1]!.at - seen[0]!.at - 1_000;
+    assert.ok(late >= -50 && late <= 2_000, `the stop came ${late} ms off the timeout`);
+    assert.ok(seen.every((e, i) => i === 0 || e.at >= seen[i - 1]!.at), 'in the order they happened');
+  } finally {
+    Date.now = wall;
+    await client.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('a cancelled command has its container removed', async () => {
   const { client, store, scope, dir } = await harness();
   try {
@@ -651,7 +674,7 @@ test('a container the daemon cannot show gone within the removal bound fails the
       (err: Error) => err instanceof SandboxTeardownError && /could not be shown removed in time/.test(err.message),
     );
     const exited = seen.find((e) => e.phase === 'exited')!;
-    const gaveUp = Date.now() - exited.at;
+    const gaveUp = monotonicNow() - exited.at;
     assert.ok(gaveUp >= COMMAND_REMOVAL_BOUND_MS - 50 && gaveUp <= COMMAND_REMOVAL_BOUND_MS + 5_000,
       `the run failed ${gaveUp} ms after its client ended, not at the ${COMMAND_REMOVAL_BOUND_MS} ms bound`);
     assert.deepEqual(seen.filter((e) => e.phase === 'removed'), []);

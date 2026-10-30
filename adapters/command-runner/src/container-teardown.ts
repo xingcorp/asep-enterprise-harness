@@ -73,6 +73,17 @@ const NO_SUCH_CONTAINER = /no such container/i;
 
 const brief = (r: DockerResult): string => r.stderr.trim().slice(0, 200) || `exit ${r.code}`;
 
+/**
+ * Epoch milliseconds that only move forward: the wall clock at the process's
+ * start plus monotonic time since. Unlike Date.now(), a wall-clock adjustment
+ * during a run does not move it, so the interval between two readings is what
+ * the timers bounding it measured. Every bounded moment of a sandbox — its
+ * deadlines and the lifecycle moments it reports — is read from it.
+ */
+export function monotonicNow(): number {
+  return performance.timeOrigin + performance.now();
+}
+
 /** The clock a removal is timed by; a test may run it on virtual time. */
 export interface TeardownClock {
   now(): number;
@@ -80,7 +91,7 @@ export interface TeardownClock {
 }
 
 const REAL_CLOCK: TeardownClock = {
-  now: () => Date.now(),
+  now: monotonicNow,
   sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
 };
 

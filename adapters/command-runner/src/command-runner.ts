@@ -25,6 +25,7 @@ import { resolveEnvironment } from './environment-profiles.js';
 import { executionOf } from './sandbox.js';
 import {
   dockerCaller, dockerClientEnv, removeLabelledContainers, SandboxTeardownError, DOCKER_CALL_TIMEOUT_MS,
+  monotonicNow,
 } from './container-teardown.js';
 
 function sha256Hex(bytes: Uint8Array): string {
@@ -60,7 +61,7 @@ export type CommandLifecyclePhase =
 
 export interface CommandLifecycleEvent {
   readonly phase: CommandLifecyclePhase;
-  // Date.now() when the runner reached the phase.
+  // monotonicNow() when the runner reached the phase.
   readonly at: number;
   readonly reason?: 'timeout' | 'aborted';
 }
@@ -100,7 +101,7 @@ export class TrustedCommandRunner implements CommandRunner {
   private mark(phase: CommandLifecyclePhase, reason?: 'timeout' | 'aborted'): void {
     if (this.observeLifecycle === undefined) return;
     try {
-      this.observeLifecycle({ phase, at: Date.now(), ...(reason !== undefined ? { reason } : {}) });
+      this.observeLifecycle({ phase, at: monotonicNow(), ...(reason !== undefined ? { reason } : {}) });
     } catch {
       // An observer never changes the run.
     }
@@ -148,7 +149,7 @@ export class TrustedCommandRunner implements CommandRunner {
     const docker = dockerCaller(exe, clientEnv);
     const removeContainer = container !== undefined
       ? () => removeLabelledContainers(docker, `asep.container=${container}`, {
-        until: Date.now() + COMMAND_REMOVAL_BOUND_MS,
+        until: monotonicNow() + COMMAND_REMOVAL_BOUND_MS,
       })
       : async () => undefined;
     // Stops the container at once. (`docker rm -f` on a `--rm` container whose

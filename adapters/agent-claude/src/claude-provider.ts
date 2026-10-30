@@ -45,7 +45,7 @@ import type {
 } from '@asep/ports';
 import {
   isDigestPinned, dockerCaller, dockerClientEnv, removeLabelledContainers, removeContainerShownGone,
-  DOCKER_CALL_TIMEOUT_MS, type DockerCall,
+  DOCKER_CALL_TIMEOUT_MS, monotonicNow, type DockerCall,
 } from '@asep/command-runner';
 import {
   ClaudeStreamParser, MalformedEventError, type ClaudeInit, type ParsedStream,
@@ -115,7 +115,9 @@ export type AgentLifecyclePhase =
 export interface AgentLifecycleEvent {
   readonly phase: AgentLifecyclePhase;
   readonly attemptId: string;
-  // Date.now() when the provider reached the phase.
+  // monotonicNow() when the provider reached the phase: epoch milliseconds a
+  // wall-clock adjustment does not move, so intervals between moments are what
+  // the provider's timers measured.
   readonly at: number;
   readonly deadline?: number;
   readonly reason?: 'timeout' | 'aborted' | 'violation';
@@ -473,7 +475,7 @@ export class ClaudeCodingProvider implements CodingAgentProvider {
   }
 
   async execute(req: AgentExecuteRequest): Promise<AgentAttemptObservation> {
-    const started = Date.now();
+    const started = monotonicNow();
     if (req.signal.aborted) return this.observation('BLOCKED', 'cancelled before start', started);
 
     let grant: ClaudeToolGrant;
@@ -708,7 +710,7 @@ export class ClaudeCodingProvider implements CodingAgentProvider {
         };
         const timer = setTimeout(
           () => finish('egress proxy did not become ready in time'),
-          Math.min(PROXY_START_TIMEOUT_MS, Math.max(1, deadline - Date.now())),
+          Math.min(PROXY_START_TIMEOUT_MS, Math.max(1, deadline - monotonicNow())),
         );
         proxyClosed = new Promise<void>((done) => child.on('close', () => done()));
         child.stdout!.on('data', (d: Buffer) => {
@@ -761,7 +763,7 @@ export class ClaudeCodingProvider implements CodingAgentProvider {
         // is a leftover, and the attempt fails.
         const until = agentRemovalDeadline({
           ...(rec.stoppedAt !== undefined ? { stoppedAt: rec.stoppedAt } : {}),
-          exitedAt: rec.exitedAt ?? Date.now(),
+          exitedAt: rec.exitedAt ?? monotonicNow(),
         });
         const left = await removeContainerShownGone(docker, agentName, until);
         if (left === undefined) mark('agent-removed');
@@ -800,7 +802,7 @@ export class ClaudeCodingProvider implements CodingAgentProvider {
   private marker(attemptId: string): Mark {
     const observe = this.cfg.observeLifecycle;
     return (phase, extra = {}) => {
-      const at = Date.now();
+      const at = monotonicNow();
       if (observe === undefined) return at;
       try {
         observe({ phase, attemptId, at, ...extra });
@@ -848,7 +850,7 @@ export class ClaudeCodingProvider implements CodingAgentProvider {
           child.kill('SIGKILL');
         });
       };
-      const timer = setTimeout(() => stop({ kind: 'timeout' }), Math.max(1, deadline - Date.now()));
+      const timer = setTimeout(() => stop({ kind: 'timeout' }), Math.max(1, deadline - monotonicNow()));
       const onAbort = (): void => stop({ kind: 'aborted' });
       if (req.signal.aborted) onAbort();
       else req.signal.addEventListener('abort', onAbort, { once: true });
@@ -965,7 +967,7 @@ export class ClaudeCodingProvider implements CodingAgentProvider {
       outputTokens: parsed?.result.outputTokens ?? 0,
       modelCostUsd: parsed?.result.totalCostUsd ?? 0,
       toolCalls: rec.parser.toolCallCount,
-      wallClockMs: parsed?.result.durationMs || (Date.now() - started),
+      wallClockMs: parsed?.result.durationMs || Math.round(monotonicNow() - started),
     });
     const build = (
       status: AgentAttemptObservation['status'], summary: string, extra: readonly string[],
@@ -1059,7 +1061,7 @@ export class ClaudeCodingProvider implements CodingAgentProvider {
       status,
       summary: `Claude attempt ${reason}.`,
       knownLimitations: [reason],
-      usage: { inputTokens: 0, outputTokens: 0, modelCostUsd: 0, toolCalls: 0, wallClockMs: Date.now() - started },
+      usage: { inputTokens: 0, outputTokens: 0, modelCostUsd: 0, toolCalls: 0, wallClockMs: Math.round(monotonicNow() - started) },
       eventArtifactRefs: [],
     };
   }

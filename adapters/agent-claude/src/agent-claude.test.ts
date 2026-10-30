@@ -41,7 +41,7 @@ import {
   PgliteClient, migrate, ContentAddressedArtifactStore, FilesystemObjectStore,
 } from '@asep/persistence';
 import {
-  DOCKER_CALL_TIMEOUT_MS, removeContainerShownGone, type DockerCall, type TeardownClock,
+  DOCKER_CALL_TIMEOUT_MS, removeContainerShownGone, monotonicNow, type DockerCall, type TeardownClock,
 } from '@asep/command-runner';
 import type { ArtifactStore, AgentExecuteRequest, ToolPolicyProfile } from '@asep/ports';
 import type {
@@ -326,7 +326,7 @@ function wallClockDue(t: Timeline): number {
 }
 
 // The stop was for `reason`; when `due` is given it was acted on no earlier
-// than that (timers and Date.now() may disagree by a few ms) and no later than
+// than that (timers and the lifecycle clock may disagree by a few ms) and no later than
 // the scheduling allowance after it; and the agent container was removed
 // within the product's stop bound after the stop.
 function assertStoppedInTime(t: Timeline, reason: 'timeout' | 'aborted' | 'violation', due?: number): void {
@@ -807,7 +807,7 @@ test('G3: cancellation stops a running agent promptly; an already-aborted signal
     const p = (await h.provider('hang')).execute(request(h, { signal: ac.signal }));
     // Cancelled once the agent runs, so the setup before it is not measured.
     await until('the agent container to start', () => containerRecords(h).some((c) => String(c['name']).startsWith('asep-agent-')));
-    const cancelledAt = Date.now();
+    const cancelledAt = monotonicNow();
     ac.abort();
     const obs = await p;
     assert.equal(obs.status, 'BLOCKED');
@@ -827,6 +827,30 @@ test('G3: cancellation stops a running agent promptly; an already-aborted signal
   }
 });
 
+// The provider's moments are read from a monotonic clock: a wall clock set
+// back while an attempt runs (as an NTP correction can) moves Date.now() but
+// none of the intervals the provider's timers bound.
+test('G3: a wall clock set back during an attempt does not move its timed moments', async () => {
+  const h = await harness();
+  const wall = Date.now;
+  try {
+    const ac = new AbortController();
+    const p = (await h.provider('hang')).execute(request(h, { signal: ac.signal }));
+    await until('the agent container to start', () => containerRecords(h).some((c) => String(c['name']).startsWith('asep-agent-')));
+    Date.now = () => wall() - 60_000;
+    const cancelledAt = monotonicNow();
+    ac.abort();
+    const obs = await p;
+    assert.equal(obs.status, 'BLOCKED', obs.knownLimitations.join('; '));
+    assertStoppedInTime(h.lifecycle, 'aborted', cancelledAt);
+    assert.ok(h.lifecycle.every((e, i) => i === 0 || e.at >= h.lifecycle[i - 1]!.at), showTimeline(h.lifecycle));
+    assertTornDown(h);
+  } finally {
+    Date.now = wall;
+    await h.close();
+  }
+});
+
 // The stop path's bound is the product's own: a `docker kill` that never
 // answers is cut at the docker-call timeout, the client is killed and the
 // container removed by name — all within AGENT_STOP_BOUND_MS of the stop.
@@ -836,7 +860,7 @@ test('G3: a docker kill that never answers is cut at its bound, and the agent is
     const ac = new AbortController();
     const p = (await h.provider('hang')).execute(request(h, { signal: ac.signal }));
     await until('the agent container to start', () => containerRecords(h).some((c) => String(c['name']).startsWith('asep-agent-')));
-    const cancelledAt = Date.now();
+    const cancelledAt = monotonicNow();
     ac.abort();
     const obs = await p;
     assert.equal(obs.status, 'BLOCKED', obs.knownLimitations.join('; '));
@@ -936,16 +960,20 @@ test('G3: an attempt whose containers cannot be shown removed fails closed', asy
 test('G3: the agent is reported removed only once docker inspect shows it gone', async () => {
   const h = await harness();
   try {
-    const obs = await (await h.provider('ok')).execute(request(h));
+    // What the fake docker had been asked when the removal was reported: read
+    // at that moment, so the order needs no clock shared between processes.
+    let askedByThen: string[][] = [];
+    const observe = (e: AgentLifecycleEvent): void => {
+      h.lifecycle.push(e);
+      if (e.phase === 'agent-removed') askedByThen = argvOf(h.invocations());
+    };
+    const obs = await (await h.provider('ok', {}, undefined, observe)).execute(request(h));
     assert.equal(obs.status, 'AGENT_DONE', obs.knownLimitations.join('; '));
-    const removed = phaseOf(h.lifecycle, 'agent-removed');
-    const agentCalls = h.invocations()
-      .filter((i) => Array.isArray(i['argv']) && String((i['argv'] as string[]).at(-1)).startsWith('asep-agent-'));
-    const rmAt = agentCalls.findIndex((i) => (i['argv'] as string[])[0] === 'rm');
-    const shown = agentCalls.slice(rmAt + 1).find((i) => (i['argv'] as string[])[0] === 'inspect');
-    assert.ok(rmAt >= 0 && shown !== undefined, 'the removal is followed by an inspect of the container');
-    assert.deepEqual(shown['argv'], ['inspect', '--type', 'container', '--format', '{{.Id}}', (agentCalls[rmAt]!['argv'] as string[])[2]]);
-    assert.ok(removed.at >= (shown['at'] as number), 'reported after the inspect, not after the rm');
+    const agentCalls = askedByThen.filter((a) => String(a.at(-1)).startsWith('asep-agent-'));
+    const rmAt = agentCalls.findIndex((a) => a[0] === 'rm');
+    const shown = agentCalls.slice(rmAt + 1).find((a) => a[0] === 'inspect');
+    assert.ok(rmAt >= 0 && shown !== undefined, 'by the time it was reported removed, the rm was followed by an inspect');
+    assert.deepEqual(shown, ['inspect', '--type', 'container', '--format', '{{.Id}}', agentCalls[rmAt]![2]]);
     assertExitedAndRemoved(h.lifecycle);
   } finally {
     await h.close();
@@ -1039,10 +1067,12 @@ test('G3: an agent removal the daemon cannot show within its bound fails the att
     assert.equal(obs.status, 'FAILED', obs.knownLimitations.join('; '));
     assert.match(obs.knownLimitations.join(' '), /container asep-agent-\S+ could not be shown removed in time/);
     assert.deepEqual(h.lifecycle.filter((e) => e.phase === 'agent-removed'), [], showTimeline(h.lifecycle));
-    // The removal was given its bound and no more: the teardown after it
-    // (proxy, label sweep, network) is quick.
+    // The removal was given its whole bound. The teardown after it (proxy,
+    // label sweeps, network) is not bounded by the product and slows with
+    // host load, so "no more than its bound" is held by this test's own
+    // timeout here, and exactly by the deadline and virtual-time tests below.
     const gaveUp = phaseOf(h.lifecycle, 'torn-down').at - phaseOf(h.lifecycle, 'agent-exited').at;
-    assert.ok(gaveUp >= AGENT_REMOVAL_BOUND_MS - 50 && gaveUp <= AGENT_REMOVAL_BOUND_MS + 15_000,
+    assert.ok(gaveUp >= AGENT_REMOVAL_BOUND_MS - 50,
       `torn down ${gaveUp} ms after the agent's client ended:\n${showTimeline(h.lifecycle)}`);
   } finally {
     await h.close();

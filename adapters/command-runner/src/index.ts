@@ -28,5 +28,5 @@ export {
 export type { DockerCall, DockerResult, TeardownClock } from './container-teardown.js';
 export {
   dockerCaller, dockerClientEnv, removeLabelledContainers, removeContainerShownGone, SandboxTeardownError,
-  DOCKER_CALL_TIMEOUT_MS,
+  DOCKER_CALL_TIMEOUT_MS, monotonicNow,
 } from './container-teardown.js';
