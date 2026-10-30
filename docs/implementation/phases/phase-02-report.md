@@ -21,19 +21,18 @@ verdict_note: >-
   private key are available in this environment. Per K6/L4 that is the case
   reserved for a pilot-pending verdict.
 
-  (2) The repairs of repair cycle 10 are unreviewed. Codex re-review cycle 9 at
-  a447983 (phase-02-final-rereview-codex-v9.md) returned REQUEST_CHANGES @ 0.99
-  and did not accept Phase 2. It accepted (RESOLVED) HIGH-001..005, HIGH-007,
-  HIGH-008, HIGH-009, MED-001..004, MED-006, MED-NEW-001..004,
-  CYCLE5-PROVENANCE, CYCLE5-PILOT-TEST, CYCLE7-HIGH-001, CYCLE7-HIGH-002,
-  CYCLE7-HIGH-004..007, CYCLE7-MED-001..004, CYCLE8-HIGH-001, CYCLE8-HIGH-002,
-  CYCLE8-HIGH-004, the --net alias and R26. It found HIGH-006, MED-005,
-  CYCLE7-HIGH-003, CYCLE8-HIGH-003 and the timeout work PARTIAL, and raised
-  CYCLE9-HIGH-001, CYCLE9-HIGH-002, CYCLE9-MED-001, CYCLE9-MED-002 and
-  CYCLE9-LOW-001. The controller's integration run at a447983 under load was
-  red (the hung-agent test, 80.8 s against a 60 s elapsed check). Repair
-  cycle 10 applies the controller's decisions on that review (reconciliation
-  R35). Every repair, test and mutation check was produced and read by the
+  (2) The repairs of repair cycle 11 are unreviewed. Codex re-review cycle 10
+  at 5dd2300 (phase-02-final-rereview-codex-v10.md) returned REQUEST_CHANGES
+  @ 0.98 and did not accept Phase 2. It accepted (RESOLVED) CYCLE9-HIGH-002
+  (both controller integration runs green at 5dd2300), CYCLE9-MED-002,
+  CYCLE9-LOW-001, the resume-base mutation, the schema reference convention
+  and R26, and the earlier RESOLVED findings stand. It found CYCLE9-HIGH-001,
+  CYCLE9-MED-001, HIGH-006, MED-005, CYCLE7-HIGH-003, CYCLE8-HIGH-003 and the
+  timeout work PARTIAL, and raised CYCLE10-HIGH-001, CYCLE10-HIGH-002,
+  CYCLE10-MED-001, CYCLE10-MED-002 and CYCLE10-MED-003. Repair cycle 11
+  applies the controller's decisions on that review (reconciliation R39),
+  which also accept the declared limitations (2), (3) and (4) as Phase 2
+  limits. Every repair, test and mutation check was produced and read by the
   implementer alone. Under this project's trust ordering (machine evidence >
   independent review > implementer self-review) that is not acceptance
   evidence, which is what the _UNREVIEWED suffix records.
@@ -52,12 +51,12 @@ repository:
   branch: phase/02-single-agent-vertical-slice
   base_sha: fc0df57df05b6745e190a53496bd5d90b7ae4bcb
   base_sha_note: base = `git merge-base main HEAD`.
-  last_reviewed_head: a447983 (Codex re-review cycle 9, REQUEST_CHANGES)
+  last_reviewed_head: 5dd2300 (Codex re-review cycle 10, REQUEST_CHANGES)
   under_review: none
-  implementation_head_sha: 1aabe5e2577225d6eff559c1576d8eb694109d9d
+  implementation_head_sha: 6608d2136b84c04c152eac6572fb8162d0f284dc
   head_binding: >-
-    implementation_head_sha is the last commit of repair cycle 10 that changes
-    code or tests (`git rev-parse 1aabe5e`). The commit after it changes
+    implementation_head_sha is the last commit of repair cycle 11 that changes
+    code or tests (`git rev-parse 6608d21`). The commits after it change
     documentation only. A commit cannot contain its own hash, so the true HEAD is bound
     outside this file (exit L1): the gitignored
     `.phase-02-implementation-complete` sentinel is written last, after
@@ -75,15 +74,17 @@ versions:
 
 verification:
   observed_at: >-
-    1aabe5e2577225d6eff559c1576d8eb694109d9d (implementation_head_sha), from a
-    clean tree
+    21aeb0de16b814b61d6c3ac97f311ff9ca377fb6 (a documentation commit; it
+    differs from implementation_head_sha in the review log only), from a clean
+    tree
   install: "pnpm install --frozen-lockfile — exit 0"
   verify_all: "pnpm verify:all — PASS, exit 0, all 14 steps: format:check, cold-cache reset, typecheck, test, contracts test (80/80), policy test (36/36), contracts compat (13 schemas), forbidden-imports (14/14), project-references (5/5), scan:secret, scan:large-file, scan:pii, check:publication, clean-tree"
-  verify_all_earlier_run: "the first verify:all of this cycle, at f98a202, failed one test (a lifecycle test asserted the deadline equal to its first moment and was 1 ms off); fixed in 1aabe5e, then the run above"
-  canonical_tests: "821 tests, 821 pass, 0 fail, 0 skipped, across 58 test files; 36 required suite markers verified by scripts/run-canonical-tests.mjs"
-  integration_gate: "pnpm test:integration — exit 0; 34 tests, 34 pass, 0 fail, 0 skipped, across 7 *.itest.ts files on digest-pinned PostgreSQL and MinIO and Docker 29.6.1 (backends published on 127.0.0.1 only); 7 required suite markers verified; containers torn down; afterwards no container labelled asep.role and no network labelled asep.attempt remained; load average about 6–10"
-  integration_gate_under_load: "at bcbafc1, which differs from 1aabe5e only in one unit test and the review log, under synthetic load (24 host and 4 Docker-VM CPU burners, 2 container- and 2 network-churn loops; load average 28 rising to 112): exit 0, 34 of 34; the hung-agent test stopped 3 ms after its deadline and removed the agent 1.5 s after the stop"
-  integration_gate_at_reviewed_head: "the controller's run 1 at a447983 (load average about 30) was red: 33 of 34, the hung-agent test 80.8 s against its 60 s elapsed check; that duration includes the test's fixture setup and cleanup, and its split between fixture, setup, stop and teardown is not recorded and cannot be verified (phase-02-review-log.md, \"Final review cycle 9 dispositions\")"
+  verify_all_earlier_run: "the first verify:all of this cycle, at 937d25e, failed one of 847 tests (the hung-kill timing test, 58 ms inside its timer: the moments were read from the wall clock); fixed in 6608d21. The first run at 21aeb0d then failed two agent tests (the egress proxy did not become ready within its timer) in a run in which the fake-docker tests of two suites ran up to 24 times slower than in every other run of this cycle (the test step took 833 s against 314 s at 937d25e); the agent suite alone and the rerun above passed; the cause of the slowdown is not established"
+  canonical_tests: "849 tests, 849 pass, 0 fail, 0 skipped, across 58 test files; 36 required suite markers verified by scripts/run-canonical-tests.mjs"
+  integration_gate: "pnpm test:integration — exit 0; 34 tests, 34 pass, 0 fail, 0 skipped, across 7 *.itest.ts files on digest-pinned PostgreSQL and MinIO and Docker 29.6.1 (backends published on 127.0.0.1 only); 7 required suite markers verified; containers torn down; afterwards no container labelled asep.role and no network labelled asep.attempt remained; load average about 6–8"
+  integration_gate_under_load: "not run in this cycle"
+  integration_gate_at_reviewed_head: "the controller's gates at 5dd2300: verify:all 821/0/0; integration twice, 34/34 each, at load average about 29 and about 11 (as reported by the controller; the logs are in the controller's lane directory)"
+  earlier_red_run: "the controller's run 1 at a447983 (load average about 30) was red: 33 of 34, the hung-agent test 80.8 s against its 60 s elapsed check; that duration includes the test's fixture setup and cleanup, and its split between fixture, setup, stop and teardown is not recorded and cannot be verified (phase-02-review-log.md, \"Final review cycle 9 dispositions\")"
   live_proofs: >-
     `pnpm test:live:claude` is opt-in and outside both gates and was not run in
     this cycle. Its CONFORMANCE test last ran at dec962b (cycle-7 follow-up)
@@ -91,17 +92,37 @@ verification:
     (9d782c1). Its LIVE test (real model API) has never run here: no
     credential.
   mutation_checks: >-
-    Run by the implementer for every cycle-9 finding: 34 mutants, all killed
-    (CYCLE9-HIGH-001 with the resume base 26, CYCLE9-HIGH-002 with
-    CYCLE9-MED-001 8). Mutants per finding are in phase-02-review-log.md,
-    "Final review cycle 9 dispositions".
+    Run by the implementer for every cycle-10 finding with a code change and
+    for this cycle's clock fix: 28 mutants, all killed (CYCLE10-HIGH-001 12,
+    CYCLE10-HIGH-002 8, CYCLE10-MED-001 3 including the reviewer's state:
+    'open', CYCLE10-MED-003 3, the clock fix 2); two HIGH-002 mutants were
+    killed by a test's own timeout. Not mutation-checked: the runner's removal
+    after a client error (no test seam) and the itest fixtures. Mutants per
+    finding are in phase-02-review-log.md, "Final review cycle 10
+    dispositions".
+
+findings_cycle_10:
+  note: >-
+    Status after repair cycle 11, as assessed by the implementer; none is
+    independently confirmed. Details, tests, mutation checks and residual
+    concerns per finding: phase-02-review-log.md, "Final review cycle 10
+    dispositions".
+  accepted_by_review_at_cycle_10: [CYCLE9-HIGH-002, CYCLE9-MED-002, CYCLE9-LOW-001, RESUME-BASE-MUTATION, SCHEMA-REFERENCE-CONVENTION, R26]
+  partial_at_cycle_10: "CYCLE9-HIGH-001, HIGH-006, CYCLE7-HIGH-003 and CYCLE8-HIGH-003 (by CYCLE10-HIGH-001), CYCLE9-MED-001 and the timeout work (by CYCLE10-HIGH-002), MED-005 (by CYCLE10-MED-001 and CYCLE10-MED-002)"
+  repaired_unreviewed:
+    CYCLE10-HIGH-001: "2cbf335 — completion and the resume read the PR back after its record and bind it to the record (number, url, head and base branch, state, merged, head commit); what is returned and persisted is that observation; another PR, a mismatch or a change ends FAILED / publication-incomplete with the found and recorded PR audited; reconcile writes only the recorded PR and creates none; the reviewer's two probes are tests"
+    CYCLE10-HIGH-002: "3fbfb9b — agent-removed and removed are reported only once the daemon shows the container gone (docker inspect / docker ps -a), within AGENT_REMOVAL_BOUND_MS and COMMAND_REMOVAL_BOUND_MS; not shown in time fails the attempt or run; the 91 s slow-retry case is a red test; the runner itest bounds removal"
+    CYCLE10-MED-001: "6ad22d3 — the update's key set is asserted; the fake GitHub applies state and base; a human closing, merging or retargeting between list and PATCH is a test; the residual read/write race is stated"
+    CYCLE10-MED-002: "53f966f — the 72 s attribution is withdrawn; the split is not recorded and cannot be verified; the duration includes fixture setup and cleanup"
+    CYCLE10-MED-003: "4159b19 — every network and container is named and labelled before it is asked for and swept whatever the create answers"
+    limitations_2_3_4: "accepted as Phase 2 limits (R39)"
+    MED-005: "this report and the L1 sentinel"
 
 findings_cycle_9:
   note: >-
-    Status after repair cycle 10, as assessed by the implementer; none is
-    independently confirmed. Details, tests, mutation checks and residual
-    concerns per finding: phase-02-review-log.md, "Final review cycle 9
-    dispositions".
+    Status after repair cycle 10, as assessed by the implementer then; the
+    cycle-10 review's verdicts on them are above. Details:
+    phase-02-review-log.md, "Final review cycle 9 dispositions".
   accepted_by_review_at_cycle_9: [HIGH-001, HIGH-002, HIGH-003, HIGH-004, HIGH-005, HIGH-007, HIGH-008, HIGH-009, MED-001, MED-002, MED-003, MED-004, MED-006, MED-NEW-001, MED-NEW-002, MED-NEW-003, MED-NEW-004, CYCLE5-PROVENANCE, CYCLE5-PILOT-TEST, CYCLE7-HIGH-001, CYCLE7-HIGH-002, CYCLE7-HIGH-004, CYCLE7-HIGH-005, CYCLE7-HIGH-006, CYCLE7-HIGH-007, CYCLE7-MED-001, CYCLE7-MED-002, CYCLE7-MED-003, CYCLE7-MED-004, CYCLE8-HIGH-001, CYCLE8-HIGH-002, CYCLE8-HIGH-004, CYCLE8-NET-ALIAS, R26]
   partial_at_cycle_9: "HIGH-006, CYCLE7-HIGH-003 and CYCLE8-HIGH-003 (by CYCLE9-HIGH-001), MED-005 (by CYCLE9-MED-002 and the red gate), the timeout work (by CYCLE9-HIGH-002 and CYCLE9-MED-001)"
   repaired_unreviewed:
@@ -136,72 +157,60 @@ exit_criteria:
   K5: "NOT MET — verifier exercised by asep-suite:pilot-manifest, asep-suite:authority-resolver-sql, asep-suite:pilot-verifier; no pilot manifest exists"
   K6: NOT MET — pilot pending
   L1: "this report; sentinel written last (see head_binding)"
-  L2: "every cycle-9 finding has a recorded disposition; independent confirmation outstanding"
+  L2: "every cycle-10 finding has a recorded disposition; independent confirmation outstanding"
   L3: "not applicable — .task-complete is not created for a pilot-pending verdict"
   L4: ".phase-02-implementation-complete only"
   M: "phase-02-pilot-runbook.md; phase-02-pilot-rehearsal.md; asep-suite:pilot-rehearsal, asep-suite:pilot-faults"
 
 commits_this_cycle:
-  - 0554860 docs(phase-2) add the cycle-9 independent re-review transcript with its provenance
-  - a9da83f fix(forge) a closed, merged or retargeted PR is never a completed publication (CYCLE9-HIGH-001)
-  - 9fc9a30 fix(agent-claude) time the stop the product bounds, not the setup (CYCLE9-HIGH-002, CYCLE9-MED-001)
-  - d45794c docs(phase-2) say what the push compare-and-set guarantees, and that only a reviewable PR completes (CYCLE9-MED-002)
-  - bcbafc1 docs(phase-2) state the artifact reference convention and which test children need the wasm flag
-  - f98a202 docs(phase-2) record the cycle-9 dispositions and drop the trailing blank line (CYCLE9-LOW-001)
-  - 1aabe5e test(agent-claude) allow the first lifecycle moment to trail the deadline's start (CYCLE9-MED-001)
+  - 399a634 docs(phase-2) add the cycle-10 independent re-review transcript with its provenance
+  - 2cbf335 fix(application) complete and persist exactly the PR read back and checked against the record (CYCLE10-HIGH-001)
+  - 53f966f docs(phase-2) withdraw the 72 s attribution of the 80.8 s run (CYCLE10-MED-002)
+  - 3fbfb9b fix(sandbox) report a container removed only once the daemon shows it gone, within a named bound (CYCLE10-HIGH-002)
+  - 6ad22d3 fix(github-app) the PR update carries only the title and body; state the residual read/write race (CYCLE10-MED-001)
+  - 4159b19 fix(sandbox) name and label before every docker create, and sweep whatever the create answers (CYCLE10-MED-003)
+  - 937d25e docs(phase-2) record the cycle-10 dispositions
+  - 6608d21 fix(sandbox) read every bounded moment from a monotonic clock (verify:all at 937d25e failed one timing test)
+  - 21aeb0d docs(phase-2) record the gate failure of this cycle and its fix
   - this report
-commits_earlier_history: "`git log fc0df57..a447983`"
+commits_earlier_history: "`git log fc0df57..5dd2300`"
 
 contract_changes_this_cycle:
   migrations: "none"
-  ports: >-
-    PullRequestRef gains optional state ('open' | 'closed') and merged, as the
-    forge reports them. ForgeProvider.upsertPullRequest: opens the PR on the
-    given base, or updates the title and body of the open PR on that base; a
-    PR for the head that is read closed, merged or on another base is returned
-    as found, not written and not duplicated; no update carries a state or a
-    base (cycle 11: residual read/write race with a human, see limitations).
-    findPullRequest returns the PR open, closed or merged, with its state.
+  ports: "none (PullRequestRef already had an optional headSha)"
   adapters: >-
-    @asep/github-app: PullsApiPr (number, html_url, head {ref, sha?}, base,
-    title?, body?, state?, merged?, merged_at?) is the row type of
-    PullsApi.list/create/update; PullsApi.update no longer takes base;
-    PullRequestResult gains state? and merged?; the open PR for a head wins
-    over an older closed one; the port passes state and merged through.
-    @asep/local-doubles: LocalPullRequest gains state and merged; new
-    closePullRequest(headBranch, {merged}) and
-    retargetPullRequest(headBranch, base); the upsert follows the port.
-    @asep/command-runner: new DOCKER_CALL_TIMEOUT_MS (30 000, the
-    dockerCaller default) and COMMAND_STOP_BOUND_MS; TrustedCommandRunner
-    takes an optional fourth argument observeLifecycle(CommandLifecycleEvent)
-    (phases spawned, stop, killed, exited, removed); a second stop request is
-    ignored. @asep/agent-claude: ClaudeProviderConfig.observeLifecycle?
-    (AgentLifecycleEvent: started, network-ready, proxy-ready,
-    agent-started, stop, agent-killed, agent-exited, agent-removed,
-    torn-down); new AGENT_STOP_BOUND_MS; every provider docker call is bounded
-    by DOCKER_CALL_TIMEOUT_MS (was 60 s).
+    @asep/command-runner: DockerCall takes an optional per-call
+    { timeoutMs }; new removeContainerShownGone(docker, name, until, opts?),
+    monotonicNow(), TeardownClock and COMMAND_REMOVAL_BOUND_MS; removeLabelledContainers
+    takes until? and clock?; the runner's 'removed' moment now means shown
+    gone. @asep/agent-claude: new AGENT_REMOVAL_BOUND_MS and
+    agentRemovalDeadline({stoppedAt?, exitedAt}); AGENT_STOP_BOUND_MS is
+    DOCKER_CALL_TIMEOUT_MS + AGENT_REMOVAL_BOUND_MS (60 000, unchanged);
+    'agent-removed' now means shown gone. Both packages' lifecycle moments
+    (AgentLifecycleEvent.at and deadline, CommandLifecycleEvent.at) are read
+    from monotonicNow(): epoch milliseconds a wall-clock adjustment does not
+    move, fractional. @asep/github-app: unchanged (the update already carried
+    the title and body only; now asserted). The test fake docker emulates
+    `inspect --type container`.
   application: >-
-    New exports pullRequestGap(pr, facts) and pullRequestFound(pr).
-    ReconcilePullRequestResult gains gap? and the base is no longer repaired.
-    CompleteToReviewResult gains reason? and gap?. ResumeStop gains
-    'publication-incomplete'. ResumeAttemptInput loses base;
-    ResumeAttemptRepositories gains bindings (new ResumeBindingPort:
-    getScoped(scope, id) → {defaultBaseBranch}). On a publication gap the
-    fresh workflow and the resume write the task FAILED with a
-    task.status.transition audit entry (outcome publication-incomplete) and no
-    PR row.
-  apps: "ResumeVerticalSliceInput loses base; resumeVerticalSlice passes RepositoryBindingRepository as the bindings port"
-  pilot_verifier: >-
-    resolvePullRequest returns baseBranch and state; resolveLivePullRequest
-    returns baseBranch, state and merged. The verifier rejects a PR row whose
-    state is not OPEN, and a live PR that is merged, closed, of unreported
-    state or merged flag, or on another base than the row's.
+    New exports publicationGap(observed, recorded, facts),
+    pullRequestRecorded(recorded) and the types RecordedPullRequest and
+    ReconcilePullRequestInput (ReconcileRemoteInput plus a required recorded).
+    reconcilePullRequestStep takes the record, no longer creates a missing
+    PR, and returns pr: PullRequestRef | null (the last observation).
+    pullRequestFound accepts null and adds headSha. CompleteToReviewResult
+    gains recorded?, and its pr is the observation completion checked. The
+    publication-incomplete audit detail gains recorded and found.headSha;
+    found may be null.
+  apps: "none (test doubles only)"
 
 known_limitations:
   - "No live run: K2/K5/K6 unmet (no model credential, no GitHub App key)."
-  - "Repair cycle 10 is unreviewed (see verdict_note)."
+  - "Repair cycle 11 is unreviewed (see verdict_note)."
   - "Publication under takeover is not fenced at the forge. A stale owner — one paused inside a forge call while its lease lapsed — may still reach the forge, and GitHub offers no compare-and-set for a PR update. The push's compare-and-set conditions only on the branch's current value: expecting absence it accepts any SHA while the branch is absent, expecting the current value it accepts an update to any SHA. That only the attempt's commit lands comes from the harness, which always pushes the attempt's pinned commit; the compare-and-set makes a stale push of a different SHA fail once the branch exists. PR content is the same pure function of the attempt's facts. Before the terminal state the takeover puts the branch back on the attempt's commit and rewrites an open PR on the attempt's base; the harness never reopens or retargets a PR, and a PR read closed, merged, on another base or of unreported state is not written and fails the task on record. A human may close, merge or retarget the PR between the adapter's read and its title/body write, so that write can land on a PR that just closed (residual read/write race: GitHub has no compare-and-set for a PR update, R30); completion's read of the PR after its record then fails the task. A stale write that lands after that reconciliation is not repaired by that resume; an open PR edited outside the harness is repaired only by a later resume; a PR closed after its task reached review leaves the task there (the harness has no transition past review), and the verifier refuses it."
-  - "The failure of a task on a publication gap is written from the persisted task status, which stays PENDING until the workflow writes a terminal state (the success path writes WAITING_FOR_HUMAN_REVIEW the same way); the domain's transition check is not applied to the persisted row. The failure taxonomy has no publication class; the outcome is the audit detail."
+  - "Accepted as a Phase 2 limit (R39): the failure of a task on a publication gap is written from the persisted task status, which stays PENDING until the workflow writes a terminal state (the success path writes WAITING_FOR_HUMAN_REVIEW the same way); the domain's transition check is not applied to the persisted row, and PENDING → FAILED is not in the domain's table. The failure taxonomy has no publication class; the outcome is the audit detail."
+  - "Accepted as a Phase 2 limit (R39): a PR closed after its task reached review leaves the task there; review is the harness's terminal state and the verifier refuses that PR."
+  - "Completion binds the PR's head commit to the attempt's commit. GitHub may update a PR's head commit asynchronously after a push; a read that lands before it has caught up is a gap, and the task fails closed rather than completing."
   - "An attempt whose harness commit never landed is not resumed; it is re-executed as a new attempt (nothing left the harness). This includes a crash between commit-tree and the create-only attempt ref, which leaves an unreferenced object: not every Git-call boundary converges on the same attempt."
   - "Migrations 0017, 0018 and 0019 refuse data that predates them; they are not a compatible upgrade, and a database at this schema must be created fresh (no pilot data exists)."
   - "The TypeScript fitness guard is a static net: a value computed at run time, or retyped through an interface a root declares itself, can evade it. Enforcement is the runner's own record: it runs a command only for a handle a sandbox provider made, where that provider put it, from its own frozen copy of the flags."
@@ -210,7 +219,7 @@ known_limitations:
   - "Containers are removed by the harness while it is alive; if the harness process itself dies, its containers run on until the operator sweep (runbook §0.1)."
   - "The pilot verifier rests on what the harness recorded — agent artifacts and the verification provenance record — and on the configured model origin: whoever can write both the database and the object store could fabricate a run, and nothing attests who answers at that origin. The provenance record is not FK-bound to the evidence reservation."
   - "The pilot workflow plans L0 and L1 only, so an R1 task stops at verification for its missing L2: pilot tasks are R0."
-  - "Test bounds that depend on host load are sized from measurements up to a load average of about 185 on 8 CPUs (bc4cca5); a heavier load can still exceed them. The stop-path assertions use the product's bounds plus a 2 s scheduling allowance (the stop came at most 4 ms late at load average up to 112); the hung-agent integration test needs its setup to finish inside its 45 s budget (measured up to 19.1 s at load average 60–106 with docker churn)."
+  - "Test bounds that depend on host load are sized from measurements up to a load average of about 185 on 8 CPUs (bc4cca5); a heavier load can still exceed them. The stop-path assertions use the product's bounds plus a 2 s scheduling allowance (the stop came at most 4 ms late at load average up to 112); the hung-agent integration test needs its setup to finish inside its 45 s budget (measured up to 19.1 s at load average 60–106 with docker churn; not checked independently) — accepted as a test condition, not a product SLA (R39). A container not shown gone within its removal bound (one docker-call timeout after its client ended) fails the attempt or the run."
   - "The 80.8 s red run at a447983 is neither reproduced nor explained. Its log records only the test's duration, which includes the test's fixture setup and cleanup; how that time split between fixture, setup, stop and teardown is not recorded and cannot be verified. No reproduction here took more than 12.3 s from the deadline to the end of teardown."
   - "Fault 5 of the rehearsal pushes to a local bare remote; fault 1 is injected into the provider, not a full pipeline run."
   - "PGlite is a fast-test seam; the real-backend proofs run on PostgreSQL 17 in the integration gate."
@@ -243,31 +252,34 @@ the harness only ever pushes the attempt's pinned commit, under a
 compare-and-set that refuses a stale push of another SHA once the branch
 exists, and PR content is a pure function of the attempt's facts. The
 takeover reconciles the branch and an open PR with those facts, on record,
-before the task reaches review. Only an open, unmerged PR on the attempt's
-base completes: a PR a human closed, merged or retargeted is left as found and
-the task fails, on record.
+before the task reaches review. Only the PR the attempt recorded, open,
+unmerged, on the attempt's base and at the attempt's commit, completes:
+completion reads it back after its record and persists exactly that read; a
+PR a human closed, merged or retargeted, or another PR on the branch, is left
+as found and the task fails, on record. A human acting between the adapter's
+read and its title/body write can still receive that write (a residual
+read/write race; GitHub has no compare-and-set for a PR update).
 
 ## Where this stands
 
 The verdict is **IMPLEMENTATION_COMPLETE_PILOT_PENDING_UNREVIEWED**. Two items
-are open: the live pilot has not run (no credentials here), and repair cycle 10
+are open: the live pilot has not run (no credentials here), and repair cycle 11
 has not been independently reviewed.
 
-The last independent review, Codex re-review cycle 9 at `a447983`, did not
-accept Phase 2. It accepted every cycle-8 probe as refused and most findings as
-resolved (listed in the YAML above), and raised five: a PR a human closed or
-merged was completed to review and recorded `OPEN`; the integration gate was
-red at that head under load; the timing assertions no longer proved a prompt
-stop; the documents credited the push compare-and-set with what harness
-pinning provides; and a blank line at the end of the review log. Repair cycle
-10 addresses each as the controller decided (reconciliation R35), together
-with the resume's base, the reference convention and the wasm-flag scope. The
-repairs are dispositioned, with their tests, mutation checks, residual
-concerns and an account of the red run, in `phase-02-review-log.md` ("Final
-review cycle 9 dispositions"). They are the implementer's own work and
-assessment; read them as claims to be checked.
+The last independent review, Codex re-review cycle 10 at `5dd2300`, did not
+accept Phase 2, with all three controller gate runs green at that head. It
+raised five findings: completion checked one PR and returned another; the
+removal bound measured a docker client's return, not the container's
+absence; the documents promised a closed PR is never edited, and a
+`state: 'open'` mutation survived; the 72 s attribution of the earlier red run
+had no evidence; and an ambiguous network create skipped its cleanup. Repair
+cycle 11 addresses each as the controller decided (reconciliation R39), which
+also accepts three declared limitations as Phase 2 limits. The repairs are
+dispositioned, with their tests, mutation checks and what was not checked, in
+`phase-02-review-log.md` ("Final review cycle 10 dispositions"). They are the
+implementer's own work and assessment; read them as claims to be checked.
 
-What this cycle observed by machine: from a clean tree at `1aabe5e` (the implementation head), `pnpm install --frozen-lockfile` succeeded; `pnpm verify:all` passed all 14 steps, including 821 canonical tests across 58 files with 36 required suites, the contract, policy and compatibility gates, the fitness suites, the scans and the publication gate; and `pnpm test:integration` passed 34 tests across 7 files against real PostgreSQL, MinIO and Docker — and also under synthetic load (load average up to 112) at `bcbafc1`, which differs only in one unit test and the review log. The sentinel is written only after both gates pass again on the report commit.
+What this cycle observed by machine: from a clean tree at `21aeb0d` (a documentation commit after the implementation head `6608d21`), `pnpm install --frozen-lockfile` succeeded; `pnpm verify:all` passed all 14 steps, including 849 canonical tests across 58 files with 36 required suites, the contract, policy and compatibility gates, the fitness suites, the scans and the publication gate; and `pnpm test:integration` passed 34 tests across 7 files against real PostgreSQL, MinIO and Docker. No run under synthetic load was made in this cycle. Two earlier `verify:all` runs of the cycle failed: one on a timing test that read the wall clock (fixed in `6608d21`), one in a run whose fake-docker tests ran up to 24 times slower than in every other run, for a reason not established (YAML, `verify_all_earlier_run`). The sentinel is written only after both gates pass again on the report commit.
 
 What it did not observe: a live model run, a push to github.com, a pilot
 manifest with ten tasks, an independent review, or the CI runner's Docker
