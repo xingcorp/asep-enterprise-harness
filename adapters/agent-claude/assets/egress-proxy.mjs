@@ -11,25 +11,34 @@
 //     refused, so the proxy cannot be used as a general forward proxy.
 //   * Upgrades (websockets) are refused.
 //   * The model credential arrives on STDIN, never in argv or the container
-//     environment (both are visible to `docker inspect` / `ps`). The agent only
-//     ever holds a placeholder: whatever x-api-key / Authorization it sends is
-//     discarded and replaced here.
+//     environment (both are visible to `docker inspect` / `ps`), and only after
+//     the proxy has reported itself ready: it starts without one, listens, says
+//     so, and until the credential arrives refuses every request. Its starter
+//     sends the credential only once it saw the proxy ready within its own
+//     bound; a proxy that started too late, or whose starter is gone, never
+//     holds one. The agent only ever holds a placeholder: whatever x-api-key /
+//     Authorization it sends is discarded and replaced here.
 //   * Logs carry method, path and status only — never headers or bodies.
 //   * Its lifetime is its own, not its starter's. It is given a relative
 //     lifetime (`--lifetime-ms`), at most MAX_LIFETIME_MS, and counts it on its
 //     own monotonic clock from its own start: one deadline, fixed once, that no
 //     change to the wall clock moves. From that deadline on it admits no
 //     request, forwards no further byte of one in flight, destroys every open
-//     connection, and exits. And stdin is its link to whoever started it: the
-//     credential is the first line, and stdin then stays open for as long as
-//     the starter keeps it open. When stdin closes — the starter ended it, or
-//     died and the operating system closed it — the proxy exits at once. So the
-//     credential it holds is not usable past its lifetime, nor past the link to
-//     its starter, whichever ends first, and nothing has to be alive to take it
+//     connection, and exits. It also has a credential window on the same clock
+//     (`--credential-window-ms`, at most and by default CREDENTIAL_WINDOW_MS):
+//     with no credential by then it exits, and a credential that arrives later
+//     is refused. And stdin is its link to whoever started it: the credential
+//     is its first line, and stdin then stays open for as long as the starter
+//     keeps it open. When stdin closes — the starter ended it, or died and the
+//     operating system closed it — the proxy exits at once. So the credential
+//     it holds is not usable past its lifetime, nor past the link to its
+//     starter, whichever ends first, and nothing has to be alive to take it
 //     back.
 //
 // Usage: node egress-proxy.mjs --listen <host:port> --upstream <origin> --lifetime-ms <ms>
-// Prints `asep-egress-proxy listening <port>` on stdout once it accepts traffic.
+//          [--credential-window-ms <ms>]
+// Prints `asep-egress-proxy listening <port>` on stdout once it accepts
+// connections, and `asep-egress-proxy serving` once it holds the credential.
 
 import { realpathSync } from 'node:fs';
 import http from 'node:http';
@@ -61,6 +70,13 @@ const DROP_RESPONSE = new Set([
  */
 export const MAX_LIFETIME_MS = 4 * 60 * 60_000;
 
+/**
+ * The longest the proxy waits for its credential, from its own start, and the
+ * window it is given unless a shorter one is: one minute. Its starter waits for
+ * it to report ready for at most 30 s and only then sends the credential.
+ */
+export const CREDENTIAL_WINDOW_MS = 60_000;
+
 function accessLog(method, path, status) {
   process.stderr.write(`${new Date().toISOString()} ${method} ${path} -> ${status}\n`);
 }
@@ -88,19 +104,22 @@ function scheduleOnce(fn, ms) {
 
 /**
  * The proxy's request handling, without its process: an HTTP server that
- * forwards the allowlisted model API calls to `upstream` with `apiKey`, and
- * refuses everything else, until `deadline` on the clock `now` (by default
- * the process's monotonic clock). The deadline is one moment for everything:
+ * starts without a credential and refuses every request until it is given one
+ * (`server.provideCredential(key)`, once, before `credentialBy`), then forwards
+ * the allowlisted model API calls to `upstream` with that key and refuses
+ * everything else, until `deadline` — both on the clock `now`, by default the
+ * process's monotonic clock. The deadline is one moment for everything:
  * whichever first sees it reached — its timer, a request arriving, or a chunk
- * of a request or response in flight — ends the proxy. Ended, it has refused
- * that request, forwarded nothing more, destroyed every open connection, to
- * the agent and to the upstream, stopped listening and called `onExpired`.
- * Once reached, the deadline stays reached, even were the clock to go back.
- * The clock and the timer are parameters so that a test can run them on
- * virtual time.
+ * of a request or response in flight — ends the proxy. So does the credential
+ * window, `credentialBy`, passed without a credential, and a credential that
+ * arrives after it. Ended, it has refused that request, forwarded nothing
+ * more, destroyed every open connection, to the agent and to the upstream,
+ * stopped listening and called `onExpired` with why. Once reached, the
+ * deadline stays reached, even were the clock to go back. The clock and the
+ * timer are parameters so that a test can run them on virtual time.
  */
 export function egressProxy({
-  upstream, apiKey, deadline, now = () => performance.now(), schedule = scheduleOnce,
+  upstream, deadline, credentialBy = deadline, now = () => performance.now(), schedule = scheduleOnce,
   log = accessLog, onExpired = () => undefined,
 }) {
   const target = new URL(upstream);
@@ -114,14 +133,19 @@ export function egressProxy({
     open.add(s);
     s.on('close', () => open.delete(s));
   };
+  // The credential, once given.
+  let apiKey;
   let reached = false;
   const pastDeadline = () => {
     if (!reached && now() >= deadline) reached = true;
     return reached;
   };
+  const credentialMissed = () => apiKey === undefined && now() >= credentialBy;
+  const LIFETIME_ENDED = 'its lifetime ended';
+  const NO_CREDENTIAL = 'no credential arrived within its credential window';
   let ended = false;
   let cancelTimer = () => undefined;
-  const end = () => {
+  const end = (why) => {
     if (ended) return;
     ended = true;
     reached = true;
@@ -129,11 +153,17 @@ export function egressProxy({
     server.close();
     for (const s of open) s.destroy();
     open.clear();
-    onExpired();
+    onExpired(why);
   };
+  // The next moment that ends it: the deadline, or the credential window while
+  // it holds no credential.
   const atDeadline = () => {
-    if (pastDeadline()) end();
-    else cancelTimer = schedule(atDeadline, Math.max(0, deadline - now()));
+    if (pastDeadline()) end(LIFETIME_ENDED);
+    else if (credentialMissed()) end(NO_CREDENTIAL);
+    else {
+      const next = apiKey === undefined ? Math.min(deadline, credentialBy) : deadline;
+      cancelTimer = schedule(atDeadline, Math.max(0, next - now()));
+    }
   };
 
   // Moves `from` into `to` chunk by chunk, each only while the deadline has
@@ -141,7 +171,7 @@ export function egressProxy({
   const relay = (from, to, done) => {
     from.on('data', (chunk) => {
       if (pastDeadline()) {
-        end();
+        end(LIFETIME_ENDED);
         return;
       }
       if (!to.write(chunk)) {
@@ -150,7 +180,7 @@ export function egressProxy({
       }
     });
     from.on('end', () => {
-      if (pastDeadline()) end();
+      if (pastDeadline()) end(LIFETIME_ENDED);
       else done();
     });
   };
@@ -162,11 +192,17 @@ export function egressProxy({
       req.socket.destroy();
       return;
     }
-    if (pastDeadline()) {
+    const shown = raw.startsWith('/') ? raw.split('?')[0] : '(absolute-form)';
+    if (pastDeadline() || credentialMissed()) {
       // Refused, and once that answer is out the proxy ends.
-      res.once('close', end);
-      refuse(res, method, raw.startsWith('/') ? raw.split('?')[0] : '(absolute-form)',
-        'no longer serving: its lifetime ended', log, true);
+      const why = pastDeadline() ? LIFETIME_ENDED : NO_CREDENTIAL;
+      res.once('close', () => end(why));
+      refuse(res, method, shown, `no longer serving: ${why}`, log, true);
+      req.resume();
+      return;
+    }
+    if (apiKey === undefined) {
+      refuse(res, method, shown, 'not serving yet: it holds no credential', log);
       req.resume();
       return;
     }
@@ -244,6 +280,27 @@ export function egressProxy({
     log(req.method ?? 'GET', '(upgrade)', 403);
   });
 
+  /**
+   * The credential, once: true when it is taken. Refused when it is empty or
+   * a second one, and — ending the proxy — when the lifetime or the credential
+   * window has passed.
+   */
+  server.provideCredential = (key) => {
+    if (ended || apiKey !== undefined || typeof key !== 'string' || key === '') return false;
+    if (pastDeadline()) {
+      end(LIFETIME_ENDED);
+      return false;
+    }
+    if (now() >= credentialBy) {
+      end('a credential arrived after its credential window');
+      return false;
+    }
+    apiKey = key;
+    cancelTimer();
+    atDeadline();
+    return true;
+  };
+
   atDeadline();
   return server;
 }
@@ -305,25 +362,22 @@ async function main() {
       + `${MAX_LIFETIME_MS} ms — refusing to start\n`);
     process.exit(2);
   }
-  // The deadline, fixed once: performance.now() is this process's monotonic
-  // clock and counts from its start, so the lifetime runs from the start.
-  const deadline = lifetimeMs;
-  const apiKey = await readStdin(() => stop('its parent link closed'));
-  if (apiKey === undefined) {
-    process.stderr.write('asep-egress-proxy: stdin closed before a credential arrived — refusing to start\n');
+  const windowMs = process.argv.includes('--credential-window-ms')
+    ? Number(arg('--credential-window-ms')) : CREDENTIAL_WINDOW_MS;
+  if (!Number.isSafeInteger(windowMs) || windowMs < 1 || windowMs > CREDENTIAL_WINDOW_MS) {
+    process.stderr.write('asep-egress-proxy: --credential-window-ms must be a whole number of milliseconds '
+      + `from 1 to ${CREDENTIAL_WINDOW_MS} — refusing to start\n`);
     process.exit(2);
   }
-  if (apiKey === '') {
-    process.stderr.write('asep-egress-proxy: no credential on stdin — refusing to start\n');
-    process.exit(2);
-  }
-  if (performance.now() >= deadline) {
-    process.stderr.write('asep-egress-proxy: its lifetime ended before a credential arrived — refusing to start\n');
-    process.exit(2);
-  }
+  process.on('SIGTERM', () => stop('signalled'));
+  process.on('SIGINT', () => stop('signalled'));
 
-  const server = egressProxy({ upstream, apiKey, deadline, onExpired: () => stop('its lifetime ended') });
+  // The deadline and the credential window, fixed once: performance.now() is
+  // this process's monotonic clock and counts from its start, so both run from
+  // the start.
+  const server = egressProxy({ upstream, deadline: lifetimeMs, credentialBy: windowMs, onExpired: stop });
 
+  // Ready without a credential: it serves nothing until one arrives.
   const sep = listen.lastIndexOf(':');
   const host = listen.slice(0, sep);
   const port = Number(listen.slice(sep + 1));
@@ -331,8 +385,17 @@ async function main() {
     process.stdout.write(`asep-egress-proxy listening ${server.address().port}\n`);
   });
 
-  process.on('SIGTERM', () => stop('signalled'));
-  process.on('SIGINT', () => stop('signalled'));
+  const apiKey = await readStdin(() => stop('its parent link closed'));
+  if (apiKey === undefined) {
+    process.stderr.write('asep-egress-proxy: stdin closed before a credential arrived — refusing to serve\n');
+    process.exit(2);
+  }
+  if (apiKey === '') {
+    process.stderr.write('asep-egress-proxy: no credential on stdin — refusing to serve\n');
+    process.exit(2);
+  }
+  // Refused only once the proxy has ended, which has stopped the process.
+  if (server.provideCredential(apiKey)) process.stdout.write('asep-egress-proxy serving\n');
 }
 
 // Run as a program (in its container, or as a host process in tests); imported,

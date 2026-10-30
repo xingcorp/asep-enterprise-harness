@@ -445,6 +445,8 @@ async function run(rest) {
         const current = existsSync(containerFile(name)) ? readJson(containerFile(name)) : record;
         current.ports = record.ports;
         writeRecord(containerFile(name), current);
+        // When the container said it listens, beside what reached its stdin.
+        log({ container: name, listening: m[1] });
       }
     }
     process.stdout.write(d);

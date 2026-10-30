@@ -31,5 +31,6 @@ export {
   ClaudeCodingProvider, AgentConfigError, AGENT_STOP_BOUND_MS, AGENT_REMOVAL_BOUND_MS, agentRemovalDeadline,
   buildClaudeArgs, buildPrompt, buildAgentRunArgs, buildProxyRunArgs, initViolation,
   MODEL_KEY_PLACEHOLDER, EGRESS_ALLOWLIST, AGENT_NETWORK_FLAGS, agentNetworkIsolationGap,
-  PROXY_EXPIRY_GRACE_MS, PROXY_EXIT_BOUND_MS, PROXY_MAX_LIFETIME_MS,
+  PROXY_EXPIRY_GRACE_MS, PROXY_EXIT_BOUND_MS, PROXY_MAX_LIFETIME_MS, PROXY_START_TIMEOUT_MS,
+  PROXY_CREDENTIAL_WINDOW_MS, proxyHandshake,
 } from './claude-provider.js';

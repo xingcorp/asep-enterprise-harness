@@ -70,8 +70,14 @@ The Claude provider has no host-execution mode. Every attempt runs like this
    starts on the egress network and is attached to the internal one. It forwards
    only `POST /v1/messages` and `POST /v1/messages/count_tokens`, only to the
    configured model API origin; absolute-form requests, `CONNECT` tunnels,
-   upgrades and every other path get 403. The model key reaches it on **stdin**
-   and it substitutes the key into each forwarded request. Its access log
+   upgrades and every other path get 403. The model key reaches it on **stdin**,
+   and only after it reported ready: it starts without the key, refuses every
+   request until the key arrives, and waits for it for at most 60 s from its
+   own start (its credential window), then exits. The harness sends the key
+   only once the proxy reported ready within its readiness bound (30 s, or what
+   is left of the budget if less, from the spawn); a proxy not ready by then is
+   killed and never gets it. The proxy substitutes the key into each forwarded
+   request. Its access log
    (method, path, status — never headers or bodies) is stored as the
    `claude-egress-log` artifact. It has a lifetime of its own: it is started
    with `--lifetime-ms`, what is left of the attempt's budget when it is
@@ -80,14 +86,12 @@ The Claude provider has no host-execution mode. Every attempt runs like this
    clock back or forward does not move its end. At the end it refuses every
    request, cuts every connection still open — a stream in progress included —
    and exits; and it exits at once when its stdin — its link to the harness —
-   closes. A proxy not ready within its readiness bound (30 s, or what is left
-   of the budget if less) is killed. So, even if the harness died, the model
-   key is usable through a leftover proxy for at most
-   `min(remaining budget + 30 s, 4 h) + readiness bound`, whatever is done to
-   the wall clock. Not covered: a harness that dies while its proxy is still
-   starting, which leaves nothing to kill a late starter (that proxy's lifetime
-   runs from whenever it starts), and time the host spends asleep, which
-   neither clock counts.
+   closes. So, even if the harness died, the model key is usable through a
+   leftover proxy for at most `min(remaining budget + 30 s, 4 h) + readiness
+   bound` from the proxy's spawn, whatever is done to the wall clock; a harness
+   that died before its proxy reported ready never sent the key, and that proxy
+   forwards nothing and exits at its credential window. Not covered: time the
+   host spends asleep, which neither clock counts.
 3. The agent container runs on the internal network only, as the harness user,
    with a read-only root filesystem, all capabilities dropped,
    `no-new-privileges`, PID/CPU/memory limits and no Docker socket. The leased

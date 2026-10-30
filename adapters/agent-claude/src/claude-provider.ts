@@ -33,7 +33,7 @@
 // The provider never holds a GitHub credential, never commits or pushes, and
 // returns no attemptId / resultSha / changedFiles: those are harness facts.
 
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { chmod, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -163,7 +163,23 @@ const PROXY_PORT = 8080;
 const PROXY_ASSET = fileURLToPath(new URL('../assets/egress-proxy.mjs', import.meta.url));
 const PROXY_ASSET_IN_CONTAINER = '/opt/asep/egress-proxy.mjs';
 const PROXY_READY = /asep-egress-proxy listening (\d+)/;
-const PROXY_START_TIMEOUT_MS = 30_000;
+const PROXY_SERVING = /asep-egress-proxy serving/;
+
+/**
+ * How long, from its spawn, the provider waits for the egress proxy to report
+ * ready and then to confirm it holds the credential (or what is left of the
+ * budget, if less). The credential is sent only once the proxy reported ready
+ * within this bound; a proxy not ready by then is killed and never gets it.
+ */
+export const PROXY_START_TIMEOUT_MS = 30_000;
+
+/**
+ * The egress proxy's credential window: with no credential this long after
+ * its own start, it exits by itself (assets/egress-proxy.mjs,
+ * CREDENTIAL_WINDOW_MS). Longer than the readiness bound, so that a proxy that
+ * reported ready in time always receives its credential within the window.
+ */
+export const PROXY_CREDENTIAL_WINDOW_MS = 60_000;
 
 /**
  * How much longer than what is left of the attempt's budget its egress proxy
@@ -339,7 +355,8 @@ export function buildAgentRunArgs(p: {
 
 /**
  * Hardened `docker run` argv for the egress proxy container. `lifetimeMs` is
- * how long, from its own start, the proxy serves before it ends by itself.
+ * how long, from its own start, the proxy serves before it ends by itself; it
+ * waits for its credential for at most PROXY_CREDENTIAL_WINDOW_MS.
  */
 export function buildProxyRunArgs(p: {
   readonly name: string;
@@ -369,7 +386,70 @@ export function buildProxyRunArgs(p: {
     '--listen', `0.0.0.0:${PROXY_PORT}`,
     '--upstream', p.upstream,
     '--lifetime-ms', String(p.lifetimeMs),
+    '--credential-window-ms', String(PROXY_CREDENTIAL_WINDOW_MS),
   ];
+}
+
+/**
+ * The egress proxy's start, from the spawn of its docker client `child` to
+ * its confirmation that it holds the credential: the credential is written on
+ * the client's stdin once — only after the proxy reported ready, and only if
+ * it did so within `bound` ms. Resolves with undefined once the proxy confirms
+ * it serves, or with why not: not ready within the bound (and then nothing was
+ * sent), the credential not confirmed within it, the client failing to start or
+ * exiting first. `startedAt` and `spawnMs` describe the spawn, on the clock
+ * `now`; the timer is a parameter so that a test can run it on virtual time.
+ */
+export function proxyHandshake(child: ChildProcess, o: {
+  readonly apiKey: string;
+  readonly bound: number;
+  readonly startedAt: number;
+  readonly spawnMs: number;
+  readonly now?: () => number;
+  readonly schedule?: (fn: () => void, ms: number) => () => void;
+}): Promise<string | undefined> {
+  const now = o.now ?? monotonicNow;
+  const schedule = o.schedule ?? ((fn: () => void, ms: number) => {
+    const timer = setTimeout(fn, ms);
+    return () => clearTimeout(timer);
+  });
+  return new Promise<string | undefined>((resolve) => {
+    let out = '';
+    let sentAt: number | undefined;
+    let settled = false;
+    const finish = (v: string | undefined): void => {
+      if (!settled) { settled = true; cancel(); resolve(v); }
+    };
+    const stage = () => (sentAt === undefined ? 'before it was ready' : 'before it confirmed its credential');
+    // How long the proxy was waited for, against its bound, and what its
+    // client had written by then.
+    const cancel = schedule(
+      () => finish(`${sentAt === undefined
+        ? 'egress proxy did not become ready in time'
+        : 'egress proxy did not confirm its credential in time'}: `
+        + `waited ${Math.round(now() - o.startedAt)}ms of its ${Math.round(o.bound)}ms bound `
+        + `(${child.pid !== undefined ? `pid ${child.pid}, ` : ''}spawn ${Math.round(o.spawnMs)}ms), `
+        + `${sentAt !== undefined ? `its credential sent at +${Math.round(sentAt - o.startedAt)}ms`
+          : out === '' ? 'with nothing on its stdout' : `with ${out.length} bytes on its stdout`}`),
+      o.bound,
+    );
+    child.stdout!.on('data', (d: Buffer) => {
+      if (settled) return;
+      out += d.toString('utf8');
+      if (sentAt === undefined && PROXY_READY.test(out)) {
+        // Ready within the bound: now, and only now, the credential, as the
+        // first line. Stdin then stays open as the proxy's link to this
+        // process: when it closes — the teardown kills the client, or this
+        // process dies — the proxy stops serving and exits.
+        sentAt = now();
+        child.stdin!.write(`${o.apiKey}\n`);
+      }
+      if (sentAt !== undefined && PROXY_SERVING.test(out)) finish(undefined);
+    });
+    child.stdin!.on('error', () => undefined);
+    child.on('error', (e) => finish(`egress proxy could not start: ${e.message}`));
+    child.on('close', (code) => finish(`egress proxy exited ${code} ${stage()}`));
+  });
 }
 
 // --- small process helpers -----------------------------------------------------
@@ -741,48 +821,25 @@ export class ClaudeCodingProvider implements CodingAgentProvider {
       // and it does not depend on this process being there to stop it: what is
       // left of the budget now, plus the grace, at most the maximum. Counted
       // from here, the end is late by no more than the proxy takes to start,
-      // and a proxy not ready within its bound below is killed.
+      // and a proxy not ready within its bound below never receives the
+      // credential, and is killed.
       const proxyArgs = buildProxyRunArgs({
         name: proxyName, egressNetwork, attemptId: req.attemptId, image: sb.proxyImage, upstream,
         lifetimeMs: Math.min(
           Math.ceil(Math.max(1, deadline - monotonicNow())) + PROXY_EXPIRY_GRACE_MS, PROXY_MAX_LIFETIME_MS),
       });
       rec.invocation['proxyDockerArgs'] = proxyArgs;
-      const proxyReady = await new Promise<string | undefined>((resolve) => {
-        const startedAt = monotonicNow();
-        const child = spawn(this.docker, proxyArgs, {
-          env: dockerClientEnv(), shell: false, stdio: ['pipe', 'pipe', 'pipe'],
-        });
-        const spawnMs = monotonicNow() - startedAt;
-        proxyChild = child;
-        let out = '';
-        let settled = false;
-        const finish = (v: string | undefined): void => {
-          if (!settled) { settled = true; clearTimeout(timer); resolve(v); }
-        };
-        // How long the proxy was waited for, against its bound, and whether
-        // its client had written anything yet.
-        const bound = Math.min(PROXY_START_TIMEOUT_MS, Math.max(1, deadline - monotonicNow()));
-        const timer = setTimeout(
-          () => finish(`egress proxy did not become ready in time: waited ${Math.round(monotonicNow() - startedAt)}ms `
-            + `of its ${Math.round(bound)}ms bound (${child.pid !== undefined ? `pid ${child.pid}, ` : ''}`
-            + `spawn ${Math.round(spawnMs)}ms), `
-            + `${out === '' ? 'with nothing on its stdout' : `with ${out.length} bytes on its stdout`}`),
-          bound,
-        );
-        proxyClosed = new Promise<void>((done) => child.on('close', () => done()));
-        child.stdout!.on('data', (d: Buffer) => {
-          out += d.toString('utf8');
-          if (PROXY_READY.test(out)) finish(undefined);
-        });
-        child.stderr!.on('data', (d: Buffer) => appendBounded(rec.egressLog, d, MAX_STDERR_BYTES));
-        child.on('error', (e) => finish(`egress proxy could not start: ${e.message}`));
-        child.on('close', (code) => finish(`egress proxy exited ${code} before it was ready`));
-        child.stdin!.on('error', () => undefined);
-        // The credential is the first line. Stdin then stays open as the
-        // proxy's link to this process: when it closes — the teardown kills the
-        // client, or this process dies — the proxy stops serving and exits.
-        child.stdin!.write(`${credential.apiKey}\n`);
+      const startedAt = monotonicNow();
+      const child = spawn(this.docker, proxyArgs, {
+        env: dockerClientEnv(), shell: false, stdio: ['pipe', 'pipe', 'pipe'],
+      });
+      const spawnMs = monotonicNow() - startedAt;
+      proxyChild = child;
+      proxyClosed = new Promise<void>((done) => child.on('close', () => done()));
+      child.stderr!.on('data', (d: Buffer) => appendBounded(rec.egressLog, d, MAX_STDERR_BYTES));
+      const proxyReady = await proxyHandshake(child, {
+        apiKey: credential.apiKey, startedAt, spawnMs,
+        bound: Math.min(PROXY_START_TIMEOUT_MS, Math.max(1, deadline - monotonicNow())),
       });
       if (proxyReady !== undefined) {
         setup('FAILED', `${proxyReady}: ${redactSecrets(rec.egressLog.text, rec.secrets).text.trim().slice(0, 300)}`);
