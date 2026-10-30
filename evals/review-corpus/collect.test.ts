@@ -489,6 +489,20 @@ test('the publication history scan fails closed', () => {
     assert.equal(found.status, 1, 'a key in history only');
     assert.match(found.stdout.toString('utf8'), /^ {2}[0-9a-f]{40}:notes\.txt:1$/m);
     assert.equal(printed(found).includes(key), false, 'the scan never prints the key');
+    // A path is not exempt because it contains an exempt name: a key under a path that carries one between colons,
+    // ends with one or starts with one is reported by that path.
+    const smuggled = ['docs/:scripts/check-publication.sh:note.txt', 'docs/:scripts/check-publication.sh', 'scripts/check-publication.sh:notes'];
+    for (const path of smuggled) {
+      mkdirSync(dirname(join(scratch, path)), { recursive: true });
+      writeFileSync(join(scratch, path), `${key}\n`);
+    }
+    commit('keys under paths naming an exempt file');
+    const named = scan();
+    assert.equal(named.status, 1, 'keys under paths naming an exempt file');
+    for (const path of smuggled) {
+      assert.match(named.stdout.toString('utf8'), new RegExp(`^ {2}[0-9a-f]{40}:${path.replaceAll('.', '\\.')}:1$`, 'm'), path);
+    }
+    assert.equal(printed(named).includes(key), false, 'the scan never prints the key');
     const full = run([]);
     assert.equal(full.status, 1, 'the full gate');
     assert.match(full.stderr.toString('utf8'), /git-history: FAIL — secret material found in history/);
