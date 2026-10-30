@@ -5,9 +5,9 @@
 // network rm — is exercised quickly and deterministically, with every argv,
 // environment and stdin recorded for assertions.
 //
-// `kill`, `rm -f`, `ps -aq` and `network ls -q` (with `--filter label=…`) act on
-// those records, so a container whose client was killed stays listed, and
-// running, until something removes it — as with the real daemon.
+// `kill`, `rm -f`, `inspect`, `ps -aq` and `network ls -q` (with `--filter
+// label=…`) act on those records, so a container whose client was killed stays
+// listed, and running, until something removes it — as with the real daemon.
 //
 // It does NOT isolate anything. The OS-enforced properties (internal network,
 // read-only binds, read-only rootfs, dropped capabilities) are proven against
@@ -89,6 +89,8 @@ async function main() {
       return ps(rest);
     case 'kill':
       return kill(rest);
+    case 'inspect':
+      return inspect(rest);
     case 'run':
       return run(rest);
     default:
@@ -224,6 +226,18 @@ async function remove(rest) {
     process.stdout.write(`${name}\n`);
   }
   process.exit(bad ? 1 : 0);
+}
+
+// Only `inspect --type container --format {{.Id}} <name>`, the provider's
+// proof of removal, answered as the daemon does for a missing container.
+function inspect(rest) {
+  if (rest.length !== 5 || rest[0] !== '--type' || rest[1] !== 'container' || rest[2] !== '--format'
+    || rest[3] !== '{{.Id}}') {
+    fail('fake docker: only `inspect --type container --format {{.Id}} <name>` is emulated', 125);
+  }
+  const name = rest[4];
+  if (!existsSync(containerFile(name))) fail(`Error response from daemon: No such container: ${name}`);
+  process.stdout.write(`${createHash('sha256').update(name).digest('hex')}\n`);
 }
 
 // Stops a container's process. Its record goes when its client sees it exit

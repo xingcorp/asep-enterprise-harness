@@ -44,8 +44,8 @@ import type {
   CodingAgentProvider, AgentExecuteRequest, AgentAttemptObservation, ArtifactStore,
 } from '@asep/ports';
 import {
-  isDigestPinned, dockerCaller, dockerClientEnv, removeLabelledContainers, DOCKER_CALL_TIMEOUT_MS,
-  type DockerCall,
+  isDigestPinned, dockerCaller, dockerClientEnv, removeLabelledContainers, removeContainerShownGone,
+  DOCKER_CALL_TIMEOUT_MS, type DockerCall,
 } from '@asep/command-runner';
 import {
   ClaudeStreamParser, MalformedEventError, type ClaudeInit, type ParsedStream,
@@ -109,7 +109,7 @@ export type AgentLifecyclePhase =
   | 'stop'           // the first reason to stop the agent was acted on: `reason`
   | 'agent-killed'   // `docker kill` of the agent container returned
   | 'agent-exited'   // the agent container's docker client ended
-  | 'agent-removed'  // `docker rm -f` of the agent container returned
+  | 'agent-removed'  // the agent container was shown gone: `docker inspect` found no such container
   | 'torn-down';     // every container and network of the attempt was handled
 
 export interface AgentLifecycleEvent {
@@ -122,12 +122,30 @@ export interface AgentLifecycleEvent {
 }
 
 /**
- * The longest the agent container can outlive the decision to stop it (the
- * `stop` phase) before it is removed: it is killed by name, then removed by
- * name, each a docker call bounded by DOCKER_CALL_TIMEOUT_MS. Its client is
- * SIGKILLed as soon as the kill returns, so it does not outlast the kill.
+ * The longest the agent container can outlive its docker client before it is
+ * shown gone (the `agent-removed` phase): its removal by name, and the
+ * `docker inspect` that finds no such container, run within this, each call
+ * cut at what is left of it. A container not shown gone within it fails the
+ * attempt, and no removal is reported.
  */
-export const AGENT_STOP_BOUND_MS = 2 * DOCKER_CALL_TIMEOUT_MS;
+export const AGENT_REMOVAL_BOUND_MS = DOCKER_CALL_TIMEOUT_MS;
+
+/**
+ * The longest the agent container can outlive the decision to stop it (the
+ * `stop` phase) before it is shown gone: it is killed by name, a docker call
+ * bounded by DOCKER_CALL_TIMEOUT_MS, its client SIGKILLed as soon as the kill
+ * returns, and then shown removed within AGENT_REMOVAL_BOUND_MS.
+ */
+export const AGENT_STOP_BOUND_MS = DOCKER_CALL_TIMEOUT_MS + AGENT_REMOVAL_BOUND_MS;
+
+/**
+ * By when the agent container must be shown gone: AGENT_REMOVAL_BOUND_MS after
+ * its client ended, and never later than AGENT_STOP_BOUND_MS after a stop.
+ */
+export function agentRemovalDeadline(t: { readonly stoppedAt?: number; readonly exitedAt: number }): number {
+  const afterExit = t.exitedAt + AGENT_REMOVAL_BOUND_MS;
+  return t.stoppedAt === undefined ? afterExit : Math.min(afterExit, t.stoppedAt + AGENT_STOP_BOUND_MS);
+}
 
 export class AgentConfigError extends Error {
   constructor(reason: string) {
@@ -373,10 +391,11 @@ async function removeLabelledNetworks(docker: DockerCall, label: string): Promis
 
 // --- the attempt ---------------------------------------------------------------
 
+// Reports a lifecycle moment and returns when it was reached.
 type Mark = (
   phase: AgentLifecyclePhase,
   extra?: Pick<AgentLifecycleEvent, 'deadline' | 'reason'>,
-) => void;
+) => number;
 
 type AgentEnd =
   | { readonly kind: 'exit'; readonly code: number | null }
@@ -409,6 +428,9 @@ interface RunRecord {
   // Containers or networks of the attempt that could not be shown removed.
   leftovers: string[];
   secrets: string[];
+  // When the agent was stopped, if it was, and when its docker client ended.
+  stoppedAt?: number;
+  exitedAt?: number;
 }
 
 export class ClaudeCodingProvider implements CodingAgentProvider {
@@ -722,8 +744,15 @@ export class ClaudeCodingProvider implements CodingAgentProvider {
       // cannot be shown gone fails the attempt (see conclude).
       const docker = dockerCaller(this.docker, dockerClientEnv());
       if (created.agent) {
-        await this.remove(agentName, rec);
-        mark('agent-removed');
+        // Reported removed only once shown gone, within its bound; otherwise it
+        // is a leftover, and the attempt fails.
+        const until = agentRemovalDeadline({
+          ...(rec.stoppedAt !== undefined ? { stoppedAt: rec.stoppedAt } : {}),
+          exitedAt: rec.exitedAt ?? Date.now(),
+        });
+        const left = await removeContainerShownGone(docker, agentName, until);
+        if (left === undefined) mark('agent-removed');
+        else rec.leftovers.push(left);
       }
       if (created.proxy) {
         await docker(['kill', proxyName]);
@@ -754,12 +783,14 @@ export class ClaudeCodingProvider implements CodingAgentProvider {
   private marker(attemptId: string): Mark {
     const observe = this.cfg.observeLifecycle;
     return (phase, extra = {}) => {
-      if (observe === undefined) return;
+      const at = Date.now();
+      if (observe === undefined) return at;
       try {
-        observe({ phase, attemptId, at: Date.now(), ...extra });
+        observe({ phase, attemptId, at, ...extra });
       } catch {
         // An observer never changes the attempt.
       }
+      return at;
     };
   }
 
@@ -794,7 +825,7 @@ export class ClaudeCodingProvider implements CodingAgentProvider {
       const stop = (end: AgentEnd): void => {
         if (ended !== undefined) return;
         ended = end;
-        mark('stop', { reason: end.kind === 'timeout' || end.kind === 'aborted' ? end.kind : 'violation' });
+        rec.stoppedAt = mark('stop', { reason: end.kind === 'timeout' || end.kind === 'aborted' ? end.kind : 'violation' });
         void runDocker(this.docker, ['kill', name]).finally(() => {
           mark('agent-killed');
           child.kill('SIGKILL');
@@ -847,7 +878,7 @@ export class ClaudeCodingProvider implements CodingAgentProvider {
       const settle = (fallback: AgentEnd): void => {
         if (!exited) {
           exited = true;
-          mark('agent-exited');
+          rec.exitedAt = mark('agent-exited');
         }
         clearTimeout(timer);
         req.signal.removeEventListener('abort', onAbort);

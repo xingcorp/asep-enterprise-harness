@@ -15,7 +15,9 @@ export {
 } from './environment-profiles.js';
 
 export type { CommandRunnerConfig, CommandLifecycleEvent, CommandLifecyclePhase } from './command-runner.js';
-export { TrustedCommandRunner, SandboxHandleNotProvenError, COMMAND_STOP_BOUND_MS } from './command-runner.js';
+export {
+  TrustedCommandRunner, SandboxHandleNotProvenError, COMMAND_STOP_BOUND_MS, COMMAND_REMOVAL_BOUND_MS,
+} from './command-runner.js';
 
 export type { SandboxHandleEx, DockerSandboxConfig } from './sandbox.js';
 export {
@@ -23,7 +25,8 @@ export {
   buildSandboxRunFlags, isDigestPinned, sandboxLabels,
 } from './sandbox.js';
 
-export type { DockerCall, DockerResult } from './container-teardown.js';
+export type { DockerCall, DockerResult, TeardownClock } from './container-teardown.js';
 export {
-  dockerCaller, dockerClientEnv, removeLabelledContainers, SandboxTeardownError, DOCKER_CALL_TIMEOUT_MS,
+  dockerCaller, dockerClientEnv, removeLabelledContainers, removeContainerShownGone, SandboxTeardownError,
+  DOCKER_CALL_TIMEOUT_MS,
 } from './container-teardown.js';

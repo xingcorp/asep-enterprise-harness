@@ -28,7 +28,7 @@ export type {
   ClaudeProviderConfig, AgentSandboxConfig, AgentLifecycleEvent, AgentLifecyclePhase,
 } from './claude-provider.js';
 export {
-  ClaudeCodingProvider, AgentConfigError, AGENT_STOP_BOUND_MS,
+  ClaudeCodingProvider, AgentConfigError, AGENT_STOP_BOUND_MS, AGENT_REMOVAL_BOUND_MS, agentRemovalDeadline,
   buildClaudeArgs, buildPrompt, buildAgentRunArgs, buildProxyRunArgs, initViolation,
   MODEL_KEY_PLACEHOLDER, EGRESS_ALLOWLIST, AGENT_NETWORK_FLAGS, agentNetworkIsolationGap,
 } from './claude-provider.js';

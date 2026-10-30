@@ -45,12 +45,11 @@ import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   ClaudeCodingProvider, FileModelCredentialProvider, MODEL_KEY_PLACEHOLDER, AGENT_STOP_BOUND_MS,
-  type AgentLifecycleEvent, type AgentLifecyclePhase,
+  AGENT_REMOVAL_BOUND_MS, type AgentLifecycleEvent, type AgentLifecyclePhase,
 } from './index.js';
 import {
   PgliteClient, migrate, ContentAddressedArtifactStore, FilesystemObjectStore,
 } from '@asep/persistence';
-import { DOCKER_CALL_TIMEOUT_MS } from '@asep/command-runner';
 import type { AgentExecuteRequest } from '@asep/ports';
 import type {
   OrganizationId, ProjectId, TenantScope, WorkspaceId, AttemptId, ArtifactRef,
@@ -258,8 +257,11 @@ async function provider(
 //
 // The stop path is bounded by the product: from the moment a stop is decided
 // (the deadline fires, a cancellation is delivered) the agent container is
-// killed and removed by name, each a docker call bounded by
-// DOCKER_CALL_TIMEOUT_MS (AGENT_STOP_BOUND_MS). The setup before the agent
+// killed by name, a docker call bounded by DOCKER_CALL_TIMEOUT_MS, then removed
+// by name and shown gone by `docker inspect` within AGENT_REMOVAL_BOUND_MS
+// (together AGENT_STOP_BOUND_MS). 'agent-removed' is the moment the daemon
+// showed the container gone; a removal not shown in time reports no such
+// moment, and the assertion below fails on its absence. The setup before the agent
 // starts — network, proxy, image start — is not bounded by the product and is
 // never part of an asserted interval. Each test prints its timeline to the
 // gate log, so a slow run shows where its time went.
@@ -551,11 +553,11 @@ test('SIGKILLing the agent and proxy docker clients mid-run leaves no container 
     console.log('killed clients timeline:', showTimeline(lifecycle));
     assert.equal(obs.status, 'FAILED', obs.knownLimitations.join('; '));
     // The attempt ended with its client — nothing, least of all the wall clock,
-    // had to stop it — and the container went within one docker call.
+    // had to stop it — and the container was shown gone within the removal bound.
     assert.deepEqual(lifecycle.filter((e) => e.phase === 'stop'), [], showTimeline(lifecycle));
     const exited = phaseOf(lifecycle, 'agent-exited');
     assert.ok(exited.at - killedAt <= SCHEDULING_ALLOWANCE_MS, showTimeline(lifecycle));
-    assert.ok(phaseOf(lifecycle, 'agent-removed').at - exited.at <= DOCKER_CALL_TIMEOUT_MS + SCHEDULING_ALLOWANCE_MS,
+    assert.ok(phaseOf(lifecycle, 'agent-removed').at - exited.at <= AGENT_REMOVAL_BOUND_MS + SCHEDULING_ALLOWANCE_MS,
       showTimeline(lifecycle));
     assert.equal(await leftovers(req.attemptId), '', 'the containers and the network were removed, not abandoned');
   } finally {

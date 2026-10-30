@@ -14,7 +14,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PgliteClient, migrate, ContentAddressedArtifactStore, FilesystemObjectStore } from '@asep/persistence';
 import type { SqlClient } from '@asep/persistence';
-import { TrustedCommandRunner, type CommandLifecycleEvent } from './command-runner.js';
+import { TrustedCommandRunner, COMMAND_REMOVAL_BOUND_MS, type CommandLifecycleEvent } from './command-runner.js';
 import { BoundedCapture, TRUNCATION_MARKER } from './bounded-capture.js';
 import { resolveEnvironment, UnknownEnvironmentProfileError } from './environment-profiles.js';
 import {
@@ -22,7 +22,9 @@ import {
   buildSandboxRunFlags, isDigestPinned, executionOf, sandboxLabels,
   type SandboxHandleEx,
 } from './sandbox.js';
-import { SandboxTeardownError } from './container-teardown.js';
+import {
+  SandboxTeardownError, removeLabelledContainers, removeContainerShownGone, type DockerCall, type TeardownClock,
+} from './container-teardown.js';
 import { SandboxHandleNotProvenError } from './command-runner.js';
 import { spawn } from 'node:child_process';
 import type { CommandSpec, SandboxHandle } from '@asep/ports';
@@ -439,8 +441,9 @@ interface FakeDaemon {
 
 // A fake docker client shim that records the pid of each client it starts.
 // `refuseRm` makes every `docker rm` and `docker kill` fail, as a daemon that
-// cannot stop or remove a container.
-async function fakeDaemon(dir: string, refuseRm = false): Promise<FakeDaemon> {
+// cannot stop or remove a container; `hangPs` makes every `docker ps` hang, as
+// a daemon that never says what is left.
+async function fakeDaemon(dir: string, refuseRm = false, hangPs = false): Promise<FakeDaemon> {
   const state = join(dir, 'docker-state');
   const docker = join(dir, 'docker');
   const pids = join(dir, 'client-pids');
@@ -448,6 +451,7 @@ async function fakeDaemon(dir: string, refuseRm = false): Promise<FakeDaemon> {
     '#!/bin/sh',
     `echo "$$ $1" >> "${pids}"`,
     ...(refuseRm ? ['case "$1" in rm|kill) echo "Error response from daemon: removal refused" >&2; exit 1;; esac'] : []),
+    ...(hangPs ? ['case "$1" in ps) exec sleep 600;; esac'] : []),
     `exec "${process.execPath}" "${FAKE_DOCKER}" --state "${state}" "$@"`,
     '',
   ].join('\n'), { mode: 0o755 });
@@ -616,18 +620,42 @@ test('a cancelled command has its container removed', async () => {
   }
 });
 
-test('a container that cannot be removed fails the run closed', async () => {
+test('a container that cannot be removed fails the run closed, and is never reported removed', async () => {
   const { client, store, scope, dir } = await harness();
   let leftover: number | undefined;
   try {
     const d = await fakeDaemon(dir, true);
-    const running = new TrustedCommandRunner(scope, store).run(spec({ ...LONG, cwd: d.wt, timeoutMs: 1_000 }), await dockerHandle(d));
+    const seen: CommandLifecycleEvent[] = [];
+    const running = new TrustedCommandRunner(scope, store, undefined, (e) => { seen.push(e); })
+      .run(spec({ ...LONG, cwd: d.wt, timeoutMs: 1_000 }), await dockerHandle(d));
     await until('the container to start', () => d.containers().length === 1);
     leftover = d.containers()[0]!['pid'] as number;
     await assert.rejects(running, (err: Error) =>
       err instanceof SandboxTeardownError && /could not be removed .*removal refused/.test(err.message));
+    assert.deepEqual(seen.filter((e) => e.phase === 'removed'), [], 'not shown gone, not reported removed');
   } finally {
     if (leftover !== undefined) try { process.kill(-leftover, 'SIGKILL'); } catch { /* gone */ }
+    await client.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('a container the daemon cannot show gone within the removal bound fails the run at the bound', { timeout: 120_000 }, async () => {
+  const { client, store, scope, dir } = await harness();
+  try {
+    const d = await fakeDaemon(dir, false, true);
+    const seen: CommandLifecycleEvent[] = [];
+    await assert.rejects(
+      new TrustedCommandRunner(scope, store, undefined, (e) => { seen.push(e); })
+        .run(spec({ cwd: d.wt }), await dockerHandle(d)),
+      (err: Error) => err instanceof SandboxTeardownError && /could not be shown removed in time/.test(err.message),
+    );
+    const exited = seen.find((e) => e.phase === 'exited')!;
+    const gaveUp = Date.now() - exited.at;
+    assert.ok(gaveUp >= COMMAND_REMOVAL_BOUND_MS - 50 && gaveUp <= COMMAND_REMOVAL_BOUND_MS + 5_000,
+      `the run failed ${gaveUp} ms after its client ended, not at the ${COMMAND_REMOVAL_BOUND_MS} ms bound`);
+    assert.deepEqual(seen.filter((e) => e.phase === 'removed'), []);
+  } finally {
     await client.close();
     await rm(dir, { recursive: true, force: true });
   }
@@ -823,5 +851,53 @@ test('a genuine handle still runs where its provider put it', async () => {
   } finally {
     await client.close();
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// Removal on virtual time: what the removal helpers do with their deadline.
+// The daemon answers each call after `costMs`, cut at the timeout it is
+// given as the docker client's is, and shows the container until `goneAt`.
+function virtualDaemon(goneAt: number, costMs: number) {
+  let now = 0;
+  const calls: { at: number; argv: readonly string[]; cut: number | undefined }[] = [];
+  const clock: TeardownClock = { now: () => now, sleep: async (ms) => { now += ms; } };
+  const docker: DockerCall = async (argv, opts = {}) => {
+    calls.push({ at: now, argv, cut: opts.timeoutMs });
+    const cut = opts.timeoutMs ?? Infinity;
+    if (costMs > cut) {
+      now += cut;
+      return { code: null, stdout: '', stderr: '' };
+    }
+    now += costMs;
+    const there = now < goneAt;
+    if (argv[0] === 'ps') return { code: 0, stdout: there ? 'c-1\n' : '', stderr: '' };
+    if (argv[0] === 'inspect') {
+      return there ? { code: 0, stdout: 'f'.repeat(64), stderr: '' }
+        : { code: 1, stdout: '', stderr: 'Error response from daemon: No such container: c-1' };
+    }
+    return { code: 0, stdout: 'c-1\n', stderr: '' };
+  };
+  return { clock, docker, calls, at: (t: number) => { now = t; }, now: () => now };
+}
+
+test('a removal is shown gone only by the daemon, and never past its deadline', async () => {
+  for (const [name, remove] of [
+    ['by label', (v: ReturnType<typeof virtualDaemon>, until: number) =>
+      removeLabelledContainers(v.docker, 'asep.container=c-1', { until, clock: v.clock, attempts: 1_000 })],
+    ['by name', (v: ReturnType<typeof virtualDaemon>, until: number) =>
+      removeContainerShownGone(v.docker, 'c-1', until, { clock: v.clock, attempts: 1_000 })],
+  ] as const) {
+    // Gone at 91 s; the deadline is 30 s after the client ended at 30 s.
+    const late = virtualDaemon(91_000, 5_000);
+    late.at(30_000);
+    const left = await remove(late, 60_000);
+    assert.match(left ?? '', /could not be shown removed in time/, name);
+    assert.ok(late.now() <= 60_000, `${name}: the removal ended at ${late.now()} ms, past its deadline`);
+    assert.ok(late.calls.every((c) => c.cut !== undefined && c.at + c.cut <= 60_000), `${name}: every call is cut at the deadline`);
+    // Gone at 45 s: shown, within the deadline.
+    const inTime = virtualDaemon(45_000, 5_000);
+    inTime.at(30_000);
+    assert.equal(await remove(inTime, 60_000), undefined, name);
+    assert.ok(inTime.now() >= 45_000 && inTime.now() <= 60_000, name);
   }
 });

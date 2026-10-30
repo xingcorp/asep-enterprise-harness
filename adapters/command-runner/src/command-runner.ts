@@ -56,7 +56,7 @@ export type CommandLifecyclePhase =
   | 'stop'      // the timeout fired or the cancellation was acted on: `reason`
   | 'killed'    // the container was killed by name (in a container) and the process group signalled
   | 'exited'    // the process (or docker client) ended
-  | 'removed';  // in a container: its removal by label returned
+  | 'removed';  // in a container: `docker ps -a` lists no container with its label
 
 export interface CommandLifecycleEvent {
   readonly phase: CommandLifecyclePhase;
@@ -72,6 +72,14 @@ export interface CommandLifecycleEvent {
  * group is SIGKILLed as soon as that call returns.
  */
 export const COMMAND_STOP_BOUND_MS = DOCKER_CALL_TIMEOUT_MS;
+
+/**
+ * The longest a verification container can outlive its docker client before
+ * it is shown gone (the `removed` phase): its removal by label, and the
+ * listing that shows none left, run within this, each call cut at what is left
+ * of it. A container not shown gone within it fails the run.
+ */
+export const COMMAND_REMOVAL_BOUND_MS = DOCKER_CALL_TIMEOUT_MS;
 
 // The runner needs the scope to store artifacts. It is constructed per attempt
 // with a scope + artifact store, then run() is called per command.
@@ -139,7 +147,9 @@ export class TrustedCommandRunner implements CommandRunner {
     const clientEnv = inContainer ? dockerClientEnv() : env;
     const docker = dockerCaller(exe, clientEnv);
     const removeContainer = container !== undefined
-      ? () => removeLabelledContainers(docker, `asep.container=${container}`)
+      ? () => removeLabelledContainers(docker, `asep.container=${container}`, {
+        until: Date.now() + COMMAND_REMOVAL_BOUND_MS,
+      })
       : async () => undefined;
     // Stops the container at once. (`docker rm -f` on a `--rm` container whose
     // client is still attached can take seconds; `docker kill` does not.)
@@ -224,10 +234,11 @@ export class TrustedCommandRunner implements CommandRunner {
       });
     });
 
-    // However the client ended, the container goes with it: removed by name and
-    // shown gone, or the run fails closed below.
+    // However the client ended, the container goes with it: removed by label
+    // and shown gone within its bound, or the run fails closed below. Only a
+    // container shown gone is reported removed.
     const left = await removeContainer();
-    if (container !== undefined) this.mark('removed');
+    if (container !== undefined && left === undefined) this.mark('removed');
 
     // Store raw output as immutable artifacts BEFORE returning (D5). This
     // happens for every run, success or fail, so evidence exists before any

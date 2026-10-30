@@ -29,7 +29,9 @@ import { join } from 'node:path';
 import { execFile, execFileSync } from 'node:child_process';
 import { PgliteClient, migrate, ContentAddressedArtifactStore, FilesystemObjectStore } from '@asep/persistence';
 import type { SqlClient } from '@asep/persistence';
-import { TrustedCommandRunner, COMMAND_STOP_BOUND_MS, type CommandLifecycleEvent } from './command-runner.js';
+import {
+  TrustedCommandRunner, COMMAND_STOP_BOUND_MS, COMMAND_REMOVAL_BOUND_MS, type CommandLifecycleEvent,
+} from './command-runner.js';
 import { DockerSandboxProvider, type SandboxHandleEx } from './sandbox.js';
 import type { CommandSpec } from '@asep/ports';
 import type { OrganizationId, ProjectId, TenantScope, WorkspaceId } from '@asep/contracts';
@@ -356,15 +358,23 @@ test('F3 (in-container): a timeout removes the container itself', async () => {
       return found[0]!;
     };
     // Measured from the runner's own timer and its own stop, never from a start
-    // that includes the container's: the timeout fired when it was due, and the
-    // command was stopped within one docker call of it — then shown removed.
+    // that includes the container's: the timeout fired when it was due, the
+    // command was stopped within one docker call of it, and the container was
+    // shown gone within the removal bound of its client's end — 'removed' is
+    // reported only once `docker ps -a` lists none, so a removal not shown in
+    // time fails here on its absence.
     const stop = at('stop');
     assert.equal(stop.reason, 'timeout', shown);
     const late = stop.at - at('spawned').at - timeoutMs;
     assert.ok(late >= -50 && late <= SCHEDULING_ALLOWANCE_MS, `the timeout fired ${late} ms off its due time: ${shown}`);
     assert.ok(at('exited').at - stop.at <= COMMAND_STOP_BOUND_MS + SCHEDULING_ALLOWANCE_MS,
       `the command ended ${at('exited').at - stop.at} ms after its stop: ${shown}`);
-    assert.ok(at('removed').at >= at('exited').at, shown);
+    const removedAfter = at('removed').at - at('exited').at;
+    assert.ok(removedAfter >= 0 && removedAfter <= COMMAND_REMOVAL_BOUND_MS + SCHEDULING_ALLOWANCE_MS,
+      `the container was shown gone ${removedAfter} ms after its client ended; the bound is `
+        + `${COMMAND_REMOVAL_BOUND_MS} ms + ${SCHEDULING_ALLOWANCE_MS} ms: ${shown}`);
+    assert.ok(at('removed').at - stop.at <= COMMAND_STOP_BOUND_MS + COMMAND_REMOVAL_BOUND_MS + SCHEDULING_ALLOWANCE_MS,
+      `the container was shown gone ${at('removed').at - stop.at} ms after its stop: ${shown}`);
     assert.deepEqual(await containersLabelled(`asep.sandbox=${handle.sandboxId}`), []);
     await provider.stop(handle);
   } finally {

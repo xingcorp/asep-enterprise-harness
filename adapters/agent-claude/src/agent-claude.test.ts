@@ -34,12 +34,15 @@ import {
   ClaudeCodingProvider, FileModelCredentialProvider, AgentConfigError, MODEL_KEY_PLACEHOLDER,
   claudeToolGrant, ToolPolicyError, buildClaudeArgs, parseModelBaseUrl, ModelCredentialError,
   parseStream, MalformedEventError, redactSecrets, agentNetworkIsolationGap, AGENT_STOP_BOUND_MS,
+  AGENT_REMOVAL_BOUND_MS, agentRemovalDeadline,
   type AgentSandboxConfig, type ModelCredentialProvider, type AgentLifecycleEvent, type AgentLifecyclePhase,
 } from './index.js';
 import {
   PgliteClient, migrate, ContentAddressedArtifactStore, FilesystemObjectStore,
 } from '@asep/persistence';
-import { DOCKER_CALL_TIMEOUT_MS } from '@asep/command-runner';
+import {
+  DOCKER_CALL_TIMEOUT_MS, removeContainerShownGone, type DockerCall, type TeardownClock,
+} from '@asep/command-runner';
 import type { ArtifactStore, AgentExecuteRequest, ToolPolicyProfile } from '@asep/ports';
 import type {
   OrganizationId, ProjectId, TenantScope, WorkspaceId, AttemptId, ArtifactRef,
@@ -170,6 +173,7 @@ interface Harness {
 
 async function harness(opts: {
   echoKey?: boolean; workOrder?: unknown; refuseRemoval?: boolean; hangKill?: boolean;
+  keepAgent?: boolean; agentRmErrs?: boolean; hangInspect?: boolean;
 } = {}): Promise<Harness> {
   // Real paths: the provider resolves the worktree with realpath(3).
   const dir = await realpath(await mkdtemp(join(tmpdir(), 'claude-provider-')));
@@ -179,13 +183,26 @@ async function harness(opts: {
   const docker = join(bin, 'docker');
   // Records each client's pid and argv, so a test can kill one; with
   // `refuseRemoval` it stands for a daemon that cannot stop or remove anything,
-  // with `hangKill` for one whose `docker kill` of the agent never answers.
+  // with `hangKill` for one whose `docker kill` of the agent never answers,
+  // with `keepAgent` for one that cannot stop the agent and answers its
+  // removal with success while keeping it, and with `agentRmErrs` for one that
+  // removes the agent but answers its removal with an error, and with
+  // `hangInspect` for one that never answers whether a container exists.
+  const fake = `"${process.execPath}" "${FAKE_DOCKER}" --state "${state}" "$@"`;
   await writeFile(docker, [
     '#!/bin/sh',
     `echo "$$ $*" >> "${join(dir, 'client-pids')}"`,
     ...(opts.refuseRemoval ? ['case "$1" in rm|kill) echo "Error response from daemon: removal refused" >&2; exit 1;; esac'] : []),
     ...(opts.hangKill ? ['case "$1 $2" in "kill asep-agent-"*) exec sleep 600;; esac'] : []),
-    `exec "${process.execPath}" "${FAKE_DOCKER}" --state "${state}" "$@"`,
+    ...(opts.keepAgent ? [
+      'case "$1 $2" in "kill asep-agent-"*) echo "Error response from daemon: cannot kill" >&2; exit 1;; esac',
+      'case "$1 $2 $3" in "rm -f asep-agent-"*) echo "$3"; exit 0;; esac',
+    ] : []),
+    ...(opts.agentRmErrs ? [
+      `case "$1 $2 $3" in "rm -f asep-agent-"*) ${fake} >/dev/null; echo "Error response from daemon: lost the answer" >&2; exit 1;; esac`,
+    ] : []),
+    ...(opts.hangInspect ? ['case "$1" in inspect) exec sleep 600;; esac'] : []),
+    `exec ${fake}`,
     '',
   ].join('\n'), { mode: 0o755 });
   const wt = join(dir, 'wt');
@@ -316,12 +333,12 @@ function assertStoppedInTime(t: Timeline, reason: 'timeout' | 'aborted' | 'viola
 }
 
 // The agent ended on its own — nothing stopped it, least of all the wall
-// clock — and its container was removed within one docker call of its end.
+// clock — and its container was shown gone within the removal bound of its end.
 function assertExitedAndRemoved(t: Timeline): void {
   assert.deepEqual(t.filter((e) => e.phase === 'stop'), [], `nothing stopped the agent:\n${showTimeline(t)}`);
   const exited = phaseOf(t, 'agent-exited');
   const removed = phaseOf(t, 'agent-removed');
-  assert.ok(removed.at - exited.at <= DOCKER_CALL_TIMEOUT_MS + SCHEDULING_ALLOWANCE_MS,
+  assert.ok(removed.at - exited.at <= AGENT_REMOVAL_BOUND_MS + SCHEDULING_ALLOWANCE_MS,
     `the agent container was removed ${removed.at - exited.at} ms after its client ended:\n${showTimeline(t)}`);
 }
 
@@ -377,12 +394,12 @@ test('a contained attempt: internal network, proxy, agent, teardown — and an u
     );
     assert.equal(readFileSync(join(h.wt, 'feature.txt'), 'utf8'), 'written by the fake claude CLI\n');
 
-    // The docker choreography, in order: the agent is removed by name, the proxy
-    // stopped then removed by name, then everything labelled with the attempt
-    // is shown gone before and after the network goes.
+    // The docker choreography, in order: the agent is removed by name and shown
+    // gone, the proxy stopped then removed by name, then everything labelled
+    // with the attempt is shown gone before and after the network goes.
     assert.deepEqual(verbs(h.invocations()), [
-      'network create', 'network inspect', 'run', 'network connect', 'run', 'rm', 'kill', 'rm', 'ps', 'network rm',
-      'network ls',
+      'network create', 'network inspect', 'run', 'network connect', 'run', 'rm', 'inspect', 'kill', 'rm', 'ps',
+      'network rm', 'network ls',
     ]);
     const sweeps = argvOf(h.invocations()).filter((a) => a[0] === 'ps' || (a[0] === 'network' && a[1] === 'ls'));
     for (const a of sweeps) assert.ok(a.includes(`label=asep.attempt=${ATTEMPT}`), `${a.join(' ')} sweeps by the attempt label`);
@@ -900,6 +917,149 @@ test('G3: an attempt whose containers cannot be shown removed fails closed', asy
     for (const p of pids) try { process.kill(-p, 'SIGKILL'); } catch { /* gone */ }
     await h.close();
   }
+});
+
+// The removal is reported only once the daemon shows the container gone:
+// `docker inspect` answers that no such container exists.
+
+test('G3: the agent is reported removed only once docker inspect shows it gone', async () => {
+  const h = await harness();
+  try {
+    const obs = await (await h.provider('ok')).execute(request(h));
+    assert.equal(obs.status, 'AGENT_DONE', obs.knownLimitations.join('; '));
+    const removed = phaseOf(h.lifecycle, 'agent-removed');
+    const agentCalls = h.invocations()
+      .filter((i) => Array.isArray(i['argv']) && String((i['argv'] as string[]).at(-1)).startsWith('asep-agent-'));
+    const rmAt = agentCalls.findIndex((i) => (i['argv'] as string[])[0] === 'rm');
+    const shown = agentCalls.slice(rmAt + 1).find((i) => (i['argv'] as string[])[0] === 'inspect');
+    assert.ok(rmAt >= 0 && shown !== undefined, 'the removal is followed by an inspect of the container');
+    assert.deepEqual(shown['argv'], ['inspect', '--type', 'container', '--format', '{{.Id}}', (agentCalls[rmAt]!['argv'] as string[])[2]]);
+    assert.ok(removed.at >= (shown['at'] as number), 'reported after the inspect, not after the rm');
+    assertExitedAndRemoved(h.lifecycle);
+  } finally {
+    await h.close();
+  }
+});
+
+test('G3: an agent removal that fails yet leaves the container gone is shown gone, and the attempt stands', async () => {
+  const h = await harness({ agentRmErrs: true });
+  try {
+    const ac = new AbortController();
+    const running = (await h.provider('hang')).execute(request(h, { signal: ac.signal }));
+    await until('the agent container to start', () => containerRecords(h).some((c) => String(c['name']).startsWith('asep-agent-')));
+    // The client dies, so the container outlives it until it is removed.
+    process.kill(runClientPid(h, 'agent'), 'SIGKILL');
+    const obs = await running;
+    assert.doesNotMatch(obs.knownLimitations.join(' '), /could not be shown removed/);
+    assertExitedAndRemoved(h.lifecycle);
+    assertTornDown(h);
+  } finally {
+    await h.close();
+  }
+});
+
+test('G3: an agent the daemon keeps while answering its removal with success is never reported removed', async () => {
+  const h = await harness({ keepAgent: true });
+  const pids: number[] = [];
+  const ac = new AbortController();
+  const running = (await h.provider('hang')).execute(request(h, { signal: ac.signal }));
+  try {
+    await until('the agent container to start', () => containerRecords(h).some((c) => String(c['name']).startsWith('asep-agent-')));
+    pids.push(...containerRecords(h).map((c) => c['pid'] as number));
+    ac.abort();
+    const obs = await running;
+    assert.equal(obs.status, 'FAILED', obs.knownLimitations.join('; '));
+    assert.match(obs.knownLimitations.join(' '),
+      /container asep-agent-\S+ could not be shown removed in time: docker inspect still shows it/);
+    assert.deepEqual(h.lifecycle.filter((e) => e.phase === 'agent-removed'), [], showTimeline(h.lifecycle));
+    assert.throws(() => assertStoppedInTime(h.lifecycle, 'aborted'), /exactly one 'agent-removed' moment/);
+  } finally {
+    ac.abort();
+    await running.catch(() => undefined);
+    for (const p of pids) try { process.kill(-p, 'SIGKILL'); } catch { /* gone */ }
+    await h.close();
+  }
+});
+
+// The removal path on virtual time, as the provider composes it: the removal
+// deadline (agentRemovalDeadline), the removal shown by inspect
+// (removeContainerShownGone), and the 'agent-removed' moment reported only
+// when it was shown. The daemon answers each removal at once with "already in
+// progress", or slowly, while inspect shows the container until `goneAt`.
+async function removalOnVirtualTime(goneAt: number, rmMs: number): Promise<Timeline> {
+  let now = 0;
+  const clock: TeardownClock = { now: () => now, sleep: async (ms) => { now += ms; } };
+  const docker: DockerCall = async (argv, opts = {}) => {
+    const cost = argv[0] === 'rm' ? rmMs : 20;
+    const cut = opts.timeoutMs ?? DOCKER_CALL_TIMEOUT_MS;
+    if (cost > cut) {
+      now += cut;
+      return { code: null, stdout: '', stderr: '' };
+    }
+    now += cost;
+    if (argv[0] === 'rm') {
+      return { code: 1, stdout: '', stderr: 'Error response from daemon: removal of container x is already in progress' };
+    }
+    return now >= goneAt
+      ? { code: 1, stdout: '', stderr: `Error response from daemon: No such container: ${String(argv.at(-1))}` }
+      : { code: 0, stdout: 'f'.repeat(64), stderr: '' };
+  };
+  const moment = (phase: AgentLifecyclePhase, at: number, extra: Partial<AgentLifecycleEvent> = {}): AgentLifecycleEvent =>
+    ({ phase, attemptId: ATTEMPT, at, ...extra });
+  // Stopped at 0; the kill was cut at its bound and the client SIGKILLed then.
+  const lifecycle: AgentLifecycleEvent[] = [
+    moment('started', -5_000, { deadline: 0 }), moment('agent-started', -4_000),
+    moment('stop', 0, { reason: 'timeout' }), moment('agent-killed', DOCKER_CALL_TIMEOUT_MS),
+    moment('agent-exited', DOCKER_CALL_TIMEOUT_MS),
+  ];
+  now = DOCKER_CALL_TIMEOUT_MS;
+  const until = agentRemovalDeadline({ stoppedAt: 0, exitedAt: DOCKER_CALL_TIMEOUT_MS });
+  const left = await removeContainerShownGone(docker, 'asep-agent-x', until, { clock, attempts: 1_000 });
+  assert.ok(now <= until, `no removal call outlives the deadline: at ${now} ms, deadline ${until} ms`);
+  if (left === undefined) lifecycle.push(moment('agent-removed', now));
+  lifecycle.push(moment('torn-down', now + 10));
+  return lifecycle;
+}
+
+test('G3: an agent removal the daemon cannot show within its bound fails the attempt at the bound', { timeout: 120_000 }, async () => {
+  const h = await harness({ hangInspect: true });
+  try {
+    const obs = await (await h.provider('ok')).execute(request(h));
+    assert.equal(obs.status, 'FAILED', obs.knownLimitations.join('; '));
+    assert.match(obs.knownLimitations.join(' '), /container asep-agent-\S+ could not be shown removed in time/);
+    assert.deepEqual(h.lifecycle.filter((e) => e.phase === 'agent-removed'), [], showTimeline(h.lifecycle));
+    // The removal was given its bound and no more: the teardown after it
+    // (proxy, label sweep, network) is quick.
+    const gaveUp = phaseOf(h.lifecycle, 'torn-down').at - phaseOf(h.lifecycle, 'agent-exited').at;
+    assert.ok(gaveUp >= AGENT_REMOVAL_BOUND_MS - 50 && gaveUp <= AGENT_REMOVAL_BOUND_MS + 15_000,
+      `torn down ${gaveUp} ms after the agent's client ended:\n${showTimeline(h.lifecycle)}`);
+  } finally {
+    await h.close();
+  }
+});
+
+test('G3: the agent removal deadline is its bound after the client ended, never past the stop bound', () => {
+  assert.equal(agentRemovalDeadline({ exitedAt: 1_000 }), 1_000 + AGENT_REMOVAL_BOUND_MS);
+  assert.equal(agentRemovalDeadline({ stoppedAt: 0, exitedAt: 1_000 }), 1_000 + AGENT_REMOVAL_BOUND_MS);
+  assert.equal(agentRemovalDeadline({ stoppedAt: 0, exitedAt: 45_000 }), AGENT_STOP_BOUND_MS);
+});
+
+test('G3: a removal that lands 91 s after the stop turns the stop-bound assertion red', async () => {
+  // Slow retries: each removal takes 5 s, the container is gone only at 91 s.
+  const late = await removalOnVirtualTime(91_000, 5_000);
+  assert.deepEqual(late.filter((e) => e.phase === 'agent-removed'), [], 'not shown gone within the bound');
+  assert.throws(() => assertStoppedInTime(late, 'timeout', 0), /exactly one 'agent-removed' moment/);
+  // Fast answers, the same late removal.
+  const fast = await removalOnVirtualTime(91_000, 10);
+  assert.throws(() => assertStoppedInTime(fast, 'timeout', 0), /exactly one 'agent-removed' moment/);
+  // Were a removal reported when it landed, at 91 s, the assertion is red too.
+  const reportedLate = [...late.slice(0, -1), { phase: 'agent-removed' as const, attemptId: ATTEMPT, at: 91_000 }];
+  assert.throws(() => assertStoppedInTime(reportedLate, 'timeout', 0), /removed 91000 ms after the stop/);
+  // Gone within the bound: shown, reported, and green.
+  const inTime = await removalOnVirtualTime(45_000, 5_000);
+  const removed = phaseOf(inTime, 'agent-removed');
+  assert.ok(removed.at >= 45_000 && removed.at <= AGENT_STOP_BOUND_MS, showTimeline(inTime));
+  assertStoppedInTime(inTime, 'timeout', 0);
 });
 
 test('G5: concurrent attempts through one provider stay apart', async () => {
