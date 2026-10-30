@@ -7,11 +7,6 @@
       "rationale": "The canonical test command's glob misses the top-level acceptance regression tests, so the gate never runs them.",
       "defectClass": "gate-config"
     },
-    "P1-FINAL-HIGH-003": {
-      "goldCategory": "SECURITY",
-      "rationale": "The PII scanner's allowlist skips a whole line that holds a placeholder address, so a real address beside it passes.",
-      "defectClass": "code"
-    },
     "P2-FINAL-HIGH-001": {
       "goldCategory": "EVIDENCE_INTEGRITY",
       "rationale": "The integration gate passes without provisioning or health-checking the real backends and pins no image digest.",

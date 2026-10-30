@@ -5,9 +5,10 @@
 // eligibility, the full packet sources, the packet-dependent synthetic fields and the final
 // `corpusSha256`) needs the runtime packet builder and egress decision, so it comes once the
 // evals package is bound to the runtime packet code, and nothing may bind to the hash written
-// here; the manifest says so in its stage fields. It applies the freeze rule `no-location`
-// and the one packet-level rule that needs no packet, `leakage-filtered`, after collection's
-// provenance rules, in the protocol's order, and counts every reason. The two packet-level
+// here; the manifest says so in its stage fields. It applies the exclusion rules in the
+// protocol's order and counts every reason: collection's provenance rules, `reviewed-tree-unknown`
+// also for a residual whose rule C repair base is unknown, the freeze rule `no-location`, and the
+// one packet-level rule that needs no packet, `leakage-filtered`. The two packet-level
 // rules that need a packet, `not-in-packet` and `egress-stopped`, are named as pending and
 // never counted. The freeze
 // also stores, content-addressed, the rule-P diff section of every cited file of a negative
@@ -269,15 +270,13 @@ export interface ItemSynthetic {
   readonly reviewKind: 'fresh' | 're-review';
   readonly taskBaseSha: string;
   readonly resultSha: string;
-  /** Rule C: the previous cycle's reviewed tree; null when it is unknown. */
+  /** Rule C: the reviewed tree of the cycle the residual re-reviews; null under rule P. */
   readonly repairBaseSha: string | null;
   readonly repairDelta: { readonly from: string; readonly to: string } | null;
   /** Rule C: every included item labelled at the previous cycle. */
   readonly priorCandidates: readonly PriorCandidate[];
   /** A post-fix negative's packet: a fresh review of the post-fix tree on the item's base. */
   readonly negative: { readonly taskBaseSha: string; readonly resultSha: string } | null;
-  /** Set when a packet of the rule cannot be built from the provenance. */
-  readonly blockedBy: 'previous-cycle-tree-unknown' | null;
 }
 
 /** The synthetic fields every corpus packet shares. */
@@ -292,6 +291,22 @@ export interface CorpusSynthetic {
 
 function cycleKey(phase: number, cycle: number): string {
   return (CYCLES.find((c) => c.phase === phase && c.cycle === cycle) ?? fail(`no cycle ${phase}:${cycle}`)).key;
+}
+
+/** The manifest's key of a cycle record; the zero-padded cycle sorts the records in order. */
+function cycleRecordKey(phase: number, cycle: number): string {
+  return `${phase}:${String(cycle).padStart(3, '0')}`;
+}
+
+/**
+ * Rule C's repair base for a residual: the cycle it re-reviews, the one before its own in its phase, and that
+ * cycle's reviewed tree, null when the tree is unknown.
+ */
+function repairBase(item: CorpusItem, cycles: ReadonlyMap<string, ManifestCycle>): { readonly cycle: number; readonly sha: string | null } {
+  const previous = Math.max(...CYCLES.filter((c) => c.phase === item.phase && c.cycle > 0 && c.cycle < item.cycle).map((c) => c.cycle));
+  if (!Number.isFinite(previous)) fail(`${item.id}: a residual of a phase's first cycle`);
+  const record = cycles.get(cycleRecordKey(item.phase, previous)) ?? fail(`${item.id}: no item records cycle ${item.phase}:${previous}`);
+  return { cycle: previous, sha: record.reviewedSha };
 }
 
 // --- manifest -----------------------------------------------------------------------------------
@@ -356,6 +371,8 @@ export interface ManifestCounts {
   /** Items no rule applied by the freeze excludes; the packet plan's rules still apply to them. */
   readonly included: number;
   readonly excluded: Readonly<Record<string, number>>;
+  /** Of the `reviewed-tree-unknown` exclusions, the residuals whose own tree is known but whose rule C repair base is not. */
+  readonly excludedRepairBaseUnknown: number;
   readonly noLocationByPhase: Readonly<Record<string, number>>;
   readonly includedBySet: Readonly<Record<string, number>>;
   readonly includedByInstanceKind: Readonly<Record<string, number>>;
@@ -434,15 +451,32 @@ function labelOrigin(item: CorpusItem): Pick<ManifestItem, 'labelSource' | 'labe
   return { labelSource: 'codex-gpt-5.6-sol', labelQuality: 'primary' };
 }
 
-/** The first freeze rule that excludes a collected item, after collection's own exclusion. */
-export function freezeExclusion(item: CorpusItem): ManifestItem['excluded'] {
-  if (item.excluded !== null) {
-    if (!PROVENANCE_EXCLUSIONS.includes(item.excluded.reason)) fail(`${item.id}: collection recorded ${item.excluded.reason}`);
-    return { reason: item.excluded.reason, level: EXCLUSION_LEVEL[item.excluded.reason] };
-  }
-  if (item.locations.length === 0) return { reason: 'no-location', level: EXCLUSION_LEVEL['no-location'] };
-  if (item.locations.every((l) => isLeakagePath(l.file))) return { reason: 'leakage-filtered', level: EXCLUSION_LEVEL['leakage-filtered'] };
-  return null;
+/**
+ * The first exclusion rule that applies to a collected item, in the protocol's order: collection's provenance rules,
+ * where `reviewed-tree-unknown` also takes a residual whose rule C repair base is unknown (rule C needs that tree, and
+ * a tree is never guessed); then `no-location` and `leakage-filtered`. The packet plan's two rules never apply here.
+ */
+export function freezeExclusion(item: CorpusItem, cycles: ReadonlyMap<string, ManifestCycle>): ManifestItem['excluded'] {
+  const collected = item.excluded?.reason ?? null;
+  if (collected !== null && !PROVENANCE_EXCLUSIONS.includes(collected)) fail(`${item.id}: collection recorded ${collected}`);
+  const applies = (reason: ExclusionReason): boolean => {
+    switch (reason) {
+      case 'plan-defect':
+      case 'excerpt-unpublishable':
+        return collected === reason;
+      case 'reviewed-tree-unknown':
+        return collected === reason || (item.instanceKind === 'residual' && repairBase(item, cycles).sha === null);
+      case 'no-location':
+        return item.locations.length === 0;
+      case 'leakage-filtered':
+        return item.locations.every((l) => isLeakagePath(l.file));
+      case 'not-in-packet':
+      case 'egress-stopped':
+        return false;
+    }
+  };
+  const reason = EXCLUSION_ORDER.find(applies);
+  return reason === undefined ? null : { reason, level: EXCLUSION_LEVEL[reason] };
 }
 
 /** The inputs of a freeze, as read from the tree. */
@@ -470,7 +504,28 @@ export function freezeCorpus(inputs: FreezeInputs): FrozenCorpus {
     });
   const annotations = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(inputs.annotationsBytes)) as Annotations;
 
-  const decided = items.map(({ item, sha256 }) => ({ item, sha256, excluded: freezeExclusion(item) }));
+  // The review cycles, from every collected item; the items of one cycle agree on its trees.
+  const cycles = new Map<string, ManifestCycle>();
+  for (const { item } of items) {
+    const key = cycleRecordKey(item.phase, item.cycle);
+    const record: ManifestCycle = {
+      phase: item.phase,
+      cycle: item.cycle,
+      reviewKind: item.reviewKind,
+      doc: item.provenance.doc,
+      reviewedSha: item.reviewedSha,
+      reviewedShaSource: item.reviewedShaSource,
+      baseSha: item.baseSha,
+      postFixSha: item.postFixSha,
+      reachability: item.reachability,
+      items: (cycles.get(key)?.items ?? 0) + 1,
+    };
+    const seen = cycles.get(key);
+    if (seen !== undefined && JSON.stringify({ ...seen, items: 0 }) !== JSON.stringify({ ...record, items: 0 })) fail(`${item.id} disagrees with its cycle's trees`);
+    cycles.set(key, record);
+  }
+
+  const decided = items.map(({ item, sha256 }) => ({ item, sha256, excluded: freezeExclusion(item, cycles) }));
   checkAnnotations(annotations, new Set(decided.filter((d) => d.excluded === null).map((d) => d.item.findingId)));
 
   // Negative candidates: the cited files' diff sections between the reviewed and post-fix trees.
@@ -490,26 +545,6 @@ export function freezeCorpus(inputs: FreezeInputs): FrozenCorpus {
   for (const list of sections.values()) for (const s of list) if (s.bytes !== null) candidates.set(sha256Hex(s.bytes), s.bytes);
   const failing = inputs.gates(candidates);
   const mappingBlobs = new Map([...candidates].filter(([sha]) => (failing.get(sha) ?? []).length === 0));
-
-  const cycles = new Map<string, ManifestCycle>();
-  for (const { item } of decided) {
-    const key = `${item.phase}:${String(item.cycle).padStart(3, '0')}`;
-    const record: ManifestCycle = {
-      phase: item.phase,
-      cycle: item.cycle,
-      reviewKind: item.reviewKind,
-      doc: item.provenance.doc,
-      reviewedSha: item.reviewedSha,
-      reviewedShaSource: item.reviewedShaSource,
-      baseSha: item.baseSha,
-      postFixSha: item.postFixSha,
-      reachability: item.reachability,
-      items: (cycles.get(key)?.items ?? 0) + 1,
-    };
-    const seen = cycles.get(key);
-    if (seen !== undefined && JSON.stringify({ ...seen, items: 0 }) !== JSON.stringify({ ...record, items: 0 })) fail(`${item.id} disagrees with its cycle's trees`);
-    cycles.set(key, record);
-  }
 
   // Rule C's prior candidates: the included items labelled at each cycle, with the record a re-review shows.
   const priorsByCycle = new Map<string, PriorCandidate[]>();
@@ -545,22 +580,19 @@ export function freezeCorpus(inputs: FreezeInputs): FrozenCorpus {
       negative: negative ? { taskBaseSha: item.baseSha!, resultSha: item.postFixSha! } : null,
     };
     if (item.instanceKind === 'first-occurrence') {
-      return { rule: 'P', ...common, round: 1, reviewKind: 'fresh', repairBaseSha: null, repairDelta: null, priorCandidates: [], blockedBy: null };
+      return { rule: 'P', ...common, round: 1, reviewKind: 'fresh', repairBaseSha: null, repairDelta: null, priorCandidates: [] };
     }
-    // Rule C re-reviews the residual's own tree against the cycle it re-reviews, the one before it.
-    const previous = Math.max(...CYCLES.filter((c) => c.phase === item.phase && c.cycle > 0 && c.cycle < item.cycle).map((c) => c.cycle));
-    const record = cycles.get(`${item.phase}:${String(previous).padStart(3, '0')}`) ?? fail(`${item.id}: no item records cycle ${item.phase}:${previous}`);
-    const repairBaseSha = record.reviewedSha;
+    // Rule C re-reviews the residual's own tree against its repair base; an included residual always has one.
+    const base = repairBase(item, cycles);
+    const repairBaseSha = base.sha ?? fail(`${item.id}: an included residual has no repair base`);
     return {
       rule: 'C',
       ...common,
       round: 2,
       reviewKind: 're-review',
       repairBaseSha,
-      repairDelta: repairBaseSha === null ? null : { from: repairBaseSha, to: item.reviewedSha! },
-      // A cycle whose tree is unknown has every item excluded, so it has no candidates.
-      priorCandidates: [...(priorsByCycle.get(`${item.phase}:${previous}`) ?? [])],
-      blockedBy: repairBaseSha === null ? 'previous-cycle-tree-unknown' : null,
+      repairDelta: { from: repairBaseSha, to: item.reviewedSha! },
+      priorCandidates: [...(priorsByCycle.get(`${item.phase}:${base.cycle}`) ?? [])],
     };
   };
 
@@ -630,6 +662,7 @@ export function freezeCorpus(inputs: FreezeInputs): FrozenCorpus {
       items: manifestItems.length,
       included: included.length,
       excluded: tally(manifestItems.flatMap((i) => (i.excluded === null ? [] : [i.excluded.reason]))),
+      excludedRepairBaseUnknown: decided.filter((d) => d.excluded?.reason === 'reviewed-tree-unknown' && d.item.excluded?.reason !== 'reviewed-tree-unknown').length,
       noLocationByPhase: tally(manifestItems.filter((i) => i.excluded?.reason === 'no-location').map((i) => String(i.phase))),
       includedBySet: tally(included.map((i) => i.set)),
       includedByInstanceKind: tally(included.map((i) => i.instanceKind)),
@@ -673,6 +706,6 @@ if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.a
   console.log(
     `review-corpus freeze: ${counts.items} items, ${counts.included} included (${Object.entries(counts.excluded)
       .map(([k, v]) => `${k} ${v}`)
-      .join(', ')}), corpusSha256 ${frozen.corpusSha256}`,
+      .join(', ')}; repair base unknown ${counts.excludedRepairBaseUnknown}), corpusSha256 ${frozen.corpusSha256}`,
   );
 }

@@ -28,20 +28,22 @@ bind to the provenance-stage `corpusSha256`, and nothing here is the frozen corp
   run on the same tree writes the same bytes (`freeze.test.ts`).
 - Exclusions apply in the protocol's order (plan §7.8), the first that applies wins: collection's provenance rules
   (`plan-defect`, `reviewed-tree-unknown`, `excerpt-unpublishable`), the freeze rule `no-location`, and
-  `leakage-filtered` (every cited file is removed by rule P's leakage filter). `not-in-packet` and `egress-stopped`
-  need the runtime packet builder and egress decision: the final freeze applies them after S0 and SR-X8. The
-  manifest names them as pending and never counts them.
+  `leakage-filtered` (every cited file is removed by rule P's leakage filter). `reviewed-tree-unknown` also excludes a
+  residual whose rule C repair base — the reviewed tree of the cycle it re-reviews — is unknown (R45): a tree is never
+  guessed, so such a residual is never scored, fresh or otherwise. The manifest counts these on their own line,
+  `excludedRepairBaseUnknown`. `not-in-packet` and `egress-stopped` need the runtime packet builder and egress
+  decision: the final freeze applies them after S0 and SR-X8. The manifest names them as pending and never counts
+  them.
 - Each included item lists its `uses`: `rediscovery` (a first occurrence, rule P), `residual-status` (a residual,
   rule C) and `post-fix-negative` (resolved at the next re-review with a known post-fix tree). Fix commits are
-  provenance only and never decide a use; an item that names no fix commit (15 included residuals) is used for its
+  provenance only and never decide a use; an item that names no fix commit (seven included residuals) is used for its
   residual status only and is never described as fixed.
 - Each included item carries the `synthetic` fields its provenance determines (plan §7.8): the rule (P for a first
   occurrence, C for a residual), the cycle's task id, round and review kind, the base and reviewed SHAs, rule C's
   repair base and repair-delta range and its prior-finding candidates (every included item labelled at the previous
   cycle), and the post-fix side of a negative. The fields every packet shares (identity, work orders by phase, the
   `NOT_RECORDED` execution) are recorded once; `pendingPacketFields` lists the fields only the runtime packet code can
-  fill, which the final freeze adds. A residual after a cycle whose reviewed tree is unknown has no repair base and
-  carries `blockedBy: "previous-cycle-tree-unknown"` (nine items).
+  fill, which the final freeze adds.
 - `annotations.json` holds, per finding id of an included item, Lane B's gold category (category table
   `corpus-categories/v1`), its one-line rationale and the defect class. The freeze refuses a missing, stray or
   invalid annotation.

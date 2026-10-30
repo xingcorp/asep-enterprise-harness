@@ -92,9 +92,10 @@ test('an item without a fix commit is used for its residual status only', () => 
     assert.deepEqual(entry.uses, [item.instanceKind === 'first-occurrence' ? 'rediscovery' : 'residual-status', ...(negative ? ['post-fix-negative'] : [])], entry.id);
   }
 
-  // The review's count: 15 included items name no fix commit. Each is a residual used for its status only.
+  // Seven included items name no fix commit (the review counted 15; the eight after Phase 2 re-review v4 have no
+  // rule C repair base and are excluded). Each is a residual used for its status only.
   const without = body.items.filter((i) => i.excluded === null && itemOf(i.id).fixCommits.length === 0);
-  assert.equal(without.length, 15);
+  assert.equal(without.length, 7);
   for (const entry of without) assert.deepEqual([entry.instanceKind, entry.uses, entry.mapping], ['residual', ['residual-status'], null], entry.id);
 
   // Fix commits never decide a use: without any fix commit, every item keeps its uses.
@@ -157,7 +158,6 @@ test('every included item carries the synthetic fields its provenance determines
     repairDelta: null,
     priorCandidates: [],
     negative: { taskBaseSha: B, resultSha: R2 },
-    blockedBy: null,
   });
 
   // A residual: rule C, a re-review of round 2 on the previous cycle's tree, every included item labelled there a
@@ -178,7 +178,6 @@ test('every included item carries the synthetic fields its provenance determines
       ...['MED-001', 'MED-002', 'MED-003', 'MED-004', 'MED-006'],
     ].map((s) => `P2-FINAL-${s}@2e61f24`),
     negative: null,
-    blockedBy: null,
   });
   assert.deepEqual(
     residual.priorCandidates.find((p) => p.itemId === 'P2-FINAL-HIGH-003@2e61f24'),
@@ -197,14 +196,6 @@ test('every included item carries the synthetic fields its provenance determines
     },
   );
 
-  // A residual after a cycle whose tree is unknown has no repair base: its re-review packet cannot be built.
-  const blocked = body.items.filter((i) => i.synthetic?.blockedBy === 'previous-cycle-tree-unknown');
-  assert.equal(blocked.length, 9, 'one after the first Phase 1 final review, eight after Phase 2 re-review v4');
-  assert.ok(blocked.some((i) => i.id === 'P1-FINAL-HIGH-003@7dea09c'));
-  for (const i of blocked) {
-    assert.deepEqual([i.synthetic!.rule, i.synthetic!.repairBaseSha, i.synthetic!.repairDelta, i.synthetic!.priorCandidates], ['C', null, null, []], i.id);
-  }
-
   // Every included item: the rule follows the instance kind; an excluded item has no record.
   const inputs = treeInputs(ROOT);
   for (const e of body.items) {
@@ -219,11 +210,45 @@ test('every included item carries the synthetic fields its provenance determines
     assert.deepEqual([s.taskBaseSha, s.resultSha], [item.baseSha, item.reviewedSha], e.id);
     assert.equal(s.taskId.label, `corpus:task:${s.cycle}`, e.id);
     assert.equal(s.negative === null, e.mapping === null, e.id);
+    // A rule C packet always has its repair base.
+    if (ruleC) assert.deepEqual([typeof s.repairBaseSha, s.repairDelta?.to], ['string', item.reviewedSha], e.id);
   }
   assert.deepEqual(
     [body.items.filter((i) => i.synthetic?.rule === 'P').length, body.items.filter((i) => i.synthetic?.rule === 'C').length],
-    [17, 29],
+    [17, 20],
   );
+});
+
+test('a residual whose re-reviewed cycle has an unknown tree is excluded, on its own line', () => {
+  const { body } = committedManifest();
+  const inputs = treeInputs(ROOT);
+  const itemOf = (id: string) => JSON.parse(new TextDecoder().decode(inputs.itemFiles.get(`${id}.json`)!)) as CorpusItem;
+
+  // Rule C re-reviews a residual against the cycle before its own. The first Phase 1 final review (cycle 1) and Phase 2
+  // re-review v4 (cycle 4) have no known tree, so the residuals labelled at the cycles after them, listed here from
+  // the review documents, have no repair base. Rule 2 comes before `no-location` and `leakage-filtered`, so it
+  // excludes the six of them that cite no location and the one that cites only the phase report too.
+  const noRepairBase = [
+    ...['CRIT-001', 'HIGH-001', 'HIGH-002', 'HIGH-003', 'MED-001', 'MED-002', 'MED-003'].map((s) => `P1-FINAL-${s}@7dea09c`),
+    ...['HIGH-002', 'HIGH-005', 'HIGH-006', 'HIGH-008', 'HIGH-009', 'MED-003', 'MED-004', 'MED-005', 'MED-006'].map((s) => `P2-FINAL-${s}@bb11d00`),
+  ];
+  for (const id of noRepairBase) {
+    const entry = body.items.find((i) => i.id === id)!;
+    assert.deepEqual(
+      [entry.instanceKind, entry.excluded, entry.uses, entry.synthetic],
+      ['residual', { reason: 'reviewed-tree-unknown', level: 'provenance' }, null, null],
+      id,
+    );
+  }
+
+  // Exactly these are excluded for an unknown tree although their own tree is known, and they have their own line.
+  const ownTreeKnown = body.items.filter((i) => i.excluded?.reason === 'reviewed-tree-unknown' && itemOf(i.id).reviewedSha !== null);
+  assert.deepEqual(ownTreeKnown.map((i) => i.id).sort(), [...noRepairBase].sort());
+  assert.equal(body.counts.excludedRepairBaseUnknown, 16);
+  assert.equal(body.counts.excluded['reviewed-tree-unknown'], 19 + 16);
+
+  // The residuals of the other cycles keep their repair base.
+  assert.equal(body.items.find((i) => i.id === 'P2-FINAL-HIGH-005@061ec23')!.excluded, null);
 });
 
 test('the freeze rules apply in order and every exclusion is counted', () => {
@@ -231,17 +256,22 @@ test('the freeze rules apply in order and every exclusion is counted', () => {
   const reason = (id: string) => body.items.find((i) => i.id === id)!.excluded?.reason ?? null;
 
   // Counts tallied from the collected items outside the freeze code.
-  assert.deepEqual(body.counts.excluded, { 'leakage-filtered': 3, 'no-location': 16, 'plan-defect': 69, 'reviewed-tree-unknown': 19 });
+  assert.deepEqual(body.counts.excluded, { 'leakage-filtered': 2, 'no-location': 10, 'plan-defect': 69, 'reviewed-tree-unknown': 35 });
+  assert.equal(body.counts.excludedRepairBaseUnknown, 16);
   assert.equal(body.counts.items, 153);
-  assert.equal(body.counts.included, 46);
-  assert.deepEqual(body.counts.noLocationByPhase, { '1': 15, '2': 1 });
-  assert.deepEqual(body.counts.includedBySet, { 'prompt-development': 2, reporting: 44 });
-  assert.equal(body.counts.includedPrivateBundleOnly, 8);
-  assert.equal(body.counts.includedDependsOnPrivateBundle, 12);
+  assert.equal(body.counts.included, 37);
+  assert.deepEqual(body.counts.noLocationByPhase, { '1': 9, '2': 1 });
+  assert.deepEqual(body.counts.includedBySet, { 'prompt-development': 1, reporting: 36 });
+  assert.deepEqual(body.counts.includedByInstanceKind, { 'first-occurrence': 17, residual: 20 });
+  assert.equal(body.counts.includedPrivateBundleOnly, 0);
+  assert.equal(body.counts.includedDependsOnPrivateBundle, 4);
+  assert.equal(body.counts.negativeCandidates, 8);
 
-  // The first rule that applies wins: a plan label, an unknown tree, no location, then the leakage filter.
+  // The first rule that applies wins: a plan label, an unknown tree or repair base, no location, then the leakage filter.
   assert.equal(reason('P1-ARCH-001@unknown'), 'plan-defect');
   assert.equal(reason('P2-FINAL-HIGH-005@unknown'), 'reviewed-tree-unknown', 'an unknown tree, though it cites no location');
+  assert.equal(reason('P1-FINAL-CRIT-001@7dea09c'), 'reviewed-tree-unknown', 'an unknown repair base, though it cites no location');
+  assert.equal(reason('P2-FINAL-MED-005@bb11d00'), 'reviewed-tree-unknown', 'an unknown repair base, though it cites only the phase report');
   assert.equal(reason('P2-CYCLE6-HIGH-001@ebaf519'), 'no-location');
   assert.equal(reason('P2-FINAL-MED-005@2e61f24'), 'leakage-filtered', 'it cites only the phase report');
   assert.equal(reason('P2-FINAL-MED-005@594b628'), null, 'it also cites the exit criteria');

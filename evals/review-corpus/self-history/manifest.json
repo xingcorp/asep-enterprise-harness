@@ -1,5 +1,5 @@
 {
-  "annotationsSha256": "b1f7f6441297a357a740ab6c17eb4d39a5f3c7f746fa1793d90dd9fd626ff76b",
+  "annotationsSha256": "14dc06b183d35e54be330877ac3c05e5700bbc031c1dd262b092cb94da1bedbd",
   "blobs": [
     "00eecaf8d2f542e82438759e8b85262a49237b63d362235c32b8bb7d1e91ae21",
     "051a7bb628a420d1a5070efb6d666c5aa6010c6d415456850979b1fc7a23a1de",
@@ -124,31 +124,32 @@
     "fc93bbedc4e0d21fa749f681233a415d7f11cebf6f965ae2669ecc635b317454",
     "fd6406294c8aee4e604b36112bc3af2d83245ca08e3227597f679aaffaeff5ab"
   ],
-  "corpusSha256": "6314c0460546b5d4458fe45b30d292d75a2fee9bb0510123f5c54ac0fa4cd380",
+  "corpusSha256": "95f8ae5fd2a26e070cf3b7f13518f0030883bbe61b97a91dfb0ab5bd3234b4fa",
   "counts": {
     "excluded": {
-      "leakage-filtered": 3,
-      "no-location": 16,
+      "leakage-filtered": 2,
+      "no-location": 10,
       "plan-defect": 69,
-      "reviewed-tree-unknown": 19
+      "reviewed-tree-unknown": 35
     },
-    "included": 46,
+    "excludedRepairBaseUnknown": 16,
+    "included": 37,
     "includedByInstanceKind": {
       "first-occurrence": 17,
-      "residual": 29
+      "residual": 20
     },
     "includedBySet": {
-      "prompt-development": 2,
-      "reporting": 44
+      "prompt-development": 1,
+      "reporting": 36
     },
-    "includedDependsOnPrivateBundle": 12,
+    "includedDependsOnPrivateBundle": 4,
     "includedLabellerMiss": 0,
-    "includedPrivateBundleOnly": 8,
+    "includedPrivateBundleOnly": 0,
     "includedSecondhand": 0,
     "items": 153,
-    "negativeCandidates": 9,
+    "negativeCandidates": 8,
     "noLocationByPhase": {
-      "1": 15,
+      "1": 9,
       "2": 1
     }
   },
@@ -750,7 +751,6 @@
       "set": "prompt-development",
       "severity": "MEDIUM",
       "synthetic": {
-        "blockedBy": null,
         "cycle": "p1-rereview-4",
         "negative": {
           "resultSha": "e7a2d4e2b7eac96a5cfc94ed207a2babf2d6e50c",
@@ -929,8 +929,8 @@
       "defectClass": null,
       "dependsOnPrivateBundle": false,
       "excluded": {
-        "level": "freeze",
-        "reason": "no-location"
+        "level": "provenance",
+        "reason": "reviewed-tree-unknown"
       },
       "findingId": "P1-FINAL-CRIT-001",
       "goldCategory": null,
@@ -979,8 +979,8 @@
       "defectClass": null,
       "dependsOnPrivateBundle": false,
       "excluded": {
-        "level": "freeze",
-        "reason": "no-location"
+        "level": "provenance",
+        "reason": "reviewed-tree-unknown"
       },
       "findingId": "P1-FINAL-HIGH-001",
       "goldCategory": null,
@@ -1054,8 +1054,8 @@
       "defectClass": null,
       "dependsOnPrivateBundle": false,
       "excluded": {
-        "level": "freeze",
-        "reason": "no-location"
+        "level": "provenance",
+        "reason": "reviewed-tree-unknown"
       },
       "findingId": "P1-FINAL-HIGH-002",
       "goldCategory": null,
@@ -1101,54 +1101,28 @@
     },
     {
       "cycle": 2,
-      "defectClass": "code",
+      "defectClass": null,
       "dependsOnPrivateBundle": false,
-      "excluded": null,
+      "excluded": {
+        "level": "provenance",
+        "reason": "reviewed-tree-unknown"
+      },
       "findingId": "P1-FINAL-HIGH-003",
-      "goldCategory": "SECURITY",
-      "goldCategoryRationale": "The PII scanner's allowlist skips a whole line that holds a placeholder address, so a real address beside it passes.",
+      "goldCategory": null,
+      "goldCategoryRationale": null,
       "id": "P1-FINAL-HIGH-003@7dea09c",
       "instanceKind": "residual",
       "itemSha256": "8c545b3bad6b685ce45ed868124df8d13e70e7da218047e5ec38bb624ff7a82e",
       "labelQuality": "primary",
       "labelSource": "codex-gpt-5.6-sol",
       "labellerMiss": false,
-      "mapping": [
-        {
-          "diffSha256": null,
-          "newPath": "scripts/lib/secret-patterns.sh",
-          "path": "scripts/lib/secret-patterns.sh",
-          "withheldGates": []
-        }
-      ],
+      "mapping": null,
       "phase": 1,
       "reachability": "reachable",
       "set": "prompt-development",
       "severity": "HIGH",
-      "synthetic": {
-        "blockedBy": "previous-cycle-tree-unknown",
-        "cycle": "p1-rereview-2",
-        "negative": {
-          "resultSha": "1af1cff0dde456b935a5886e9895ae4ebbeeec58",
-          "taskBaseSha": "83ba33db16072f05fb27f00f34cebd6774cb771a"
-        },
-        "priorCandidates": [],
-        "repairBaseSha": null,
-        "repairDelta": null,
-        "resultSha": "7dea09ca473e61190ae08499c7616b70fdbb690d",
-        "reviewKind": "re-review",
-        "round": 2,
-        "rule": "C",
-        "taskBaseSha": "83ba33db16072f05fb27f00f34cebd6774cb771a",
-        "taskId": {
-          "id": "4MTEYE2HJQX2GTTYRNX412EPY0",
-          "label": "corpus:task:p1-rereview-2"
-        }
-      },
-      "uses": [
-        "residual-status",
-        "post-fix-negative"
-      ]
+      "synthetic": null,
+      "uses": null
     },
     {
       "cycle": 1,
@@ -1255,8 +1229,8 @@
       "defectClass": null,
       "dependsOnPrivateBundle": false,
       "excluded": {
-        "level": "freeze",
-        "reason": "no-location"
+        "level": "provenance",
+        "reason": "reviewed-tree-unknown"
       },
       "findingId": "P1-FINAL-MED-001",
       "goldCategory": null,
@@ -1330,8 +1304,8 @@
       "defectClass": null,
       "dependsOnPrivateBundle": false,
       "excluded": {
-        "level": "freeze",
-        "reason": "no-location"
+        "level": "provenance",
+        "reason": "reviewed-tree-unknown"
       },
       "findingId": "P1-FINAL-MED-002",
       "goldCategory": null,
@@ -1405,8 +1379,8 @@
       "defectClass": null,
       "dependsOnPrivateBundle": false,
       "excluded": {
-        "level": "freeze",
-        "reason": "no-location"
+        "level": "provenance",
+        "reason": "reviewed-tree-unknown"
       },
       "findingId": "P1-FINAL-MED-003",
       "goldCategory": null,
@@ -2345,7 +2319,6 @@
       "set": "reporting",
       "severity": "HIGH",
       "synthetic": {
-        "blockedBy": null,
         "cycle": "p2-final",
         "negative": {
           "resultSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
@@ -2389,7 +2362,6 @@
       "set": "reporting",
       "severity": "HIGH",
       "synthetic": {
-        "blockedBy": null,
         "cycle": "p2-rereview-2",
         "negative": null,
         "priorCandidates": [
@@ -2615,7 +2587,6 @@
       "set": "reporting",
       "severity": "HIGH",
       "synthetic": {
-        "blockedBy": null,
         "cycle": "p2-final",
         "negative": null,
         "priorCandidates": [],
@@ -2655,7 +2626,6 @@
       "set": "reporting",
       "severity": "HIGH",
       "synthetic": {
-        "blockedBy": null,
         "cycle": "p2-rereview-3",
         "negative": null,
         "priorCandidates": [
@@ -2837,12 +2807,15 @@
     },
     {
       "cycle": 5,
-      "defectClass": "code",
+      "defectClass": null,
       "dependsOnPrivateBundle": true,
-      "excluded": null,
+      "excluded": {
+        "level": "provenance",
+        "reason": "reviewed-tree-unknown"
+      },
       "findingId": "P2-FINAL-HIGH-002",
-      "goldCategory": "SECURITY",
-      "goldCategoryRationale": "The agent sandbox is optional and mounts the worktree read-write, so the agent can write the repository's git metadata.",
+      "goldCategory": null,
+      "goldCategoryRationale": null,
       "id": "P2-FINAL-HIGH-002@bb11d00",
       "instanceKind": "residual",
       "itemSha256": "63873f63fbfd62828f6964bf7a17362a501697edb8439db174104ae4bc8d3998",
@@ -2854,26 +2827,8 @@
       "reachability": "private-bundle-only",
       "set": "reporting",
       "severity": "HIGH",
-      "synthetic": {
-        "blockedBy": "previous-cycle-tree-unknown",
-        "cycle": "p2-rereview-5",
-        "negative": null,
-        "priorCandidates": [],
-        "repairBaseSha": null,
-        "repairDelta": null,
-        "resultSha": "bb11d0086108fc439d69c1d50e6ddcf009409198",
-        "reviewKind": "re-review",
-        "round": 2,
-        "rule": "C",
-        "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
-        "taskId": {
-          "id": "704YRY6F97RWN32KHTV0YZHPJG",
-          "label": "corpus:task:p2-rereview-5"
-        }
-      },
-      "uses": [
-        "residual-status"
-      ]
+      "synthetic": null,
+      "uses": null
     },
     {
       "cycle": 1,
@@ -2914,7 +2869,6 @@
       "set": "reporting",
       "severity": "HIGH",
       "synthetic": {
-        "blockedBy": null,
         "cycle": "p2-final",
         "negative": {
           "resultSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
@@ -2983,7 +2937,6 @@
       "set": "reporting",
       "severity": "HIGH",
       "synthetic": {
-        "blockedBy": null,
         "cycle": "p2-rereview-2",
         "negative": {
           "resultSha": "594b6287416ab6f18b18adb9a152bdba1c6278be",
@@ -3213,7 +3166,6 @@
       "set": "reporting",
       "severity": "HIGH",
       "synthetic": {
-        "blockedBy": null,
         "cycle": "p2-final",
         "negative": null,
         "priorCandidates": [],
@@ -3253,7 +3205,6 @@
       "set": "reporting",
       "severity": "HIGH",
       "synthetic": {
-        "blockedBy": null,
         "cycle": "p2-rereview-2",
         "negative": null,
         "priorCandidates": [
@@ -3479,7 +3430,6 @@
       "set": "reporting",
       "severity": "HIGH",
       "synthetic": {
-        "blockedBy": null,
         "cycle": "p2-final",
         "negative": null,
         "priorCandidates": [],
@@ -3519,7 +3469,6 @@
       "set": "reporting",
       "severity": "HIGH",
       "synthetic": {
-        "blockedBy": null,
         "cycle": "p2-rereview-3",
         "negative": null,
         "priorCandidates": [
@@ -3701,12 +3650,15 @@
     },
     {
       "cycle": 5,
-      "defectClass": "code",
+      "defectClass": null,
       "dependsOnPrivateBundle": true,
-      "excluded": null,
+      "excluded": {
+        "level": "provenance",
+        "reason": "reviewed-tree-unknown"
+      },
       "findingId": "P2-FINAL-HIGH-005",
-      "goldCategory": "CORRECTNESS",
-      "goldCategoryRationale": "Authoritative references are stored without foreign keys or checksum checks, so records can point at the wrong or a missing object.",
+      "goldCategory": null,
+      "goldCategoryRationale": null,
       "id": "P2-FINAL-HIGH-005@bb11d00",
       "instanceKind": "residual",
       "itemSha256": "ef905d682ff0a2bad3736afc3eb4e9c17b1562fb7f299f33af29ec4398b84b77",
@@ -3718,26 +3670,8 @@
       "reachability": "private-bundle-only",
       "set": "reporting",
       "severity": "HIGH",
-      "synthetic": {
-        "blockedBy": "previous-cycle-tree-unknown",
-        "cycle": "p2-rereview-5",
-        "negative": null,
-        "priorCandidates": [],
-        "repairBaseSha": null,
-        "repairDelta": null,
-        "resultSha": "bb11d0086108fc439d69c1d50e6ddcf009409198",
-        "reviewKind": "re-review",
-        "round": 2,
-        "rule": "C",
-        "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
-        "taskId": {
-          "id": "704YRY6F97RWN32KHTV0YZHPJG",
-          "label": "corpus:task:p2-rereview-5"
-        }
-      },
-      "uses": [
-        "residual-status"
-      ]
+      "synthetic": null,
+      "uses": null
     },
     {
       "cycle": 4,
@@ -3784,7 +3718,6 @@
       "set": "reporting",
       "severity": "HIGH",
       "synthetic": {
-        "blockedBy": null,
         "cycle": "p2-rereview-2",
         "negative": null,
         "priorCandidates": [
@@ -4010,7 +3943,6 @@
       "set": "reporting",
       "severity": "HIGH",
       "synthetic": {
-        "blockedBy": null,
         "cycle": "p2-final",
         "negative": null,
         "priorCandidates": [],
@@ -4050,7 +3982,6 @@
       "set": "reporting",
       "severity": "HIGH",
       "synthetic": {
-        "blockedBy": null,
         "cycle": "p2-rereview-3",
         "negative": null,
         "priorCandidates": [
@@ -4232,12 +4163,15 @@
     },
     {
       "cycle": 5,
-      "defectClass": "code",
+      "defectClass": null,
       "dependsOnPrivateBundle": true,
-      "excluded": null,
+      "excluded": {
+        "level": "provenance",
+        "reason": "reviewed-tree-unknown"
+      },
       "findingId": "P2-FINAL-HIGH-006",
-      "goldCategory": "CORRECTNESS",
-      "goldCategoryRationale": "A side effect recorded as pending is replayed after a crash instead of being reconciled, so commits, pushes or pull requests repeat.",
+      "goldCategory": null,
+      "goldCategoryRationale": null,
       "id": "P2-FINAL-HIGH-006@bb11d00",
       "instanceKind": "residual",
       "itemSha256": "e9de88a22e7d0a7ad3cb79ec41fc483a028d2e402228ca71db1483a836d67411",
@@ -4249,26 +4183,8 @@
       "reachability": "private-bundle-only",
       "set": "reporting",
       "severity": "HIGH",
-      "synthetic": {
-        "blockedBy": "previous-cycle-tree-unknown",
-        "cycle": "p2-rereview-5",
-        "negative": null,
-        "priorCandidates": [],
-        "repairBaseSha": null,
-        "repairDelta": null,
-        "resultSha": "bb11d0086108fc439d69c1d50e6ddcf009409198",
-        "reviewKind": "re-review",
-        "round": 2,
-        "rule": "C",
-        "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
-        "taskId": {
-          "id": "704YRY6F97RWN32KHTV0YZHPJG",
-          "label": "corpus:task:p2-rereview-5"
-        }
-      },
-      "uses": [
-        "residual-status"
-      ]
+      "synthetic": null,
+      "uses": null
     },
     {
       "cycle": 4,
@@ -4340,7 +4256,6 @@
       "set": "reporting",
       "severity": "HIGH",
       "synthetic": {
-        "blockedBy": null,
         "cycle": "p2-final",
         "negative": {
           "resultSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
@@ -4384,7 +4299,6 @@
       "set": "reporting",
       "severity": "HIGH",
       "synthetic": {
-        "blockedBy": null,
         "cycle": "p2-rereview-2",
         "negative": null,
         "priorCandidates": [
@@ -4610,7 +4524,6 @@
       "set": "reporting",
       "severity": "HIGH",
       "synthetic": {
-        "blockedBy": null,
         "cycle": "p2-final",
         "negative": null,
         "priorCandidates": [],
@@ -4650,7 +4563,6 @@
       "set": "reporting",
       "severity": "HIGH",
       "synthetic": {
-        "blockedBy": null,
         "cycle": "p2-rereview-3",
         "negative": null,
         "priorCandidates": [
@@ -4832,12 +4744,15 @@
     },
     {
       "cycle": 5,
-      "defectClass": "code",
+      "defectClass": null,
       "dependsOnPrivateBundle": true,
-      "excluded": null,
+      "excluded": {
+        "level": "provenance",
+        "reason": "reviewed-tree-unknown"
+      },
       "findingId": "P2-FINAL-HIGH-008",
-      "goldCategory": "ARCHITECTURE",
-      "goldCategoryRationale": "No production composition root exists: the shared driver hard-codes test doubles instead of injecting the real adapters.",
+      "goldCategory": null,
+      "goldCategoryRationale": null,
       "id": "P2-FINAL-HIGH-008@bb11d00",
       "instanceKind": "residual",
       "itemSha256": "87ff9d0114da2d94908e5af0b47e0d888784d3f7cbafd2f58a561bdae56d43a6",
@@ -4849,26 +4764,8 @@
       "reachability": "private-bundle-only",
       "set": "reporting",
       "severity": "HIGH",
-      "synthetic": {
-        "blockedBy": "previous-cycle-tree-unknown",
-        "cycle": "p2-rereview-5",
-        "negative": null,
-        "priorCandidates": [],
-        "repairBaseSha": null,
-        "repairDelta": null,
-        "resultSha": "bb11d0086108fc439d69c1d50e6ddcf009409198",
-        "reviewKind": "re-review",
-        "round": 2,
-        "rule": "C",
-        "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
-        "taskId": {
-          "id": "704YRY6F97RWN32KHTV0YZHPJG",
-          "label": "corpus:task:p2-rereview-5"
-        }
-      },
-      "uses": [
-        "residual-status"
-      ]
+      "synthetic": null,
+      "uses": null
     },
     {
       "cycle": 4,
@@ -4915,7 +4812,6 @@
       "set": "reporting",
       "severity": "HIGH",
       "synthetic": {
-        "blockedBy": null,
         "cycle": "p2-rereview-2",
         "negative": null,
         "priorCandidates": [
@@ -5141,7 +5037,6 @@
       "set": "reporting",
       "severity": "HIGH",
       "synthetic": {
-        "blockedBy": null,
         "cycle": "p2-final",
         "negative": null,
         "priorCandidates": [],
@@ -5181,7 +5076,6 @@
       "set": "reporting",
       "severity": "HIGH",
       "synthetic": {
-        "blockedBy": null,
         "cycle": "p2-rereview-3",
         "negative": null,
         "priorCandidates": [
@@ -5363,12 +5257,15 @@
     },
     {
       "cycle": 5,
-      "defectClass": "gate-config",
+      "defectClass": null,
       "dependsOnPrivateBundle": true,
-      "excluded": null,
+      "excluded": {
+        "level": "provenance",
+        "reason": "reviewed-tree-unknown"
+      },
       "findingId": "P2-FINAL-HIGH-009",
-      "goldCategory": "EVIDENCE_INTEGRITY",
-      "goldCategoryRationale": "The pilot manifest verifier trusts self-declared data, so a fabricated complete manifest passes.",
+      "goldCategory": null,
+      "goldCategoryRationale": null,
       "id": "P2-FINAL-HIGH-009@bb11d00",
       "instanceKind": "residual",
       "itemSha256": "43d3a22369252545928a5304419856738222b7a2ceebcf77959ea96daf268160",
@@ -5380,26 +5277,8 @@
       "reachability": "private-bundle-only",
       "set": "reporting",
       "severity": "HIGH",
-      "synthetic": {
-        "blockedBy": "previous-cycle-tree-unknown",
-        "cycle": "p2-rereview-5",
-        "negative": null,
-        "priorCandidates": [],
-        "repairBaseSha": null,
-        "repairDelta": null,
-        "resultSha": "bb11d0086108fc439d69c1d50e6ddcf009409198",
-        "reviewKind": "re-review",
-        "round": 2,
-        "rule": "C",
-        "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
-        "taskId": {
-          "id": "704YRY6F97RWN32KHTV0YZHPJG",
-          "label": "corpus:task:p2-rereview-5"
-        }
-      },
-      "uses": [
-        "residual-status"
-      ]
+      "synthetic": null,
+      "uses": null
     },
     {
       "cycle": 4,
@@ -5471,7 +5350,6 @@
       "set": "reporting",
       "severity": "MEDIUM",
       "synthetic": {
-        "blockedBy": null,
         "cycle": "p2-final",
         "negative": {
           "resultSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
@@ -5515,7 +5393,6 @@
       "set": "reporting",
       "severity": "MEDIUM",
       "synthetic": {
-        "blockedBy": null,
         "cycle": "p2-rereview-2",
         "negative": null,
         "priorCandidates": [
@@ -5741,7 +5618,6 @@
       "set": "reporting",
       "severity": "MEDIUM",
       "synthetic": {
-        "blockedBy": null,
         "cycle": "p2-final",
         "negative": null,
         "priorCandidates": [],
@@ -5781,7 +5657,6 @@
       "set": "reporting",
       "severity": "MEDIUM",
       "synthetic": {
-        "blockedBy": null,
         "cycle": "p2-rereview-3",
         "negative": null,
         "priorCandidates": [
@@ -6006,7 +5881,6 @@
       "set": "reporting",
       "severity": "MEDIUM",
       "synthetic": {
-        "blockedBy": null,
         "cycle": "p2-rereview-2",
         "negative": null,
         "priorCandidates": [
@@ -6232,7 +6106,6 @@
       "set": "reporting",
       "severity": "MEDIUM",
       "synthetic": {
-        "blockedBy": null,
         "cycle": "p2-final",
         "negative": null,
         "priorCandidates": [],
@@ -6272,7 +6145,6 @@
       "set": "reporting",
       "severity": "MEDIUM",
       "synthetic": {
-        "blockedBy": null,
         "cycle": "p2-rereview-3",
         "negative": null,
         "priorCandidates": [
@@ -6454,12 +6326,15 @@
     },
     {
       "cycle": 5,
-      "defectClass": "code",
+      "defectClass": null,
       "dependsOnPrivateBundle": true,
-      "excluded": null,
+      "excluded": {
+        "level": "provenance",
+        "reason": "reviewed-tree-unknown"
+      },
       "findingId": "P2-FINAL-MED-003",
-      "goldCategory": "SPEC",
-      "goldCategoryRationale": "Most of the required spans have no runtime call site, so the audit trail misses them.",
+      "goldCategory": null,
+      "goldCategoryRationale": null,
       "id": "P2-FINAL-MED-003@bb11d00",
       "instanceKind": "residual",
       "itemSha256": "02b7fe9fca414ed950d55e0d86e7392913551c4c9c5d670994977469f7b91722",
@@ -6471,26 +6346,8 @@
       "reachability": "private-bundle-only",
       "set": "reporting",
       "severity": "MEDIUM",
-      "synthetic": {
-        "blockedBy": "previous-cycle-tree-unknown",
-        "cycle": "p2-rereview-5",
-        "negative": null,
-        "priorCandidates": [],
-        "repairBaseSha": null,
-        "repairDelta": null,
-        "resultSha": "bb11d0086108fc439d69c1d50e6ddcf009409198",
-        "reviewKind": "re-review",
-        "round": 2,
-        "rule": "C",
-        "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
-        "taskId": {
-          "id": "704YRY6F97RWN32KHTV0YZHPJG",
-          "label": "corpus:task:p2-rereview-5"
-        }
-      },
-      "uses": [
-        "residual-status"
-      ]
+      "synthetic": null,
+      "uses": null
     },
     {
       "cycle": 4,
@@ -6537,7 +6394,6 @@
       "set": "reporting",
       "severity": "MEDIUM",
       "synthetic": {
-        "blockedBy": null,
         "cycle": "p2-rereview-2",
         "negative": null,
         "priorCandidates": [
@@ -6763,7 +6619,6 @@
       "set": "reporting",
       "severity": "MEDIUM",
       "synthetic": {
-        "blockedBy": null,
         "cycle": "p2-final",
         "negative": null,
         "priorCandidates": [],
@@ -6803,7 +6658,6 @@
       "set": "reporting",
       "severity": "MEDIUM",
       "synthetic": {
-        "blockedBy": null,
         "cycle": "p2-rereview-3",
         "negative": null,
         "priorCandidates": [
@@ -6985,12 +6839,15 @@
     },
     {
       "cycle": 5,
-      "defectClass": "code",
+      "defectClass": null,
       "dependsOnPrivateBundle": true,
-      "excluded": null,
+      "excluded": {
+        "level": "provenance",
+        "reason": "reviewed-tree-unknown"
+      },
       "findingId": "P2-FINAL-MED-004",
-      "goldCategory": "ARCHITECTURE",
-      "goldCategoryRationale": "The app layer calls repositories and sequences the workflow directly, and the import scanner misses the pattern.",
+      "goldCategory": null,
+      "goldCategoryRationale": null,
       "id": "P2-FINAL-MED-004@bb11d00",
       "instanceKind": "residual",
       "itemSha256": "133e2770652f23d3cba3b8fb2e082ad5308fccfd24e072840de48b038b62f4b3",
@@ -7002,26 +6859,8 @@
       "reachability": "private-bundle-only",
       "set": "reporting",
       "severity": "MEDIUM",
-      "synthetic": {
-        "blockedBy": "previous-cycle-tree-unknown",
-        "cycle": "p2-rereview-5",
-        "negative": null,
-        "priorCandidates": [],
-        "repairBaseSha": null,
-        "repairDelta": null,
-        "resultSha": "bb11d0086108fc439d69c1d50e6ddcf009409198",
-        "reviewKind": "re-review",
-        "round": 2,
-        "rule": "C",
-        "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
-        "taskId": {
-          "id": "704YRY6F97RWN32KHTV0YZHPJG",
-          "label": "corpus:task:p2-rereview-5"
-        }
-      },
-      "uses": [
-        "residual-status"
-      ]
+      "synthetic": null,
+      "uses": null
     },
     {
       "cycle": 4,
@@ -7118,7 +6957,6 @@
       "set": "reporting",
       "severity": "MEDIUM",
       "synthetic": {
-        "blockedBy": null,
         "cycle": "p2-rereview-3",
         "negative": null,
         "priorCandidates": [
@@ -7303,8 +7141,8 @@
       "defectClass": null,
       "dependsOnPrivateBundle": true,
       "excluded": {
-        "level": "packet",
-        "reason": "leakage-filtered"
+        "level": "provenance",
+        "reason": "reviewed-tree-unknown"
       },
       "findingId": "P2-FINAL-MED-005",
       "goldCategory": null,
@@ -7368,7 +7206,6 @@
       "set": "reporting",
       "severity": "MEDIUM",
       "synthetic": {
-        "blockedBy": null,
         "cycle": "p2-rereview-2",
         "negative": null,
         "priorCandidates": [
@@ -7594,7 +7431,6 @@
       "set": "reporting",
       "severity": "MEDIUM",
       "synthetic": {
-        "blockedBy": null,
         "cycle": "p2-final",
         "negative": null,
         "priorCandidates": [],
@@ -7634,7 +7470,6 @@
       "set": "reporting",
       "severity": "MEDIUM",
       "synthetic": {
-        "blockedBy": null,
         "cycle": "p2-rereview-3",
         "negative": null,
         "priorCandidates": [
@@ -7816,12 +7651,15 @@
     },
     {
       "cycle": 5,
-      "defectClass": "test-adequacy",
+      "defectClass": null,
       "dependsOnPrivateBundle": true,
-      "excluded": null,
+      "excluded": {
+        "level": "provenance",
+        "reason": "reviewed-tree-unknown"
+      },
       "findingId": "P2-FINAL-MED-006",
-      "goldCategory": "TEST_QUALITY",
-      "goldCategoryRationale": "The pilot rehearsal is a tabletop document whose faults have no executable test.",
+      "goldCategory": null,
+      "goldCategoryRationale": null,
       "id": "P2-FINAL-MED-006@bb11d00",
       "instanceKind": "residual",
       "itemSha256": "23c3f4054225debcc422b3dc561b96b2f7ca7a2b024be0d111fceb748af3b933",
@@ -7833,26 +7671,8 @@
       "reachability": "private-bundle-only",
       "set": "reporting",
       "severity": "MEDIUM",
-      "synthetic": {
-        "blockedBy": "previous-cycle-tree-unknown",
-        "cycle": "p2-rereview-5",
-        "negative": null,
-        "priorCandidates": [],
-        "repairBaseSha": null,
-        "repairDelta": null,
-        "resultSha": "bb11d0086108fc439d69c1d50e6ddcf009409198",
-        "reviewKind": "re-review",
-        "round": 2,
-        "rule": "C",
-        "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
-        "taskId": {
-          "id": "704YRY6F97RWN32KHTV0YZHPJG",
-          "label": "corpus:task:p2-rereview-5"
-        }
-      },
-      "uses": [
-        "residual-status"
-      ]
+      "synthetic": null,
+      "uses": null
     },
     {
       "cycle": 4,
@@ -8412,7 +8232,6 @@
       "set": "reporting",
       "severity": "MEDIUM",
       "synthetic": {
-        "blockedBy": null,
         "cycle": "p2-rereview-2",
         "negative": {
           "resultSha": "594b6287416ab6f18b18adb9a152bdba1c6278be",
@@ -8463,7 +8282,6 @@
       "set": "reporting",
       "severity": "MEDIUM",
       "synthetic": {
-        "blockedBy": null,
         "cycle": "p2-rereview-2",
         "negative": {
           "resultSha": "594b6287416ab6f18b18adb9a152bdba1c6278be",
