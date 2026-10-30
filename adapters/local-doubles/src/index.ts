@@ -94,8 +94,9 @@ export class FileWritingAgent implements CodingAgentProvider {
  * Like the GitHub adapter, a push is compare-and-set (a real
  * `--force-with-lease` the bare remote enforces), an upsert opens the PR on
  * the base it is given and writes exactly the title and body it is given, and
- * a PR a human closed, merged (`closePullRequest`) or retargeted
- * (`retargetPullRequest`) is never reopened, retargeted or edited.
+ * a PR read closed, merged (`closePullRequest`) or retargeted
+ * (`retargetPullRequest`) is not written; nothing ever reopens or retargets a
+ * PR.
  */
 export interface LocalPullRequest extends PullRequestRef {
   readonly title: string;
@@ -177,8 +178,7 @@ export class LocalBareForgeProvider implements ForgeProvider {
     const at = prs.findIndex((p) => p.headBranch === input.headBranch);
     if (at >= 0) {
       // Idempotent: the one PR for the head branch is updated, never duplicated
-      // — and never reopened, retargeted or edited once closed or on another
-      // base.
+      // — and not written once read closed or on another base.
       const existing = prs[at]!;
       if (existing.state !== 'open' || existing.baseBranch !== input.base) return refOf(existing);
       const updated: LocalPullRequest = { ...existing, title: input.title, body: input.body };

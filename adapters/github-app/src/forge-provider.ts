@@ -396,10 +396,14 @@ export class GitHubAppForgeProvider {
   // for a PR update, so this read-then-write cannot exclude another writer;
   // what makes a late writer harmless is that every writer of an attempt's PR
   // writes the same content (pullRequestContent). A PR for the head that is
-  // closed, merged or on another base is not the attempt's to write — a human
-  // closed or retargeted it: it is returned as found, never reopened,
-  // retargeted, edited or duplicated by a create. No merge is ever attempted
-  // (H5). Token minted JIT, opaque.
+  // read closed, merged or on another base is not the attempt's to write — a
+  // human closed or retargeted it: it is returned as found, not written and
+  // not duplicated by a create. The update carries the title and body and
+  // nothing else, so the harness never reopens or retargets a PR. A human may
+  // still close, merge or retarget the PR between the read and the update; the
+  // title and body then land on the PR as the human left it (the residual
+  // read/write race). No merge is ever attempted (H5). Token minted JIT,
+  // opaque.
   async upsertPullRequest(input: UpsertPrInput): Promise<PullRequestResult> {
     const { identity, repositoryId } = input.repository;
     const owner = identity.githubOwner;

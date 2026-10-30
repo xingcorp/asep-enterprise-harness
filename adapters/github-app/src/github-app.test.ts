@@ -273,8 +273,13 @@ interface FakePr {
 
 // An in-memory GitHub pulls API. Reads hand back copies, newest first, as the
 // REST API lists them (a listed PR says it was merged by `merged_at`); a create
-// for a head that already has an open PR is refused, as GitHub refuses it.
-function fakeOctokit(store: { prs: FakePr[]; nextNumber: number; calls: string[] }): (token: string) => OctokitLike {
+// for a head that already has an open PR is refused, as GitHub refuses it. An
+// update applies whatever it carries, as GitHub does: a state reopens or
+// closes the PR (a merged one cannot be reopened), a base retargets it. Each
+// update's parameters are kept in `updates`, when given.
+function fakeOctokit(store: {
+  prs: FakePr[]; nextNumber: number; calls: string[]; updates?: Record<string, unknown>[];
+}): (token: string) => OctokitLike {
   const copy = (pr: FakePr): FakePr => structuredClone(pr);
   return () => ({
     pulls: {
@@ -297,10 +302,17 @@ function fakeOctokit(store: { prs: FakePr[]; nextNumber: number; calls: string[]
       },
       update: async (params) => {
         store.calls.push('update');
+        store.updates?.push({ ...params });
         const pr = store.prs.find((p) => p.number === params.pull_number)!;
-        // GitHub retargets a PR only when it is asked to.
-        const base = (params as { base?: string }).base;
-        Object.assign(pr, { title: params.title, body: params.body, ...(base !== undefined ? { base: { ref: base } } : {}) });
+        const { state, base } = params as { state?: 'open' | 'closed'; base?: string };
+        if (state === 'open' && pr.merged_at !== null) {
+          throw { status: 422, message: 'Validation Failed: a merged pull request cannot be reopened' };
+        }
+        Object.assign(pr, {
+          title: params.title, body: params.body,
+          ...(state !== undefined ? { state } : {}),
+          ...(base !== undefined ? { base: { ref: base } } : {}),
+        });
         return { data: { ...copy(pr), merged: pr.merged_at !== null } };
       },
     },
@@ -365,7 +377,7 @@ test('the open PR for a head wins over an older closed one', async () => {
 });
 
 test('H4/H6: PR upsert creates on first call and updates on the second (idempotent)', async () => {
-  const store = { prs: [] as FakePr[], nextNumber: 7, calls: [] as string[] };
+  const store = { prs: [] as FakePr[], nextNumber: 7, calls: [] as string[], updates: [] as Record<string, unknown>[] };
   const creds = new GitHubAppCredentialProvider({ appId: 1, privateKey: 'PEM', installationId: 9 }, fakeAuth());
   const forge = new GitHubAppForgeProvider(creds, fakeOctokit(store), ['github.com']);
 
@@ -377,6 +389,9 @@ test('H4/H6: PR upsert creates on first call and updates on the second (idempote
   assert.equal(second.number, 7, 'same PR — no duplicate created');
   assert.equal(store.prs.length, 1, 'exactly one PR exists');
   assert.deepEqual(store.calls, ['list', 'create', 'list', 'update']);
+  // The update names the PR (owner, repo, number) and carries its title and
+  // body — never a state or a base.
+  assert.deepEqual(store.updates.map((u) => Object.keys(u).sort()), [['body', 'owner', 'pull_number', 'repo', 'title']]);
   // Exactly what it was given, and nothing of its own.
   assert.deepEqual(
     { title: store.prs[0]!.title, body: store.prs[0]!.body, base: store.prs[0]!.base.ref },
@@ -406,7 +421,7 @@ test('an upsert never retargets or edits an open PR that is on another base', as
 const facts = { taskId: id('T'), attemptId: id('P'), commitSha: COMMIT, evidenceId: id('E'), base: 'main' };
 
 // Owner 1's transport, held after its read until `release`; owner 2 shares the store.
-function heldAfterRead(store: { prs: FakePr[]; nextNumber: number; calls: string[] }) {
+function heldAfterRead(store: { prs: FakePr[]; nextNumber: number; calls: string[]; updates?: Record<string, unknown>[] }) {
   let release!: () => void;
   const released = new Promise<void>((res) => { release = res; });
   let read!: () => void;
@@ -448,6 +463,41 @@ test('owner 1 reads the PR, owner 2 updates it, owner 1 updates it: the PR is by
   assert.equal(store.prs[0]!.title, pullRequestContent(facts).title);
   assert.equal(store.prs[0]!.body, pullRequestContent(facts).body);
 });
+
+// Nor does it stop a human: the PR may be closed, merged or retargeted between
+// the upsert's read and its write. The write carries the title and body only,
+// so it never reopens or retargets the PR — but it does land on the PR as the
+// human left it: the residual read/write race, which no compare-and-set on
+// GitHub can close.
+const humanActs: readonly { name: string; act: (pr: FakePr) => void }[] = [
+  { name: 'closes', act: (pr) => { pr.state = 'closed'; } },
+  { name: 'merges', act: (pr) => { pr.state = 'closed'; pr.merged_at = '2026-10-30T00:00:00Z'; } },
+  { name: 'retargets', act: (pr) => { pr.base = { ref: 'release' }; } },
+];
+
+for (const human of humanActs) {
+  test(`a human ${human.name} the PR between the upsert's read and its write: the write is the title and body only`, async () => {
+    const store = { prs: [] as FakePr[], nextNumber: 7, calls: [] as string[], updates: [] as Record<string, unknown>[] };
+    // Opened earlier with other content, so the late write is visible.
+    await ownerForge(fakeOctokit(store)).upsertPullRequest({
+      repository, headBranch: attemptBranchStr, base: facts.base, title: 'earlier', body: 'earlier',
+    });
+    const held = heldAfterRead(store);
+    const writing = upsertFacts(ownerForge(held.octokit));
+    await held.hasRead;
+    human.act(store.prs[0]!);
+    const asLeft = { state: store.prs[0]!.state, merged_at: store.prs[0]!.merged_at, base: store.prs[0]!.base.ref };
+    held.release();
+    await writing;
+    assert.deepEqual(store.updates.map((u) => Object.keys(u).sort()), [['body', 'owner', 'pull_number', 'repo', 'title']],
+      'the PR named, its title and body, nothing else');
+    const pr = store.prs[0]!;
+    assert.deepEqual({ state: pr.state, merged_at: pr.merged_at, base: pr.base.ref }, asLeft, 'never reopened, never retargeted');
+    assert.equal(store.prs.length, 1, 'no second PR');
+    // The residual race: the title and body landed on the PR as the human left it.
+    assert.deepEqual({ title: pr.title, body: pr.body }, pullRequestContent(facts));
+  });
+}
 
 test('owner 1 reads no PR, owner 2 opens it, owner 1 tries to open it: still owner 2\'s one PR', async () => {
   const store = { prs: [] as FakePr[], nextNumber: 7, calls: [] as string[] };
