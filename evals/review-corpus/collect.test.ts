@@ -569,36 +569,45 @@ test('a publication gate that does not complete aborts collection', () => {
   const gateOf = (command: string, args: readonly string[]): PublicationGate =>
     command === 'grep' ? 'path-leak-scan' : (/^scripts\/(.+)\.sh$/.exec(args[0] ?? '')![1] as PublicationGate);
   /** Every gate clean except `faulty`, which returns `run`. */
+  // The temporary repositories go under a scratch directory of this test's own, so other test
+  // files running concurrently cannot disturb the leftover check.
+  const scratch = mkdtempSync(join(tmpdir(), 'asep-gates-scratch-'));
+  const during: string[][] = [];
   const runner =
     (faulty: readonly PublicationGate[], run: Partial<GateRun>): GateRunner =>
     (command, args) => {
+      during.push(readdirSync(scratch));
       const gate = gateOf(command, args);
       const clean: GateRun = { status: CODES[gate].clean, signal: null, error: null, output: `${gate}: PASS` };
       return faulty.includes(gate) ? { ...clean, status: null, ...run } : clean;
     };
-  const leftovers = () => readdirSync(tmpdir()).filter((name) => name.startsWith('asep-corpus-gates-')).sort();
-  const before = leftovers();
+  const excerpts = (run: GateRunner) => failingExcerpts(ROOT, candidates, run, scratch);
 
-  for (const gate of gates) {
-    const aborts: readonly (readonly [string, Partial<GateRun>, RegExp])[] = [
-      ['crash', { signal: 'SIGSEGV' }, /killed by SIGSEGV/],
-      ['missing executable', { error: Object.assign(new Error(`spawnSync ${gate} ENOENT`), { code: 'ENOENT' }) }, /could not run/],
-      ['findings code naming no excerpt', { status: CODES[gate].findings, output: `${gate}: FAIL — the scanner could not read its input` }, /named no excerpt/],
-      ['a status outside the documented codes', { status: 2, output: `${gate}: error` }, /exited 2/],
-    ];
-    for (const [label, run, reason] of aborts) {
-      assert.throws(() => failingExcerpts(ROOT, candidates, runner([gate], run)), new RegExp(`publication gate ${gate} .*${reason.source}`), `${gate}: ${label}`);
+  try {
+    for (const gate of gates) {
+      const aborts: readonly (readonly [string, Partial<GateRun>, RegExp])[] = [
+        ['crash', { signal: 'SIGSEGV' }, /killed by SIGSEGV/],
+        ['missing executable', { error: Object.assign(new Error(`spawnSync ${gate} ENOENT`), { code: 'ENOENT' }) }, /could not run/],
+        ['findings code naming no excerpt', { status: CODES[gate].findings, output: `${gate}: FAIL — the scanner could not read its input` }, /named no excerpt/],
+        ['a status outside the documented codes', { status: 2, output: `${gate}: error` }, /exited 2/],
+      ];
+      for (const [label, run, reason] of aborts) {
+        assert.throws(() => excerpts(runner([gate], run)), new RegExp(`publication gate ${gate} .*${reason.source}`), `${gate}: ${label}`);
+      }
+      // A findings code that names an excerpt withholds that excerpt, and only that one.
+      const named = excerpts(runner([gate], { status: CODES[gate].findings, output: `  ${BLOBS_DIR}/${a}: finding` }));
+      assert.deepEqual([...named], [[a, [gate]]], gate);
     }
-    // A findings code that names an excerpt withholds that excerpt, and only that one.
-    const named = failingExcerpts(ROOT, candidates, runner([gate], { status: CODES[gate].findings, output: `  ${BLOBS_DIR}/${a}: finding` }));
-    assert.deepEqual([...named], [[a, [gate]]], gate);
+    // The review's probe: all five gates fail with status 2.
+    assert.throws(() => excerpts(runner(gates, { status: 2 })), /publication gate/);
+    // Every gate clean: nothing is withheld.
+    assert.deepEqual([...excerpts(runner([], {}))], []);
+    // Each gate ran inside one temporary repository, and none is left behind, whatever the outcome.
+    assert.ok(during.length > 0 && during.every((names) => names.length === 1 && names[0]!.startsWith('asep-corpus-gates-')));
+    assert.deepEqual(readdirSync(scratch), []);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
   }
-  // The review's probe: all five gates fail with status 2.
-  assert.throws(() => failingExcerpts(ROOT, candidates, runner(gates, { status: 2 })), /publication gate/);
-  // Every gate clean: nothing is withheld.
-  assert.deepEqual([...failingExcerpts(ROOT, candidates, runner([], {}))], []);
-  // No temporary repository is left behind, whatever the outcome.
-  assert.deepEqual(leftovers(), before);
 
 
   // Git: a spawn error or a signal is never read as "no such object"; a probe's own

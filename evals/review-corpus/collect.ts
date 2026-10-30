@@ -654,17 +654,19 @@ export function leakPatterns(list: string): string[] {
  * exit 0 clean and 1 with findings; the path-leak scan (`grep -lE` with the patterns of
  * `LEAK_PATTERNS_FILE`) exits 1 clean and 0 with findings. A spawn error, a signal, any
  * other code, or a findings code whose output names no excerpt aborts. Gate output is
- * inspected for excerpt names only and is never printed.
+ * inspected for excerpt names only and is never printed. The temporary repository is created
+ * under `scratchParent` and removed whatever the outcome.
  */
 export function failingExcerpts(
   root: string,
   candidates: ReadonlyMap<string, Uint8Array>,
   run: GateRunner = runGateProcess,
+  scratchParent: string = tmpdir(),
 ): Map<string, PublicationGate[]> {
   const failing = new Map<string, PublicationGate[]>();
   if (candidates.size === 0) return failing;
   const patterns = leakPatterns(readFileSync(join(root, LEAK_PATTERNS_FILE), 'utf8'));
-  const dir = mkdtempSync(join(tmpdir(), 'asep-corpus-gates-'));
+  const dir = mkdtempSync(join(scratchParent, 'asep-corpus-gates-'));
   try {
     for (const file of GATE_SCRIPTS) {
       mkdirSync(dirname(join(dir, file)), { recursive: true });
