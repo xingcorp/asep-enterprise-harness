@@ -31,7 +31,7 @@ import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -43,6 +43,10 @@ import type { AgentAttemptObservation, AgentExecuteRequest } from '@asep/ports';
 import type {
   OrganizationId, ProjectId, TenantScope, WorkspaceId, AttemptId, ArtifactRef,
 } from '@asep/contracts';
+import {
+  registryShimLine, removeFakeDockerFixture,
+  // @ts-expect-error - .mjs has no type declarations; runtime import is fine under tsx.
+} from '../../../scripts/testing/fake-docker-fixture.mjs';
 
 const REPO = fileURLToPath(new URL('../../../', import.meta.url));
 const TESTING = join(REPO, 'scripts', 'testing');
@@ -181,7 +185,7 @@ test('LIVE: the real Claude CLI, contained, makes one real change through the eg
     assertNoSecret(dir, obs, readFileSync(keyFile, 'utf8').trim());
   } finally {
     await db.close();
-    await rm(dir, { recursive: true, force: true });
+    await removeFakeDockerFixture(dir);
   }
 });
 
@@ -208,7 +212,7 @@ test('CONFORMANCE: the real CLI accepts the provider\'s argv and prompt channel,
     const bin = join(dir, 'bin');
     await mkdir(bin);
     const docker = join(bin, 'docker');
-    await writeFile(docker, `#!/bin/sh\nexec "${process.execPath}" "${join(TESTING, 'fake-docker.mjs')}" --state "${join(dir, 'docker-state')}" "$@"\n`,
+    await writeFile(docker, `#!/bin/sh\n${registryShimLine()}\nexec "${process.execPath}" "${join(TESTING, 'fake-docker.mjs')}" --state "${join(dir, 'docker-state')}" "$@"\n`,
       { mode: 0o755 });
     const secret = `asep-test-model-key-${randomUUID()}`;
     const keyFile = join(dir, 'model-key');
@@ -242,6 +246,6 @@ test('CONFORMANCE: the real CLI accepts the provider\'s argv and prompt channel,
   } finally {
     api.kill('SIGTERM');
     await db.close();
-    await rm(dir, { recursive: true, force: true });
+    await removeFakeDockerFixture(dir);
   }
 });

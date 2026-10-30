@@ -30,7 +30,7 @@ import assert from 'node:assert/strict';
 import { createHash, generateKeyPairSync, randomUUID } from 'node:crypto';
 import http from 'node:http';
 import type net from 'node:net';
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -54,6 +54,10 @@ import {
   signAuthorization,
   // @ts-expect-error - .mjs has no type declarations; runtime import is fine under tsx.
 } from '../../../scripts/pilot/human-authorization-crypto.mjs';
+import {
+  registryShimLine, removeFakeDockerFixture,
+  // @ts-expect-error - .mjs has no type declarations; runtime import is fine under tsx.
+} from '../../../scripts/testing/fake-docker-fixture.mjs';
 
 console.log('SUITE-ID: asep-suite:pilot-verifier');
 
@@ -111,7 +115,7 @@ async function rig(): Promise<Rig> {
   const bin = join(dir, 'bin');
   await mkdir(bin, { recursive: true });
   const docker = join(bin, 'docker');
-  await writeFile(docker, `#!/bin/sh\nexec "${process.execPath}" "${FAKE_DOCKER}" --state "${join(dir, 'docker-state')}" "$@"\n`,
+  await writeFile(docker, `#!/bin/sh\n${registryShimLine()}\nexec "${process.execPath}" "${FAKE_DOCKER}" --state "${join(dir, 'docker-state')}" "$@"\n`,
     { mode: 0o755 });
   // The pinned CLI, played by the strict fake: asks the model, then edits.
   const cli = join(bin, 'claude');
@@ -127,7 +131,7 @@ async function rig(): Promise<Rig> {
     modelUrl: model.url, keyFile, cli,
     async close() {
       await model.close();
-      await rm(dir, { recursive: true, force: true });
+      await removeFakeDockerFixture(dir);
     },
   };
 }

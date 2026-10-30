@@ -24,7 +24,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile, mkdir } from 'node:fs/promises';
+import { mkdtemp, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -37,6 +37,10 @@ import type {
   CommandSpec, CodingAgentProvider, AgentExecuteRequest, AgentAttemptObservation,
 } from '@asep/ports';
 import { runVerticalSlice, seedMirror } from './vertical-slice.js';
+import {
+  registryShimLine, removeFakeDockerFixture,
+  // @ts-expect-error - .mjs has no type declarations; runtime import is fine under tsx.
+} from '../../../scripts/testing/fake-docker-fixture.mjs';
 
 console.log('SUITE-ID: asep-suite:pilot-target');
 
@@ -48,7 +52,7 @@ async function fakeDockerSandbox(dir: string): Promise<DockerSandboxProvider> {
   await mkdir(dir, { recursive: true });
   const docker = join(dir, 'fake-docker');
   const fake = fileURLToPath(new URL('../../../scripts/testing/fake-docker.mjs', import.meta.url));
-  await writeFile(docker, `#!/bin/sh\nexec "${process.execPath}" "${fake}" --state "${join(dir, 'docker-state')}" "$@"\n`,
+  await writeFile(docker, `#!/bin/sh\n${registryShimLine()}\nexec "${process.execPath}" "${fake}" --state "${join(dir, 'docker-state')}" "$@"\n`,
     { mode: 0o755 });
   return new DockerSandboxProvider({ imageDigest: `alpine@sha256:${'a'.repeat(64)}`, dockerBinary: docker });
 }
@@ -241,7 +245,7 @@ test('HIGH-008/K2: a pilot target registers the REAL repository, including the n
     assert.equal(bundle.environment.lockfileHash, '2'.repeat(64));
   } finally {
     await client.close?.();
-    await rm(dir, { recursive: true, force: true });
+    await removeFakeDockerFixture(dir);
   }
 });
 
@@ -269,6 +273,6 @@ test('HIGH-008/K2: omitting the target keeps the SYNTHETIC default (both K1 proo
     assert.equal(result.taskStatus, 'WAITING_FOR_HUMAN_REVIEW');
   } finally {
     await client.close?.();
-    await rm(dir, { recursive: true, force: true });
+    await removeFakeDockerFixture(dir);
   }
 });

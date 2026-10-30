@@ -8,6 +8,12 @@
 // `kill`, `rm -f`, `inspect`, `ps -aq` and `network ls -q` (with `--filter
 // label=…`) act on those records, so a container whose client was killed stays
 // listed, and running, until something removes it — as with the real daemon.
+// A record is the only way to find its container's process, so it goes only
+// once nothing of that process group runs: `kill` and `rm -f` that cannot show
+// that answer with the daemon's error and leave the record. Each container is
+// also recorded in the run's process registry (scripts/lib/process-registry.mjs,
+// found through ASEP_PROCESS_REGISTRY) for as long as it runs, so that the test
+// runner can end what a dead test process left behind.
 //
 // It does NOT isolate anything. The OS-enforced properties (internal network,
 // read-only binds, read-only rootfs, dropped capabilities) are proven against
@@ -17,6 +23,9 @@
 // duplicate names, and removing a network that still has containers on it.
 //
 // Usage: node fake-docker.mjs --state <dir> <docker args…>   (via a shim)
+//
+// A `kill-does-not-take` file in the state directory stands for a daemon whose
+// kill does not stop the container's process.
 //
 // Emulation:
 //   * `--mount type=bind,src=S,dst=D` and `--tmpfs D` map container paths to
@@ -32,6 +41,7 @@ import {
   appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
+import { register, stillRunning, unregister } from '../lib/process-registry.mjs';
 
 const args = process.argv.slice(2);
 if (args[0] !== '--state' || !args[1]) {
@@ -72,6 +82,20 @@ const alive = (pid) => {
   }
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Kills a container's process group, unless the daemon's kill does not take,
+// and waits until none of it runs. True once that is shown.
+async function stopContainer(pid) {
+  if (!existsSync(join(STATE, 'kill-does-not-take'))) {
+    try {
+      process.kill(-pid, 'SIGKILL');
+    } catch { /* already gone */ }
+  }
+  for (let i = 0; i < 200 && (alive(pid) || alive(-pid)); i++) await sleep(10);
+  // An exited process that its client has not reaped yet runs no more.
+  return !(alive(pid) || alive(-pid)) || !stillRunning(pid, true);
+}
+
 const BUILTIN_NETWORKS = new Set(['bridge', 'none', 'host']);
 const DIGEST = /@sha256:[0-9a-f]{64}$/;
 
@@ -218,11 +242,14 @@ async function remove(rest) {
       continue;
     }
     const c = readJson(containerFile(name));
-    try {
-      process.kill(-c.pid, 'SIGKILL');
-    } catch { /* already gone */ }
-    for (let i = 0; i < 200 && alive(c.pid); i++) await sleep(10);
+    if (!(await stopContainer(c.pid))) {
+      process.stderr.write(`Error response from daemon: cannot remove container "/${name}": could not kill: `
+        + `process ${c.pid} is still running\n`);
+      bad = true;
+      continue;
+    }
     rmSync(containerFile(name), { force: true });
+    unregister(c.pid);
     process.stdout.write(`${name}\n`);
   }
   process.exit(bad ? 1 : 0);
@@ -251,10 +278,11 @@ async function kill(names) {
       continue;
     }
     const c = readJson(containerFile(name));
-    try {
-      process.kill(-c.pid, 'SIGKILL');
-    } catch { /* already gone */ }
-    for (let i = 0; i < 200 && alive(c.pid); i++) await sleep(10);
+    if (!(await stopContainer(c.pid))) {
+      process.stderr.write(`Error response from daemon: cannot kill container: ${name}: process ${c.pid} is still running\n`);
+      bad = true;
+      continue;
+    }
     process.stdout.write(`${name}\n`);
   }
   process.exit(bad ? 1 : 0);
@@ -368,11 +396,14 @@ async function run(rest) {
   const child = spawn(argv[0], argv.slice(1), {
     cwd, env, detached: true, stdio: [flags.bool.has('-i') ? 'pipe' : 'ignore', 'pipe', 'pipe'],
   });
+  // What the process's command line shows, so that the registry ends only it.
+  const marker = argv.slice(0, 2).join(' ').split('\n')[0];
   const record = {
-    name, pid: child.pid, image, network: netName, networks: [netName], labels: flags.labels, ports: {},
-    flags: { ...flags, bool: [...flags.bool] }, mounts: map,
+    name, pid: child.pid, group: true, marker, image, network: netName, networks: [netName], labels: flags.labels,
+    ports: {}, flags: { ...flags, bool: [...flags.bool] }, mounts: map,
   };
   writeRecord(containerFile(name), record);
+  register(child.pid, { marker, group: true });
 
   // What reached the container's stdin, as the hash of all of it so far after
   // every chunk — a starter may keep stdin open for the container's whole life —
@@ -409,8 +440,13 @@ async function run(rest) {
     rmSync(containerFile(name), { force: true });
     fail(`docker: Error response from daemon: failed to create task: exec: "${argv[0]}": ${e.message}`, 127);
   });
-  child.on('close', (code, signal) => {
-    rmSync(containerFile(name), { force: true });
+  child.on('close', async (code, signal) => {
+    // As the daemon does when a container's process ends, whatever else ran in
+    // it is killed; the container goes once none of it runs.
+    if (await stopContainer(child.pid)) {
+      rmSync(containerFile(name), { force: true });
+      unregister(child.pid);
+    }
     process.exit(code ?? (signal === 'SIGKILL' ? 137 : 128));
   });
 }

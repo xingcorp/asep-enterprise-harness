@@ -25,7 +25,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -45,6 +45,10 @@ import type {
   ArtifactId, AttemptId, OrganizationId, ProjectId, RepositoryBindingId, RunId, TaskId, TenantScope,
 } from '@asep/contracts';
 import { runVerticalSlice, resumeVerticalSlice, seedMirror } from './vertical-slice.js';
+import {
+  registryShimLine, removeFakeDockerFixture,
+  // @ts-expect-error - .mjs has no type declarations; runtime import is fine under tsx.
+} from '../../../scripts/testing/fake-docker-fixture.mjs';
 
 console.log('SUITE-ID: asep-suite:pilot-faults');
 
@@ -52,7 +56,7 @@ async function fakeDockerSandbox(dir: string): Promise<DockerSandboxProvider> {
   await mkdir(dir, { recursive: true });
   const docker = join(dir, 'fake-docker');
   const fake = fileURLToPath(new URL('../../../scripts/testing/fake-docker.mjs', import.meta.url));
-  await writeFile(docker, `#!/bin/sh\nexec "${process.execPath}" "${fake}" --state "${join(dir, 'docker-state')}" "$@"\n`,
+  await writeFile(docker, `#!/bin/sh\n${registryShimLine()}\nexec "${process.execPath}" "${fake}" --state "${join(dir, 'docker-state')}" "$@"\n`,
     { mode: 0o755 });
   return new DockerSandboxProvider({ imageDigest: `alpine@sha256:${'a'.repeat(64)}`, dockerBinary: docker });
 }
@@ -218,7 +222,7 @@ test('fault 3: an object-store outage at the evidence write stops the attempt; o
       'no new attempt was started');
   } finally {
     await client.close();
-    await rm(dir, { recursive: true, force: true });
+    await removeFakeDockerFixture(dir);
   }
 });
 
@@ -336,6 +340,6 @@ test('fault 5: a GitHub rate limit on the PR stops the run; after back-off the r
     assert.equal(prs.length, 1);
   } finally {
     await client.close();
-    await rm(dir, { recursive: true, force: true });
+    await removeFakeDockerFixture(dir);
   }
 });

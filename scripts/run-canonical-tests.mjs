@@ -18,7 +18,11 @@
 //   5. assert every REQUIRED_SUITES machine-readable SUITE ID appears in the
 //      captured output — so a critical suite that is dropped, renamed, or
 //      crashes before its first line turns the gate RED even on a 0 exit;
-//   6. propagate the child's EXACT exit code (non-zero on any test failure).
+//   6. propagate the child's EXACT exit code (non-zero on any test failure);
+//   7. keep the processes the tests start in a run-scoped registry outside the
+//      test processes (lib/process-registry.mjs): before the tests, end what
+//      earlier runs whose runner is gone left behind; after them, end what this
+//      run left. Both are reported; one that cannot be ended fails the run.
 //
 // Usage:
 //   node scripts/run-canonical-tests.mjs      # the canonical test command
@@ -33,6 +37,7 @@ import {
   missingRequiredSuites,
 } from './lib/canonical-tests.mjs';
 import { nodeTestArgs } from './lib/node-test-flags.mjs';
+import { withProcessRegistry } from './lib/process-registry.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(HERE, '..');
@@ -45,7 +50,8 @@ const REPO_ROOT = join(HERE, '..');
  */
 export function runCanonicalTests(opts = {}) {
   const stream = opts.stream !== false;
-  const files = discoverTestFiles(REPO_ROOT);
+  // `opts.files` stands in for discovery when the runner's own wiring is tested.
+  const files = opts.files ?? discoverTestFiles(REPO_ROOT);
 
   // (2) Fail closed on empty discovery: a walk that finds no tests is a bug in
   // the runner, not a clean tree. Never report success by running nothing.
@@ -69,15 +75,19 @@ export function runCanonicalTests(opts = {}) {
   // The V8 flags every test process needs come first (lib/node-test-flags.mjs).
   const concurrency = process.env['ASEP_TEST_CONCURRENCY'] ?? '2';
   const args = nodeTestArgs(files, { concurrency });
-  const child = spawnSync(process.execPath, args, {
-    cwd: REPO_ROOT,
-    shell: false,
-    encoding: 'utf8',
-    maxBuffer: 64 * 1024 * 1024,
-  });
+  // (7) The child gets the run's registry in its environment.
+  const { result: child, earlier, left } = withProcessRegistry(REPO_ROOT, 'run-canonical-tests', (env) =>
+    spawnSync(process.execPath, args, {
+      cwd: REPO_ROOT,
+      shell: false,
+      encoding: 'utf8',
+      maxBuffer: 64 * 1024 * 1024,
+      env,
+    }));
 
   const stdout = child.stdout ?? '';
-  const stderr = child.stderr ?? '';
+  const registry = describeLeftovers(earlier, left);
+  const stderr = (child.stderr ?? '') + registry.text;
   if (stream) {
     process.stdout.write(stdout);
     process.stderr.write(stderr);
@@ -100,8 +110,10 @@ export function runCanonicalTests(opts = {}) {
   );
 
   // (6) Propagate the child's exact exit code. A signal death (code === null)
-  // becomes a non-zero failure.
+  // becomes a non-zero failure, and so does a process of this run that could
+  // not be ended.
   let code = typeof child.status === 'number' ? child.status : 1;
+  if (registry.stuck && code === 0) code = 1;
 
   if (missing.length > 0) {
     const msg =
@@ -122,6 +134,15 @@ export function runCanonicalTests(opts = {}) {
     );
   }
   return { code, stdout, stderr, files };
+}
+
+// What the process registry ended before and after the tests, one line each,
+// and whether a process of this run is still running.
+function describeLeftovers(earlier, left) {
+  const line = (e) => `  - pid ${e.pid} (${e.marker})${e.run !== undefined ? ` of run ${e.run}` : ''}: ${e.outcome}\n`;
+  const text = `canonical-tests: process registry: ${earlier.length} process(es) left by earlier runs, `
+    + `${left.length} left by this run\n${[...earlier, ...left].map(line).join('')}`;
+  return { text, stuck: left.some((e) => e.outcome === 'still-running') };
 }
 
 const invokedDirectly =

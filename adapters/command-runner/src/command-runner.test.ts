@@ -8,7 +8,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -32,6 +32,10 @@ import type { CommandSpec, SandboxHandle } from '@asep/ports';
 import type {
   OrganizationId, ProjectId, TenantScope,
 } from '@asep/contracts';
+import {
+  registryShimLine, removeFakeDockerFixture,
+  // @ts-expect-error - .mjs has no type declarations; runtime import is fine under tsx.
+} from '../../../scripts/testing/fake-docker-fixture.mjs';
 
 console.log('SUITE-ID: asep-suite:command-runner');
 
@@ -103,7 +107,7 @@ test('F2: a non-zero exit code is preserved exactly (no 1 -> 0 coercion)', async
     assert.equal(res.timedOut, false);
   } finally {
     await client.close();
-    await rm(dir, { recursive: true, force: true });
+    await removeFakeDockerFixture(dir);
   }
 });
 
@@ -119,7 +123,7 @@ test('F2: raw stdout is captured to an immutable artifact and round-trips', asyn
     assert.equal(res.stdoutBytes, 'hello-evidence'.length);
   } finally {
     await client.close();
-    await rm(dir, { recursive: true, force: true });
+    await removeFakeDockerFixture(dir);
   }
 });
 
@@ -142,7 +146,7 @@ test('F3: a command exceeding its timeout is killed and flagged timedOut', async
     assert.equal(res.signal, 'SIGKILL');
   } finally {
     await client.close();
-    await rm(dir, { recursive: true, force: true });
+    await removeFakeDockerFixture(dir);
   }
 });
 
@@ -161,7 +165,7 @@ test('F3: an already-aborted signal kills the command promptly', async () => {
     assert.ok(res.signal === 'SIGKILL' || res.signal === 'SIGTERM');
   } finally {
     await client.close();
-    await rm(dir, { recursive: true, force: true });
+    await removeFakeDockerFixture(dir);
   }
 });
 
@@ -188,7 +192,7 @@ test('F1: shell metacharacters are inert (no shell interpretation)', async () =>
     assert.ok(!text.includes('INJECTED\n'), 'no shell interpretation occurred');
   } finally {
     await client.close();
-    await rm(dir, { recursive: true, force: true });
+    await removeFakeDockerFixture(dir);
   }
 });
 
@@ -212,7 +216,7 @@ test('F1: a verification command runs with a sanitized allowlisted env only', as
   } finally {
     delete process.env['ASEP_SECRET_CANARY'];
     await client.close();
-    await rm(dir, { recursive: true, force: true });
+    await removeFakeDockerFixture(dir);
   }
 });
 
@@ -383,7 +387,7 @@ test('F5: the docker probe gets only the client environment, and an unreachable 
   } finally {
     if (before === undefined) delete process.env['ASEP_PROBE_CANARY'];
     else process.env['ASEP_PROBE_CANARY'] = before;
-    await rm(dir, { recursive: true, force: true });
+    await removeFakeDockerFixture(dir);
   }
 });
 
@@ -420,7 +424,7 @@ test('E8: a Docker handle runs commands through its configured docker client, in
     const state = join(dir, 'docker-state');
     const docker = join(dir, 'docker');
     const fake = fileURLToPath(new URL('../../../scripts/testing/fake-docker.mjs', import.meta.url));
-    await writeFile(docker, `#!/bin/sh\nexec "${process.execPath}" "${fake}" --state "${state}" "$@"\n`, { mode: 0o755 });
+    await writeFile(docker, `#!/bin/sh\n${registryShimLine()}\nexec "${process.execPath}" "${fake}" --state "${state}" "$@"\n`, { mode: 0o755 });
     const wt = join(dir, 'wt');
     await mkdir(wt);
     const provider = new DockerSandboxProvider({ imageDigest: `alpine@sha256:${'a'.repeat(64)}`, dockerBinary: docker });
@@ -445,7 +449,7 @@ test('E8: a Docker handle runs commands through its configured docker client, in
     }
   } finally {
     await client.close();
-    await rm(dir, { recursive: true, force: true });
+    await removeFakeDockerFixture(dir);
   }
 });
 
@@ -480,6 +484,7 @@ async function fakeDaemon(dir: string, refuseRm = false, hangPs = false, psErr?:
   const pids = join(dir, 'client-pids');
   await writeFile(docker, [
     '#!/bin/sh',
+    registryShimLine(),
     `echo "$$ $1" >> "${pids}"`,
     ...(refuseRm ? ['case "$1" in rm|kill) echo "Error response from daemon: removal refused" >&2; exit 1;; esac'] : []),
     ...(hangPs ? ['case "$1" in ps) exec sleep 600;; esac'] : []),
@@ -562,7 +567,7 @@ test('a verification container is named and labelled for its sandbox, workspace 
     assert.deepEqual(d.containers(), []);
   } finally {
     await client.close();
-    await rm(dir, { recursive: true, force: true });
+    await removeFakeDockerFixture(dir);
   }
 });
 
@@ -582,7 +587,7 @@ test('killing the docker client mid-run does not leave its container running', a
     await until('the container process to end', () => !alive(containerPid), 5_000);
   } finally {
     await client.close();
-    await rm(dir, { recursive: true, force: true });
+    await removeFakeDockerFixture(dir);
   }
 });
 
@@ -598,7 +603,7 @@ test('a timed-out command has its container removed, not merely its client kille
       'the container itself was stopped, by its name');
   } finally {
     await client.close();
-    await rm(dir, { recursive: true, force: true });
+    await removeFakeDockerFixture(dir);
   }
 });
 
@@ -629,7 +634,7 @@ test('the runner tells each moment of a timed-out run in order, and an observer 
     assert.deepEqual(d.containers(), []);
   } finally {
     await client.close();
-    await rm(dir, { recursive: true, force: true });
+    await removeFakeDockerFixture(dir);
   }
 });
 
@@ -651,7 +656,7 @@ test('a wall clock set back during a run does not move the moments the runner re
   } finally {
     Date.now = wall;
     await client.close();
-    await rm(dir, { recursive: true, force: true });
+    await removeFakeDockerFixture(dir);
   }
 });
 
@@ -671,7 +676,7 @@ test('a cancelled command has its container removed', async () => {
     await until('the container process to end', () => !alive(containerPid), 5_000);
   } finally {
     await client.close();
-    await rm(dir, { recursive: true, force: true });
+    await removeFakeDockerFixture(dir);
   }
 });
 
@@ -691,7 +696,7 @@ test('a container that cannot be removed fails the run closed, and is never repo
   } finally {
     if (leftover !== undefined) try { process.kill(-leftover, 'SIGKILL'); } catch { /* gone */ }
     await client.close();
-    await rm(dir, { recursive: true, force: true });
+    await removeFakeDockerFixture(dir);
   }
 });
 
@@ -721,7 +726,7 @@ test('a container the daemon cannot show gone within the removal bound fails the
     assert.deepEqual(seen.filter((e) => e.phase === 'removed'), []);
   } finally {
     await client.close();
-    await rm(dir, { recursive: true, force: true });
+    await removeFakeDockerFixture(dir);
   }
 });
 
@@ -752,7 +757,7 @@ for (const [name, said] of DAEMON_ERRORS) {
       assert.deepEqual(seen.filter((e) => e.phase === 'removed'), [], 'not shown gone, not reported removed');
     } finally {
       await client.close();
-      await rm(dir, { recursive: true, force: true });
+      await removeFakeDockerFixture(dir);
     }
   });
 }
@@ -798,7 +803,7 @@ test('a client that errs after it started has its container removed and shown go
     assert.deepEqual(seen2.filter((e) => e.phase === 'removed'), []);
   } finally {
     await client.close();
-    await rm(dir, { recursive: true, force: true });
+    await removeFakeDockerFixture(dir);
   }
 });
 
@@ -831,7 +836,7 @@ test('stopping a sandbox removes any container still carrying its id, and fails 
   } finally {
     for (const pid of leftovers) try { process.kill(-pid, 'SIGKILL'); } catch { /* gone */ }
     await client.close();
-    await rm(dir, { recursive: true, force: true });
+    await removeFakeDockerFixture(dir);
   }
 });
 
@@ -882,7 +887,7 @@ test('a handle no sandbox provider made is refused and runs nothing, on the host
     assert.deepEqual(d.invocations().filter((a) => a[0] === 'run'), [], 'no container was started');
   } finally {
     await client.close();
-    await rm(dir, { recursive: true, force: true });
+    await removeFakeDockerFixture(dir);
   }
 });
 
@@ -896,7 +901,7 @@ test('a handle a provider made cannot be altered after the fact', async () => {
       assert.throws(() => { delete (handle as { sandboxId?: string }).sandboxId; }, TypeError);
     }
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await removeFakeDockerFixture(dir);
   }
 });
 
@@ -959,7 +964,7 @@ test('the flags a handle and a result expose are frozen copies, never the ones t
     }
   } finally {
     await client.close();
-    await rm(dir, { recursive: true, force: true });
+    await removeFakeDockerFixture(dir);
   }
 });
 
@@ -991,7 +996,7 @@ test('a genuine handle still runs where its provider put it', async () => {
     assert.ok(runs[0]!.includes(where.image));
   } finally {
     await client.close();
-    await rm(dir, { recursive: true, force: true });
+    await removeFakeDockerFixture(dir);
   }
 });
 
@@ -1040,7 +1045,7 @@ test('a docker call records the signal that ended its client, its duration and t
     assert.equal(missing.call?.spawned, false);
     assert.equal(missing.call?.pid, undefined, 'a client that never started has no pid');
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await removeFakeDockerFixture(dir);
   }
 });
 

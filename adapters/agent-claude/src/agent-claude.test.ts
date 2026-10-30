@@ -44,6 +44,14 @@ import {
   DOCKER_CALL_TIMEOUT_MS, removeContainerShownGone, monotonicNow, type DockerCall, type TeardownClock,
 } from '@asep/command-runner';
 import type { ArtifactStore, AgentAttemptObservation, AgentExecuteRequest, ToolPolicyProfile } from '@asep/ports';
+import {
+  REGISTRY_ENV, register, unregister, endProcess, stillRunning,
+  // @ts-expect-error - .mjs has no type declarations; runtime import is fine under tsx.
+} from '../../../scripts/lib/process-registry.mjs';
+import {
+  registryShimLine, removeFakeDockerFixture,
+  // @ts-expect-error - .mjs has no type declarations; runtime import is fine under tsx.
+} from '../../../scripts/testing/fake-docker-fixture.mjs';
 import type {
   OrganizationId, ProjectId, TenantScope, WorkspaceId, AttemptId, ArtifactRef,
 } from '@asep/contracts';
@@ -197,6 +205,7 @@ async function harness(opts: {
   const fake = `"${process.execPath}" "${FAKE_DOCKER}" --state "${state}" "$@"`;
   await writeFile(docker, [
     '#!/bin/sh',
+    registryShimLine(),
     `echo "$$ $*" >> "${join(dir, 'client-pids')}"`,
     ...(opts.refuseRemoval ? ['case "$1" in rm|kill) echo "Error response from daemon: removal refused" >&2; exit 1;; esac'] : []),
     ...(opts.hangKill ? ['case "$1 $2" in "kill asep-agent-"*) exec sleep 600;; esac'] : []),
@@ -272,7 +281,7 @@ async function harness(opts: {
     },
     async close() {
       await upstream.close();
-      await rm(dir, { recursive: true, force: true });
+      await removeFakeDockerFixture(dir);
     },
   };
   return h;
@@ -371,6 +380,24 @@ async function eventStream(h: Harness, refs: readonly ArtifactRef[]): Promise<st
 }
 
 // --- the happy path ------------------------------------------------------------------
+
+test('closing a harness ends every container still recorded in its docker state before that state goes', async () => {
+  const h = await harness();
+  // A container whose client died: only its record finds its process.
+  const client = spawn(h.docker, ['run', '--name', 'left-behind', AGENT_IMAGE, process.execPath, '-e', 'setInterval(() => {}, 1e9)'],
+    { stdio: 'ignore' });
+  const record = join(h.state, 'containers', 'left-behind.json');
+  await within((async () => {
+    while (!existsSync(record)) await new Promise((r) => setTimeout(r, 20));
+  })(), 30_000, 'the container starting');
+  const pid = (JSON.parse(readFileSync(record, 'utf8')) as { pid: number }).pid;
+  client.kill('SIGKILL');
+  await new Promise((r) => client.once('exit', r));
+  assert.equal(stillRunning(pid, true), true, 'its client is gone, the container is not');
+  await h.close();
+  assert.equal(stillRunning(pid, true), false, 'the container was ended');
+  assert.equal(existsSync(h.dir), false, 'and then the harness state was removed');
+});
 
 test('the lifecycle observer sees each moment of an attempt in order, and one that throws changes nothing', async () => {
   const h = await harness();
@@ -656,36 +683,54 @@ function within<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
 }
 
 interface StartedProxy {
+  readonly pid: number;
   readonly port: number;
   log(): string;
-  stop(): void;
+  // Kills it, and resolves once it has exited.
+  stop(): Promise<void>;
   // When this process saw it exit, and how.
   readonly exited: Promise<{ at: number; code: number | null }>;
 }
 
 // The real proxy as a host process: the credential written on its stdin, which
-// then stays open as its link to this process.
-async function startProxy(upstream: string, key: string, expiresAt = Date.now() + 10 * 60_000): Promise<StartedProxy> {
+// then stays open as its link to this process — if this process dies, the
+// proxy exits. It is also recorded in the run's process registry until it is
+// shown gone. One that is not ready within `readyWithinMs` is killed.
+async function startProxy(
+  upstream: string, key: string, expiresAt = Date.now() + 10 * 60_000, readyWithinMs = 30_000,
+): Promise<StartedProxy> {
   const child = spawn(process.execPath, [
     PROXY_ASSET, '--listen', '127.0.0.1:0', '--upstream', upstream, '--expires-at', String(expiresAt),
   ], { stdio: ['pipe', 'pipe', 'pipe'] });
+  const pid = child.pid!;
+  register(pid, { marker: PROXY_ASSET });
   let log = '';
   child.stderr.on('data', (d: Buffer) => { log += d.toString('utf8'); });
   const exited = new Promise<{ at: number; code: number | null }>((resolve) => {
     child.on('exit', (code) => resolve({ at: Date.now(), code }));
   });
+  const stop = async () => {
+    child.kill('SIGKILL');
+    await exited;
+    unregister(pid);
+  };
   child.stdin.on('error', () => undefined);
   child.stdin.write(`${key}\n`);
-  const port = await new Promise<number>((resolve, reject) => {
-    let out = '';
-    child.stdout.on('data', (d: Buffer) => {
-      out += d.toString('utf8');
-      const m = /listening (\d+)/.exec(out);
-      if (m) resolve(Number(m[1]));
-    });
-    child.on('close', (code) => reject(new Error(`proxy exited ${code}: ${log}`)));
-  });
-  return { port, log: () => log, stop: () => child.kill('SIGKILL'), exited };
+  try {
+    const port = await within(new Promise<number>((resolve, reject) => {
+      let out = '';
+      child.stdout.on('data', (d: Buffer) => {
+        out += d.toString('utf8');
+        const m = /listening (\d+)/.exec(out);
+        if (m) resolve(Number(m[1]));
+      });
+      child.on('close', (code) => reject(new Error(`proxy (pid ${pid}) exited ${code}: ${log}`)));
+    }), readyWithinMs, `the proxy (pid ${pid}) becoming ready`);
+    return { pid, port, log: () => log, stop, exited };
+  } catch (err) {
+    await stop();
+    throw err;
+  }
 }
 
 // One request to a proxy, on a connection of its own: its status and body.
@@ -750,8 +795,37 @@ test('the egress proxy forwards only the model API, swaps in the key, and refuse
     assert.match(log, /POST \/v1\/messages -> 200/);
     assert.match(log, /GET \/v1\/models -> 403/);
   } finally {
-    proxy.stop();
+    await proxy.stop();
     await up.close();
+  }
+});
+
+test('a test proxy that is not ready in time is killed, and leaves the process registry only once gone', async () => {
+  const up = await fakeModelApi();
+  const registry = await mkdtemp(join(tmpdir(), 'asep-registry-'));
+  const before = process.env[REGISTRY_ENV];
+  process.env[REGISTRY_ENV] = registry;
+  try {
+    let message = '';
+    await assert.rejects(startProxy(up.url, `asep-test-model-key-${randomUUID()}`, undefined, 1), (err: Error) => {
+      message = err.message;
+      return /becoming ready: not within 1 ms/.test(err.message);
+    });
+    const pid = Number(/\(pid (\d+)\)/.exec(message)?.[1]);
+    assert.ok(Number.isSafeInteger(pid) && pid > 0, message);
+    assert.equal(stillRunning(pid), false, 'it was killed and has exited');
+    assert.deepEqual(readdirSync(registry), [], 'and only then left the registry');
+
+    const proxy = await startProxy(up.url, `asep-test-model-key-${randomUUID()}`);
+    assert.deepEqual(readdirSync(registry), [`${proxy.pid}.json`], 'a running proxy is in the registry');
+    await proxy.stop();
+    assert.equal(stillRunning(proxy.pid), false);
+    assert.deepEqual(readdirSync(registry), []);
+  } finally {
+    if (before === undefined) delete process.env[REGISTRY_ENV];
+    else process.env[REGISTRY_ENV] = before;
+    await up.close();
+    await rm(registry, { recursive: true, force: true });
   }
 });
 
@@ -826,8 +900,7 @@ const PROXY_TEST_LIFETIME_MS = 5_000;
 test('the egress proxy process refuses every request and exits when its lifetime ends', async () => {
   const up = await fakeModelApi();
   const expiresAt = Date.now() + PROXY_TEST_LIFETIME_MS;
-  const proxy = await within(startProxy(up.url, `asep-test-model-key-${randomUUID()}`, expiresAt),
-    PROXY_TEST_LIFETIME_MS, 'the proxy becoming ready');
+  const proxy = await startProxy(up.url, `asep-test-model-key-${randomUUID()}`, expiresAt, PROXY_TEST_LIFETIME_MS);
   try {
     assert.equal((await proxyRequest(proxy.port, 'POST', '/v1/messages')).status, 200, 'it serves before its expiry');
     const bound = PROXY_EXIT_BOUND_MS + SCHEDULING_ALLOWANCE_MS;
@@ -841,18 +914,19 @@ test('the egress proxy process refuses every request and exits when its lifetime
       'nothing answers on its port any more');
     assert.equal(up.seen.length, 1);
   } finally {
-    proxy.stop();
+    await proxy.stop();
     await up.close();
   }
 });
 
 // A starter for the proxy, as a process of its own: it hands the proxy the
 // credential and keeps its stdin open, sends the proxy's stderr to a file,
-// prints the proxy's pid and port, and waits to be killed.
+// prints the proxy's pid and port, and runs until it is killed or its own
+// stdin — its link to the test — closes.
 const PROXY_STARTER = `
 const { spawn } = require('node:child_process');
 const { openSync } = require('node:fs');
-const [asset, upstream, expiresAt, logPath] = process.argv.slice(1);
+const [asset, upstream, expiresAt, logPath] = process.argv.slice(2);
 const proxy = spawn(process.execPath, [asset, '--listen', '127.0.0.1:0', '--upstream', upstream, '--expires-at', expiresAt], {
   stdio: ['pipe', 'pipe', openSync(logPath, 'a')], env: { PATH: process.env.PATH },
 });
@@ -863,7 +937,8 @@ proxy.stdout.on('data', (d) => {
   const m = /listening (\\d+)/.exec(out);
   if (m) process.stdout.write(JSON.stringify({ pid: proxy.pid, port: Number(m[1]) }) + '\\n');
 });
-setInterval(() => undefined, 60_000);
+process.stdin.on('end', () => process.exit(0));
+process.stdin.resume();
 `;
 
 // When the process `pid` — not a child of this one — was first seen gone,
@@ -886,12 +961,15 @@ test('the egress proxy stops serving and exits once the process that started it 
   const up = await fakeModelApi();
   const dir = await mkdtemp(join(tmpdir(), 'egress-proxy-starter-'));
   const logPath = join(dir, 'proxy.log');
+  const starterPath = join(dir, 'starter.cjs');
+  await writeFile(starterPath, PROXY_STARTER);
   const starter = spawn(process.execPath, [
-    '-e', PROXY_STARTER, PROXY_ASSET, up.url, String(Date.now() + 10 * 60_000), logPath,
+    starterPath, PROXY_ASSET, up.url, String(Date.now() + 10 * 60_000), logPath,
   ], {
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: ['pipe', 'pipe', 'pipe'],
     env: { PATH: process.env['PATH'] ?? '', ASEP_TEST_PROXY_KEY: `asep-test-model-key-${randomUUID()}` },
   });
+  register(starter.pid, { marker: starterPath });
   let proxyPid: number | undefined;
   try {
     const started = await within(new Promise<{ pid: number; port: number }>((resolve, reject) => {
@@ -906,6 +984,7 @@ test('the egress proxy stops serving and exits once the process that started it 
       starter.on('close', (code) => reject(new Error(`the starter exited ${code}: ${err}`)));
     }), 30_000, 'the proxy becoming ready under its starter');
     proxyPid = started.pid;
+    register(proxyPid, { marker: PROXY_ASSET });
     assert.equal((await proxyRequest(started.port, 'POST', '/v1/messages')).status, 200, 'it serves while its starter lives');
 
     const killedAt = Date.now();
@@ -920,11 +999,8 @@ test('the egress proxy stops serving and exits once the process that started it 
       'nothing answers on its port any more');
     assert.equal(up.seen.length, 1);
   } finally {
-    starter.kill('SIGKILL');
-    if (proxyPid !== undefined) {
-      try {
-        process.kill(proxyPid, 'SIGKILL');
-      } catch { /* already gone */ }
+    for (const [pid, marker] of [[starter.pid!, starterPath], [proxyPid, PROXY_ASSET]] as const) {
+      if (pid !== undefined && endProcess({ pid, marker }) !== 'still-running') unregister(pid);
     }
     await up.close();
     await rm(dir, { recursive: true, force: true });

@@ -26,7 +26,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, rm, mkdir, writeFile, realpath, readFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, realpath, readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -58,6 +58,10 @@ import type {
 } from '@asep/contracts';
 import type { TaskAggregate } from '@asep/domain';
 import { runVerticalSlice } from './vertical-slice.js';
+import {
+  registryShimLine, removeFakeDockerFixture,
+  // @ts-expect-error - .mjs has no type declarations; runtime import is fine under tsx.
+} from '../../../scripts/testing/fake-docker-fixture.mjs';
 
 console.log('SUITE-ID: asep-suite:vertical-integration');
 
@@ -69,7 +73,7 @@ async function fakeDockerSandbox(dir: string): Promise<DockerSandboxProvider> {
   await mkdir(dir, { recursive: true });
   const docker = join(dir, 'fake-docker');
   const fake = fileURLToPath(new URL('../../../scripts/testing/fake-docker.mjs', import.meta.url));
-  await writeFile(docker, `#!/bin/sh\nexec "${process.execPath}" "${fake}" --state "${join(dir, 'docker-state')}" "$@"\n`,
+  await writeFile(docker, `#!/bin/sh\n${registryShimLine()}\nexec "${process.execPath}" "${fake}" --state "${join(dir, 'docker-state')}" "$@"\n`,
     { mode: 0o755 });
   return new DockerSandboxProvider({ imageDigest: `alpine@sha256:${'a'.repeat(64)}`, dockerBinary: docker });
 }
@@ -425,7 +429,7 @@ test('K1: full vertical slice reaches WAITING_FOR_HUMAN_REVIEW with a real PR + 
     assert.equal(prBack.evidenceArtifactId, result.evidence!.ref.artifactId, 'PR → evidence artifact (persisted)');
   } finally {
     await client.close();
-    await rm(dir, { recursive: true, force: true });
+    await removeFakeDockerFixture(dir);
   }
 });
 
@@ -485,7 +489,7 @@ for (const [label, make] of unclaimedSandboxes) {
         'no attempt carries a result commit');
     } finally {
       await client.close();
-      await rm(dir, { recursive: true, force: true });
+      await removeFakeDockerFixture(dir);
     }
   });
 }
@@ -548,7 +552,7 @@ test('the vertical slice refuses a handle stripped down to its isolation claim, 
       'no attempt carries a result commit');
   } finally {
     await client.close();
-    await rm(dir, { recursive: true, force: true });
+    await removeFakeDockerFixture(dir);
   }
 });
 
@@ -586,6 +590,6 @@ test('the vertical slice attaches the WorkOrder to its task and the context pack
     assert.equal(attempt.rows[0]!['context_pack_sha256'], attempt.rows[0]!['sha256']);
   } finally {
     await client.close();
-    await rm(dir, { recursive: true, force: true });
+    await removeFakeDockerFixture(dir);
   }
 });

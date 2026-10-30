@@ -17,11 +17,16 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 // @ts-expect-error — .mjs helpers have no type declarations; we test their runtime contract.
 import { discoverTestFiles, REQUIRED_SUITES, suiteMarker, missingRequiredSuites, TEST_ROOTS } from './lib/canonical-tests.mjs';
+// @ts-expect-error — .mjs helpers have no type declarations; we test their runtime contract.
+import { runCanonicalTests } from './run-canonical-tests.mjs';
+// @ts-expect-error — .mjs helpers have no type declarations; we test their runtime contract.
+import { endProcess, stillRunning } from './lib/process-registry.mjs';
 
 // Machine-readable suite marker (kept consistent with the other suites, though
 // this file is not itself in the required set).
@@ -29,6 +34,46 @@ console.log('SUITE-ID: asep-suite:canonical-runner');
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(HERE, '..');
+
+// A test file that leaves a process of its own group running and records it in
+// the registry its runner handed it, as a fake container whose test died would.
+const LEAVES_A_PROCESS = (pidFile: string) => `
+import { spawn } from 'node:child_process';
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1e9)', 'asep-runner-leftover'], { detached: true, stdio: 'ignore' });
+child.unref();
+writeFileSync(join(process.env.ASEP_PROCESS_REGISTRY, child.pid + '.json'),
+  JSON.stringify({ pid: child.pid, group: true, marker: 'asep-runner-leftover' }));
+writeFileSync(${JSON.stringify(pidFile)}, String(child.pid));
+`;
+
+test('the runner hands its tests a process registry and ends what they leave running', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'asep-runner-registry-'));
+  const pidFile = join(dir, 'pid');
+  let pid: number | undefined;
+  try {
+    const fixture = join(dir, 'leaves-a-process.test.mjs');
+    writeFileSync(fixture, LEAVES_A_PROCESS(pidFile));
+    // The runner is run here from inside a test process; its own test child
+    // must not take itself for one of this runner's.
+    const context = process.env['NODE_TEST_CONTEXT'];
+    delete process.env['NODE_TEST_CONTEXT'];
+    let r: { stderr: string };
+    try {
+      r = runCanonicalTests({ stream: false, files: [fixture] });
+    } finally {
+      if (context !== undefined) process.env['NODE_TEST_CONTEXT'] = context;
+    }
+    pid = Number(readFileSync(pidFile, 'utf8'));
+    assert.match(r.stderr, /canonical-tests: process registry: \d+ process\(es\) left by earlier runs, 1 left by this run\n/);
+    assert.ok(r.stderr.includes(`  - pid ${pid} (asep-runner-leftover): ended\n`), r.stderr);
+    assert.equal(stillRunning(pid, true), false, 'the leftover was ended');
+  } finally {
+    if (pid !== undefined) endProcess({ pid, group: true, marker: 'asep-runner-leftover' });
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test('discovery is recursive and finds the nested scripts/ suites the shell glob dropped', () => {
   const files = discoverTestFiles(REPO_ROOT) as string[];

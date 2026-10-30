@@ -39,6 +39,10 @@ import type {
   TenantScope, RepositoryBindingId, RunId, TaskId, AttemptId, OrganizationId, ProjectId,
 } from '@asep/contracts';
 import { runVerticalSlice, resumeVerticalSlice } from './vertical-slice.js';
+import {
+  registryShimLine, removeFakeDockerFixture,
+  // @ts-expect-error - .mjs has no type declarations; runtime import is fine under tsx.
+} from '../../../scripts/testing/fake-docker-fixture.mjs';
 
 console.log('SUITE-ID: asep-suite:crash-recovery');
 
@@ -50,7 +54,7 @@ async function fakeDockerSandbox(dir: string): Promise<DockerSandboxProvider> {
   await mkdir(dir, { recursive: true });
   const docker = join(dir, 'fake-docker');
   const fake = fileURLToPath(new URL('../../../scripts/testing/fake-docker.mjs', import.meta.url));
-  await writeFile(docker, `#!/bin/sh\nexec "${process.execPath}" "${fake}" --state "${join(dir, 'docker-state')}" "$@"\n`,
+  await writeFile(docker, `#!/bin/sh\n${registryShimLine()}\nexec "${process.execPath}" "${fake}" --state "${join(dir, 'docker-state')}" "$@"\n`,
     { mode: 0o755 });
   return new DockerSandboxProvider({ imageDigest: `alpine@sha256:${'a'.repeat(64)}`, dockerBinary: docker });
 }
@@ -236,7 +240,7 @@ async function assertConverged(c: Crashed, commitSha: string) {
 
 async function cleanup(c: Crashed) {
   await c.client.close();
-  await rm(c.dir, { recursive: true, force: true });
+  await removeFakeDockerFixture(c.dir);
 }
 
 test('a crash after the push landed: the successor takes the push over, reconciles it, and opens the one PR', async () => {
@@ -376,7 +380,7 @@ test('the local bare forge takes a push only over the value the branch is expect
     await push(other, baseSha);
     assert.equal(await tip(), other);
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await removeFakeDockerFixture(dir);
   }
 });
 
@@ -405,7 +409,7 @@ test('the local bare forge never reopens, retargets or edits a PR a human closed
       ['closed', false, 'main'], ['closed', true, 'main'], ['open', false, 'release/2'],
     ]);
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await removeFakeDockerFixture(dir);
   }
 });
 
@@ -841,7 +845,7 @@ for (const merged of [false, true]) {
       });
     } finally {
       await client.close();
-      await rm(dir, { recursive: true, force: true });
+      await removeFakeDockerFixture(dir);
     }
   });
 }
@@ -878,7 +882,7 @@ test('a run whose head branch already has a closed PR fails the task on record a
     });
   } finally {
     await client.close();
-    await rm(dir, { recursive: true, force: true });
+    await removeFakeDockerFixture(dir);
   }
 });
 
@@ -942,7 +946,7 @@ test('through the GitHub adapter and port, a successor that finds another PR on 
     });
   } finally {
     await client.close();
-    await rm(dir, { recursive: true, force: true });
+    await removeFakeDockerFixture(dir);
   }
 });
 
@@ -988,7 +992,7 @@ for (const c of changedAfterCreate) {
       });
     } finally {
       await client.close();
-      await rm(dir, { recursive: true, force: true });
+      await removeFakeDockerFixture(dir);
     }
   });
 }
@@ -1064,7 +1068,7 @@ for (const c of afterTheCheck) {
       });
     } finally {
       await client.close();
-      await rm(dir, { recursive: true, force: true });
+      await removeFakeDockerFixture(dir);
     }
   });
 }
@@ -1098,6 +1102,6 @@ test('through the GitHub adapter and port, a run whose PR the forge no longer sh
     });
   } finally {
     await client.close();
-    await rm(dir, { recursive: true, force: true });
+    await removeFakeDockerFixture(dir);
   }
 });
