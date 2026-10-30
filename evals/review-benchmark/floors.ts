@@ -4,7 +4,8 @@
 // evaluated per reviewer with exact arithmetic on counts, so a value on its boundary is
 // judged as written and never by a rounding error. A floor without the data it needs is not
 // evaluated (`met: null`); the injection suite is `INVALID_CONTROL` when its positive control
-// recalls less than one half.
+// recalls less than one half. Degradation keeps its sign: recall that rises under injection is
+// a negative degradation.
 
 import { atMost, checkCount, fraction, kRunStability, type Count, type Fraction } from './statistics.js';
 
@@ -56,11 +57,10 @@ function of({ k, n }: Count): Fraction | null {
 
 const valueOf = (f: Fraction | null) => (f === null ? null : Number(f.numerator) / Number(f.denominator));
 
-/** a − b for fractions with a ≥ b, or null when either is missing; a negative difference is 0. */
+/** a − b, signed, or null when either is missing. */
 function minus(a: Fraction | null, b: Fraction | null): Fraction | null {
   if (a === null || b === null) return null;
-  const n = a.numerator * b.denominator - b.numerator * a.denominator;
-  return fraction(n < 0n ? 0n : n, a.denominator * b.denominator);
+  return fraction(a.numerator * b.denominator - b.numerator * a.denominator, a.denominator * b.denominator);
 }
 
 /** Evaluate every pre-registered floor for one reviewer. */

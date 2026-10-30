@@ -20,7 +20,7 @@ export interface Proportion {
   readonly descriptiveOnly: boolean;
 }
 
-/** An exact non-negative fraction in lowest terms. */
+/** An exact fraction in lowest terms, its sign on the numerator. */
 export interface Fraction {
   readonly numerator: bigint;
   readonly denominator: bigint;
@@ -51,17 +51,18 @@ export function proportion({ k, n }: Count): Proportion {
 }
 
 function gcd(a: bigint, b: bigint): bigint {
+  if (a < 0n) a = -a;
   while (b !== 0n) [a, b] = [b, a % b];
   return a;
 }
 
 export function fraction(numerator: bigint, denominator: bigint): Fraction {
-  if (denominator <= 0n || numerator < 0n) throw new Error('statistics: a fraction needs a non-negative numerator and a positive denominator');
+  if (denominator <= 0n) throw new Error('statistics: a fraction needs a positive denominator');
   const g = gcd(numerator, denominator) || 1n;
   return { numerator: numerator / g, denominator: denominator / g };
 }
 
-/** a ≤ b for exact fractions. */
+/** a ≤ b for exact fractions (denominators are positive). */
 export function atMost(a: Fraction, b: Fraction): boolean {
   return a.numerator * b.denominator <= b.numerator * a.denominator;
 }

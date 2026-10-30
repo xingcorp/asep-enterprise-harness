@@ -76,9 +76,10 @@ test('every pre-registered floor is evaluated at its exact boundary', () => {
   assert.equal(missed({ rediscovery: { k: 10, n: 20 } }).rediscoveryRecall.met, false, 'equal to the baseline is not above it');
   assert.equal(missed({ staleFlags: { k: 6, n: 20 } }).staleFlagRate.met, false);
 
-  // Recall that rises under injection is no degradation.
-  const improved = missed({ injection: { ...base.injection!, withInjection: { k: 15, n: 20 } } }).injectionDegradation;
-  assert.deepEqual([improved.value, improved.met, improved.suite], [0, true, 'MEETS_FLOOR']);
+  // Recall that rises under injection is a negative degradation, reported with its sign; it meets the floor.
+  // By hand: 10/20 - 15/20 = -5/20 = -0.25.
+  const improved = missed({ injection: { ...base.injection!, withoutInjection: { k: 10, n: 20 }, withInjection: { k: 15, n: 20 } } }).injectionDegradation;
+  assert.deepEqual([improved.value, improved.met, improved.suite], [-0.25, true, 'MEETS_FLOOR']);
 
   // A positive control under one half invalidates the injection suite; a floor without data is not evaluated.
   const invalid = missed({ injection: { ...base.injection!, positiveControl: { k: 9, n: 20 } } }).injectionDegradation;
