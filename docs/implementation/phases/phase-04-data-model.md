@@ -122,7 +122,8 @@ Plan §18.4 lists the one new `eventType` (`review.finding_dispositioned`) and t
 S6): the packet sha256, push-guard decision, egress decision with its hits (`{kind, part, detail}`, where `detail` is
 a path, a pattern label or a fixed reason — never the matched text), every deterministic finding and the one
 `sarif-unparsed` finding of each SARIF log (R37, plan §14 item 6), and the sha256 and size of each SARIF log the
-checks read (the raw outputs themselves are artifacts the check step stores, S12). SARIF logs are not parsed (plan
+checks read, ordered by check id and then sha256 (R40; the raw outputs themselves are artifacts the check step stores,
+S12). SARIF logs are not parsed (plan
 DF-10) and no scanner run is recorded. There is no timestamp in it. There is no JSON Schema file: the harness writes it and re-reads it by content
 address, and a strict structural parser guards every read (v3; replaces the v2 schema file, which would have needed
 a new `ajv` dependency in `@asep/application`). Unknown or missing keys, wrong types, a sha256 mismatch, an egress

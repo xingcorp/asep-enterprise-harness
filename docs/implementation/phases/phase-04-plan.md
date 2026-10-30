@@ -13,6 +13,15 @@
 > history-secret scan fails closed while `--scan-paths` takes a leading `--` as the end of its options (§7.5). The code
 > fixes land as separate commits (§0 "What v7 changes").
 >
+> v7 re-check: v7 and its code at `287ed0f` received an independent re-check (`phase-04-review-codex-v7.md`, Codex
+> `gpt-6.1-sol`, ACCEPT_WITH_CHANGES 0.96: every v6 finding resolved or moot, no self-closing SARIF path; 1 code MEDIUM,
+> 3 code LOW and two surviving mutations). The controller released G-LB (R39: the slot block at sha256 `9cc21c98…` is
+> the S0 copy and does not change) and decided R40, applied as written within v7: the check summary counts every SARIF
+> finding as blocking and SARIF inputs are listed in a total order (§14), the SARIF refusal is proven from every state
+> (§13), the history exemption is proven against a path that contains it (§7.5), and persistence and replay hydrate
+> only states reached through recorded dispositions (§13; S8 and S12 in §21). Dispositions are in
+> `phase-04-review-log.md` ("Review v7").
+>
 > v6 status, kept for the record: **LOCKED v6 (pending controller confirmation)**, superseded by v7 before it was
 > confirmed. v5, its slot block and the code fixes at `fb2e432` received
 > an independent re-check (`phase-04-review-codex-v5.md`, Codex `gpt-6.1-sol`, REQUEST_CHANGES 0.99, `HAND-OFF:
@@ -201,6 +210,16 @@ What v7 changes (re-check `phase-04-review-codex-v6.md`, controller decision R37
 | SARIF dispositions | no harness rule verified a SARIF finding, but the harness could refute one marked ungrounded | the domain and the database refuse every non-human disposition of a SARIF finding — verify, refute, waive, accept, claim — whatever `grounded` says; only a harness reopen (an expired waiver) remains (§13, data model §3.1) |
 | Stateless fixture | the disabled, not-configured and scripted slots could declare `stateless: true` | only a slot that persists nothing (the disabled and scripted slots); Lane A's `NotConfiguredAssuranceSlot` persists outcome events and presents a stateful fixture; wording only, no TypeScript change (§18, §18.2) |
 | Publication gate | the history-secret scan read a `git grep` failure as clean; `--scan-paths --` read `--` as a file name | the history scan reads `git grep` status 0, 1 or anything else and fails closed; `--scan-paths` takes a leading `--` as the end of its options (§7.5) |
+
+R40 additions within v7 (re-check `phase-04-review-codex-v7.md`; no slot-block change):
+
+| Area | At `287ed0f` | After R40 |
+|---|---|---|
+| Check summary | counted a finding as blocking by severity only, so a policy without HIGH reported a SARIF log as non-blocking | counts every SARIF finding as blocking whatever the severity policy says, like adjudication (§14) |
+| SARIF input order | `sarifInputs` sorted by check id only, so two logs of one check kept their arrival order | sorted by check id, then sha256; one report for every order (§14, data model §2.8) |
+| SARIF refusal | proven from `OPEN` only | proven from every state a disposition may leave (§13) |
+| History exemption | anchored, but no fixture put the exemption string in a path | a key committed under a path containing `:scripts/check-publication.sh:` is still reported (§7.5) |
+| Hydration | not stated | the domain trusts the aggregate it is given; S8 and S12 hydrate only states reached through recorded dispositions (§13, §21) |
 
 ---
 
@@ -567,7 +586,9 @@ Floors make the measurement falsifiable; failing one does not fail the phase, be
   `git grep`'s status as 0 (a hit, then filtered for the scanner's own files), 1 (clean) or anything else (the scan
   failed); a listing or a filter that fails, or a `git grep` that fails, fails the gate. `--scan-paths` takes one
   leading `--` as the end of its options, so `--scan-paths -- --` scans a file named `--`; `--scan-history` runs the
-  history scan alone with the `--scan-paths` exit codes.
+  history scan alone with the `--scan-paths` exit codes. The scan runs `git grep -c`, so it reports
+  `<commit>:<path>:<count>` and never the matched text, and the exemption matches only a whole such line that names one
+  of the scanner's own files: a path that merely contains `:scripts/check-publication.sh:` is still a hit (R40).
 
 ### 7.6 Comparator choice (D-4)
 
@@ -997,8 +1018,14 @@ gating decision, so there is no would-be outcome to record (P4-PLAN2-MED-005; co
     it. Model output never closes it, and neither does scanner output: a later round without the log, or with another
     log, changes nothing. Scanner-recheck closure is deferred out of Phase 4 (DF-9) and so is SARIF parsing (DF-10).
     The domain refuses every disposition of a SARIF finding by a non-human actor — verify, refute, waive, accept and
-    claim — whatever `grounded` says; only a harness rule's reopen (an expired waiver) remains, which makes the finding
-    blocking again. The database refuses the same rows (`finding_dispositions_sarif_ck`, data model §3.1).
+    claim — whatever `grounded` says and from every state the disposition may leave (`OPEN`, `ACKNOWLEDGED`, `FIXED`,
+    and `REFUTED` or `ADJUDICATED` for an acceptance; R40); only a harness rule's reopen (an expired waiver) remains,
+    which makes the finding blocking again. The database refuses the same rows (`finding_dispositions_sarif_ck`, data
+    model §3.1).
+  - **Hydration boundary (R40).** The domain decides on the aggregate it is given: it does not prove how a finding
+    reached its stored state, and an aggregate built directly can already claim `CLOSED` or `WAIVED`. Persistence (S8)
+    and the step use cases that hand priors to adjudication (S12) therefore hydrate only states reached through the
+    finding's recorded dispositions, and refuse a stored state that no recorded disposition chain reaches.
   - A `RESOLVED` claim whose cited file was not touched by the repair delta stays `OPEN`
     (`closure-without-change`).
   - A finding of this round that matches a `VERIFIED` or `CLOSED` prior is a regression linked to that prior (§12).
@@ -1039,7 +1066,8 @@ gating decision, so there is no would-be outcome to record (P4-PLAN2-MED-005; co
    the subject is the canonical JSON text of `["sarif-log", checkId, sha256]`, so two logs are two findings and a new
    log of the same check is a new finding. The bytes are
    never decoded: a log that is not even JSON yields the same one finding. The check report's parser requires
-   exactly these findings for its listed logs. The rules of SARIF reference resolution (rule-ID forms, hierarchical
+   exactly these findings for its listed logs, lists the logs by check id and then sha256, so every arrival order gives
+   one report, and the check summary counts each SARIF finding as blocking whatever the severity policy says (R40). The rules of SARIF reference resolution (rule-ID forms, hierarchical
    IDs, artifact indexes, `uriBaseId`) are DF-10's entry criteria (§5.3).
 7. Raw check output is stored before any reduction (ADR 0009).
 
@@ -2426,11 +2454,11 @@ rule of §21.2.
 | S5 | packet builder (incl. execution manifest), prompt renderer, independence checks | canaries in coder self-report never reach packet, prompt or request bytes; identical bytes across builds; nonce derivation; over-budget flagged, never cut; manifest carries command, exit code, environment digest, raw refs, scanned bounded excerpts | pure core pre-S0 (frozen local DTOs); integration after S0/S1/S2 (§21.1) | `feat(assurance): build an independent review packet with an execution manifest` |
 | S6 | push guard, egress decision, false-green checks, Trojan Source, dependency/invariant checks, SARIF | seeded violation per check; secret-pattern parity; each egress stop kind; seeded false-green cases (zero tests, added skip, exit-code mismatch, missing check) all caught; each SARIF log one blocking `sarif-unparsed` finding (R37) | pure core pre-S0; integration after S0/S1 (§21.1) | `feat(assurance): deterministic push guard, egress decision and false-green checks` |
 | S7 | grounding, adjudication rule table, closure authority, repair order | every rule row × {gating, shadow}; shadow never yields REPAIR/ESCALATE; out-of-packet citations refuted; repair order bounded and anchored | pure core pre-S0; integration after S0/S1 (§21.1) | `feat(assurance): grounding, adjudication and closure authority` |
-| S8 | SR-M1/M3/M4, repositories, fenced decision writes, snapshot store | PGlite + real PG: migrations apply once and stay in range; tenant IDOR rejected; append-only and final-record triggers; shadow check constraint; disposition actor constraints; `metric_snapshots` versions append-only; fence: new owner completes after handoff, old owner fenced, concurrent claim one winner | after P2 + S0 | `feat(persistence): persist review rounds, findings, dispositions and adjudications under fencing` |
+| S8 | SR-M1/M3/M4, repositories, fenced decision writes, snapshot store | PGlite + real PG: migrations apply once and stay in range; tenant IDOR rejected; append-only and final-record triggers; shadow check constraint; disposition actor constraints; a finding's state is hydrated only from its recorded dispositions, and a stored state no recorded disposition chain reaches is refused (R40); `metric_snapshots` versions append-only; fence: new owner completes after handoff, old owner fenced, concurrent claim one winner | after P2 + S0 | `feat(persistence): persist review rounds, findings, dispositions and adjudications under fencing` |
 | S9 | `ReviewSourceReader` | real temp repos: exact range diff; binary/too-large/submodule/deleted/non-UTF-8 reported, never dropped; traversal rejected | after S0 | `feat(workspace): trusted range diffs and post-images for review` |
 | S10 | `adapters/reviewer-openai` + credential source + request-byte egress re-check | fake HTTP server rows for every adapter MUST; exact request body asserted; credential canary absent; rotation on 401; expiry refresh; no `process.env` in adapter source; gateway-alteration detection (returned `instructions` vs sent, usage attribution) recorded per call against a fake gateway that mimics the injection; opt-in probe of primary (`gpt-6.1-sol`) and comparator records the gateway's behaviour and confirms detection live | after S0 | `feat(reviewer): OpenAI-compatible Responses reviewer with an injected credential source` |
 | S11 | `adapters/reviewer-replay` | exact replay by request hash; miss and manifest mismatch fail closed; scripted provider marked fake | after S0 | `feat(reviewer): deterministic replay and scripted reviewers` |
-| S12 | step use cases `planAssurance`, `buildReviewPacket`, `runDeterministicChecks`, `runReviewer`, `adjudicateRound` (application, against fakes) | JSON round trip within the envelope; zero provider calls on push-guard BLOCK and on every egress stop; crash at each step boundary converges with byte-identical records (fixed logical time); the workspace comes only from the resolver and every refusal stops the step before any read (E13); resolver kit WRC-01…05 on the fake; parallel reviewers blind | after S0 | `feat(assurance): idempotent assurance step use cases` |
+| S12 | step use cases `planAssurance`, `buildReviewPacket`, `runDeterministicChecks`, `runReviewer`, `adjudicateRound` (application, against fakes) | JSON round trip within the envelope; zero provider calls on push-guard BLOCK and on every egress stop; crash at each step boundary converges with byte-identical records (fixed logical time); the workspace comes only from the resolver and every refusal stops the step before any read (E13); resolver kit WRC-01…05 on the fake; parallel reviewers blind; priors reach adjudication only as hydrated from their recorded dispositions (R40) | after S0 | `feat(assurance): idempotent assurance step use cases` |
 | S13 | `createAssuranceSlot` (composite, `recordAttemptOutcome`, `admitWithAssurance`, `buildRepairContextPack`, event emission); SR-X1 | conformance kit RLC-01…18 on PGlite (helper fencing, redelivery, pre-lease terminals, the late grant and the atomicity case included); events per §15 with deterministic ids; repair ContextPack by `ArtifactRef` with `generatedAt` from the REPAIR decision; `admitWithAssurance` equals `admitRisk` for production capability; governed-execution suite unchanged | after S0 | `feat(assurance): implement the review-loop slot and attempt-outcome events` |
 | S14 | `runAssuredTask` sequential driver + durable-shaped fake | shadow mode changes no workflow decision except BLOCK; drill gating loop bounded by `maxRounds`; activity-granular fake converges under retries, cancellation and a lease handoff | after S0 | `feat(assurance): sequential proof driver and activity-granular fake` |
 | S15 | `assurance-root.ts` + CLI (`asep assurance report`, disposition entry for humans) | fail-closed config; gating unreachable from production composition (policy with `gating` refused); credential source injected; disabled-reviewer literal | after S0 | `feat(control-plane): compose the independent reviewer behind a fail-closed root` |

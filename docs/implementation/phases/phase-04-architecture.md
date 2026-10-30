@@ -450,7 +450,7 @@ finding(log)  = { source: sarif, raisedBy: "sarif:unparsed", ruleId: "sarif-unpa
                   evidence: the check id, sha256 and size of the log as the check report lists it }
 fingerprint   = sha256(canonical JSON [EVIDENCE_INTEGRITY, subject, null, "sarif-unparsed"]),
                 subject = canonical JSON text of ["sarif-log", checkId, sha256]
-blocking      = always (R37), whatever blockingSeverities[risk] says
+blocking      = always (R37), whatever blockingSeverities[risk] says; the check summary counts it so too (R40)
 closure       = only an authorized human; the domain and the database refuse every non-human disposition of a
                 SARIF finding except a harness reopen (an expired waiver)
 ```

@@ -20,6 +20,9 @@
 > v7: the re-check of v6, the slot block and the code fixes (`phase-04-review-codex-v6.md`, Codex `gpt-6.1-sol`,
 > snapshot `d0907b9`, REQUEST_CHANGES 0.98, `HAND-OFF: READY`) and controller decision R37 are dispositioned in
 > "Review v6" below.
+> v7 re-check: the re-check of v7 and its code fixes (`phase-04-review-codex-v7.md`, Codex `gpt-6.1-sol`, snapshot
+> `287ed0f`, ACCEPT_WITH_CHANGES 0.96) and controller decisions R39 and R40 are dispositioned in "Review v7" below;
+> the plan stays v7.
 >
 > Each finding is dispositioned `ACCEPTED` / `PARTIALLY_ACCEPTED` / `REJECTED_WITH_EVIDENCE`. Nothing was
 > auto-accepted: each finding's cited code was re-read before deciding. An accepted finding names its design
@@ -1437,6 +1440,123 @@ Every finding of the review is dispositioned (6 numbered and 3 unnumbered accept
 the documents. Remaining: the controller's diff check of the block against `023f16dc…` (G-LB), the controller's check
 of the code fixes at the lane head, and confirmation of v7.
 
+## Review v7 (Codex `gpt-6.1-sol`, snapshot `287ed0f`)
+
+> Raw review: `phase-04-review-codex-v7.md` (verbatim copy with provenance). Verdict: ACCEPT_WITH_CHANGES, confidence
+> 0.96. Controller decisions applied alongside: `reconciliation-v1.md` R39 (G-LB released: the slot block at `287ed0f`,
+> sha256 `9cc21c98…`, is the S0 copy and does not change) and R40 (final decisions for this re-check; applied as
+> written). Each finding's cited code was re-read at `287ed0f` before deciding; line numbers below refer to `287ed0f`.
+> The controller's checks at that snapshot, on a clean detached worktree: `pnpm verify:all` exit 0, 625 pass, 0 fail,
+> 0 skipped, 60 files, 37 required suites; shellcheck through Docker on `scripts/check-publication.sh`, exit 0, no
+> warning.
+
+### Summary
+
+| Severity | Count | ACCEPTED | PARTIAL | REJECTED |
+|---|---|---|---|---|
+| MEDIUM — code (P4-CODE7) | 1 | 1 | 0 | 0 |
+| LOW — code (P4-CODE7) | 3 | 3 | 0 | 0 |
+| **Total numbered** | **4** | **4** | **0** | **0** |
+| Unnumbered: two surviving mutations (domain guard limited to `OPEN`; comparator removed from the SARIF input sort); the lane's wrong "equivalent" claim for the unanchored history filter; the hydration boundary of the domain | 4 | 4 | 0 | 0 |
+
+The re-check found every v6 finding RESOLVED or MOOT under R37, no path that closes a SARIF finding by itself, and a
+check-report parser that refuses 11/11 tampered reports. It raised no plan finding (no `P4-PLAN7` ID) and did not
+re-check the slot block, which R39 released. The review also confirmed the lane's other equivalence claim, the domain
+mutant `disposition !== 'REOPENED'`: the same states and error codes over 672 cases, with six different diagnostic
+messages, so it is equivalent in behaviour, not in bytes.
+
+The plan text below lands in the docs-only commit that carries this section; each code finding lands in its own commit
+with a failing-first test and a mutation check, reported in the lane report. Nothing here changes the slot block.
+
+### P4-CODE7-MED-001 — The check summary counted a SARIF finding by severity only — ACCEPTED
+**Concern:** `checkReportSummary` counts a finding as blocking only when its severity is in the plan's blocking
+severities, so a valid `[CRITICAL]` policy reports `{total: 1, blocking: 0}` for a SARIF log while adjudication returns
+`REPAIR` (`check-report.ts:81`; `adjudication.ts:348`; `checks.test.ts:575`).
+**Disposition:** Correct: `check-report.ts:81` filters by `blocking.has(f.severity)` alone, while `adjudication.ts:348`
+blocks every SARIF finding whatever the policy says (R37); the only summary assertion (`checks.test.ts:575`) passes a
+policy that contains HIGH. R40: count a SARIF finding as blocking whatever the severity policy, like adjudication.
+**Locked change:** plan §14 item 6 (the check summary counts every SARIF finding as blocking); architecture §11
+("SARIF findings in Phase 4"); exit F3.
+**Validation:** exit F3 (`checks.test.ts` › "the check summary counts a SARIF finding as blocking whatever the severity
+policy says": a policy without HIGH counts the SARIF finding, and a policy with HIGH counts it once).
+
+### P4-CODE7-LOW-001 — Two logs of one check could be listed in either order — ACCEPTED
+**Concern:** the report sorts `sarifInputs` by check id only, so two logs of the same check with different bytes keep
+their arrival order and the same findings give two report digests (`check-report.ts:65`, `:67`; the review's probe
+`SAME_NAME_REPORT_ORDER`, `2577185c…` and `95fc1622…`).
+**Disposition:** Correct: the comparator at `check-report.ts:67` compares `checkId` alone and `Array.prototype.sort` is
+stable, so equal check ids keep the input order. R40: sort by a total key, check id then digest.
+**Locked change:** data model §2.8 (`sarifInputs` ordered by check id, then sha256); exit F3.
+**Validation:** exit F3 (`checks.test.ts` › "the check report lists SARIF logs in one order whatever order they arrive
+in": two logs of one check, both orders, identical report bytes); the comparator-removal mutant must fail (lane
+report).
+
+### P4-CODE7-LOW-002 — The domain's SARIF matrix ran from `OPEN` only — ACCEPTED
+**Concern:** the negative matrix for source `sarif` builds every aggregate in `OPEN`; a guard limited to `OPEN` keeps
+69/69 tests green, and the review's sequence (an ungrounded SARIF finding, a human `ACCEPTED` to `ACKNOWLEDGED`, then a
+harness `citation-unresolvable` refutation to `REFUTED`) is accepted by that mutant (`assurance.test.ts:273`, `:281`;
+`assurance.ts:214`).
+**Disposition:** Correct: `assurance.test.ts:281` calls `sarifFinding({ grounded })`, always `OPEN`; the guard at
+`assurance.ts:214` does not read the state, so HEAD refuses the sequence, but no test would see it go. R40: cover
+`ACKNOWLEDGED` and `FIXED` as well as `OPEN`.
+**Locked change:** plan §13 ("SARIF findings": the refusal holds from every state a disposition may leave); exit E6.
+**Validation:** exit E6 (`assurance.test.ts` › "only a human disposes of a SARIF finding": every machine disposition from
+every state the lifecycle allows it to leave — `OPEN`, `ACKNOWLEDGED`, `FIXED`, and `REFUTED` and `ADJUDICATED` for
+`ACCEPTED` — is refused, the review's sequence included; a human records each); the review's `state === 'OPEN'` mutant
+must fail (lane report).
+
+### P4-CODE7-LOW-003 — No fixture put the exemption string in a path — ACCEPTED
+**Concern:** the history-scan test puts `:scripts/check-publication.sh:` only in the content of `notes.txt`, which
+`git grep -c` never prints, so no test can see a path smuggle the exemption; the lane's claim that the unanchored filter
+is equivalent under `-c` is wrong (`collect.test.ts:484`; `check-publication.sh:178`).
+**Disposition:** Correct: `collect.test.ts:484` writes the string into the file's content only, and the count line
+`<commit>:<path>:<count>` still carries the path; see the correction below. R40: add a fixture whose path contains
+`:scripts/check-publication.sh:`.
+**Locked change:** plan §7.5 (the exemption matches a whole count line naming one of the scanner's own files); exit I13.
+**Validation:** exit I13 (`collect.test.ts` › "the publication history scan fails closed": a key committed under
+`docs/:scripts/check-publication.sh:note.txt` is reported by that path); the unanchored-filter mutant must fail (lane
+report).
+
+### Surviving mutation: domain guard limited to `OPEN` — ACCEPTED
+`finding.source === 'sarif' && finding.state === 'OPEN' && …` kept 69/69 tests green (`assurance.ts:214`). Closed by
+LOW-002's matrix.
+
+### Surviving mutation: comparator removed from the SARIF input sort — ACCEPTED
+`.sort()` without its comparator kept 69/69 tests green (`check-report.ts:67`). Closed by LOW-001's permutation test.
+
+### Correction: the unanchored history filter is not equivalent — ACCEPTED
+The lane report for `287ed0f` called the mutant that reverts the history exemption to the unanchored
+`':(scripts/secret-scan\.sh|scripts/check-publication\.sh|scripts/lib/secret-patterns\.sh):'` equivalent under
+`git grep -c`, because a count line carries no matched text. That was wrong: the count line still carries the path,
+and a path may contain the exemption string. The review's counterexample,
+`aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:docs/:scripts/check-publication.sh:note:1`, is kept by the anchored filter
+(`check-publication.sh:178`) and dropped by the unanchored one. The claim is withdrawn; LOW-003's fixture makes the
+mutant fail.
+
+### Hydration boundary for S8 and S12 — recorded (R40)
+The domain decides on the aggregate it is given: `applyFindingDisposition` and the adjudication read a prior's
+`lifecycleState` and `waiverExpiresAt` as hydrated, and an aggregate built directly can already claim `CLOSED` or
+`WAIVED` (`assurance.ts:47`; `adjudication.ts:202`, `:246`). The pure core cannot prove how a state was reached, so
+persistence and replay must hydrate only states reached through recorded dispositions. This is an acceptance check of
+S8 and S12 (plan §13, §21) and exit H3; the pure core accepted here does not certify those paths.
+
+### R40 applied
+
+| Item | Applied as | Where |
+|---|---|---|
+| MED-001 | the check summary counts every SARIF finding as blocking whatever the severity policy | plan §14; architecture §11; exit F3; code commit |
+| LOW-001 | `sarifInputs` ordered by check id, then sha256; permutation test with two logs of one check | data model §2.8; exit F3; code commit |
+| LOW-002 | the SARIF refusal proven from `OPEN`, `ACKNOWLEDGED` and `FIXED` (and the `ACCEPTED` source states) | plan §13; exit E6; code commit |
+| LOW-003 | a key committed under a path that contains `:scripts/check-publication.sh:`; the equivalence claim corrected | plan §7.5; exit I13; test commit |
+| Hydration boundary | persistence and replay hydrate only states reached through recorded dispositions | plan §13, §21 (S8, S12); exit H3 |
+| G-LB (R39) | the slot block stays at sha256 `9cc21c98…` (894 lines) | not touched |
+
+### Freeze gate (v7 re-check)
+
+Every finding of the re-check is dispositioned (4 numbered and 4 unnumbered accepted, 0 rejected) and R40 is applied in
+the documents. Remaining: the controller's check of the code fixes at the lane head; then the controller confirms the v7
+lock and releases the S19 freeze and the S20 pure core (integration parts still wait for G-P2 and Lane A's S0/S1).
+
 ---
 
 ## Disposition template
@@ -1465,5 +1585,8 @@ v5 record: **LOCKED v5 (pending controller confirmation)**, superseded by v6 bef
 
 v6 record: **LOCKED v6 (pending controller confirmation)**, superseded by v7 before confirmation; its slot block was
 found `HAND-OFF: READY`.
+
+v7 re-check record: ACCEPT_WITH_CHANGES 0.96 at `287ed0f`; R39 released G-LB with the block at sha256 `9cc21c98…`;
+R40 applied ("Review v7"); the lock is confirmed by the controller once the R40 code fixes are checked.
 
 **PLAN_STATUS: LOCKED v7 (pending controller confirmation)**
