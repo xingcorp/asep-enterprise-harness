@@ -151,3 +151,19 @@ test('ties break on the gold item id, then the fingerprint, and the chunk last',
   // A finding's identity is its chunk and fingerprint together.
   assert.throws(() => matchFindings([], [finding('f', 'CORRECTNESS', 'src/a.ts', 1), finding('f', 'SPEC', 'src/b.ts', 2)], 'strict'), /twice/);
 });
+
+test('lenient matching is nearest first too', () => {
+  // Two findings in the gold file: 'a' 290 lines past the range, 'b' inside it. Lenient matching needs only the
+  // path, yet the nearer finding takes the gold item; 'a' sorts first by fingerprint, so only distance decides.
+  const result = matchFindings(
+    [gold('G', 'CORRECTNESS', ['src/a.ts', 100, 110])],
+    [finding('a', 'MAINTAINABILITY', 'src/a.ts', 400), finding('b', 'MAINTAINABILITY', 'src/a.ts', 105)],
+    'lenient',
+  );
+  assert.deepEqual(result.matches, [match('G', 'b', 0)]);
+  assert.deepEqual([result.duplicate, result.unlabelled], [[ref('a')], []]);
+
+  // The distance a lenient match reports is the line gap, as under strict.
+  const far = matchFindings([gold('G', 'CORRECTNESS', ['src/a.ts', 100, 110])], [finding('a', 'MAINTAINABILITY', 'src/a.ts', 400)], 'lenient');
+  assert.deepEqual(far.matches, [match('G', 'a', 290)]);
+});
