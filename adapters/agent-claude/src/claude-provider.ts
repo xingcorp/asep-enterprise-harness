@@ -164,6 +164,22 @@ const PROXY_ASSET = fileURLToPath(new URL('../assets/egress-proxy.mjs', import.m
 const PROXY_ASSET_IN_CONTAINER = '/opt/asep/egress-proxy.mjs';
 const PROXY_READY = /asep-egress-proxy listening (\d+)/;
 const PROXY_START_TIMEOUT_MS = 30_000;
+
+/**
+ * How long past the attempt's deadline its egress proxy may still serve. The
+ * agent is stopped at the deadline; the grace only covers a proxy container
+ * whose clock runs behind the host's. From the deadline plus this on, the proxy
+ * refuses every request and exits by itself, whether or not anything is left
+ * to stop it (assets/egress-proxy.mjs).
+ */
+export const PROXY_EXPIRY_GRACE_MS = 30_000;
+
+/**
+ * How soon the egress proxy process exits once its lifetime has ended or its
+ * stdin — its link to the process that started it — has closed. From either
+ * moment on it refuses every request.
+ */
+export const PROXY_EXIT_BOUND_MS = 2_000;
 // What the agent holds instead of the credential. The proxy discards it.
 export const MODEL_KEY_PLACEHOLDER = 'asep-placeholder-the-egress-proxy-holds-the-real-key';
 // The only paths the proxy forwards (mirrors assets/egress-proxy.mjs).
@@ -313,13 +329,17 @@ export function buildAgentRunArgs(p: {
   ];
 }
 
-/** Hardened `docker run` argv for the egress proxy container. */
+/**
+ * Hardened `docker run` argv for the egress proxy container. `expiresAt` (epoch
+ * milliseconds) is when the proxy stops serving and exits by itself.
+ */
 export function buildProxyRunArgs(p: {
   readonly name: string;
   readonly egressNetwork: string;
   readonly attemptId: string;
   readonly image: string;
   readonly upstream: string;
+  readonly expiresAt: number;
 }): string[] {
   return [
     'run', '--rm', '-i',
@@ -340,6 +360,7 @@ export function buildProxyRunArgs(p: {
     'node', PROXY_ASSET_IN_CONTAINER,
     '--listen', `0.0.0.0:${PROXY_PORT}`,
     '--upstream', p.upstream,
+    '--expires-at', String(p.expiresAt),
   ];
 }
 
@@ -647,9 +668,13 @@ export class ClaudeCodingProvider implements CodingAgentProvider {
         contextPack: { path: contextPack.path, sha256: contextPack.sha256 },
       });
       const egressNetwork = sb.egressNetwork ?? 'bridge';
+      // The proxy's own lifetime, on the wall clock its container shares: the
+      // attempt's deadline plus the grace. It does not depend on this process
+      // being there to stop the proxy.
+      const proxyExpiresAt = Math.round(Date.now() + (deadline - monotonicNow()) + PROXY_EXPIRY_GRACE_MS);
       const proxyArgs = buildProxyRunArgs({
         name: proxyName, egressNetwork, attemptId: req.attemptId,
-        image: sb.proxyImage, upstream,
+        image: sb.proxyImage, upstream, expiresAt: proxyExpiresAt,
       });
       rec.invocation = {
         providerId: this.providerId,
@@ -743,7 +768,10 @@ export class ClaudeCodingProvider implements CodingAgentProvider {
         child.on('error', (e) => finish(`egress proxy could not start: ${e.message}`));
         child.on('close', (code) => finish(`egress proxy exited ${code} before it was ready`));
         child.stdin!.on('error', () => undefined);
-        child.stdin!.end(`${credential.apiKey}\n`);
+        // The credential is the first line. Stdin then stays open as the
+        // proxy's link to this process: when it closes — the teardown kills the
+        // client, or this process dies — the proxy stops serving and exits.
+        child.stdin!.write(`${credential.apiKey}\n`);
       });
       if (proxyReady !== undefined) {
         setup('FAILED', `${proxyReady}: ${redactSecrets(rec.egressLog.text, rec.secrets).text.trim().slice(0, 300)}`);

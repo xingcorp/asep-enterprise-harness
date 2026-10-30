@@ -73,7 +73,11 @@ The Claude provider has no host-execution mode. Every attempt runs like this
    upgrades and every other path get 403. The model key reaches it on **stdin**
    and it substitutes the key into each forwarded request. Its access log
    (method, path, status — never headers or bodies) is stored as the
-   `claude-egress-log` artifact.
+   `claude-egress-log` artifact. It has a lifetime of its own: it is started
+   with `--expires-at` (the attempt's deadline plus 30 s), refuses every
+   request from then on and exits, and it exits at once when its stdin — its
+   link to the harness — closes. So the model key is never usable through a
+   leftover proxy past that expiry, even if the harness died.
 3. The agent container runs on the internal network only, as the harness user,
    with a read-only root filesystem, all capabilities dropped,
    `no-new-privileges`, PID/CPU/memory limits and no Docker socket. The leased
@@ -107,7 +111,9 @@ marked):
 
 Orphan sweep after a harness crash. The harness removes what it started only
 while it is alive; if its own process dies, its containers keep running until
-swept (nothing else is ever labelled this way):
+swept (nothing else is ever labelled this way). An egress proxy ends itself by
+its expiry at the latest, but the agent container and the attempt's network
+do not go by themselves, so the sweep is still needed:
 
 ```sh
 docker rm -f $(docker ps -aq --filter label=asep.role)

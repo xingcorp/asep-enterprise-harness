@@ -374,11 +374,18 @@ async function run(rest) {
   };
   writeRecord(containerFile(name), record);
 
+  // What reached the container's stdin, as the hash of all of it so far after
+  // every chunk — a starter may keep stdin open for the container's whole life —
+  // and whether its client's stdin ended.
   const hash = createHash('sha256');
   if (child.stdin) {
-    process.stdin.on('data', (d) => { hash.update(d); child.stdin.write(d); });
+    process.stdin.on('data', (d) => {
+      hash.update(d);
+      log({ container: name, stdinSha256: hash.copy().digest('hex') });
+      child.stdin.write(d);
+    });
     process.stdin.on('end', () => {
-      log({ container: name, stdinSha256: hash.digest('hex') });
+      log({ container: name, stdinSha256: hash.digest('hex'), stdinEnded: true });
       child.stdin.end();
     });
     child.stdin.on('error', () => undefined);
