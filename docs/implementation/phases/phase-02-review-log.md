@@ -1488,7 +1488,11 @@ entry.
 - `reconcilePullRequestStep` takes the record (`recorded`), checks before
   any write, writes only to the recorded, reviewable PR (title and body from
   the facts, audited `forge.reconcile`), reads it back after a write and
-  returns that observation. It no longer creates a missing PR.
+  returns that observation. It no longer creates a missing PR. *(Correction,
+  repair cycle 12: the check named the recorded PR, but the write went
+  through the branch-keyed upsert, which selected the branch's PR again and
+  could write another PR a human had opened there, or create one; see
+  CYCLE11-HIGH-001 below.)*
 - `completeToReview` runs it after the upsert (fresh and adopted alike) and
   returns the observation as `pr`, the record as `recorded`, and stops
   `upsert-pr` with the gap. `resumeAttemptToReview` runs it with the record
@@ -1662,3 +1666,281 @@ is still on time and the moments in order (`agent-claude.test.ts`,
 `command-runner.test.ts`).
 **Mutation check:** 2 mutants, both killed: the provider's moments read from
 `Date.now()`; the runner's moments read from `Date.now()`.
+
+## Final review cycle 11 dispositions
+
+> Reviewer: Codex `gpt-6.1-sol`, re-review cycle 11 at `42b6d78`
+> (`phase-02-final-rereview-codex-v11.md`), verdict **REQUEST_CHANGES** @ 0.99.
+> The controller's decisions on it (reconciliation R43, with R42 recording the
+> red gate run) were applied as stated. Repairs: repair cycle 12, on
+> `phase/02-single-agent-vertical-slice` from `42b6d78`. Every disposition,
+> repair, test, measurement and mutation check below was made and verified by
+> the implementer only; none has been independently reviewed. Mutation checks
+> work as in the cycle-10 section.
+
+### What the review accepted, and what it did not
+
+The review marked **RESOLVED**: CYCLE10-HIGH-002, CYCLE10-MED-001,
+CYCLE10-MED-002, CYCLE10-MED-003, the `state: 'open'` mutation,
+CYCLE9-HIGH-001 and CYCLE9-MED-001. It found **PARTIAL**: CYCLE10-HIGH-001,
+HIGH-006, CYCLE7-HIGH-003 and CYCLE8-HIGH-003 (all by CYCLE11-HIGH-001),
+MED-005 and the timeout work (by the red gate run), and raised
+CYCLE11-HIGH-001 (reconcile's repair could write a PR that replaced the
+recorded one, or create one), CYCLE11-HIGH-002 (one of the controller's two
+`verify:all` runs at `42b6d78` was red) and CYCLE11-MED-001 (no test held the
+difference between an inspect error and absence). On the declared concerns:
+(2), the runner's client error after spawn, needs a regression test; (3), the
+head-SHA lag, is accepted as a Phase 2 limit (R43), with the runbook stating
+its symptom and recovery.
+
+### Summary
+
+| ID | Disposition | Commits |
+|---|---|---|
+| CYCLE11-HIGH-001 | ACCEPTED — the repair is one update of the recorded PR by its number; no list, no selection, no create; both probes are tests | `fab5760` |
+| CYCLE11-HIGH-002 | ACCEPTED in part — every docker call reports its signal, duration and bound, and every removal failure its calls; the one unbounded docker call is bounded; the stall is not reproduced (0 of 20 runs under four synthetic loads before the changes, 0 of 10 under three after) and its cause is not established; no bound raised, fault 3 unchanged | `a375f1e`, `bd08654` |
+| CYCLE11-MED-001 | ACCEPTED — inspect and ps errors are tests for agent and runner; the `/./` mutant is killed | `056457a` |
+| Concern 2 (runner client error after spawn) | ACCEPTED — a spawn seam; the probe is a test | `056457a` |
+| Concern 3 (head-SHA lag) | accepted as a Phase 2 limit (R43); runbook | docs commit |
+| Test polling bounds | moved to the monotonic clock, with two lease waits of the same kind | `a8f45ca` |
+| The loosened assertion in `6608d21` | named below | docs commit |
+| MED-005 | data model, threat model and runbook in `fab5760`; review log and report | docs commits |
+| Gate failure in this cycle | `c67b25b` failed format-check; fixed | `52d4d62` |
+
+Also: `c67b25b` adds the cycle-11 transcript with its provenance note.
+
+### CYCLE11-HIGH-001 — the repair could write a PR that replaced the recorded one — ACCEPTED
+
+**Invariant:** reconcile writes only the attempt's recorded PR, named by its
+number; it lists nothing, selects nothing and creates nothing. The one write
+that can still land after its check is that PR's own title and body, after a
+human closed, merged or retargeted it (R30's race); the read after the write
+then fails the task.
+**Change (`fab5760`):**
+- Forge port: `updatePullRequestContent(scope, {repositoryBindingId, number,
+  title, body}): Promise<PullRequestRef>` — the title and body of one PR, by
+  its number; an unknown number is an error, never a create.
+- GitHub adapter: `GitHubAppForgeProvider.updatePullRequestContent` sends one
+  `pulls.update` of `{owner, repo, pull_number, title, body}`, under the same
+  JIT credential loop as every operation (`ForgeOperation` gains
+  `'pr-update'`); a number that is not a positive whole number calls nothing.
+  `GitHubAppForgePort` translates it. The local doubles write the PR by its
+  number in whatever state it is in.
+- `reconcilePullRequestStep` calls it with `recorded.number` and keeps its
+  read afterwards; the branch-keyed upsert is no longer reachable from it.
+- The fitness rule against direct forge calls in a composition root covers the
+  new write.
+**Tests (failing first on `42b6d78`):**
+- Pipeline: between reconcile's check and its write a human closes #7 and
+  opens #8 on the branch — the old code wrote `update:8`; now the one write is
+  `update:7`, #8 is as the human opened it, the gap names #8. The forge stops
+  listing the PR between the check and the write — the old code created #8;
+  now the write is `update:7` and the gap is "shows no pull request".
+- The reviewer's `CYCLE11_COMPLETION_REPAIR_REPLACEMENT` and
+  `CYCLE11_RECONCILE_MISSING_BETWEEN_READ_AND_UPSERT`, through the GitHub
+  adapter and port on a fresh run (`crash-recovery.test.ts`): a stale owner's
+  title lands on #1 after it is opened; right after the run's check, a human
+  closes #1 and opens #2, or GitHub stops listing #1. The old code wrote
+  `['create', 'update:2']` and `['create', 'create']`; now the write log is
+  `['create', 'update:1']` and never names #2, #2 is untouched, no PR is
+  created, and the run ends `FAILED / publication-incomplete` with the found
+  and recorded PR audited and no PR row.
+- Adapter: the update by number is one PATCH with exactly that key set, no
+  list and no create, and leaves another PR on the head untouched; a number
+  GitHub does not hold fails with its 404 and creates nothing; a number that
+  is not a positive whole number calls nothing; the re-mint table covers it.
+  Port: the update goes to the named PR only, in the port's ref shape; a
+  binding of another tenant is refused.
+- Existing repair tests now assert the update by number and no upsert; the
+  resume's repair is one `forge.pr.update`.
+**Mutation check:** 5 mutants, all killed: reconcile repairs through the
+branch-keyed upsert (7 tests red, the reviewer's two probes among them); the
+update also sends `state: 'open'`; any number accepted; the adapter selects
+the head's open PR by a list first; the fitness rule misses the new write.
+**Port delta for Lanes A and B:** `ForgeProvider` has a fifth, required
+method, `updatePullRequestContent`; every implementation (production port,
+local doubles, test doubles) needs it. `GitHubAppForgeProvider` gains the
+method and the `UpdatePrContentInput` type; `ForgeOperation` gains
+`'pr-update'`. `upsertPullRequest`, `findPullRequest`, `resolveRef` and
+`pushBranch` are unchanged.
+
+### CYCLE11-HIGH-002 — the gate was red at the reviewed head — ACCEPTED in part
+
+**Evidence.** Controller run 2 at `42b6d78`: fault 3 rejected with
+`SandboxTeardownError … could not be shown removed in time: docker ps failed:
+exit null` after 71.1 s, and "a crash between the commit and its evidence"
+passed after 69.3 s (5.1 s in run 1). Its canonical test step took 422 s
+against 351 s in run 1 (R43's "176 s" is not in run 1's log; 175.9 ms is the
+duration of another step). In run 2 no other test stands out against run 1.
+The canonical runner runs two test files at a time
+(`ASEP_TEST_CONCURRENCY`, default 2); `crash-recovery.test.ts` and
+`pilot-faults.test.ts` are adjacent in its sorted list, so the two slow tests
+were the two running together: the slow window covered exactly what ran in
+it. `exit null` with empty stderr is a client ended by a signal; the old
+caller recorded neither the signal nor who sent it, nor any time.
+
+**Step 1 — evidence (`a375f1e`).** Every docker client call of a sandbox goes
+through `dockerCaller`, whose result now carries the signal that ended the
+client and a `DockerCallRecord`: the call's first words, when it was spawned,
+how long the spawn and the call took, the bound it was given and, when its
+caller killed it at that bound, when the kill ran. A removal that cannot show
+its container gone reports every call it made (`ps -aq at +0ms: signal SIGKILL
+after 30004ms (spawn 3ms, bound 30000ms, cut at 30001ms)`) beside its last
+reason; the runner's teardown error adds how the command's client ended,
+after how long, and how soon the removal followed. The agent's setup calls go
+through the same caller and say how they ended; a proxy that never becomes
+ready says how long it was waited for against its bound and whether its
+client wrote anything. Mutation check: 8 mutants (signal, cut, either
+removal's call list, the runner's client line, the setup timing, the proxy's
+wait and bound), all killed; the last survived at first, and its test now
+asserts the bound it reports.
+
+**Step 2 — reproduction under synthetic load.** Local tools only: Node CPU
+burners (`for (;;) {}`), Node fsync burners (rewriting a 256 MiB file in
+8 MiB chunks, `fsync` after each), and concurrent copies of
+`node --test --test-concurrency=2 pilot-faults.test.ts crash-recovery.test.ts`,
+with host samples every second; for the traced rounds a temporary,
+uncommitted trace recorded each call's record and, inside the fake docker
+client, when its Node process started and when its script began and ended.
+
+| Load | Runs | Failed | fault 3 | crash between commit and evidence | docker calls (traced) |
+|---|---|---|---|---|---|
+| 3 copies, 8 CPU burners (load average up to 125) | 3 | 0 | 16.0–17.8 s | 7.0–7.9 s | not traced |
+| 4 copies, 16 CPU burners, 2 rounds (load average up to 104) | 8 | 0 | 20.9–25.7 s | 9.2–12.6 s | 768: p50 158 ms, p99 1.6 s, max 4.0 s |
+| 3 copies, 4 CPU and 4 fsync burners, 2 rounds | 6 | 0 | 28.4–32.1 s | 17.1–22.4 s | 336 (first round): p50 205 ms, max 1.3 s |
+| 3 copies, 8 CPU and 4 fsync burners | 3 | 0 | 43.0–45.5 s | 14.0–15.0 s | 288: p50 185 ms, p99 3.1 s, max 6.1 s |
+
+Reproduction rate before any change past the instrumentation: **0 of 20
+runs**. Probes beside these: under 16 CPU burners, the first exec of a freshly
+written shim costs no more than a repeat (shell 10–23 ms, Node 51–83 ms); a
+storm of back-to-back Node launches makes a launch 61–316 ms; under four fsync
+burners a file create and rename takes 131 ms on average (359 ms at most, from
+under 1 ms idle) and one loop of append, write and rename took 8.2 s. The
+host during these runs: 8 CPUs, 16 GB, 6.4–6.5 of 7.2 GB swap in use, about
+4.4 GB compressed, and the data volume 97% full (6.7 GB free). Memory
+pressure was not added: with that little swap and disk left it could have
+starved every other process on the host.
+
+**Step 3 — where the time goes.** Under every load the docker calls stayed
+short: the longest was 6.1 s, almost all of it between the spawn and the
+fake client's Node process starting (`exec → node`: p50 58–93 ms, worst
+5.9 s); Node's own start-up took at most 377 ms, the client's work at most
+253 ms, and the caller saw it close within 338 ms. The slowed tests spent
+their time in their own work: fault 3 ran up to nine times slower with every
+docker call short. The controller's failure needs one call, or the removal
+loop, to run 30 s; no synthetic load came within a fifth of that. Where the
+~60 s went in run 2 cannot be shown from its log, which records no call; the
+evidence available — the two tests running together slowed by the same ~65 s
+while no other test did — points to a stall of the host in that window. Its
+cause is not established. The same holds for `21aeb0d` ("egress proxy did
+not become ready in time"): not shown to be another class; the proxy's error
+now says how long it waited against its bound.
+
+**What was fixed (`bd08654`).** The one docker call outside `dockerCaller`:
+the `docker version` probe a sandbox makes before it starts ran through
+`execFile` with no timeout and the whole process environment. It is now a
+bounded call with the client environment, and a refusal says how it ended.
+That bounds a hang; it does not explain the red run.
+
+**Not changed.** No bound was raised; none is shown wrong by these
+measurements (no traced docker call took more than 6.1 s, against the 30 s
+bound of a removal). Fault 3 keeps its assertion. **Open:** the cause of the red run;
+recorded as a concern for the controller. With step 1 in place, a recurrence
+will name the call, its phase and its bound.
+
+**Step 4 — after.** The same burners and copies, one round each, untraced, at
+`a8f45ca` (every code and test change of this cycle):
+
+| Load | Runs | Failed | fault 3 | crash between commit and evidence | peak load average |
+|---|---|---|---|---|---|
+| 3 copies, 8 CPU burners | 3 | 0 | 19.6–19.9 s | 10.7–10.8 s | 43 (125 before) |
+| 4 copies, 16 CPU burners | 4 | 0 | 25.5–26.3 s | 12.8–13.0 s | 45 (104 before) |
+| 3 copies, 4 CPU and 4 fsync burners | 3 | 0 | 23.6–24.1 s | 21.2–22.3 s | 37 (28 before) |
+| 3 copies, 8 CPU and 4 fsync burners | — | — | — | — | stopped |
+
+Reproduction rate after: **0 of 10 runs**. The fourth load did not complete:
+the data volume filled while it ran (other work on the host had taken its
+free space from 6.7 GB to about 1 GB, and the fsync burners write 1 GiB),
+three burners and the three test copies failed with `ENOSPC`, and the round
+was stopped and its files removed. Its failures are the disk's, not the
+flake's, and it is not counted. The load average includes other work on the
+host, so equal burners did not give equal load: the first two loads ran
+after at about a third to a half of the load average they ran at before.
+Neither rate says anything about the red run's cause: no run, before or
+after, failed the way it did, and a run without a failure closes nothing.
+
+### CYCLE11-MED-001 — inspect errors were not held apart from absence by any test — ACCEPTED
+
+**Invariant:** only "no such container" from `docker inspect` (agent), or a
+`docker ps -a` that lists none (runner), shows a container gone; a call that
+fails with anything else on stderr is no answer, and the attempt or run
+fails with no removal marker.
+**Tests (`056457a`):** for each of permission denied on the daemon socket, no
+daemon, and an unrelated daemon error: the agent's attempt fails with
+`docker inspect failed: <that error>` and no `agent-removed`; the runner's run
+fails with `docker ps failed: <that error>` and no `removed`; the helpers
+never take such an answer for absence, after an rm that succeeded or failed
+(virtual time).
+**Mutation check:** the reviewer's `NO_SUCH_CONTAINER = /./` (4 tests red); a
+failing `ps` taken as an empty listing (4 red).
+
+### Concern 2 — the runner's client error after spawn — ACCEPTED
+
+The runner takes the function that starts a command's client (`SpawnClient`,
+default node's `spawn`), so a test can make a client fail after it started
+(`056457a`). The reviewer's `CYCLE11_RUNNER_CLIENT_ERROR` is a test: the
+client reports an error and dies while its container runs; the run asks
+`version`, `run`, then `ps`, `rm`, `ps`, reports the container removed once
+shown gone, and throws the client's own error. A client that never started
+makes no docker call. Mutation check: no removal after a client error; a
+removal for a client that never started — both killed. This closes the gap
+the cycle-10 MED-003 entry left ("not mutation-checked: the runner's removal
+after a client error").
+
+### Concern 3 — GitHub's head SHA can lag a push — accepted as a Phase 2 limit (R43)
+
+Fail closed is the intended behaviour. The runbook (§3.4) states the symptom
+(a `publication-incomplete` failure whose reason names another head commit,
+while the PR shows the attempt's commit when looked at later) and the
+recovery (run the work order as a new task), and asks the pilot to log each
+occurrence so its rate is measured.
+
+### Test polling bounds — moved to the monotonic clock
+
+The four helpers the review named (`agent-claude.test.ts`,
+`agent-sandbox.itest.ts`, `command-runner.test.ts`, `sandbox-exec.itest.ts`)
+and the two lease waits of `crash-takeover.itest.ts`, the same kind, measure
+their waits with `monotonicNow()` (`a8f45ca`).
+
+### The assertion loosened in `6608d21`
+
+`6608d21` removed the upper bound (`AGENT_REMOVAL_BOUND_MS + 15_000`) on the
+whole teardown in "G3: an agent removal the daemon cannot show within its
+bound fails the attempt at the bound" (`agent-claude.test.ts`). The reason: the
+teardown after the removal — the proxy's kill and removal, the label sweeps,
+the network — is not bounded by the product and slowed with host load (one
+run took 79 s). The test keeps its lower bound (the removal was given its
+whole bound) and its 120 s timeout. Each step's own bound is held by
+virtual-time tests instead: "G3: the agent removal deadline is its bound
+after the client ended, never past the stop bound" and "G3: a removal that
+lands 91 s after the stop turns the stop-bound assertion red"
+(`agent-claude.test.ts`), and "a removal is shown gone only by the daemon,
+and never past its deadline" (`command-runner.test.ts`). The removal's own
+end is now also named in the attempt's failure (the inspect killed at its
+bound, cycle 12).
+
+### MED-005 — what reconcile writes
+
+After `fab5760`: one update of the recorded PR's title and body, by its
+number; nothing listed, selected or created. The data model, threat model
+(T2-17 and its summary) and runbook (§3.4) say so in `fab5760` and keep only
+R30's residual; the selection race the review found never had a description
+to drop. The cycle-10 entry above ("writes only to the recorded, reviewable
+PR … no longer creates a missing PR") was wrong about the write, which went
+through the branch-keyed upsert; it carries a correction note.
+
+### A gate failure in this cycle — a missing final newline
+
+`pnpm verify:all` at `c67b25b` failed at format-check: the reviewer's output,
+copied verbatim, has no final newline. `52d4d62` adds it and names the edit in
+the provenance note.

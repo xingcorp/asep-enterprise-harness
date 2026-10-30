@@ -258,6 +258,7 @@ those IDs; a panel that cannot resolve a data point to one attempt is a bug.
 | `cost_per_accepted_task` | > 1.5× baseline | > 3× baseline |
 | provider timeout / quota errors | > 10% of attempts | > 30% or sustained quota exhaustion |
 | GitHub 403/rate-limit | any | sustained (token/permission problem, see §2.3) |
+| `publication-incomplete` from a PR head GitHub had not caught up with (§3.4) | record every one | — (a Phase 2 limit; the count is the measurement) |
 
 Thresholds are pilot heuristics; record actuals during rehearsal and tune before
 scaling task volume.
@@ -389,15 +390,26 @@ merged code is possible because nothing is auto-merged.
   write by the recorded number; that write then lands on the attempt's own PR
   as the human left it, possibly one that just closed (a residual read/write
   race: GitHub has no compare-and-set for a PR update, R30). It never lands on
-  another PR a human opened on the branch. A run or resume then
-  reads the PR again, finds it not reviewable and fails the task: an
-  `audit_events` row with action `task.status.transition` whose detail has
-  `to: FAILED`, `outcome: publication-incomplete`, the reason, the PR found
-  (number, url, head, base, head commit, state, merged) and the recorded PR,
-  and no `pull_requests` row.
+  another PR a human opened on the branch. A run or resume then reads the PR
+  again, finds it not reviewable and fails the task: an `audit_events` row
+  with action `task.status.transition` whose detail has `to: FAILED`,
+  `outcome: publication-incomplete`, the reason, the PR found (number, url,
+  head, base, head commit, state, merged) and the recorded PR, and no
+  `pull_requests` row.
   FAILED is terminal: to publish the change again, run its work order as a new
   task. A PR closed after its task reached review leaves the task there; the
   pilot verifier rejects it.
+- **A PR head GitHub has not caught up with yet (a Phase 2 limit, R43):**
+  completion binds the PR's head commit to the attempt's commit, and GitHub
+  may go on reporting the PR's previous head for a while after a push. A read
+  in that window fails the task closed rather than completing it. Symptom: a
+  `publication-incomplete` failure as above whose reason contains
+  `PR #<n> shows <sha>, not the attempt's commit <sha>`, while the PR on
+  GitHub shows the attempt's commit when looked at afterwards. Recovery: as
+  for any FAILED task, run its work order as a new task. Record each
+  occurrence (task, PR, the two SHAs, the time between the push and the
+  failure) under its row in §1's observation table: the pilot measures how
+  often it happens.
 - **Worktree hygiene:** cleanup is idempotent and a failed worktree is
   **quarantined, not reused** (exit E7). Do not manually re-point a quarantined
   worktree at a new attempt.
