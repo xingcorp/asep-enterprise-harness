@@ -2330,3 +2330,315 @@ adapters and test tooling:
   `scripts/testing/fake-docker-fixture.mjs`; the canonical runner sets
   `ASEP_PROCESS_REGISTRY` for its tests and reports what it ended; the fake
   docker's records carry `group` and `marker`.
+
+## Final review cycle 13 dispositions
+
+> Reviewer: Codex `gpt-6.1-sol`, re-review cycle 13 at `26d2a55`
+> (`phase-02-final-rereview-codex-v13.md`), verdict **REQUEST_CHANGES** @ 0.99.
+> The controller's decisions on it (reconciliation R48) were applied as
+> stated. Repairs: repair cycle 14, on `phase/02-single-agent-vertical-slice`
+> from `26d2a55`. Every disposition, repair, test, measurement and mutation
+> check below was made and verified by the implementer only; none has been
+> independently reviewed. Mutation checks work as in the cycle-10 section.
+> Every full gate of this cycle ran through the controller's `gate.sh` (R47).
+
+### What the review accepted, and what it did not
+
+The review marked **RESOLVED**: CYCLE12-MED-002, the cut mutant, the three
+instrumentation items (the client's pid, the proxy's kill result, the
+tool-budget assertion), the real-Octokit probe, the timeout work,
+CYCLE10-HIGH-002, CYCLE11-HIGH-001, CYCLE11-MED-001, concern 2,
+CYCLE10-HIGH-001, HIGH-006, MED-005, CYCLE7-HIGH-003, CYCLE8-HIGH-003 and the
+monotonic waits. It found the controller's four gates at `26d2a55` valid
+under R47 and the L1 sentinel byte-identical to that head. It found
+**PARTIAL**: CYCLE12-HIGH-001 (the proxy's lifetime was its own, but read
+from the wall clock), CYCLE12-MED-001 (the registry existed, but its
+identity check, its proof of absence and its coverage fell short) and
+CYCLE11-HIGH-002 (its cause is not proven; the R47 disposition is enough for
+gate evidence). It raised CYCLE13-HIGH-001 (a wall clock set back extends
+the model capability, and a stream open after the expiry was observed goes
+on), CYCLE13-MED-001 (the registry could kill another process after pid
+reuse), CYCLE13-MED-002 (a failed `ps` was taken as proof a process was
+gone), CYCLE13-MED-003 (test helpers still started processes outside the
+canonical run's registry) and CYCLE13-MED-004 (leftovers of an earlier run
+did not fail the gate). The controller ended the two proxies left running
+in cycle 13 (pids 4822 and 89091).
+
+### Summary
+
+| ID | Disposition | Commits |
+|---|---|---|
+| CYCLE13-HIGH-001 (rest of CYCLE12-HIGH-001) | ACCEPTED — the proxy takes a relative lifetime, at most a named maximum, and fixes its deadline once on its own monotonic clock; admission, its timer and every request and stream in flight answer to that deadline; at it the proxy destroys every open connection and exits | `d883e24`, `6f4dc30` |
+| CYCLE13-MED-001 (with CYCLE12-MED-001) | ACCEPTED — a recorded process carries a token of its own in its environment and its start time; it is signalled only while its pid shows both; test cleanups end containers by that identity, never by a pid alone | `607b6dc`, `f02fe83` |
+| CYCLE13-MED-002 | ACCEPTED — a `ps` that fails, or an environment that cannot be read, is "unknown": nothing is signalled, the record stays, the cleanup fails; in the registry and in the fake docker | `607b6dc` |
+| CYCLE13-MED-003 | ACCEPTED — every long-lived process a test starts is in the run's registry, the registry's own tests included, or a fitness test's list says why it need not be | `a94fa3e`, `985ddf3` |
+| CYCLE13-MED-004 | ACCEPTED — a leftover of an earlier run that cannot be shown gone fails the gate | `6fec876` |
+| CYCLE11-HIGH-002 | NOT CLOSED; disposition R47 unchanged | — |
+| Port and schema deltas | none to ports, schema or migrations; the egress proxy's argv and asset take a relative lifetime | `d883e24` |
+
+Also: `ceb300e` adds the cycle-13 transcript with its provenance note.
+
+### CYCLE13-HIGH-001 — the proxy's lifetime ran on the wall clock — ACCEPTED
+
+**Invariant (R48):** the model credential is usable through the egress proxy
+for at most one lifetime, counted on the proxy's own monotonic clock from its
+own start: admission, its exit timer and every open request or stream answer
+to one deadline fixed once; at that deadline the proxy destroys every open
+connection and exits. No change to any wall clock moves it.
+**Change (`d883e24`):**
+- `assets/egress-proxy.mjs` takes `--lifetime-ms` — a whole number of
+  milliseconds from 1 to `MAX_LIFETIME_MS` (four hours, exported); beyond it,
+  it refuses to start ("is beyond the maximum lifetime … refusing to start").
+  Its deadline is that lifetime on `performance.now()`, which counts from the
+  process's start and which setting the system clock does not move. A
+  lifetime that ends before the credential arrives refuses to start.
+- `egressProxy({ deadline, now, schedule, onExpired, … })`: one deadline for
+  everything. Whichever first sees it reached — the timer, a request
+  arriving, a chunk or the end of a request body, a chunk or the end of a
+  response — ends the proxy: that request is refused (403 with `connection:
+  close`), nothing more is forwarded, every open connection to the agent and
+  every request to the upstream is destroyed, the server stops listening and
+  `onExpired` runs, which in the process is `stop` (exit). Bodies are relayed
+  chunk by chunk with that check instead of `pipe`. Once reached, the
+  deadline stays reached. The chunked wall-clock timer is gone.
+- The provider passes `lifetimeMs = min(ceil(remaining budget) +
+  PROXY_EXPIRY_GRACE_MS, PROXY_MAX_LIFETIME_MS)`, counted just before it
+  spawns the proxy, after the network setup, so the time the proxy's own
+  start takes is the only extra, and the readiness bound (30 s, or what is
+  left of the budget if less) caps it: a proxy not ready by then is killed.
+  `PROXY_MAX_LIFETIME_MS` (four hours) is exported and equal to the asset's
+  `MAX_LIFETIME_MS`. The invocation manifest records the proxy argv from
+  that moment.
+- T2-16 and the runbook state the window after worker death as
+  `min(remaining budget + grace, maximum) + readiness bound`, independent of
+  wall-clock changes, with two limits: a worker that dies while its proxy is
+  still starting leaves nothing to kill a late starter (that proxy's lifetime
+  runs from whenever it starts), and host sleep is counted by neither clock.
+**Tests (written first, except the late-response test, which came after the
+asset; the eight run against the previous asset and provider — with
+`PROXY_MAX_LIFETIME_MS` added first so that the suite could load — all
+failed; the changed assertion of the contained-attempt test was not run
+red):**
+- `CYCLE13_CLOCK_ROLLBACK_BEFORE_EXPIRY` and `CYCLE13_EXPIRED_LATCH_TIMER` as
+  a real process: a proxy whose `Date` an `--import` double moves an hour
+  back — and one an hour forward — 200 ms after it loads (its access log
+  shows the moved clock) serves, keeps a stream open, and at the end of its
+  8 s lifetime cuts the stream and exits: not before its lifetime from the
+  spawn, and within `PROXY_EXIT_BOUND_MS` plus the scheduling allowance of it
+  from readiness.
+- `CYCLE13_STREAM_AFTER_EXPIRY_OBSERVED`, on virtual time: a request and its
+  response streaming at the deadline are cut whichever sees the deadline
+  first — the timer, more of the response, the response's end, more of the
+  request, the request's end, a new request on another connection — and
+  nothing of either past the deadline reaches the other side.
+- A request on a kept-alive connection at the deadline is refused, and then
+  the proxy ends; a timer firing early is set again for the deadline; after
+  the end neither the timer nor a clock set back changes anything.
+- A response whose headers come only after the deadline reaches the agent
+  not at all — not even its status line (`6f4dc30`).
+- `CYCLE13_EXPIRY_INPUT`: `--lifetime-ms` of the maximum plus 1 and of
+  `Number.MAX_SAFE_INTEGER` are refused; the maximum is accepted; 0, 1.5 and
+  a word are refused; a lifetime of 1 ms has ended before the credential.
+- The provider: with a network inspect slowed by 2 s, the lifetime is at
+  least 2 s short of budget plus grace; with a 24-hour budget it is the
+  maximum, which the asset accepts. The contained attempt checks the argv
+  carries no wall-clock moment.
+- The existing tests still hold: a proxy whose starter is SIGKILLed exits
+  within the bound; one not ready in time fails the attempt and is torn
+  down; the real-daemon sandbox suite passed against the new asset.
+**Mutation check:** 14 mutants on `d883e24`'s draft, 13 killed: the
+deadline read from the wall clock; no check per chunk; none at a stream's
+end; open connections not destroyed; a refusal at the deadline not ending the
+proxy; no check at admission; no timer; the timer 10 s late; the maximum not
+enforced; the lifetime counted 5 s past the process's start; the provider
+without the grace, without the clamp, or counting from before the setup. The
+fourteenth, "a response beginning after the deadline is forwarded", survived:
+the check it removed, at the response's headers, was redundant, since
+`writeHead` only queues the headers, which leave with the first chunk or the
+end, both checked. The branch was removed before the commit. `6f4dc30` makes
+that a test of what the agent receives: a mutant that flushes the headers at
+once is killed.
+**The red run did not exit by itself.** After its last test, the test process
+stayed open: the "forwards only the model API" test left its fake upstream
+listening when its proxy failed to start (as every proxy did against the old
+asset's argv). The process was killed by pid; that test now closes its
+upstream on that path.
+
+### CYCLE13-MED-001 — the registry could kill another process after pid reuse — ACCEPTED
+
+**Invariant (R48):** each recorded process carries a run-unique token the
+sweep can see and its start time; the sweep signals only a process whose
+token and start time both match; when identity cannot be shown, it does not
+signal and the cleanup fails.
+**Change (`607b6dc`):**
+- A recorded process is started with `ASEP_PROCESS_TOKEN` (a random UUID) in
+  its environment and recorded as `{ pid, group, token, startedAt }`, the
+  start time as `ps -o lstart` shows it (`identityOf`); recording fails when
+  the table does not show the token. The environment is read from
+  `/proc/<pid>/environ` on Linux and from `ps -E` on macOS, where `ps` shows
+  none for the system's own binaries — such a process cannot be recorded.
+- `endProcess` signals only when the pid shows both ('not-ours' otherwise; a
+  pid that shows another start time is another process now). A group whose
+  leader has exited is ended only if every member left shows the token and
+  started no earlier; otherwise 'unknown'.
+- `spawnRecorded` spawns with a fresh token and records the child; one that
+  cannot be recorded is killed and the error thrown. The fake docker gives
+  each container its token, records it in the run's registry before its own
+  container record, keeps the identity in that record, and ends containers
+  through `endProcess`. The run's owner is its runner's pid and start time.
+- `f02fe83`: four test cleanups that sent SIGKILL to a container's process
+  group by a pid read earlier now end it by its record's identity; a fitness
+  test finds any group signalled by a pid alone in the test sources.
+**The reviewer's marker-prefix mutant.** The marker is gone, so
+`marker.split(' ')[0]` has no target. Its class — an identity weakened to
+what another process of the same executable also shows — was run on the
+token: any token taken as ours (M1), the token compared by its first eight
+characters (M2), the start time not compared (M3). All three are killed by
+the shared-executable negative case: at the recorded pid, the same `node -e`
+command line without the token, with a token one character off, with another
+start time, and with no start time recorded, is each left alone.
+**Tests:** the registry's and the fake docker's tests were rewritten with the
+module; against the previous registry they failed only at load (its new
+exports were missing), so the mutation check is what shows each assertion
+bites. `CYCLE13_REGISTRY_PID_REUSE` is the shared-executable case above.
+
+### CYCLE13-MED-002 — a failed `ps` was taken as proof of absence — ACCEPTED
+
+**Invariant (R48):** a `ps` that fails — non-zero status, spawn error,
+signal — yields "unknown": the record stays and the cleanup fails, in the
+registry and in the fake docker.
+**Change (`607b6dc`):** every `ps` call checks its status, error and signal;
+presence comes from `kill(pid, 0)` (only ESRCH is absence), and a `ps` that
+fails for a present pid is "unknown". `stillRunning` answers true when it
+cannot tell. Records are removed only for 'gone', 'ended' or 'not-ours'. The
+fake docker's `kill` and `rm -f` keep a container whose table cannot be read
+and answer "could not tell whether process N is still running"; fixture
+removal fails with each outcome; the canonical runner fails on any record of
+its run not shown gone. A run whose runner cannot be read is left as it is.
+`ASEP_PROCESS_TABLE_PS` names the `ps` to use, for the tests.
+**Tests:** `CYCLE13_REGISTRY_PS_FAILURE` and `CYCLE13_FAKE_DOCKER_PS_FAILURE`
+as tests, for a `ps` that exits 1, one killed by a signal and one that cannot
+start: `endProcess` is 'unknown' for a process and for a leaderless group,
+nothing is signalled, the record stays, recording fails; the fake docker's
+`kill` and `rm -f` keep the container and say why. A run whose runner cannot
+be read is left in place; an environment the table does not show is
+'unknown'; a process that cannot be recorded is not left running.
+**Mutation check (CYCLE13-MED-001 and -002, 16 mutants):** M1–M3 above; an
+unreadable table taken as absence (M4); an unreadable group listing taken as
+no members (M5); the status of `ps` not checked (M6); a record whose
+identity is unknown removed (M7); members of a leaderless group not checked
+for the token (M8); a runner taken as alive by its pid alone (M9); a runner
+that cannot be read taken as gone (M10); an environment not shown taken as
+one without the token (M11); a process not showing its token recorded anyway
+(M12); a process that cannot be recorded left running (M13); the fake docker
+taking an unknown table as the container gone (M14); fixture removal
+counting only 'still-running' (M15); the runner not failing on an unknown
+process of its run (M16) — all killed. The first run of M4 and M13 did not
+end within the mutation runner's 600 s bound — their failures were already
+reported, but the test file's process did not exit — and the runner ended
+it; those mutants left processes that the registry's tests then held
+forever. The tests' processes now hold a minute at most; rerun, both mutants
+were killed in 136 s. Those runs left four processes, each with this
+worktree as its working directory and a test token in its environment; they
+were killed by pid after their start times and environments were checked.
+`f02fe83`: a cleanup signalling a group by a pid alone again, and an allowed
+signal that is gone but still listed — both killed.
+
+### CYCLE13-MED-003 — test helpers started processes outside the run's registry — ACCEPTED
+
+**Invariant (R48):** every long-lived test helper and direct spawn registers,
+including the registry's own tests.
+**Change (`a94fa3e`):** the fake docker test helper starts its client with
+`spawnRecorded` and the run's registry in its environment, so the client and
+its container are both recorded; a test that keeps a registry of its own
+keeps it beside the run's (`ASEP_PROCESS_REGISTRY` may list several
+directories, joined by the path delimiter: a process is recorded and
+forgotten in each). The registry's own helpers record what they start and
+forget it once shown gone; the one helper that by design shows no token of
+ours, and the system binary `ps` shows no environment of, hold a minute at
+most. The runner's wiring fixture records what it starts. A fitness test
+scans every test source — test, itest and live files and the test tooling —
+for `spawn(`: each is recorded or listed with why it need not be (a docker
+client through a shim, whose container the fake docker records; a process
+outside the canonical run, such as the live proof's and the integration
+runner's; a member of a recorded group), and the list must stay current.
+`985ddf3`: the gate at `a94fa3e` listed one record of its run whose process
+had gone — the registry's leaderless-group test tried to end the group
+before its stranger member; it now ends the stranger first.
+**Tests:** `CYCLE13_TEST_HELPER_REGISTRY_GAP` as two tests: a container the
+fake docker helper starts, and its client, are in the run's registry without
+being handed it; what the registry's helpers start is in the run's registry,
+and a registry of a test's own is kept beside it. The fitness test was red
+against the previous fake docker test file (its direct spawns). The two
+probe tests were written after the helpers were changed; the mutation check
+shows each fails without its change.
+**Mutation check:** the helper not handing its client the run's registry;
+the helper not recording its client; the registry's helper not recording; a
+registry list taken as one directory; an unrecorded spawn not listed; a
+listed spawn no longer there; the runner's fixture starting its process
+without recording it — all killed.
+
+### CYCLE13-MED-004 — leftovers of an earlier run did not fail the gate — ACCEPTED
+
+**Invariant (R48):** leftovers of an earlier run fail the gate, as the
+runner's header promises.
+**Change (`6fec876`):** the runner fails when any record, of this run or of an
+earlier one, is not shown gone ('still-running' or 'unknown'); its header
+says so.
+**Tests (written first, red before the change):** the negative wiring test:
+the runner on a test file that starts nothing, with an earlier run whose
+runner is gone holding (a) a plain recorded process — it is ended and the run
+passes — and then (b) a leaderless group whose member shows another token —
+the run exits 1, lists it as 'unknown', signals nothing and keeps its record.
+`CYCLE13_EARLIER_STUCK_GATE` is (b).
+**Mutation check:** the runner counting only this run's records as stuck —
+killed.
+
+### CYCLE11-HIGH-002 — disposition R47 unchanged
+
+Nothing in this cycle changes what is known of the Node launch stall. Every
+gate ran through `gate.sh`; none showed a launch of 10 s or more.
+
+**Gate runs of this cycle.** Every one through `gate.sh`; the sampler line is
+its own summary.
+
+| Commit | Gate | Result | Tests | Duration | Sampler: samples, longest Node launch, launches of 10 s or more | Valid under R47 |
+|---|---|---|---|---|---|---|
+| `ceb300e` | `verify:all` | exit 0 | 885 of 885 | 461 s | 202, 3081 ms, 0 | yes |
+| `d883e24` | `verify:all` | exit 0 | 888 of 888 | 452 s | 198, 2851 ms, 0 | yes |
+| `607b6dc` | `verify:all` | exit 0 | 895 of 895 | 444 s | 192, 3533 ms, 0 | yes |
+| `f02fe83` | `verify:all` | exit 0 | 896 of 896 | 522 s | 220, 5316 ms, 0 | yes |
+| `a94fa3e` | `verify:all` | exit 0 | 899 of 899 | 502 s | 215, 4741 ms, 0 | yes |
+| `985ddf3` | `verify:all` | exit 0 | 899 of 899 | 514 s | 217, 4653 ms, 0 | yes |
+| `6f4dc30` | `verify:all` | exit 0 | 899 of 899 | 528 s | 223, 4767 ms, 0 | yes |
+| `6fec876` | `verify:all` | exit 0 | 900 of 900 | 552 s | 234, 3440 ms, 0 | yes |
+| `6fec876` | `test:integration` | exit 0 | 34 of 34 | 110 s | 50, 1003 ms, 0 | yes |
+
+No gate run of this cycle was red. The canonical runner at `a94fa3e` listed
+one record of its own run whose process had already gone; `985ddf3` removed
+its cause (see CYCLE13-MED-003), and no other run listed any. No run found a recorded process still running, before or after
+the tests. After the integration run no container labelled `asep.role` and
+no network labelled `asep.attempt` remained. The final sequence on the
+report commit —
+`pnpm install --frozen-lockfile`, two `verify:all` and two
+`test:integration` runs, each through `gate.sh` — is bound by the L1
+sentinel and reported to the controller with its sampler lines.
+
+### Port and schema deltas for Lanes A and B
+
+No port, schema or migration changes in this cycle. Contract changes, all
+inside adapters and test tooling:
+- `@asep/agent-claude`: `buildProxyRunArgs` takes a required `lifetimeMs`
+  in place of `expiresAt`; `assets/egress-proxy.mjs` takes `--lifetime-ms` in
+  place of `--expires-at`, refuses a lifetime beyond its exported
+  `MAX_LIFETIME_MS`, and its `egressProxy` takes `deadline`, `now`,
+  `schedule` and `onExpired` in place of `expiresAt`; new export
+  `PROXY_MAX_LIFETIME_MS`.
+- Test tooling: `scripts/lib/process-registry.mjs` records
+  `{ pid, group, token, startedAt }` (no marker) and exports `identityOf`,
+  `spawnRecorded`, `shownGone`, `TOKEN_ENV` and `PS_ENV`; `register(entry,
+  dir)`, `endProcess(entry, { waitMs, kill })` with the outcome 'unknown',
+  `withProcessRegistry(root, fn)`; `ASEP_PROCESS_REGISTRY` may list several
+  directories. Fake docker containers get `ASEP_PROCESS_TOKEN` in their
+  environment, and its records carry the identity. `runCanonicalTests`
+  accepts `registryRoot` and fails on leftovers of earlier runs.

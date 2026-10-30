@@ -21,20 +21,24 @@ verdict_note: >-
   private key are available in this environment. Per K6/L4 that is the case
   reserved for a pilot-pending verdict.
 
-  (2) The repairs of repair cycle 13 are unreviewed, and one finding is not
-  closed. Codex re-review cycle 12 at d9255fb
-  (phase-02-final-rereview-codex-v12.md) returned REQUEST_CHANGES @ 0.99 and
-  did not accept Phase 2. It accepted (RESOLVED) CYCLE11-HIGH-001,
-  CYCLE11-MED-001, concern 2, CYCLE10-HIGH-001, HIGH-006, MED-005,
-  CYCLE7-HIGH-003, CYCLE8-HIGH-003 and the monotonic waits, and the earlier
-  RESOLVED findings stand. It found CYCLE11-HIGH-002, the timeout work and
-  CYCLE10-HIGH-002 PARTIAL, and raised CYCLE12-HIGH-001 (the egress proxy kept
-  the model credential usable with no bound once its starter was gone),
-  CYCLE12-MED-001 (test fixtures could leave processes behind and delete the
-  records that find them) and CYCLE12-MED-002 (absence that arrived after the
-  removal deadline was taken as proof); one mutant of the docker caller's cut
-  survived. Repair cycle 13 applies the controller's decisions on that review
-  (reconciliation R47). CYCLE11-HIGH-002 is not closed. The stall is in
+  (2) The repairs of repair cycle 14 are unreviewed, and one finding is not
+  closed. Codex re-review cycle 13 at 26d2a55
+  (phase-02-final-rereview-codex-v13.md) returned REQUEST_CHANGES @ 0.99 and
+  did not accept Phase 2. It accepted (RESOLVED) CYCLE12-MED-002, the cut
+  mutant, the instrumentation, the real-Octokit probe, the timeout work,
+  CYCLE10-HIGH-002, CYCLE11-HIGH-001, CYCLE11-MED-001, concern 2,
+  CYCLE10-HIGH-001, HIGH-006, MED-005, CYCLE7-HIGH-003, CYCLE8-HIGH-003 and
+  the monotonic waits, and found the controller's four gates at 26d2a55 valid
+  under R47. It found CYCLE12-HIGH-001, CYCLE12-MED-001 and CYCLE11-HIGH-002
+  PARTIAL, and raised CYCLE13-HIGH-001 (the egress proxy read its lifetime
+  from the wall clock, so a clock set back extended the credential's window,
+  and a stream open after the expiry was observed went on), CYCLE13-MED-001
+  (the test process registry could kill another process after pid reuse),
+  CYCLE13-MED-002 (a failed ps was taken as proof a process was gone),
+  CYCLE13-MED-003 (test helpers started processes outside the canonical run's
+  registry) and CYCLE13-MED-004 (leftovers of an earlier run did not fail the
+  gate). Repair cycle 14 applies the controller's decisions on that review
+  (reconciliation R48). CYCLE11-HIGH-002 is not closed. The stall is in
   launching Node on this host (measured: a new Node process waited up to
   40.7 s while /bin/sh launched in at most 173 ms); that the host's
   launch-policy check holds those launches is a strong hypothesis, not
@@ -55,21 +59,25 @@ verdict_note: >-
   stale owner off it, that the push's lease refused any commit but the
   attempt's, that the takeover's reconciliation made any PR the attempt's
   reviewable publication, that reconcile wrote only the recorded PR
-  (cycle 11; its write went through the branch-keyed upsert), and that the
+  (cycle 11; its write went through the branch-keyed upsert), that the
   cause of CYCLE11-HIGH-002 had been found on the host (cycle 12; it is a
-  strong hypothesis, not proven). The reviews showed each was wrong. This revision states the gate results observed in
+  strong hypothesis, not proven), that after worker death the credential was
+  usable through a leftover proxy at most until the attempt's deadline plus
+  30 s (cycle 13; a wall clock set back extended it), and that a test
+  fixture's record stayed until its process was shown gone (cycle 13; a
+  failed ps was taken as absence). The reviews showed each was wrong. This revision states the gate results observed in
   this cycle and the status of each finding, and nothing else as verified.
 
 repository:
   branch: phase/02-single-agent-vertical-slice
   base_sha: fc0df57df05b6745e190a53496bd5d90b7ae4bcb
   base_sha_note: base = `git merge-base main HEAD`.
-  last_reviewed_head: d9255fb (Codex re-review cycle 12, REQUEST_CHANGES)
+  last_reviewed_head: 26d2a55 (Codex re-review cycle 13, REQUEST_CHANGES)
   under_review: none
-  implementation_head_sha: b95cb8267ad5621f7ec769c2ae236a7d8488422c
+  implementation_head_sha: 6fec876e6643fbfd20accb046cd79147126404e2
   head_binding: >-
-    implementation_head_sha is the last commit of repair cycle 13 that changes
-    code or tests (`git rev-parse b95cb82`). The commits after it change
+    implementation_head_sha is the last commit of repair cycle 14 that changes
+    code or tests (`git rev-parse 6fec876`). The commits after it change
     documentation only. A commit cannot contain its own hash, so the true HEAD is bound
     outside this file (exit L1): the gitignored
     `.phase-02-implementation-complete` sentinel is written last, after
@@ -87,44 +95,50 @@ versions:
 
 verification:
   observed_at: >-
-    b95cb8267ad5621f7ec769c2ae236a7d8488422c (implementation_head_sha), from a
+    6fec876e6643fbfd20accb046cd79147126404e2 (implementation_head_sha), from a
     clean tree; every gate through the controller's gate.sh, which holds the
     host's gate lock and samples Node launches beside the run
-  install: "not run at b95cb82; pnpm install --frozen-lockfile opens the final gate sequence on the report commit"
-  verify_all: "pnpm verify:all through gate.sh — PASS, exit 0, all 14 steps: format:check, cold-cache reset, typecheck, test, contracts test (80/80), policy test (36/36), contracts compat (13 schemas), forbidden-imports (14/14), project-references (5/5), scan:secret, scan:large-file, scan:pii, check:publication, clean-tree; 427 s; sampler: 186 samples, longest Node launch 3101 ms, none of 10 s or more (valid under R47)"
-  every_commit: "verify:all through gate.sh at each commit before the next, every run passed and valid under R47 (no Node launch of 10 s or more; longest 1.4–3.2 s): 158608f 869, e58c588 870, 87c231c 870, 0d95b1f 873, 2d974cb 884, e47b2cb 884, b95cb82 885 tests. No red run in this cycle"
-  canonical_tests: "885 tests, 885 pass, 0 fail, 0 skipped, across 60 test files; 36 required suite markers verified by scripts/run-canonical-tests.mjs; its process registry found no recorded process still running from earlier runs or from this run, and no record left"
-  integration_gate: "pnpm test:integration through gate.sh — exit 0; 34 tests, 34 pass, 0 fail, 0 skipped, across 7 *.itest.ts files on digest-pinned PostgreSQL and MinIO and Docker 29.6.1 (backends published on 127.0.0.1 only); 7 required suite markers verified; containers torn down; afterwards no container labelled asep.role and no network labelled asep.attempt remained; 113 s; sampler: 50 samples, longest Node launch 988 ms (valid under R47)"
+  install: "not run at 6fec876; pnpm install --frozen-lockfile opens the final gate sequence on the report commit"
+  verify_all: "pnpm verify:all through gate.sh — PASS, exit 0, all 14 steps: format:check, cold-cache reset, typecheck, test, contracts test (80/80), policy test (36/36), contracts compat (13 schemas), forbidden-imports (14/14), project-references (5/5), scan:secret, scan:large-file, scan:pii, check:publication, clean-tree; 552 s; sampler: 234 samples, longest Node launch 3440 ms, none of 10 s or more (valid under R47)"
+  every_commit: "verify:all through gate.sh at each commit before the next, every run passed and valid under R47 (no Node launch of 10 s or more; longest 2.9–5.3 s): ceb300e 885, d883e24 888, 607b6dc 895, f02fe83 896, a94fa3e 899, 985ddf3 899, 6f4dc30 899, 6fec876 900 tests. No red run in this cycle"
+  canonical_tests: "900 tests, 900 pass, 0 fail, 0 skipped, across 60 test files; 36 required suite markers verified by scripts/run-canonical-tests.mjs; its process registry found no recorded process still running from earlier runs or from this run, and no record left"
+  integration_gate: "pnpm test:integration through gate.sh — exit 0; 34 tests, 34 pass, 0 fail, 0 skipped, across 7 *.itest.ts files on digest-pinned PostgreSQL and MinIO and Docker 29.6.1 (backends published on 127.0.0.1 only); 7 required suite markers verified; containers torn down; afterwards no container labelled asep.role and no network labelled asep.attempt remained; 110 s; sampler: 50 samples, longest Node launch 1003 ms (valid under R47)"
   gate_validity: "R47: a gate run is acceptance evidence only if its Node-launch sampler shows no launch of 10 s or more; a red run with such a stall is a host stall, neither pass nor fix; a red run without one is a real failure needing a root cause; acceptance needs two consecutive valid green runs of each gate at the final head (the final sequence on the report commit, bound by the sentinel)"
-  synthetic_load: "not run in this cycle (cycle 12's runs, which do not exercise the stall: 0 failures in 20 runs before its changes, 0 in 10 after; phase-02-review-log.md, \"Final review cycle 11 dispositions\")"
+  synthetic_load: "not run in this cycle or the last (cycle 12's runs, which do not exercise the stall: 0 failures in 20 runs before its changes, 0 in 10 after; phase-02-review-log.md, \"Final review cycle 11 dispositions\")"
   integration_gate_under_load: "not run in this cycle"
-  integration_gate_at_reviewed_head: "the controller's gates at d9255fb, on a clean detached worktree with no lane running and a Node-launch sampler: verify:all twice, exit 0, 869 pass, 0 fail each; integration twice, 34 of 34 each; no leftover container or network; node -e 0 launch median 60 ms, at most 2.87 s over 452 samples (logs in the controller's lane directory)"
+  integration_gate_at_reviewed_head: "the controller's gates at 26d2a55, through gate.sh: verify:all twice, exit 0, 885 of 885 each (sampler 195 and 182 samples, longest Node launch 2956 and 3245 ms); test:integration twice, exit 0, 34 of 34 each (45 samples each, longest 960 and 742 ms); none with a launch of 10 s or more; the cycle-13 review recomputed the samplers from the raw logs and found the four runs valid under R47"
   earlier_red_runs: "verify:all at 7017cfc, twice (two tests each: the sandbox's first docker call, the tests' Node-based fake client, started at once and was killed at its 30 s bound; a probe beside the second run measured Node launches held 4.6–40.7 s while /bin/sh and /usr/bin/true launched in at most 173 ms — what holds them is a strong hypothesis, the host's launch-policy check, not proven); the controller's run 2 at 42b6d78 (fits the same stall; its window is no longer in the host's kernel log, so it cannot be checked; its canonical test step took 422 s against 351 s in run 1); the first run of repair cycle 11 at 21aeb0d (two agent tests: the egress proxy, a Node process, did not become ready within its timer; the same class, not checkable now); the controller's run 1 at a447983 (the hung-agent test 80.8 s against its 60 s check; not explained)"
   live_proofs: >-
     `pnpm test:live:claude` is opt-in and outside both gates and was not run in
     this cycle. Its CONFORMANCE test last ran at dec962b (cycle-7 follow-up)
     and passed; the agent network's creation and inspection (9d782c1) and the
-    egress proxy's lifetime (0d95b1f) changed after it. Its LIVE test (real
-    model API) has never run here: no credential.
+    egress proxy's lifetime (0d95b1f, then d883e24) changed after it, so its
+    rerun is a pilot prerequisite (PP1). Its LIVE test (real model API) has
+    never run here: no credential.
   mutation_checks: >-
-    Run by the implementer for every cycle-12 finding with a code or test
-    change: 39 mutants, all killed (CYCLE12-MED-002 3; the cut and the
-    instrumentation 6, the reviewer's cutMs + 1_000 among them;
-    CYCLE12-HIGH-001 11; CYCLE12-MED-001 17; the real-Octokit probe 2). Two
-    more, run against a first draft of the proxy's stop, have no code left to
-    mutate: one was killed, the other survived on a branch that cannot be
-    reached, and the draft was simplified. One run of a CYCLE12-MED-001 mutant
-    hung in the Node test runner's parent and was killed; rerun twice, the
-    mutant was killed. Not mutation-checked: the threat model and runbook
-    text, and the manual container stdin probe. Mutants per finding are in
-    phase-02-review-log.md, "Final review cycle 12 dispositions".
+    Run by the implementer for every cycle-13 finding: 44 mutants, 43 killed (CYCLE13-HIGH-001 16, CYCLE13-MED-001 and -002 18, CYCLE13-MED-003 7, CYCLE13-MED-004 3). The one that survived — a response beginning after the deadline forwarded — removed a check that was redundant (the headers leave only with the first chunk or the end, both checked); the branch was removed, and a test of what the agent receives kills a mutant that flushes the headers at once. The reviewer's marker-prefix mutant has no target (the marker is gone); its class, an identity weakened to what a shared executable shows, was run on the token and the start time and killed by the shared-executable negative case. Two mutants (an unreadable table taken as absence; a process that cannot be recorded left running) did not end within the mutation runner's 600 s bound on their first run and were killed on a rerun; the processes those runs left were killed by pid after their identity was checked. Not mutation-checked: the threat model and runbook text. Mutants per finding are in phase-02-review-log.md, "Final review cycle 13 dispositions".
+
+findings_cycle_13:
+  note: >-
+    Status after repair cycle 14, as assessed by the implementer; none is
+    independently confirmed. Details, tests, mutation checks and residual
+    concerns per finding: phase-02-review-log.md, "Final review cycle 13
+    dispositions".
+  accepted_by_review_at_cycle_13: [CYCLE12-MED-002, CUT-MUTANT, INSTRUMENTATION, REAL-OCTOKIT-PROBE, TIMEOUTS, CYCLE10-HIGH-002, CYCLE11-HIGH-001, CYCLE11-MED-001, CONCERN-2, CYCLE10-HIGH-001, HIGH-006, MED-005, CYCLE7-HIGH-003, CYCLE8-HIGH-003, MONOTONIC-WAITS]
+  partial_at_cycle_13: "CYCLE12-HIGH-001 (by CYCLE13-HIGH-001), CYCLE12-MED-001 (by CYCLE13-MED-001 to -004), CYCLE11-HIGH-002 (its cause not proven; R47 holds)"
+  repaired_unreviewed:
+    CYCLE13-HIGH-001: "d883e24, 6f4dc30 — the egress proxy takes a relative lifetime (--lifetime-ms, at most MAX_LIFETIME_MS, four hours; it refuses to start beyond) and fixes its deadline once on its own monotonic clock from its own start; admission, its exit timer and every request and stream in flight answer to that one deadline, and whichever first sees it reached ends the proxy: nothing more is forwarded, every open connection is destroyed, the proxy exits. The provider passes what is left of the budget at the proxy's spawn plus PROXY_EXPIRY_GRACE_MS, at most PROXY_MAX_LIFETIME_MS; a proxy not ready within its readiness bound is killed. Tests: the reviewer's rollback, latch-timer, stream-after-expiry and expiry-input probes (a real proxy with its wall clock moved an hour back and an hour forward; streams cut at the deadline whatever sees it first; a kept-alive request refused; start beyond the maximum refused); the provider's lifetime with a slow setup and a budget beyond the maximum. T2-16 and the runbook: the window after worker death is min(remaining budget + grace, maximum) + readiness bound, independent of wall-clock changes"
+    CYCLE13-MED-001: "607b6dc, f02fe83 — a recorded test process carries a token of its own in its environment and its start time; it is signalled only while its pid shows both; a leaderless group only while every member shows the token; test cleanups end containers by that identity, never by a pid alone. The marker-prefix mutant's class (identity weakened to what a shared executable shows) is killed by the shared-executable negative case"
+    CYCLE13-MED-002: "607b6dc — a ps that fails (status, spawn error, signal) or an environment that cannot be read is 'unknown': nothing is signalled, the record stays, the cleanup fails; in the registry, the fake docker, fixture removal and the canonical runner"
+    CYCLE13-MED-003: "a94fa3e, 985ddf3 — every long-lived process a test starts is in the run's registry, the registry's own tests included; a fitness test lists each spawn that is not, with why"
+    CYCLE13-MED-004: "6fec876 — a leftover of an earlier run that cannot be shown gone fails the gate; a negative wiring test"
+    CYCLE11-HIGH-002: "NOT CLOSED; disposition R47 unchanged. Every gate of this cycle ran through gate.sh and was valid under R47"
 
 findings_cycle_12:
   note: >-
-    Status after repair cycle 13, as assessed by the implementer; none is
-    independently confirmed. Details, tests, mutation checks and residual
-    concerns per finding: phase-02-review-log.md, "Final review cycle 12
-    dispositions".
+    Status after repair cycle 13, as assessed by the implementer then; the
+    cycle-13 review's verdicts on them are above. Details:
+    phase-02-review-log.md, "Final review cycle 12 dispositions".
   accepted_by_review_at_cycle_12: [CYCLE11-HIGH-001, CYCLE11-MED-001, CONCERN-2, CYCLE10-HIGH-001, HIGH-006, MED-005, CYCLE7-HIGH-003, CYCLE8-HIGH-003, MONOTONIC-WAITS]
   partial_at_cycle_12: "CYCLE11-HIGH-002 (the stall measured; what makes the bursts, and a fix, not verified), the timeout work, and CYCLE10-HIGH-002 (by the late absence of CYCLE12-MED-002)"
   repaired_unreviewed:
@@ -215,15 +229,16 @@ exit_criteria:
   M: "phase-02-pilot-runbook.md; phase-02-pilot-rehearsal.md; asep-suite:pilot-rehearsal, asep-suite:pilot-faults"
 
 commits_this_cycle:
-  - 158608f docs(phase-2) add the cycle-12 independent review transcript
-  - e58c588 fix(sandbox) absence that arrives after the removal deadline is refused (CYCLE12-MED-002)
-  - 87c231c test(sandbox) bound the cut from above; docker calls carry the client pid; kill results are kept
-  - 0d95b1f fix(agent) the egress proxy has a lifetime of its own (CYCLE12-HIGH-001)
-  - 2d974cb test(harness) test processes are recorded outside the test worker and ended before their records go (CYCLE12-MED-001)
-  - e47b2cb test(harness) fixture removal forgets what it ended; the runner counts what it found running (CYCLE12-MED-001)
-  - b95cb82 test(forge) the reviewer's real-Octokit probe is a test
-  - this report and the cycle-12 dispositions
-commits_earlier_history: "`git log fc0df57..d9255fb`"
+  - ceb300e docs(phase-2) add the cycle-13 independent review transcript
+  - d883e24 fix(agent-claude) the egress proxy counts a relative lifetime on its own monotonic clock (CYCLE13-HIGH-001)
+  - 607b6dc fix(test-registry) a recorded process is identified by its token and start time, and an unreadable process table is unknown (CYCLE13-MED-001, CYCLE13-MED-002)
+  - f02fe83 fix(tests) test cleanup ends a recorded container by its identity, never by its pid alone (CYCLE13-MED-001)
+  - a94fa3e test(harness) every long-lived process a test starts is in the run's registry, or says why not (CYCLE13-MED-003)
+  - 985ddf3 test(harness) the registry's own test forgets a leaderless group once its stranger member is ended (CYCLE13-MED-003)
+  - 6f4dc30 test(agent-claude) a response that begins after the deadline sends the agent not even its status line (CYCLE13-HIGH-001)
+  - 6fec876 fix(test-runner) leftovers of an earlier run that cannot be shown gone fail the gate (CYCLE13-MED-004)
+  - this report and the cycle-13 dispositions
+commits_earlier_history: "`git log fc0df57..26d2a55`"
 
 contract_changes_this_cycle:
   migrations: "none"
@@ -233,27 +248,28 @@ contract_changes_this_cycle:
     their rebase after G-P2, and no adapter may implement
     updatePullRequestContent through a branch-keyed upsert (R47).
   adapters: >-
-    @asep/agent-claude: buildProxyRunArgs takes a required expiresAt (epoch
-    milliseconds); assets/egress-proxy.mjs requires --expires-at, keeps reading
-    stdin after the credential line as its link to its starter, and exports
-    egressProxy; new exports PROXY_EXPIRY_GRACE_MS and PROXY_EXIT_BOUND_MS;
-    the teardown notes may name a failed kill of the proxy or of the agent at
-    its stop. @asep/command-runner: DockerCallRecord gains pid?, which
-    describeDockerCall names; the runner's teardown error names its client's
-    pid; both removal helpers refuse absence that arrives after their
-    deadline, with how late it came.
+    @asep/agent-claude: buildProxyRunArgs takes a required lifetimeMs in place
+    of expiresAt; assets/egress-proxy.mjs takes --lifetime-ms in place of
+    --expires-at, refuses a lifetime beyond its exported MAX_LIFETIME_MS, and
+    its egressProxy takes deadline, now, schedule and onExpired in place of
+    expiresAt; new export PROXY_MAX_LIFETIME_MS; the invocation manifest
+    records the proxy's argv at its spawn.
   application: "none"
-  apps: "none (test fixtures only)"
+  apps: "none"
   test_tooling: >-
-    scripts/lib/process-registry.mjs and scripts/testing/fake-docker-fixture.mjs
-    are new; the canonical runner sets ASEP_PROCESS_REGISTRY for its tests,
-    ends what earlier and current runs left, and reports it; the fake docker
-    records carry group and marker, keep a container's record until its
-    process group is shown gone, and log a container's stdin per chunk.
+    scripts/lib/process-registry.mjs records { pid, group, token, startedAt }
+    (no marker) and exports identityOf, spawnRecorded, shownGone, TOKEN_ENV
+    and PS_ENV; register(entry, dir), endProcess(entry, { waitMs, kill }) with
+    the outcome 'unknown', withProcessRegistry(root, fn);
+    ASEP_PROCESS_REGISTRY may list several directories. Fake docker
+    containers get ASEP_PROCESS_TOKEN in their environment and their records
+    carry the identity; its kill also forgets the container in the registry.
+    runCanonicalTests accepts registryRoot and fails on leftovers of earlier
+    runs not shown gone.
 
 known_limitations:
   - "No live run: K2/K5/K6 unmet (no model credential, no GitHub App key)."
-  - "Repair cycle 13 is unreviewed, and CYCLE11-HIGH-002 is not closed (see verdict_note)."
+  - "Repair cycle 14 is unreviewed, and CYCLE11-HIGH-002 is not closed (see verdict_note)."
   - "Publication under takeover is not fenced at the forge. A stale owner — one paused inside a forge call while its lease lapsed — may still reach the forge, and GitHub offers no compare-and-set for a PR update. The push's compare-and-set conditions only on the branch's current value: expecting absence it accepts any SHA while the branch is absent, expecting the current value it accepts an update to any SHA. That only the attempt's commit lands comes from the harness, which always pushes the attempt's pinned commit; the compare-and-set makes a stale push of a different SHA fail once the branch exists. PR content is the same pure function of the attempt's facts. Before the terminal state the takeover puts the branch back on the attempt's commit and rewrites the title and body of the attempt's recorded PR, named by its number, when it reads that PR open on the attempt's base; the repair lists, selects and creates no PR, the harness never reopens or retargets a PR, and a PR read closed, merged, on another base or of unreported state is not written and fails the task on record. A human may close, merge or retarget a PR between the harness's read of it and its title/body write (the recorded PR in that repair, the branch's PR in a fresh run's upsert), so that write can land on a PR that just closed (residual read/write race: GitHub has no compare-and-set for a PR update, R30); the read of the PR that follows then fails the task. A stale write that lands after that reconciliation is not repaired by that resume; an open PR edited outside the harness is repaired only by a later resume; a PR closed after its task reached review leaves the task there (the harness has no transition past review), and the verifier refuses it."
   - "Accepted as a Phase 2 limit (R39): the failure of a task on a publication gap is written from the persisted task status, which stays PENDING until the workflow writes a terminal state (the success path writes WAITING_FOR_HUMAN_REVIEW the same way); the domain's transition check is not applied to the persisted row, and PENDING → FAILED is not in the domain's table. The failure taxonomy has no publication class; the outcome is the audit detail."
   - "Accepted as a Phase 2 limit (R39): a PR closed after its task reached review leaves the task there; review is the harness's terminal state and the verifier refuses that PR."
@@ -263,12 +279,13 @@ known_limitations:
   - "The TypeScript fitness guard is a static net: a value computed at run time, or retyped through an interface a root declares itself, can evade it. Enforcement is the runner's own record: it runs a command only for a handle a sandbox provider made, where that provider put it, from its own frozen copy of the flags."
   - "The agent's model provider is a trusted data channel: the egress proxy limits method, path and origin, not content."
   - "The agent network needs Docker Engine 28.0.0 or later (isolated gateway mode). Verified on Docker Desktop 29.6.1 here; the CI runner's engine version is not verified."
-  - "Containers are removed by the harness while it is alive; if the harness process itself dies, its containers run on until the operator sweep (runbook §0.1). The egress proxy among them ends itself at its expiry, the attempt's deadline plus 30 s, at the latest, or when its stdin link closes; until then the agent can still reach the model API through it with the credential (threat model T2-16)."
+  - "Containers are removed by the harness while it is alive; if the harness process itself dies, its containers run on until the operator sweep (runbook §0.1). The egress proxy among them ends itself at the end of its lifetime, counted on its own monotonic clock, at the latest — after worker death within min(remaining budget + 30 s, 4 h) plus the readiness bound, whatever is done to the wall clock — or when its stdin link closes; until then the agent can still reach the model API through it with the credential (threat model T2-16). Not covered: a worker that dies while its proxy is still starting (that proxy's lifetime runs from whenever it starts), and host sleep, which neither clock counts."
   - "The pilot verifier rests on what the harness recorded — agent artifacts and the verification provenance record — and on the configured model origin: whoever can write both the database and the object store could fabricate a run, and nothing attests who answers at that origin. The provenance record is not FK-bound to the evidence reservation."
   - "The pilot workflow plans L0 and L1 only, so an R1 task stops at verification for its missing L2: pilot tasks are R0."
   - "Test bounds that depend on host load are sized from measurements up to a load average of about 185 on 8 CPUs (bc4cca5); a heavier load can still exceed them. The stop-path assertions use the product's bounds plus a 2 s scheduling allowance (the stop came at most 4 ms late at load average up to 112); the hung-agent integration test needs its setup to finish inside its 45 s budget (measured up to 19.1 s at load average 60–106 with docker churn; not checked independently) — accepted as a test condition, not a product SLA (R39). A container not shown gone within its removal bound (one docker-call timeout after its client ended) fails the attempt or the run."
   - "The 80.8 s red run at a447983 is neither reproduced nor explained. Its log records only the test's duration, which includes the test's fixture setup and cleanup; how that time split between fixture, setup, stop and teardown is not recorded and cannot be verified. No reproduction here took more than 12.3 s from the deadline to the end of teardown."
   - "The gates are not reliable on this host (CYCLE11-HIGH-002). During bursts of Node launches on the host a new Node process waited up to 40.7 s (measured in cycle 12); that the host's launch-policy check (AppleSystemPolicy notifying syspolicyd) holds them is a strong hypothesis, not proven, and what makes the bursts is unknown. The unit tests' fake docker client is one Node launch per docker call, so a call in such a window exceeds its 30 s bound and the test fails: 2 of the 8 canonical test runs of cycle 12 after the instrumentation landed failed so; none of the 8 gate runs of cycle 13 had a Node launch of 10 s or more. Every docker call and every failed removal reports its timeline (call, client pid, end, signal, duration, bound, cut), which names such a failure. Disposition R47: every gate runs through gate.sh; a run counts only if its sampler shows no launch of 10 s or more; acceptance needs two consecutive valid green runs of each gate at the final head. Possible remedies, none applied: a host-policy exemption for the process that launches the gates (the user's choice; untested), keeping Node-launch bursts off the host during a gate, or a fake docker client that is not a Node launch per call."
+  - "The test process registry reads a process's environment from /proc on Linux and with ps -E on macOS. Only the macOS path ran here; the Linux path, which the CI runner (ubuntu-latest) takes, is not verified."
   - "Fault 5 of the rehearsal pushes to a local bare remote; fault 1 is injected into the provider, not a full pipeline run."
   - "PGlite is a fast-test seam; the real-backend proofs run on PostgreSQL 17 in the integration gate."
   - "No Phase 3+ runtime (Temporal, distributed scheduling, second-model reviewer, Web Console, memory, auto-merge, deploy, K8s/gVisor, enterprise OIDC) by design."
@@ -314,32 +331,36 @@ compare-and-set for a PR update); the read that follows fails the task.
 
 The verdict is **IMPLEMENTATION_COMPLETE_PILOT_PENDING_UNREVIEWED**. Three
 items are open: the live pilot has not run (no credentials here), repair cycle
-13 has not been independently reviewed, and the gates are not reliable on this
+14 has not been independently reviewed, and the gates are not reliable on this
 host (CYCLE11-HIGH-002): a new Node process has waited tens of seconds to run
 here — what holds it is a strong hypothesis, the host's launch-policy check,
 not proven — and the unit tests' fake docker client is a Node process per
 call. Under the controller's disposition (R47) a gate run counts only when its
 Node-launch sampler shows no launch of 10 s or more.
 
-The last independent review, Codex re-review cycle 12 at `d9255fb`, did not
-accept Phase 2. It found the egress proxy kept the model credential usable
-with nothing to bound it once the process that started it was gone; that test
-fixtures could leave processes running and delete the records that find them;
-and that both container-removal helpers took absence that arrived after their
-deadline as proof; a mutant of the docker caller's cut survived. Repair cycle
-13 addresses each as the controller decided (reconciliation R47): the proxy
-has a lifetime of its own (an expiry and a link to its starter), test
-processes are recorded outside the test process and ended before their
-records go, late absence is refused, and the cut is bounded from above. The
+The last independent review, Codex re-review cycle 13 at `26d2a55`, did not
+accept Phase 2. It found that the egress proxy read its lifetime from the
+wall clock, so a clock set back extended the credential's window and a stream
+open after the expiry went on; that the test process registry could kill
+another process after pid reuse and took a failed `ps` as proof a process was
+gone; that test helpers still started processes outside the run's registry;
+and that leftovers of an earlier run did not fail the gate. Repair cycle 14
+addresses each as the controller decided (reconciliation R48): the proxy
+counts a relative lifetime on its own monotonic clock, with one deadline for
+admission, its timer and every open stream, and a named maximum; a recorded
+test process is identified by a token of its own and its start time, and an
+unreadable process table is unknown, never absence; every long-lived test
+process is recorded; and an earlier run's leftovers fail the gate. The
 dispositions, with their tests, mutation checks and what was not checked, are
-in `phase-02-review-log.md` ("Final review cycle 12 dispositions"). They are
+in `phase-02-review-log.md` ("Final review cycle 13 dispositions"). They are
 the implementer's own work and assessment; read them as claims to be checked.
 
-What this cycle observed by machine, every gate through `gate.sh` with its Node-launch sampler: `pnpm verify:all` passed at each of the seven commits of the cycle, 869 to 885 canonical tests, with no Node launch of 10 s or more in any run (the longest 3.2 s); at the implementation head `b95cb82`, from a clean tree, all 14 steps passed with 885 canonical tests across 60 files and 36 required suites, and `pnpm test:integration` passed 34 tests across 7 files against real PostgreSQL, MinIO and Docker. No gate run of the cycle was red. The final sequence on the report commit — a frozen install, two `verify:all` and two `test:integration` runs — is reported to the controller, and the sentinel is written only after it passes.
+What this cycle observed by machine, every gate through `gate.sh` with its Node-launch sampler: `pnpm verify:all` passed at each of the eight commits of the cycle, 885 to 900 canonical tests, with no Node launch of 10 s or more in any run (the longest 5.3 s); at the implementation head `6fec876`, from a clean tree, all 14 steps passed with 900 canonical tests across 60 files and 36 required suites, and `pnpm test:integration` passed 34 tests across 7 files against real PostgreSQL, MinIO and Docker. No gate run of the cycle was red. The final sequence on the report commit — a frozen install, two `verify:all` and two `test:integration` runs — is reported to the controller, and the sentinel is written only after it passes.
 
 What it did not observe: a live model run, a push to github.com, a pilot
-manifest with ten tasks, an independent review, or the CI runner's Docker
-Engine version.
+manifest with ten tasks, an independent review, the CI runner's Docker
+Engine version, or the test process registry's Linux path (its environment
+read from /proc), which the CI runner takes.
 
 See `phase-02-exit-criteria.md` for the MUST list, `phase-02-pilot-runbook.md`
 for operating the pilot and its verifier, and `phase-02-pilot-rehearsal.md` for
