@@ -43,7 +43,9 @@ const SUITES_MODULE = pathToFileURL(join(HERE, 'lib', 'canonical-tests.mjs')).hr
 // process it leaves is a group whose leader has exited, with a member that
 // shows another token: it cannot be shown to be the one recorded. It stands in
 // for every required suite, so that what its runner answers is the registry's
-// doing alone.
+// doing alone. What it starts is recorded in the registry its runner hands it,
+// and holds a minute at most, so that what a failed test leaves does not
+// outlive it by long.
 const LEAVES_A_PROCESS = (pidFile: string, unproven = false) => `
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -54,12 +56,12 @@ import { REQUIRED_SUITES, suiteMarker } from ${JSON.stringify(SUITES_MODULE)};
 for (const id of Object.keys(REQUIRED_SUITES)) console.log(suiteMarker(id));
 const memberToken = randomUUID();
 const script = ${JSON.stringify(
-    "const c = require('node:child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1e9)'], "
+    "const c = require('node:child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60_000)'], "
     + "{ stdio: 'ignore', env: { PATH: process.env.PATH, ASEP_PROCESS_TOKEN: process.argv[1] } }); "
     + "process.stdout.write(c.pid + '\\n'); setTimeout(() => process.exit(0), 100);")};
 const { child, entry } = ${unproven}
   ? spawnRecorded(process.execPath, ['-e', script, memberToken], { detached: true, stdio: ['ignore', 'pipe', 'ignore'] })
-  : spawnRecorded(process.execPath, ['-e', 'setInterval(() => {}, 1e9)'], { detached: true, stdio: 'ignore' });
+  : spawnRecorded(process.execPath, ['-e', 'setTimeout(() => {}, 60_000)'], { detached: true, stdio: 'ignore' });
 let left = { pid: child.pid, token: entry.token };
 if (${unproven}) {
   const member = await new Promise((resolve) => child.stdout.once('data', (d) => resolve(Number(String(d).trim()))));

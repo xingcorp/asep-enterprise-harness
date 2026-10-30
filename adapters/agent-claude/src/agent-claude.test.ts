@@ -28,7 +28,7 @@ import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:f
 import http from 'node:http';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   ClaudeCodingProvider, FileModelCredentialProvider, AgentConfigError, MODEL_KEY_PLACEHOLDER,
@@ -854,8 +854,9 @@ test('the egress proxy forwards only the model API, swaps in the key, and refuse
 test('a test proxy that is not ready in time is killed, and leaves the process registry only once gone', async () => {
   const up = await fakeModelApi();
   const registry = await mkdtemp(join(tmpdir(), 'asep-registry-'));
+  // A registry of its own, beside the run's.
   const before = process.env[REGISTRY_ENV];
-  process.env[REGISTRY_ENV] = registry;
+  process.env[REGISTRY_ENV] = [registry, before].filter((d) => d !== undefined && d !== '').join(delimiter);
   try {
     let message = '';
     await assert.rejects(startProxy(up.url, `asep-test-model-key-${randomUUID()}`, { readyWithinMs: 1 }), (err: Error) => {

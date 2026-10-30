@@ -10,11 +10,11 @@ import {
   chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, relative } from 'node:path';
+import { delimiter, dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  endProcess, endRecorded, identityOf, register, registryRoot, registryShimLine, spawnRecorded, stillRunning,
-  withProcessRegistry,
+  endProcess, endRecorded, identityOf, register, registryRoot, registryShimLine, shownGone, spawnRecorded, stillRunning,
+  unregister, withProcessRegistry,
   PS_ENV, REGISTRY_ENV, TOKEN_ENV,
   // @ts-expect-error — .mjs helper has no type declarations; we test its runtime contract.
 } from './process-registry.mjs';
@@ -35,7 +35,8 @@ const startOf = (pid: number) =>
   spawnSync('ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C' } }).stdout.trim();
 
 // A process of its own group that runs until it is killed, started with `env`
-// (and PATH) as its whole environment.
+// (and PATH) as its whole environment: one that shows no token of ours, or
+// another one, so that it cannot be recorded by one. Its test kills it.
 function lone(env: NodeJS.ProcessEnv = {}): ChildProcess {
   const child = spawn(process.execPath, ['-e', HOLD], {
     detached: true, stdio: 'ignore', env: { PATH: process.env['PATH'], ...env },
@@ -44,24 +45,33 @@ function lone(env: NodeJS.ProcessEnv = {}): ChildProcess {
   return child;
 }
 
-// The same, with a token of its own: what identifies it.
+// The same, with a token of its own and recorded in the run's registry: what
+// identifies it.
 function recorded(): Entry {
-  const token = randomUUID();
-  return identityOf(lone({ [TOKEN_ENV]: token }).pid, { token, group: true }) as Entry;
+  const { child, entry } = spawnRecorded(process.execPath, ['-e', HOLD], { detached: true, stdio: 'ignore' }) as {
+    child: ChildProcess; entry: Entry;
+  };
+  child.unref();
+  return entry;
 }
 
-// A process that leads its own group, with a member in that group: the member
-// inherits its environment, token included, unless `memberToken` gives it one
-// of its own. With `leaderExits` the leader then exits.
+// Ends `entry` by its identity, and once it is shown gone, forgets it in the
+// run's registry.
+function finish(entry: Entry | undefined): void {
+  if (entry !== undefined && shownGone(endProcess(entry))) unregister(entry.pid);
+}
+
+// A process that leads its own group, recorded in the run's registry, with a
+// member in that group: the member inherits its environment, token included,
+// unless `memberToken` gives it one of its own. With `leaderExits` the leader
+// then exits.
 async function group(o: { leaderExits?: boolean; memberToken?: string } = {}): Promise<{ entry: Entry; member: number }> {
-  const token = randomUUID();
   const memberEnv = o.memberToken === undefined ? '' : `, env: { PATH: process.env.PATH, ${TOKEN_ENV}: '${o.memberToken}' }`;
   const script = `const c = require('node:child_process').spawn(process.execPath, ['-e', '${HOLD}'], { stdio: 'ignore'${memberEnv} }); `
     + `process.stdout.write(c.pid + '\\n'); ${o.leaderExits ? 'setTimeout(() => process.exit(0), 100);' : `${HOLD};`}`;
-  const leader = spawn(process.execPath, ['-e', script], {
-    detached: true, stdio: ['ignore', 'pipe', 'ignore'], env: { PATH: process.env['PATH'], [TOKEN_ENV]: token },
-  });
-  const entry = identityOf(leader.pid, { token, group: true }) as Entry;
+  const { child: leader, entry } = spawnRecorded(process.execPath, ['-e', script], {
+    detached: true, stdio: ['ignore', 'pipe', 'ignore'], env: { PATH: process.env['PATH'] },
+  }) as { child: ChildProcess; entry: Entry };
   const member = await new Promise<number>((resolve, reject) => {
     leader.stdout!.once('data', (d: Buffer) => resolve(Number(d.toString('utf8').trim())));
     leader.once('error', reject);
@@ -72,6 +82,39 @@ async function group(o: { leaderExits?: boolean; memberToken?: string } = {}): P
   return { entry, member };
 }
 
+test('what this file\'s helpers start is in the run\'s registry, and a registry of a test\'s own is kept beside it', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'asep-registry-helpers-'));
+  const run = join(dir, 'run');
+  const own = join(dir, 'own');
+  mkdirSync(run);
+  mkdirSync(own);
+  const before = process.env[REGISTRY_ENV];
+  process.env[REGISTRY_ENV] = run;
+  const started: Entry[] = [];
+  try {
+    started.push(recorded());
+    const g = await group();
+    started.push(g.entry);
+    assert.deepEqual(readdirSync(run).sort(), started.map((e) => `${e.pid}.json`).sort(),
+      'both helpers record what they start in the run\'s registry');
+    // Both registries, joined by the path delimiter: recorded and forgotten in each.
+    process.env[REGISTRY_ENV] = [own, run].join(delimiter);
+    const both = recorded();
+    started.push(both);
+    assert.ok(readdirSync(own).includes(`${both.pid}.json`) && readdirSync(run).includes(`${both.pid}.json`));
+    finish(both);
+    assert.ok(!readdirSync(own).includes(`${both.pid}.json`) && !readdirSync(run).includes(`${both.pid}.json`));
+    process.env[REGISTRY_ENV] = run;
+    for (const e of started) finish(e);
+    assert.deepEqual(readdirSync(run), [], 'and forget it once it is shown gone');
+  } finally {
+    for (const e of started) finish(e);
+    if (before === undefined) delete process.env[REGISTRY_ENV];
+    else process.env[REGISTRY_ENV] = before;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('a process that is still the one recorded — its pid, start time and token — is ended with its whole group', async () => {
   const g = await group();
   try {
@@ -81,7 +124,7 @@ test('a process that is still the one recorded — its pid, start time and token
     assert.equal(stillRunning(g.member), false, 'its member went with it');
     assert.equal(endProcess(g.entry), 'gone', 'and there is nothing left to end');
   } finally {
-    endProcess(g.entry);
+    finish(g.entry);
   }
 });
 
@@ -90,6 +133,8 @@ test('a pid whose process does not show the recorded start time and token is lef
   const bare = lone();
   const tokenAlike = `${ours.token.slice(0, -1)}${ours.token.endsWith('0') ? '1' : '0'}`;
   const near = lone({ [TOKEN_ENV]: tokenAlike });
+  const nearEntry = identityOf(near.pid, { token: tokenAlike, group: true }) as Entry;
+  register(nearEntry);
   try {
     // The same executable and arguments: only the token and start time tell
     // them apart.
@@ -112,9 +157,9 @@ test('a pid whose process does not show the recorded start time and token is lef
     assert.equal(stillRunning(bare.pid!), true);
     assert.equal(stillRunning(near.pid!), true);
   } finally {
-    endProcess(ours);
+    finish(ours);
     bare.kill('SIGKILL');
-    near.kill('SIGKILL');
+    finish(nearEntry);
   }
 });
 
@@ -129,7 +174,8 @@ test('a group whose leader has exited is ended only while every member left show
     assert.equal(endProcess(ours.entry), 'ended');
     assert.equal(stillRunning(ours.member), false);
   } finally {
-    endProcess(ours.entry);
+    finish(ours.entry);
+    finish(unproven.entry);
     endProcess(identityOf(unproven.member, { token: memberToken }) ?? { pid: unproven.member, group: false, token: memberToken });
   }
 });
@@ -176,8 +222,8 @@ test('an unreadable process table is not absence: nothing is signalled, the reco
     }
   } finally {
     restore();
-    endProcess(ours);
-    endProcess(leaderless.entry);
+    finish(ours);
+    finish(leaderless.entry);
     rmSync(dir, { recursive: true, force: true });
   }
 });
@@ -187,7 +233,7 @@ test('a process whose environment the table does not show cannot be shown to be 
   // /proc shows every environment, the token shows, and the process is ours.
   const hidden = !existsSync('/proc/self/environ');
   const token = randomUUID();
-  const sleeper = spawn('/bin/sleep', ['600'], { stdio: 'ignore', env: { [TOKEN_ENV]: token } });
+  const sleeper = spawn('/bin/sleep', ['60'], { stdio: 'ignore', env: { [TOKEN_ENV]: token } });
   try {
     const entry = { pid: sleeper.pid!, group: false, token, startedAt: startOf(sleeper.pid!) };
     if (hidden) {
@@ -295,7 +341,7 @@ test('records are ended and forgotten; a run whose runner is gone is swept at th
       [[running.pid, 'ended']]);
     assert.deepEqual(readdirSync(live), ['owner.json']);
   } finally {
-    for (const entry of entries) endProcess(entry);
+    for (const entry of entries) finish(entry);
     rmSync(root, { recursive: true, force: true });
     rmSync(repo, { recursive: true, force: true });
   }
@@ -327,8 +373,8 @@ test('a run whose runner cannot be read in the process table is left in place, a
     assert.deepEqual(readdirSync(run).sort(), [`${leftover.pid}.json`, 'owner.json'], 'the run is left as it was');
     assert.equal(stillRunning(leftover.pid), true, 'and what it recorded was not signalled');
   } finally {
-    endProcess(runner);
-    endProcess(leftover);
+    finish(runner);
+    finish(leftover);
     rmSync(root, { recursive: true, force: true });
     rmSync(repo, { recursive: true, force: true });
   }
@@ -384,5 +430,80 @@ test('no test signals a process group by a pid alone, without the identity the r
   for (const a of GROUP_SIGNALS_BY_PID) {
     assert.ok(testSources().some(([file, lines]) => file === a.file && lines.some((l) => l.includes(a.match))),
       `${a.file}: '${a.match}' is no longer there; drop it from the list`);
+  }
+});
+
+// Where a test starts a process without recording it in the run's registry,
+// and why that is safe. No match names the call itself, so that this list is
+// not one of the places it lists.
+const SPAWNS_NOT_RECORDED: readonly { file: string; match: string; why: string }[] = [
+  {
+    file: 'adapters/agent-claude/src/agent-claude.test.ts', match: "(h.docker, ['run'",
+    why: 'a docker client through the harness shim, which ends with its container; the fake docker records the container',
+  },
+  {
+    file: 'adapters/agent-claude/src/agent-claude.test.ts', match: "const proxy = spawn",
+    why: 'in the proxy starter\'s source: the starter is recorded, and the test records the proxy by the token it hands it',
+  },
+  {
+    file: 'adapters/agent-claude/src/claude-live.live.ts', match: "(process.execPath, [join(TESTING, 'fake-model-api.mjs')",
+    why: 'run by pnpm test:live:claude, outside the canonical run and its registry; the test kills it',
+  },
+  {
+    file: 'adapters/command-runner/src/command-runner.test.ts', match: 'const child = spawn',
+    why: 'the docker client of the code under test, through its spawn seam; it ends with its container, which the fake docker records',
+  },
+  {
+    file: 'adapters/command-runner/src/command-runner.test.ts', match: "(join(dir, 'no-such-docker')",
+    why: 'a binary that does not exist: nothing starts',
+  },
+  {
+    file: 'adapters/command-runner/src/command-runner.test.ts', match: 'const orphan = spawn',
+    why: 'a docker client through the fake daemon\'s shim, killed by the test at once; the fake docker records its container',
+  },
+  {
+    file: 'apps/control-plane-api/src/crash-takeover.itest.ts', match: "(process.execPath, ['--import', 'tsx'",
+    why: 'run by run-integration.mjs, which keeps no process registry; the test kills it',
+  },
+  {
+    file: 'scripts/forbidden-imports.test.ts', match: "('git', ['status'])",
+    why: 'source text under test, not a call',
+  },
+  {
+    file: 'scripts/lib/process-registry.test.ts', match: "(process.execPath, ['-e', HOLD], {",
+    why: 'lone(): by design it shows no token of ours, or another one, so it cannot be recorded by one; '
+      + 'it holds a minute at most, and its test kills it',
+  },
+  {
+    file: 'scripts/lib/process-registry.test.ts', match: "child_process').spawn",
+    why: 'a member of a recorded group',
+  },
+  {
+    file: 'scripts/lib/process-registry.test.ts', match: "('/bin/sleep'",
+    why: 'a system binary whose environment ps on macOS does not show, so it cannot be recorded there — the test\'s point; '
+      + 'it ends by itself within a minute, and its test kills it',
+  },
+  {
+    file: 'scripts/run-canonical-tests.test.ts', match: "child_process').spawn",
+    why: 'a member of the group its fixture records',
+  },
+  {
+    file: 'scripts/testing/fake-docker.mjs', match: 'const child = spawn',
+    why: 'a container process, recorded at once with identityOf and register, before its container record',
+  },
+  {
+    file: 'scripts/testing/fake-docker.test.ts', match: "child_process').spawn",
+    why: "a member of a recorded container's group",
+  },
+];
+
+test('every process a test starts is recorded in the run\'s registry, or the list here says why it need not be', () => {
+  const calls = testSources().flatMap(([file, lines]) => lines.flatMap((line, i) => (
+    !comment(line) && /(?<![\w$])spawn\(/.test(line) ? [{ file, at: `${file}:${i + 1}: ${line.trim()}`, line }] : [])));
+  const unlisted = calls.filter((c) => !SPAWNS_NOT_RECORDED.some((s) => s.file === c.file && c.line.includes(s.match)));
+  assert.deepEqual(unlisted.map((c) => c.at), [],
+    'start a long-lived process with spawnRecorded, or say here why it need not be recorded');
+  for (const s of SPAWNS_NOT_RECORDED) {
+    assert.ok(calls.some((c) => c.file === s.file && c.line.includes(s.match)), `${s.file}: '${s.match}' is no longer there`);
   }
 });

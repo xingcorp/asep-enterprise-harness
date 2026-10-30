@@ -11,7 +11,9 @@
 //
 // <root> belongs to one checkout (tmpdir()/asep-process-registry/<hash of its
 // real path>), so a run never touches another checkout's processes. Without
-// ASEP_PROCESS_REGISTRY (a test run by hand) nothing is recorded.
+// ASEP_PROCESS_REGISTRY (a test run by hand) nothing is recorded. A test that
+// keeps a registry of its own as well names both, joined by the path
+// delimiter: a process is recorded, and forgotten, in each.
 //
 // Identity. A recorded process is started with a token of its own in its
 // environment (ASEP_PROCESS_TOKEN, a random UUID), and recorded with that
@@ -34,7 +36,7 @@ import {
   existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 
 export const REGISTRY_ENV = 'ASEP_PROCESS_REGISTRY';
 export const TOKEN_ENV = 'ASEP_PROCESS_TOKEN';
@@ -273,16 +275,19 @@ export function endRecorded(dir, end = endProcess) {
   return out;
 }
 
+// The registry directories `dir` names (see the header).
+const registries = (dir) => (dir ? dir.split(delimiter).filter((d) => d !== '') : []);
+
 /** Record `entry` (identityOf) in the current run, if there is one. */
 export function register(entry, dir = process.env[REGISTRY_ENV]) {
-  if (!dir || entry === undefined) return;
-  writeWhole(join(dir, `${entry.pid}.json`), entry);
+  if (entry === undefined) return;
+  for (const d of registries(dir)) writeWhole(join(d, `${entry.pid}.json`), entry);
 }
 
 /** Forget `pid`: it has been shown gone. */
 export function unregister(pid, dir = process.env[REGISTRY_ENV]) {
-  if (!dir || !Number.isSafeInteger(pid)) return;
-  rmSync(join(dir, `${pid}.json`), { force: true });
+  if (!Number.isSafeInteger(pid)) return;
+  for (const d of registries(dir)) rmSync(join(d, `${pid}.json`), { force: true });
 }
 
 /**
