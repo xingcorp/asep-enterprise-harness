@@ -18,6 +18,7 @@ import {
 import type {
   InstallationAuth, OctokitLike, RepositoryForgeConfig, GitRunner,
 } from './index.js';
+import { Octokit } from '@octokit/rest';
 import { runGit } from '@asep/git-worktree';
 import { pullRequestContent } from '@asep/ports';
 
@@ -525,6 +526,29 @@ test('an update by number writes that PR\'s title and body only: nothing listed,
   assert.deepEqual({ title: pr.title, body: pr.body }, pullRequestContent(facts));
   assert.equal(pr.state, 'closed', 'the residual race: written as the human left it, never reopened');
   assert.deepEqual([written.number, written.state, written.merged], [7, 'closed', false]);
+});
+
+// The same through the production transport: the real Octokit, built as the
+// composition root builds it, with only its fetch replaced. One request goes
+// out, a PATCH of the PR named by its number carrying its title and body.
+test('through the real Octokit, an update by number is one PATCH of that PR\'s title and body, and nothing else', async () => {
+  const sent: { method: string; url: string; body: unknown }[] = [];
+  const fetch = async (url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    sent.push({
+      method: init?.method ?? 'GET', url: String(url),
+      body: typeof init?.body === 'string' ? JSON.parse(init.body) : init?.body,
+    });
+    return new Response(JSON.stringify({
+      number: 1, html_url: 'https://github.com/acme/web/pull/1', state: 'open', merged_at: null,
+      head: { ref: attemptBranchStr, sha: COMMIT }, base: { ref: 'main' }, title: 'T', body: 'B',
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  const forge = ownerForge((token: string) => new Octokit({ auth: token, request: { fetch } }));
+  const written = await forge.updatePullRequestContent({ repository, number: 1, title: 'T', body: 'B' });
+  assert.deepEqual(sent, [
+    { method: 'PATCH', url: 'https://api.github.com/repos/acme/web/pulls/1', body: { title: 'T', body: 'B' } },
+  ]);
+  assert.deepEqual([written.number, written.state, written.headBranch], [1, 'open', attemptBranchStr]);
 });
 
 test('an update by number for a PR GitHub does not hold fails, and creates nothing', async () => {
