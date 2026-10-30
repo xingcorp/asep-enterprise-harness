@@ -1219,7 +1219,7 @@ child does not carry the wasm flag.
 |---|---|---|
 | CYCLE9-HIGH-001 | ACCEPTED — fixed; the reviewer's probes are tests | `a9da83f` |
 | Resume base | ACCEPTED — fixtures on `release/2`; the resume reads the base from the binding row | `a9da83f` |
-| CYCLE9-HIGH-002 | ACCEPTED — the hung-agent test measures the interval the product bounds; the 80.8 s run explained as far as its log allows (below) | `9fc9a30` |
+| CYCLE9-HIGH-002 | ACCEPTED — the hung-agent test measures the interval the product bounds; the 80.8 s run's per-phase split is not recorded (below) | `9fc9a30` |
 | CYCLE9-MED-001 | ACCEPTED — interval assertions against named product bounds, no 5-minute allowances | `9fc9a30` |
 | CYCLE9-MED-002 | ACCEPTED — data model, threat model and runbook restated; report in the docs commit | `d45794c` |
 | Schema reference detection | accepted limitation (R35); convention documented | `bcbafc1` |
@@ -1352,19 +1352,24 @@ late; stop delayed past the product bound (by `AGENT_STOP_BOUND_MS` + 5 s);
 docker calls bounded at 120 s instead of 30 s; agent container not removed by
 name; a stop that never kills the container; the runner's timeout 5 s late.
 
-**Where the 80.8 s went.** At `a447983` the test measured from just before
-`execute()` to its assertion, with a 9 s budget whose deadline counts from
-the start of `execute()`, setup included. Run 1's log records only the total
-(80.8 s) and that the status (`BUDGET_EXHAUSTED`) and the wall-clock note
-passed, so setup finished before the deadline (otherwise the proxy's start
-timer fails the attempt `FAILED` in setup) and the deadline stopped the agent;
-about 72 s therefore went to the stop and teardown. That path was bounded only
-by docker-call timeouts: `docker kill` of the agent (60 s), its `rm -f`
-(60 s), the proxy's kill (30 s) and up to 5 s for its client, the proxy's
-`rm -f` (60 s), a container sweep of up to 20 tries, `network rm` (60 s) and
-a network sweep of up to 5 tries — far above 72 s. The 60 s total the test
-asserted was below the product's own bound. Run 1 has no per-phase
-timestamps, so which call took the time is not recorded. Reproductions here,
+**Where the 80.8 s went: not recorded.** At `a447983` the test measured from
+just before `execute()` to its assertion, with a 9 s budget whose deadline
+counts from the start of `execute()`, setup included. Run 1's log records only
+the test's duration (80.8 s), which also includes the test's own fixture setup
+and cleanup, and that the status (`BUDGET_EXHAUSTED`) and the wall-clock note
+passed. The split of that time between fixture, setup, stop and teardown is
+not recorded and cannot be verified. The status does not show that the setup
+finished before the deadline: `docker network connect` runs after the proxy is
+ready and before the agent starts, can itself run past the deadline, and the
+agent's timer then fires after its 1 ms minimum. (An earlier version of this
+paragraph attributed about 72 s to the stop and teardown on that inference; the
+cycle-10 review showed the log does not support it, and it is withdrawn —
+CYCLE10-MED-002.) Whatever the split, the path from the stop to the end of
+teardown was bounded at the time only by docker-call timeouts: `docker kill`
+of the agent (60 s), its `rm -f` (60 s), the proxy's kill (30 s) and up to 5 s
+for its client, the proxy's `rm -f` (60 s), a container sweep of up to 20
+tries, `network rm` (60 s) and a network sweep of up to 5 tries — so the 60 s
+total the test asserted was below the product's own bound. Reproductions here,
 with the new timeline (times after the stop):
 
 | Load | Setup | Stop after due | Agent removed | Torn down |
@@ -1374,12 +1379,13 @@ with the new timeline (times after the stop):
 | the same plus 6 container-churn and 6 network-churn loops, load average 60–106 (2 runs) | 13.4–19.1 s | 3 ms | 2.9–4.7 s | 11.4–12.3 s |
 | full integration gate under 24 host and 4 VM burners, 2 container- and 2 network-churn loops, load average 28–112 | 5.6 s | 3 ms | 1.5 s | 5.5 s |
 
-No reproduction came near 72 s after the deadline. The heaviest setup (19.1 s)
-would have outlasted the old 9 s budget and failed the attempt in setup. In
-the same run 1, the command runner's cancellation-and-normal-exit test took
-71.6 s, which fits
-a window in which daemon calls ran towards their client timeouts; that is an
-inference from the log, not an observation. With the new assertions a stop
+No reproduction came near the run's 80.8 s: the longest from the deadline to
+the end of teardown was 12.3 s. The heaviest setup (19.1 s) would have
+outlasted the old 9 s budget. In the same run 1, the command runner's
+cancellation-and-normal-exit test took 71.6 s, which fits a window in which
+daemon calls ran towards their client timeouts; that is an inference from the
+log, not an observation, and it does not say where the hung-agent test's time
+went. With the new assertions a stop
 delayed within the product's bounds passes and its timeline shows where the
 time went; a stop delayed beyond them fails.
 
