@@ -174,7 +174,7 @@ interface Harness {
 async function harness(opts: {
   echoKey?: boolean; workOrder?: unknown; refuseRemoval?: boolean; hangKill?: boolean;
   keepAgent?: boolean; agentRmErrs?: boolean; hangInspect?: boolean;
-  netCreate?: 'hangs-after' | 'errs-after' | 'refused';
+  netCreate?: 'hangs-after' | 'errs-after' | 'refused'; proxyHangs?: boolean;
 } = {}): Promise<Harness> {
   // Real paths: the provider resolves the worktree with realpath(3).
   const dir = await realpath(await mkdtemp(join(tmpdir(), 'claude-provider-')));
@@ -191,7 +191,8 @@ async function harness(opts: {
   // `hangInspect` for one that never answers whether a container exists, and
   // with `netCreate` for one that creates the agent network and then never
   // answers ('hangs-after') or answers with an error ('errs-after'), or
-  // refuses to create it ('refused').
+  // refuses to create it ('refused'), and with `proxyHangs` for one whose
+  // proxy client never starts its container.
   const fake = `"${process.execPath}" "${FAKE_DOCKER}" --state "${state}" "$@"`;
   await writeFile(docker, [
     '#!/bin/sh',
@@ -206,6 +207,7 @@ async function harness(opts: {
       `case "$1 $2 $3" in "rm -f asep-agent-"*) ${fake} >/dev/null; echo "Error response from daemon: lost the answer" >&2; exit 1;; esac`,
     ] : []),
     ...(opts.hangInspect ? ['case "$1" in inspect) exec sleep 600;; esac'] : []),
+    ...(opts.proxyHangs ? ['case "$1 $*" in "run "*asep.role=egress-proxy*) exec sleep 600;; esac'] : []),
     ...(opts.netCreate === 'hangs-after' ? [`case "$1 $2" in "network create") ${fake} >/dev/null; exec sleep 600;; esac`] : []),
     ...(opts.netCreate === 'errs-after' ? [
       `case "$1 $2" in "network create") ${fake} >/dev/null; echo "Error response from daemon: lost the answer" >&2; exit 1;; esac`,
@@ -1066,6 +1068,11 @@ test('G3: an agent removal the daemon cannot show within its bound fails the att
     const obs = await (await h.provider('ok')).execute(request(h));
     assert.equal(obs.status, 'FAILED', obs.knownLimitations.join('; '));
     assert.match(obs.knownLimitations.join(' '), /container asep-agent-\S+ could not be shown removed in time/);
+    // Call by call: the rm answered (the container went with its client), the
+    // inspect was killed by its caller at its bound.
+    assert.match(obs.knownLimitations.join(' '), new RegExp('docker inspect failed: killed by SIGKILL at its bound; '
+      + 'calls: rm -f at \\+0ms: exit \\d+ after \\d+ms \\(spawn \\d+ms, bound \\d+ms\\); '
+      + 'inspect --type at \\+\\d+ms: signal SIGKILL after \\d+ms \\(spawn \\d+ms, bound \\d+ms, cut at \\d+ms\\)'));
     assert.deepEqual(h.lifecycle.filter((e) => e.phase === 'agent-removed'), [], showTimeline(h.lifecycle));
     // The removal was given its whole bound. The teardown after it (proxy,
     // label sweeps, network) is not bounded by the product and slows with
@@ -1094,6 +1101,12 @@ for (const netCreate of ['errs-after', 'hangs-after', 'refused'] as const) {
       const obs = await (await h.provider('ok')).execute(request(h));
       assert.equal(obs.status, 'FAILED', obs.knownLimitations.join('; '));
       assert.match(obs.summary, /did not start: docker network create failed/);
+      // How the call ended and how long it took, against its bound.
+      assert.match(obs.summary, {
+        'hangs-after': /its client was cut at the docker-call timeout: network create at \+0ms: signal SIGKILL after \d+ms \(spawn \d+ms, bound 30000ms, cut at \d+ms\)/,
+        'errs-after': /lost the answer \(network create at \+0ms: exit 1 after \d+ms \(spawn \d+ms, bound 30000ms\)\)/,
+        refused: /refused \(network create at \+0ms: exit 1 after \d+ms \(spawn \d+ms, bound 30000ms\)\)/,
+      }[netCreate]);
       assert.deepEqual(h.lifecycle.map((e) => e.phase), ['started', 'torn-down'], 'nothing past the network was started');
       // The client's own log: the refusing daemon answers before the fake records the call.
       const asked = readFileSync(join(h.dir, 'client-pids'), 'utf8').split('\n')
@@ -1110,6 +1123,24 @@ for (const netCreate of ['errs-after', 'hangs-after', 'refused'] as const) {
     }
   });
 }
+
+// A proxy that never becomes ready fails the attempt at its bound, saying how
+// long it was waited for against that bound and what its client had written.
+test('an egress proxy that never becomes ready fails the attempt, with how long it was waited for', { timeout: 120_000 }, async () => {
+  const h = await harness({ proxyHangs: true });
+  try {
+    const obs = await (await h.provider('ok')).execute(request(h, { budget: { ...BUDGET, maxWallClockMinutes: 0.05 } }));
+    assert.equal(obs.status, 'FAILED', obs.knownLimitations.join('; '));
+    const m = /egress proxy did not become ready in time: waited (\d+)ms of its (\d+)ms bound \(spawn \d+ms\), with nothing on its stdout/
+      .exec(obs.summary);
+    assert.ok(m, obs.summary);
+    // Its bound is what was left of the 3 s budget, and it was waited out.
+    assert.ok(Number(m[2]) >= 1 && Number(m[2]) <= 3_000 && Number(m[1]) >= Number(m[2]) - 1, obs.summary);
+    assertTornDown(h);
+  } finally {
+    await h.close();
+  }
+});
 
 test('G3: the agent removal deadline is its bound after the client ended, never past the stop bound', () => {
   assert.equal(agentRemovalDeadline({ exitedAt: 1_000 }), 1_000 + AGENT_REMOVAL_BOUND_MS);

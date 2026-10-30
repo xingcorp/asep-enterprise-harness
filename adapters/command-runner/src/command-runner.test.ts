@@ -23,8 +23,8 @@ import {
   type SandboxHandleEx,
 } from './sandbox.js';
 import {
-  SandboxTeardownError, removeLabelledContainers, removeContainerShownGone, monotonicNow,
-  type DockerCall, type TeardownClock,
+  SandboxTeardownError, removeLabelledContainers, removeContainerShownGone, monotonicNow, dockerCaller,
+  type DockerCall, type DockerResult, type TeardownClock,
 } from './container-teardown.js';
 import { SandboxHandleNotProvenError } from './command-runner.js';
 import { spawn } from 'node:child_process';
@@ -668,11 +668,20 @@ test('a container the daemon cannot show gone within the removal bound fails the
   try {
     const d = await fakeDaemon(dir, false, true);
     const seen: CommandLifecycleEvent[] = [];
+    let message = '';
     await assert.rejects(
       new TrustedCommandRunner(scope, store, undefined, (e) => { seen.push(e); })
         .run(spec({ cwd: d.wt }), await dockerHandle(d)),
-      (err: Error) => err instanceof SandboxTeardownError && /could not be shown removed in time/.test(err.message),
+      (err: Error) => {
+        message = err.message;
+        return err instanceof SandboxTeardownError && /could not be shown removed in time/.test(err.message);
+      },
     );
+    // The error says what each removal call did: here the one `ps`, killed by
+    // its caller at its bound, and how the command's client went before it.
+    assert.match(message, new RegExp('docker ps failed: killed by SIGKILL at its bound; calls: '
+      + 'ps -aq at \\+0ms: signal SIGKILL after \\d+ms \\(spawn \\d+ms, bound \\d+ms, cut at \\d+ms\\)'));
+    assert.match(message, /; its client ended with exit 0 after \d+ms, and the removal began \d+ms later$/);
     const exited = seen.find((e) => e.phase === 'exited')!;
     const gaveUp = monotonicNow() - exited.at;
     assert.ok(gaveUp >= COMMAND_REMOVAL_BOUND_MS - 50 && gaveUp <= COMMAND_REMOVAL_BOUND_MS + 5_000,
@@ -875,6 +884,77 @@ test('a genuine handle still runs where its provider put it', async () => {
     await client.close();
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+// Every docker client call reports how it ended and how long it took against
+// its bound: the signal that ended its client, when one did, and whether its
+// caller killed it at that bound.
+test('a docker call records the signal that ended its client, its duration and the bound it was cut at', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'asep-docker-call-'));
+  try {
+    const hangs = join(dir, 'hangs');
+    await writeFile(hangs, '#!/bin/sh\nexec sleep 30\n', { mode: 0o755 });
+    const exits = join(dir, 'exits');
+    await writeFile(exits, '#!/bin/sh\necho "refused" >&2\nexit 3\n', { mode: 0o755 });
+
+    const cut = await dockerCaller(hangs, { PATH: '/usr/bin:/bin' })(['ps', '-aq', '--filter', 'label=x'], { timeoutMs: 300 });
+    assert.equal(cut.code, null);
+    assert.equal(cut.signal, 'SIGKILL');
+    assert.equal(cut.call?.argv, 'ps -aq');
+    assert.equal(cut.call?.cutMs, 300);
+    assert.equal(cut.call?.spawned, true);
+    assert.ok((cut.call?.cutAfterMs ?? 0) >= 299, `killed at ${cut.call?.cutAfterMs} ms`);
+    assert.ok((cut.call?.durationMs ?? 0) >= (cut.call?.cutAfterMs ?? Infinity));
+
+    const exited = await dockerCaller(exits, { PATH: '/usr/bin:/bin' }, 20_000)(['rm', '-f', 'c-1']);
+    assert.deepEqual([exited.code, exited.signal, exited.stderr], [3, null, 'refused\n']);
+    assert.equal(exited.call?.cutMs, 20_000);
+    assert.equal(exited.call?.cutAfterMs, undefined, 'not cut');
+    assert.ok((exited.call?.durationMs ?? Infinity) < 20_000);
+
+    const missing = await dockerCaller(join(dir, 'missing'), { PATH: '/usr/bin:/bin' })(['ps', '-aq']);
+    assert.equal(missing.code, -1);
+    assert.equal(missing.call?.spawned, false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// A removal that cannot show the container gone says what it asked the daemon,
+// call by call: when each started, how it ended, how long it took against its
+// bound, and whether its caller cut it there.
+test('a removal that fails names each docker call it made, with its timing, end and bound', async () => {
+  let now = 0;
+  const clock: TeardownClock = { now: () => now, sleep: async (ms) => { now += ms; } };
+  const timed = (argv: readonly string[], cutMs: number, durationMs: number, r: Omit<DockerResult, 'call'>): DockerResult => {
+    const startedAt = 1_000_000 + now;
+    now += durationMs;
+    return {
+      ...r,
+      call: {
+        argv: argv.slice(0, 2).join(' '), startedAt, spawnMs: 2, durationMs, cutMs,
+        ...(r.signal ? { cutAfterMs: cutMs } : {}), spawned: true,
+      },
+    };
+  };
+  // `ps` hangs and is cut at what is left of the deadline.
+  const hung: DockerCall = async (argv, opts = {}) =>
+    timed(argv, opts.timeoutMs ?? 30_000, opts.timeoutMs ?? 30_000, { code: null, signal: 'SIGKILL', stdout: '', stderr: '' });
+  const byLabel = await removeLabelledContainers(hung, 'asep.container=c-1', { until: 30_000, clock });
+  assert.equal(byLabel, 'container(s) labelled asep.container=c-1 could not be shown removed in time: '
+    + 'docker ps failed: killed by SIGKILL at its bound; '
+    + 'calls: ps -aq at +0ms: signal SIGKILL after 30000ms (spawn 2ms, bound 30000ms, cut at 30000ms)');
+  // `rm` is answered, `inspect` keeps showing the container.
+  now = 0;
+  const shown: DockerCall = async (argv, opts = {}) => (argv[0] === 'rm'
+    ? timed(argv, opts.timeoutMs ?? 0, 40, { code: 0, signal: null, stdout: 'c-1\n', stderr: '' })
+    : timed(argv, opts.timeoutMs ?? 0, 60, { code: 0, signal: null, stdout: 'f'.repeat(64), stderr: '' }));
+  const byName = await removeContainerShownGone(shown, 'c-1', 1_000, { clock, attempts: 2, intervalMs: 100 });
+  assert.equal(byName, 'container c-1 could not be shown removed in time: docker inspect still shows it; calls: '
+    + 'rm -f at +0ms: exit 0 after 40ms (spawn 2ms, bound 1000ms); '
+    + 'inspect --type at +40ms: exit 0 after 60ms (spawn 2ms, bound 960ms); '
+    + 'rm -f at +200ms: exit 0 after 40ms (spawn 2ms, bound 800ms); '
+    + 'inspect --type at +240ms: exit 0 after 60ms (spawn 2ms, bound 760ms)');
 });
 
 // Removal on virtual time: what the removal helpers do with their deadline.

@@ -45,7 +45,8 @@ import type {
 } from '@asep/ports';
 import {
   isDigestPinned, dockerCaller, dockerClientEnv, removeLabelledContainers, removeContainerShownGone,
-  DOCKER_CALL_TIMEOUT_MS, monotonicNow, type DockerCall,
+  DOCKER_CALL_TIMEOUT_MS, monotonicNow, describeDockerCall, DockerCallTimeline,
+  type DockerCall, type DockerResult,
 } from '@asep/command-runner';
 import {
   ClaudeStreamParser, MalformedEventError, type ClaudeInit, type ParsedStream,
@@ -357,41 +358,47 @@ function appendBounded(c: Captured, chunk: Buffer, max: number): void {
   c.bytes += part.byteLength;
 }
 
-// `started` is whether the client process was started at all: one that failed
-// to spawn asked the daemon for nothing.
-function runDocker(
-  bin: string, args: readonly string[], timeoutMs = DOCKER_CALL_TIMEOUT_MS,
-): Promise<{ code: number | null; stdout: string; stderr: string; started: boolean }> {
-  return new Promise((resolve) => {
-    const child = spawn(bin, args, { env: dockerClientEnv(), shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
-    const started = child.pid !== undefined;
-    const out: Captured = { text: '', bytes: 0 };
-    const err: Captured = { text: '', bytes: 0 };
-    const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs);
-    child.stdout.on('data', (d: Buffer) => appendBounded(out, d, MAX_STDERR_BYTES));
-    child.stderr.on('data', (d: Buffer) => appendBounded(err, d, MAX_STDERR_BYTES));
-    child.on('error', (e) => { clearTimeout(timer); resolve({ code: -1, stdout: '', stderr: e.message, started }); });
-    child.on('close', (code) => { clearTimeout(timer); resolve({ code, stdout: out.text, stderr: err.text, started }); });
-  });
+// One docker client call of the attempt, bounded like every other
+// (dockerCaller), so its result carries the signal that ended the client and
+// the call's timing. `started` is whether the client process was started at
+// all: one that failed to spawn asked the daemon for nothing.
+async function runDocker(
+  bin: string, args: readonly string[],
+): Promise<DockerResult & { readonly started: boolean }> {
+  const r = await dockerCaller(bin, dockerClientEnv())(args);
+  return { ...r, started: r.call?.spawned ?? true };
+}
+
+// Why a setup call failed: what it said, else how it ended, with its timing.
+function setupCallFailure(args: readonly string[], r: DockerResult): string {
+  const said = r.stderr.trim().slice(0, 300);
+  const how = describeDockerCall(args, r, r.call?.startedAt ?? 0);
+  return said === '' ? how : `${said} (${how})`;
 }
 
 // Remove every network carrying `label` and confirm none is left; undefined when
 // gone, else why not. (Its containers must already be gone.)
 async function removeLabelledNetworks(docker: DockerCall, label: string): Promise<string | undefined> {
   let last = 'not checked';
+  const calls = new DockerCallTimeline();
+  const call = async (args: readonly string[]): Promise<DockerResult> => {
+    const r = await docker(args);
+    calls.add(args, r);
+    return r;
+  };
   for (let i = 0; i < 5; i++) {
     if (i > 1) await new Promise((r) => setTimeout(r, 250));
-    const ls = await docker(['network', 'ls', '-q', '--filter', `label=${label}`]);
+    const ls = await call(['network', 'ls', '-q', '--filter', `label=${label}`]);
     if (ls.code !== 0) {
       last = `docker network ls failed: ${ls.stderr.trim().slice(0, 200) || `exit ${ls.code}`}`;
       continue;
     }
     const ids = ls.stdout.split(/\s+/).filter((x) => x !== '');
     if (ids.length === 0) return undefined;
-    const rm = await docker(['network', 'rm', ...ids]);
+    const rm = await call(['network', 'rm', ...ids]);
     last = rm.code === 0 ? `${ids.join(', ')} still listed` : `docker network rm failed: ${rm.stderr.trim().slice(0, 200)}`;
   }
-  return `network(s) labelled ${label} could not be shown removed: ${last}`;
+  return `network(s) labelled ${label} could not be shown removed: ${last}; calls: ${calls}`;
 }
 
 // --- the attempt ---------------------------------------------------------------
@@ -664,23 +671,24 @@ export class ClaudeCodingProvider implements CodingAgentProvider {
       // still have been made by the daemon, so the teardown removes it by that
       // name and sweeps that label whatever the answer.
       created.network = true;
-      const net = await runDocker(this.docker, [
+      const netArgs = [
         'network', 'create', ...AGENT_NETWORK_FLAGS, '--label', `asep.attempt=${req.attemptId}`, network,
-      ]);
+      ];
+      const net = await runDocker(this.docker, netArgs);
       if (net.code !== 0) {
         // A client that never started asked the daemon for nothing.
         if (!net.started) created.network = false;
-        const why = net.stderr.trim().slice(0, 300)
-          || (net.code === null ? 'its client was cut at the docker-call timeout' : `exit ${net.code}`);
-        setup('FAILED', `docker network create failed: ${why}`);
+        const cut = net.call?.cutAfterMs !== undefined ? 'its client was cut at the docker-call timeout: ' : '';
+        setup('FAILED', `docker network create failed: ${cut}${setupCallFailure(netArgs, net)}`);
         return;
       }
       // A daemon that accepted the options but did not apply them must not get
       // an agent: confirm from its own description, before anything attaches.
-      const shown = await runDocker(this.docker, ['network', 'inspect', '--format', '{{json .}}', network]);
+      const inspectArgs = ['network', 'inspect', '--format', '{{json .}}', network];
+      const shown = await runDocker(this.docker, inspectArgs);
       let gap: string | undefined;
       if (shown.code !== 0) {
-        gap = `docker network inspect failed: ${shown.stderr.trim().slice(0, 300)}`;
+        gap = `docker network inspect failed: ${setupCallFailure(inspectArgs, shown)}`;
       } else {
         try {
           gap = agentNetworkIsolationGap(JSON.parse(shown.stdout));
@@ -699,18 +707,25 @@ export class ClaudeCodingProvider implements CodingAgentProvider {
       // whatever its client answers.
       created.proxy = true;
       const proxyReady = await new Promise<string | undefined>((resolve) => {
+        const startedAt = monotonicNow();
         const child = spawn(this.docker, proxyArgs, {
           env: dockerClientEnv(), shell: false, stdio: ['pipe', 'pipe', 'pipe'],
         });
+        const spawnMs = monotonicNow() - startedAt;
         proxyChild = child;
         let out = '';
         let settled = false;
         const finish = (v: string | undefined): void => {
           if (!settled) { settled = true; clearTimeout(timer); resolve(v); }
         };
+        // How long the proxy was waited for, against its bound, and whether
+        // its client had written anything yet.
+        const bound = Math.min(PROXY_START_TIMEOUT_MS, Math.max(1, deadline - monotonicNow()));
         const timer = setTimeout(
-          () => finish('egress proxy did not become ready in time'),
-          Math.min(PROXY_START_TIMEOUT_MS, Math.max(1, deadline - monotonicNow())),
+          () => finish(`egress proxy did not become ready in time: waited ${Math.round(monotonicNow() - startedAt)}ms `
+            + `of its ${Math.round(bound)}ms bound (spawn ${Math.round(spawnMs)}ms), `
+            + `${out === '' ? 'with nothing on its stdout' : `with ${out.length} bytes on its stdout`}`),
+          bound,
         );
         proxyClosed = new Promise<void>((done) => child.on('close', () => done()));
         child.stdout!.on('data', (d: Buffer) => {
@@ -727,9 +742,10 @@ export class ClaudeCodingProvider implements CodingAgentProvider {
         setup('FAILED', `${proxyReady}: ${redactSecrets(rec.egressLog.text, rec.secrets).text.trim().slice(0, 300)}`);
         return;
       }
-      const connect = await runDocker(this.docker, ['network', 'connect', network, proxyName]);
+      const connectArgs = ['network', 'connect', network, proxyName];
+      const connect = await runDocker(this.docker, connectArgs);
       if (connect.code !== 0) {
-        setup('FAILED', `docker network connect failed: ${connect.stderr.trim().slice(0, 300)}`);
+        setup('FAILED', `docker network connect failed: ${setupCallFailure(connectArgs, connect)}`);
         return;
       }
       mark('proxy-ready');

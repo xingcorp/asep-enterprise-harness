@@ -161,6 +161,9 @@ export class TrustedCommandRunner implements CommandRunner {
     // Whether a client process was started at all: a client that failed to
     // spawn made no container; one that started may have, however it ends.
     let spawned = false;
+    // When the client was spawned and when it ended, for a teardown failure.
+    const clientStartedAt = monotonicNow();
+    let clientEndedAt = clientStartedAt;
     const ran = new Promise<{
       exitCode: number | null; signal: string | null; timedOut: boolean;
     }>((resolve, reject) => {
@@ -222,6 +225,7 @@ export class TrustedCommandRunner implements CommandRunner {
       child.on('error', (err) => {
         if (settled) return;
         settled = true;
+        clientEndedAt = monotonicNow();
         this.mark('exited');
         clearTimeout(timer);
         if (this.signal) this.signal.removeEventListener('abort', onAbort);
@@ -231,6 +235,7 @@ export class TrustedCommandRunner implements CommandRunner {
       child.on('close', (code, sig) => {
         if (settled) return;
         settled = true;
+        clientEndedAt = monotonicNow();
         this.mark('exited');
         clearTimeout(timer);
         if (this.signal) this.signal.removeEventListener('abort', onAbort);
@@ -252,10 +257,20 @@ export class TrustedCommandRunner implements CommandRunner {
     // had started — the container goes with it: removed by label and shown
     // gone within its bound, or the run fails closed below. Only a container
     // shown gone is reported removed.
+    const removalStartedAt = monotonicNow();
     const left = spawned ? await removeContainer() : undefined;
     if (container !== undefined && spawned && left === undefined) this.mark('removed');
+    // A container that could not be shown gone fails the run, with how its
+    // client went and when the removal began, beside the removal's own calls.
+    const teardownError = (reason: string): SandboxTeardownError => {
+      const ended = clientError !== undefined ? 'with a client error'
+        : result.signal ? `on signal ${result.signal}` : `with exit ${result.exitCode}`;
+      return new SandboxTeardownError(`verification container ${container}`,
+        `${reason}; its client ended ${ended} after ${Math.round(clientEndedAt - clientStartedAt)}ms, `
+        + `and the removal began ${Math.round(removalStartedAt - clientEndedAt)}ms later`);
+    };
     if (clientError !== undefined) {
-      if (left !== undefined) throw new SandboxTeardownError(`verification container ${container}`, left);
+      if (left !== undefined) throw teardownError(left);
       throw clientError.error;
     }
 
@@ -276,7 +291,7 @@ export class TrustedCommandRunner implements CommandRunner {
       sha256: sha256Hex(err.bytes),
       contentType: 'application/octet-stream',
     });
-    if (left !== undefined) throw new SandboxTeardownError(`verification container ${container}`, left);
+    if (left !== undefined) throw teardownError(left);
 
     return {
       exitCode: result.exitCode,

@@ -25,8 +25,8 @@ export {
   buildSandboxRunFlags, isDigestPinned, sandboxLabels,
 } from './sandbox.js';
 
-export type { DockerCall, DockerResult, TeardownClock } from './container-teardown.js';
+export type { DockerCall, DockerCallRecord, DockerResult, TeardownClock } from './container-teardown.js';
 export {
   dockerCaller, dockerClientEnv, removeLabelledContainers, removeContainerShownGone, SandboxTeardownError,
-  DOCKER_CALL_TIMEOUT_MS, monotonicNow,
+  DOCKER_CALL_TIMEOUT_MS, monotonicNow, describeDockerCall, dockerArgvHead, DockerCallTimeline,
 } from './container-teardown.js';
