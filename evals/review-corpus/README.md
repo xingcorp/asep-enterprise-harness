@@ -31,6 +31,10 @@ bind to the provenance-stage `corpusSha256`, and nothing here is the frozen corp
   `leakage-filtered` (every cited file is removed by rule P's leakage filter). `not-in-packet` and `egress-stopped`
   need the runtime packet builder and egress decision: the final freeze applies them after S0 and SR-X8. The
   manifest names them as pending and never counts them.
+- Each included item lists its `uses`: `rediscovery` (a first occurrence, rule P), `residual-status` (a residual,
+  rule C) and `post-fix-negative` (resolved at the next re-review with a known post-fix tree). Fix commits are
+  provenance only and never decide a use; an item that names no fix commit (15 included residuals) is used for its
+  residual status only and is never described as fixed.
 - `annotations.json` holds, per finding id of an included item, Lane B's gold category (category table
   `corpus-categories/v1`), its one-line rationale and the defect class. The freeze refuses a missing, stray or
   invalid annotation.

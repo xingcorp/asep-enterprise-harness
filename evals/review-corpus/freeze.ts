@@ -236,6 +236,13 @@ export interface ManifestMapping {
   readonly withheldGates: readonly PublicationGate[];
 }
 
+/**
+ * What an included item is scored for (plan §7.8): rule P's rediscovery of a first occurrence, rule C's status
+ * of a residual, and the post-fix negative of an item resolved at the next re-review. Fix commits are provenance
+ * only and never decide a use.
+ */
+export type ItemUse = 'rediscovery' | 'residual-status' | 'post-fix-negative';
+
 export interface ManifestItem {
   readonly id: string;
   readonly itemSha256: string;
@@ -254,6 +261,8 @@ export interface ManifestItem {
   readonly goldCategory: GoldCategory | null;
   readonly goldCategoryRationale: string | null;
   readonly defectClass: DefectClass | null;
+  /** Null for an excluded item. */
+  readonly uses: readonly ItemUse[] | null;
   /** Negative candidates only: the item is resolved at the next re-review and its post-fix tree is known. */
   readonly mapping: readonly ManifestMapping[] | null;
 }
@@ -433,6 +442,7 @@ export function freezeCorpus(inputs: FreezeInputs): FrozenCorpus {
       goldCategory: a?.goldCategory ?? null,
       goldCategoryRationale: a?.rationale ?? null,
       defectClass: a?.defectClass ?? null,
+      uses: excluded !== null ? null : [item.instanceKind === 'first-occurrence' ? 'rediscovery' : 'residual-status', ...(mapping === null ? [] : ['post-fix-negative' as const])],
       mapping,
     };
   });

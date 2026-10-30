@@ -17,6 +17,7 @@ import {
   type FreezeInputs,
   type ManifestBody,
 } from './freeze.js';
+import type { CorpusItem } from './collect.js';
 
 console.log('SUITE-ID: asep-suite:review-corpus');
 
@@ -72,6 +73,41 @@ test('the committed manifest is a provenance-stage freeze that nothing binds to'
   const named = spawnSync('git', ['grep', '-l', '-F', corpusSha256], { cwd: ROOT, encoding: 'utf8' });
   assert.equal(named.status, 0);
   assert.deepEqual(named.stdout.trim().split('\n'), [MANIFEST_FILE]);
+});
+
+test('an item without a fix commit is used for its residual status only', () => {
+  const { body } = committedManifest();
+  const inputs = treeInputs(ROOT);
+  const itemOf = (id: string) => JSON.parse(new TextDecoder().decode(inputs.itemFiles.get(`${id}.json`)!)) as CorpusItem;
+
+  // Each included item's uses, by the protocol's rules stated here: rule P scores a first occurrence, rule C a
+  // residual's status, and an item resolved at the next re-review with a known post-fix tree is also a negative.
+  for (const entry of body.items) {
+    const item = itemOf(entry.id);
+    if (entry.excluded !== null) {
+      assert.equal(entry.uses, null, entry.id);
+      continue;
+    }
+    const negative = item.confirmation?.status === 'RESOLVED' && item.postFixSha !== null;
+    assert.deepEqual(entry.uses, [item.instanceKind === 'first-occurrence' ? 'rediscovery' : 'residual-status', ...(negative ? ['post-fix-negative'] : [])], entry.id);
+  }
+
+  // The review's count: 15 included items name no fix commit. Each is a residual used for its status only.
+  const without = body.items.filter((i) => i.excluded === null && itemOf(i.id).fixCommits.length === 0);
+  assert.equal(without.length, 15);
+  for (const entry of without) assert.deepEqual([entry.instanceKind, entry.uses, entry.mapping], ['residual', ['residual-status'], null], entry.id);
+
+  // Fix commits never decide a use: without any fix commit, every item keeps its uses.
+  const stripped: FreezeInputs = {
+    ...inputs,
+    itemFiles: new Map(
+      [...inputs.itemFiles].map(([name, bytes]) => [name, utf8(JSON.stringify({ ...(JSON.parse(new TextDecoder().decode(bytes)) as CorpusItem), fixCommits: [] }))] as const),
+    ),
+  };
+  assert.deepEqual(
+    freezeCorpus(stripped).body.items.map((i) => [i.id, i.uses]),
+    body.items.map((i) => [i.id, i.uses]),
+  );
 });
 
 test('the freeze rules apply in order and every exclusion is counted', () => {
