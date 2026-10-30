@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -58,6 +59,19 @@ test('a second freeze of the same tree is byte-identical and equals the committe
   assert.notEqual(freezeCorpus(edited).corpusSha256, first.corpusSha256, 'an item byte');
   const reannotated: FreezeInputs = { ...inputs, annotationsBytes: utf8(`${new TextDecoder().decode(inputs.annotationsBytes)} `) };
   assert.notEqual(freezeCorpus(reannotated).corpusSha256, first.corpusSha256, 'an annotation byte');
+});
+
+test('the committed manifest is a provenance-stage freeze that nothing binds to', () => {
+  const { body, corpusSha256 } = committedManifest();
+  assert.equal(body.stage, 'provenance');
+  assert.equal(
+    body.stageNote,
+    'A provenance-stage freeze. The final freeze (packet eligibility with not-in-packet and egress-stopped, the full packet sources, the packet-dependent synthetic fields and the final corpusSha256) is made once the evals package is bound to the runtime packet code. Nothing may bind to this corpusSha256.',
+  );
+  // No tracked file but the manifest names its digest: no preregistration or fixture binds to it.
+  const named = spawnSync('git', ['grep', '-l', '-F', corpusSha256], { cwd: ROOT, encoding: 'utf8' });
+  assert.equal(named.status, 0);
+  assert.deepEqual(named.stdout.trim().split('\n'), [MANIFEST_FILE]);
 });
 
 test('the freeze rules apply in order and every exclusion is counted', () => {

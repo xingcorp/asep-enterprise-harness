@@ -1,12 +1,15 @@
 // Self-history corpus freeze (docs/implementation/phases/phase-04-plan.md §7.5, §7.8; data model §7.1).
 //
 // The freeze reads the collected items, Lane B's gold annotations and git, and writes the
-// manifest with `corpusSha256`. It applies the freeze rule `no-location` and the one
-// packet-level rule that needs no packet, `leakage-filtered`, after collection's provenance
-// rules, in the protocol's order, and counts every reason. The two packet-level rules that
-// need the runtime packet builder and egress decision, `not-in-packet` and `egress-stopped`,
-// are applied to the frozen corpus by the packet plan once the evals package is bound to the
-// runtime packet code; the manifest names them as pending and never counts them. The freeze
+// manifest with `corpusSha256`. This is a provenance-stage freeze: the final freeze (packet
+// eligibility, the full packet sources, the packet-dependent synthetic fields and the final
+// `corpusSha256`) needs the runtime packet builder and egress decision, so it comes once the
+// evals package is bound to the runtime packet code, and nothing may bind to the hash written
+// here; the manifest says so in its stage fields. It applies the freeze rule `no-location`
+// and the one packet-level rule that needs no packet, `leakage-filtered`, after collection's
+// provenance rules, in the protocol's order, and counts every reason. The two packet-level
+// rules that need a packet, `not-in-packet` and `egress-stopped`, are named as pending and
+// never counted. The freeze
 // also stores, content-addressed, the rule-P diff section of every cited file of a negative
 // candidate (an item resolved at the next re-review), from which the post-fix location
 // mapping is computed.
@@ -42,6 +45,11 @@ export const ANNOTATIONS_FILE = `${CORPUS_DIR}/annotations.json`;
 export const MAPPING_DIR = `${CORPUS_DIR}/mapping`;
 
 export const MANIFEST_VERSION = 'self-history-manifest/v1';
+
+/** The stage of the committed manifest, and what the final freeze adds. */
+export const MANIFEST_STAGE = 'provenance';
+export const MANIFEST_STAGE_NOTE =
+  'A provenance-stage freeze. The final freeze (packet eligibility with not-in-packet and egress-stopped, the full packet sources, the packet-dependent synthetic fields and the final corpusSha256) is made once the evals package is bound to the runtime packet code. Nothing may bind to this corpusSha256.';
 export const ANNOTATIONS_VERSION = 'self-history-annotations/v1';
 export const CATEGORY_TABLE = 'corpus-categories/v1';
 
@@ -280,6 +288,8 @@ export interface ManifestCounts {
 
 export interface ManifestBody {
   readonly manifestVersion: string;
+  readonly stage: typeof MANIFEST_STAGE;
+  readonly stageNote: string;
   readonly protocol: {
     readonly plan: string;
     readonly categoryTable: string;
@@ -450,6 +460,8 @@ export function freezeCorpus(inputs: FreezeInputs): FrozenCorpus {
   const included = manifestItems.filter((i) => i.excluded === null);
   const body: ManifestBody = {
     manifestVersion: MANIFEST_VERSION,
+    stage: MANIFEST_STAGE,
+    stageNote: MANIFEST_STAGE_NOTE,
     protocol: {
       plan: 'docs/implementation/phases/phase-04-plan.md §7.8',
       categoryTable: CATEGORY_TABLE,

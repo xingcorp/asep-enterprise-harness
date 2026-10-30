@@ -45,7 +45,7 @@ function scripted(output: ScriptedOutput, side: string): MatchableFinding[] {
 test('golden historical item maps its locations and matches as specified on both sides', () => {
   const golden = json<GoldenItem>(`${GOLDEN}/item.json`);
 
-  // The golden item is the frozen corpus item, with its frozen annotation.
+  // The golden item is the collected corpus item, with its annotation as the manifest records it.
   const itemFile = `${CORPUS}/items/${golden.id}.json`;
   assert.equal(golden.corpusItemSha256, createHash('sha256').update(readFileSync(join(ROOT, itemFile))).digest('hex'));
   const item = json<{ locations: GoldLocation[] }>(itemFile);

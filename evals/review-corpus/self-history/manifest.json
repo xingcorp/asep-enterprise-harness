@@ -124,7 +124,7 @@
     "fc93bbedc4e0d21fa749f681233a415d7f11cebf6f965ae2669ecc635b317454",
     "fd6406294c8aee4e604b36112bc3af2d83245ca08e3227597f679aaffaeff5ab"
   ],
-  "corpusSha256": "b140616bd1453d7c2f087e8b7f8e0f9631935caa78cd44e20a722b95d0dd30e0",
+  "corpusSha256": "203362c02f26af73f94edd85bebfdc59b9ada975a979e17fa9ecce10bd567859",
   "counts": {
     "excluded": {
       "leakage-filtered": 3,
@@ -3916,5 +3916,7 @@
       "--find-renames",
       "--unified=3"
     ]
-  }
+  },
+  "stage": "provenance",
+  "stageNote": "A provenance-stage freeze. The final freeze (packet eligibility with not-in-packet and egress-stopped, the full packet sources, the packet-dependent synthetic fields and the final corpusSha256) is made once the evals package is bound to the runtime packet code. Nothing may bind to this corpusSha256."
 }
