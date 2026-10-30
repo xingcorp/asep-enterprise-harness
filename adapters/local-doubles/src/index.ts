@@ -95,8 +95,9 @@ export class FileWritingAgent implements CodingAgentProvider {
  * `--force-with-lease` the bare remote enforces), an upsert opens the PR on
  * the base it is given and writes exactly the title and body it is given, and
  * a PR read closed, merged (`closePullRequest`) or retargeted
- * (`retargetPullRequest`) is not written; nothing ever reopens or retargets a
- * PR.
+ * (`retargetPullRequest`) is not written by an upsert; an update by number
+ * writes that PR's title and body only, in whatever state it is. Nothing ever
+ * reopens or retargets a PR.
  */
 export interface LocalPullRequest extends PullRequestRef {
   readonly title: string;
@@ -198,6 +199,23 @@ export class LocalBareForgeProvider implements ForgeProvider {
     };
     await this.writePrs([...prs, pr]);
     return refOf(pr);
+  }
+
+  // The title and body of the PR numbered `number`, as GitHub's update by
+  // number writes them: that PR only, whatever state a human left it in. An
+  // unknown number is an error, never a create.
+  async updatePullRequestContent(_scope: TenantScope, input: {
+    repositoryBindingId: RepositoryBindingId;
+    number: number;
+    title: string;
+    body: string;
+  }): Promise<PullRequestRef> {
+    const prs = await this.readPrs();
+    const at = prs.findIndex((p) => p.number === input.number);
+    if (at < 0) throw new Error(`no pull request #${input.number}`);
+    const updated: LocalPullRequest = { ...prs[at]!, title: input.title, body: input.body };
+    await this.writePrs(prs.map((p, i) => (i === at ? updated : p)));
+    return refOf(updated);
   }
 
   // --- crash-recovery reconciliation (HIGH-006) ------------------------------

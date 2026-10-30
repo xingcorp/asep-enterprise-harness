@@ -124,6 +124,30 @@ export class GitHubAppForgePort implements ForgeProvider {
     };
   }
 
+  // The recorded PR's title and body, by its number (see the port): the
+  // adapter's one update naming that PR, narrowed to the port's ref shape.
+  async updatePullRequestContent(scope: TenantScope, input: {
+    repositoryBindingId: RepositoryBindingId;
+    number: number;
+    title: string;
+    body: string;
+  }): Promise<PullRequestRef> {
+    const { repository } = await this.resolver.resolve(scope, input.repositoryBindingId);
+    const pr = await this.inner.updatePullRequestContent({
+      repository,
+      number: input.number,
+      title: input.title,
+      body: input.body,
+    });
+    return {
+      number: pr.number,
+      url: pr.url,
+      headBranch: pr.headBranch,
+      baseBranch: pr.baseBranch,
+      ...stateOf(pr),
+    };
+  }
+
   // --- crash-recovery reconciliation (disp. P2-FINAL-HIGH-006) --------------
   //
   // Read-only lookups the application uses to decide retry-vs-adopt when it

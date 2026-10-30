@@ -279,6 +279,7 @@ test('fault 5: a GitHub rate limit on the PR stops the run; after back-off the r
       },
       resolveRef: (scope, input) => local.resolveRef(scope, input),
       upsertPullRequest: (scope, input) => github.upsertPullRequest(scope, input),
+      updatePullRequestContent: (scope, input) => github.updatePullRequestContent(scope, input),
       findPullRequest: (scope, input) => github.findPullRequest(scope, input),
     };
 

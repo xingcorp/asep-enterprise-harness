@@ -113,7 +113,7 @@ test('HIGH-008: productionSeams binds the REAL GitHub App forge to the forge sea
   );
   // The port's full surface is present (the compiler enforces `implements
   // ForgeProvider`, this asserts it at runtime too) and NO merge exists (H5).
-  for (const m of ['pushBranch', 'upsertPullRequest', 'resolveRef', 'findPullRequest']) {
+  for (const m of ['pushBranch', 'upsertPullRequest', 'updatePullRequestContent', 'resolveRef', 'findPullRequest']) {
     assert.equal(typeof (seams.forge as unknown as Record<string, unknown>)[m], 'function', m);
   }
   assert.equal(

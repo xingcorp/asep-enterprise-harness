@@ -72,7 +72,7 @@ export class ForgeReconcileError extends Error {
 
 // The operations that spend a JIT credential. Named so an exhausted budget says
 // which one could not recover.
-export type ForgeOperation = 'push' | 'resolve-ref' | 'pr-upsert' | 'pr-find';
+export type ForgeOperation = 'push' | 'resolve-ref' | 'pr-upsert' | 'pr-update' | 'pr-find';
 
 // Bound on JIT-credential re-mints per operation (MED-002). A token that
 // expires or is revoked BETWEEN mint and use is recoverable by minting a fresh
@@ -277,6 +277,14 @@ export interface UpsertPrInput {
   readonly body: string;
 }
 
+export interface UpdatePrContentInput {
+  readonly repository: RepositoryForgeConfig;
+  // The PR to write, by its number: the one an attempt recorded.
+  readonly number: number;
+  readonly title: string;
+  readonly body: string;
+}
+
 // Scrub anything that looks like the JIT token or userinfo from a string before
 // it can reach a log/artifact/error. Defense in depth on top of never logging.
 function scrub(text: string, token: string): string {
@@ -445,6 +453,32 @@ export class GitHubAppForgeProvider {
         body: input.body,
       });
       return prResult(created.data);
+    });
+  }
+
+  // Set the title and body of the PR numbered `number`, and nothing else: one
+  // update naming that PR, with no list before it and no create after it, so
+  // it cannot land on another PR for the same head branch. GitHub has no
+  // compare-and-set for it: a human may have closed, merged or retargeted the
+  // PR, and the title and body then land on it as the human left it (the
+  // residual race). The caller reads the PR again to see what it now is. No
+  // merge is ever attempted (H5). Token minted JIT, opaque.
+  async updatePullRequestContent(input: UpdatePrContentInput): Promise<PullRequestResult> {
+    if (!Number.isSafeInteger(input.number) || input.number < 1) {
+      throw new Error(`not a pull request number: ${String(input.number)}`);
+    }
+    const { identity, repositoryId } = input.repository;
+    const owner = identity.githubOwner;
+    const repo = identity.githubRepo.replace(/\.git$/, '');
+    return this.withCredential('pr-update', repositoryId, async (token) => {
+      const updated = await this.octokitFor(token).pulls.update({
+        owner,
+        repo,
+        pull_number: input.number,
+        title: input.title,
+        body: input.body,
+      });
+      return prResult(updated.data);
     });
   }
 

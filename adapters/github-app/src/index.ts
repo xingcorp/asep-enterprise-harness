@@ -12,7 +12,7 @@ export {
 } from './credential-provider.js';
 
 export type {
-  OctokitLike, PullsApi, RepositoryForgeConfig, PushInput, UpsertPrInput,
+  OctokitLike, PullsApi, RepositoryForgeConfig, PushInput, UpsertPrInput, UpdatePrContentInput,
   PullRequestResult, GitRunner, ForgeOperation,
 } from './forge-provider.js';
 export {

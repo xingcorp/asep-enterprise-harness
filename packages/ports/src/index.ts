@@ -428,6 +428,18 @@ export interface ForgeProvider {
     title: string;
     body: string;
   }): Promise<PullRequestRef>;
+  // Sets the title and body of the PR numbered `number` to exactly those given:
+  // one write, naming that PR. Nothing is listed, selected or created, and
+  // nothing else about the PR changes — one a human closed, merged or
+  // retargeted stays so. A number the forge holds no PR for is an error. This
+  // is how an attempt's recorded PR is repaired: the write cannot land on
+  // another PR for the same head branch.
+  updatePullRequestContent(scope: TenantScope, input: {
+    repositoryBindingId: RepositoryBindingId;
+    number: number;
+    title: string;
+    body: string;
+  }): Promise<PullRequestRef>;
   // --- crash-recovery reconciliation (disp. P2-FINAL-HIGH-006, exit C7) ------
   //
   // A resume that finds a PENDING push/PR record cannot tell whether the effect

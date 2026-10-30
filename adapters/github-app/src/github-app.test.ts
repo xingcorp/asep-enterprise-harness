@@ -303,7 +303,8 @@ function fakeOctokit(store: {
       update: async (params) => {
         store.calls.push('update');
         store.updates?.push({ ...params });
-        const pr = store.prs.find((p) => p.number === params.pull_number)!;
+        const pr = store.prs.find((p) => p.number === params.pull_number);
+        if (pr === undefined) throw { status: 404, message: 'Not Found' };
         const { state, base } = params as { state?: 'open' | 'closed'; base?: string };
         if (state === 'open' && pr.merged_at !== null) {
           throw { status: 422, message: 'Validation Failed: a merged pull request cannot be reopened' };
@@ -498,6 +499,54 @@ for (const human of humanActs) {
     assert.deepEqual({ title: pr.title, body: pr.body }, pullRequestContent(facts));
   });
 }
+
+// An attempt's recorded PR is repaired by its number: one update naming it,
+// with its title and body only. There is no list to select it by and no
+// create, so the write cannot land on another PR for the head branch — here a
+// human has closed the recorded PR #7 and opened #8 on the same head.
+test('an update by number writes that PR\'s title and body only: nothing listed, nothing created, no other PR', async () => {
+  const store = { prs: [] as FakePr[], nextNumber: 7, calls: [] as string[], updates: [] as Record<string, unknown>[] };
+  const forge = ownerForge(fakeOctokit(store));
+  await forge.upsertPullRequest({ repository, headBranch: attemptBranchStr, base: facts.base, title: 'earlier', body: 'earlier' });
+  closeOnForge(store, 7, false);
+  store.prs.push({
+    number: 8, html_url: 'https://github.com/acme/web/pull/8', head: { ref: attemptBranchStr }, base: { ref: 'main' },
+    title: 'opened by a human', body: 'not the attempt\'s', state: 'open', merged_at: null,
+  });
+  const human = structuredClone(store.prs[1]!);
+  store.calls.length = 0;
+  store.updates.length = 0;
+  const written = await forge.updatePullRequestContent({ repository, number: 7, ...pullRequestContent(facts) });
+  assert.deepEqual(store.calls, ['update'], 'one update; nothing listed, nothing created');
+  assert.deepEqual(store.updates, [{ owner: 'acme', repo: 'web', pull_number: 7, ...pullRequestContent(facts) }],
+    'the PR named by its number, its title and body, nothing else');
+  assert.deepEqual(store.prs[1], human, 'PR #8 is as the human opened it');
+  const pr = store.prs[0]!;
+  assert.deepEqual({ title: pr.title, body: pr.body }, pullRequestContent(facts));
+  assert.equal(pr.state, 'closed', 'the residual race: written as the human left it, never reopened');
+  assert.deepEqual([written.number, written.state, written.merged], [7, 'closed', false]);
+});
+
+test('an update by number for a PR GitHub does not hold fails, and creates nothing', async () => {
+  const store = { prs: [] as FakePr[], nextNumber: 7, calls: [] as string[] };
+  await assert.rejects(
+    ownerForge(fakeOctokit(store)).updatePullRequestContent({ repository, number: 7, title: 'T', body: 'B' }),
+    (err: unknown) => (err as { status?: number }).status === 404,
+  );
+  assert.deepEqual(store.calls, ['update']);
+  assert.equal(store.prs.length, 0);
+});
+
+test('an update names a PR by a positive whole number, or calls nothing', async () => {
+  for (const number of [0, -1, 1.5, Number.NaN]) {
+    const store = { prs: [] as FakePr[], nextNumber: 7, calls: [] as string[] };
+    await assert.rejects(
+      ownerForge(fakeOctokit(store)).updatePullRequestContent({ repository, number, title: 'T', body: 'B' }),
+      /not a pull request number/,
+    );
+    assert.deepEqual(store.calls, [], String(number));
+  }
+});
 
 test('owner 1 reads no PR, owner 2 opens it, owner 1 tries to open it: still owner 2\'s one PR', async () => {
   const store = { prs: [] as FakePr[], nextNumber: 7, calls: [] as string[] };
@@ -800,8 +849,8 @@ test('a non-auth resolveRef failure is not retried and never leaks the token', a
   assert.equal(calls, 1);
 });
 
-// The same invariant, table-driven over all four token-using operations, so a
-// fifth operation added later without the shared recovery path has a template
+// The same invariant, table-driven over all five token-using operations, so a
+// sixth operation added later without the shared recovery path has a template
 // to fail against.
 test('every forge operation re-mints once on expiry and bypasses the token cache', async () => {
   const pr = { number: 3, html_url: 'https://github.com/acme/web/pull/3', head: { ref: attemptBranchStr, sha: SHA }, base: { ref: 'main' }, state: 'open' };
@@ -826,6 +875,7 @@ test('every forge operation re-mints once on expiry and bypasses the token cache
     { name: 'pushBranch', git: true, run: (f) => f.pushBranch({ repository, localWorktreePath: '/tmp/wt', branch: attemptBranchStr, ...firstPush }) },
     { name: 'resolveRef', git: true, run: (f) => f.resolveRef({ repository, branch: attemptBranchStr }) },
     { name: 'upsertPullRequest', git: false, run: (f) => f.upsertPullRequest({ repository, headBranch: attemptBranchStr, base: 'main', title: 'T', body: 'B' }) },
+    { name: 'updatePullRequestContent', git: false, run: (f) => f.updatePullRequestContent({ repository, number: 3, title: 'T', body: 'B' }) },
     { name: 'findPullRequest', git: false, run: (f) => f.findPullRequest({ repository, headBranch: attemptBranchStr }) },
   ];
   for (const op of ops) {

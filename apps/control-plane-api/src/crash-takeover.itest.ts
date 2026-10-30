@@ -140,6 +140,7 @@ async function runCrashingExecutor(cfg: ChildConfig): Promise<never> {
       if (cfg.crashAt === 'after-pr') die();
       return pr;
     },
+    updatePullRequestContent: (scope, input) => inner.updatePullRequestContent(scope, input),
     resolveRef: (scope, input) => inner.resolveRef(scope, input),
     findPullRequest: (scope, input) => inner.findPullRequest(scope, input),
   };
@@ -444,6 +445,7 @@ function registerTests(): void {
       const countingForge: ForgeProvider = {
         pushBranch: async (sc, i) => { zombieForgeCalls += 1; return forge.pushBranch(sc, i); },
         upsertPullRequest: async (sc, i) => { zombieForgeCalls += 1; return forge.upsertPullRequest(sc, i); },
+        updatePullRequestContent: async (sc, i) => { zombieForgeCalls += 1; return forge.updatePullRequestContent(sc, i); },
         resolveRef: (sc, i) => forge.resolveRef(sc, i),
         findPullRequest: (sc, i) => forge.findPullRequest(sc, i),
       };

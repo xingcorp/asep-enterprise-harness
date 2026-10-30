@@ -149,6 +149,7 @@ function githubShaped(inner: LocalBareForgeProvider): ForgeProvider {
   return {
     pushBranch: (scope, input) => inner.pushBranch(scope, input),
     upsertPullRequest: async (scope, input) => shaped(await inner.upsertPullRequest(scope, input)),
+    updatePullRequestContent: async (scope, input) => shaped(await inner.updatePullRequestContent(scope, input)),
     resolveRef: (scope, input) => inner.resolveRef(scope, input),
     findPullRequest: async (scope, input) => {
       const pr = await inner.findPullRequest(scope, input);

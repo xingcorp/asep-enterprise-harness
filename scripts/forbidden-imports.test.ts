@@ -287,7 +287,7 @@ const ROOT_FORBIDDEN: ReadonlyArray<{ label: string; test: (src: string) => bool
     label: 'direct forge invocation',
     test: (s) => {
       const code = s.replace(/\bnew\s+[\w$.]+\s*\(/g, 'new (');
-      return /\b[\w$]*(?:forge|Forge)[\w$]*\s*\.\s*(?:pushBranch|upsertPullRequest|resolveRef|findPullRequest)\s*\(/.test(code);
+      return /\b[\w$]*(?:forge|Forge)[\w$]*\s*\.\s*(?:pushBranch|upsertPullRequest|updatePullRequestContent|resolveRef|findPullRequest)\s*\(/.test(code);
     },
   },
   { label: 'direct policy decision', test: (s) => /\b(admitRisk|gatePolicy|classifyRisk|approvalFor|requiredLevels|classifyFailure)\s*\(/.test(s) },
@@ -456,9 +456,11 @@ test('arch mutation self-test: direct git + forge invocation in a root is REJECT
   // Forge side effects driven from the root rather than the application layer.
   const seededForgePush = `await forge.pushBranch(scope, { branch, commitSha });`;
   const seededForgePr = `const pr = await forge.upsertPullRequest(scope, { headBranch, base });`;
+  const seededForgeUpdate = `await forge.updatePullRequestContent(scope, { number, title, body });`;
   const seededLocalForge = `const sha = await localForge.resolveRef(scope, { branch });`;
   for (const [label, src] of [
     ['pushBranch', seededForgePush], ['upsertPullRequest', seededForgePr],
+    ['updatePullRequestContent', seededForgeUpdate],
     ['resolveRef on a local double', seededLocalForge],
   ] as const) {
     assert.ok(

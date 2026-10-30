@@ -97,6 +97,7 @@ function crashingForge(inner: LocalBareForgeProvider, at: CrashPoint): ForgeProv
       if (at === 'after-pr') throw new SimulatedCrash('executor died after the PR was opened');
       return pr;
     },
+    updatePullRequestContent: (scope, input) => inner.updatePullRequestContent(scope, input),
     resolveRef: (scope, input) => inner.resolveRef(scope, input),
     findPullRequest: (scope, input) => inner.findPullRequest(scope, input),
   };
@@ -660,10 +661,16 @@ function githubPulls(opts: {
   closedBeforeRun?: { merged: boolean };
   // What a human does to the PR on GitHub right after it is opened.
   afterCreate?: (pr: StoredPr, prs: StoredPr[]) => void;
+  // What happens on GitHub right after a list of the head's PRs is answered.
+  // `view.listed = false` stands in for a list that shows none of them, while
+  // each still answers by its number.
+  afterList?: (prs: StoredPr[], view: { listed: boolean }) => void;
 } = {}) {
   const prs: StoredPr[] = [];
+  // Every write, with the PR an update named.
   const writes: string[] = [];
   const heads = new Map<string, string>();
+  const view = { listed: true };
   const copy = (pr: StoredPr) => {
     const sha = heads.get(pr.head.ref);
     return { ...structuredClone(pr), head: { ref: pr.head.ref, ...(sha !== undefined ? { sha } : {}) } };
@@ -680,7 +687,9 @@ function githubPulls(opts: {
             merged_at: opts.closedBeforeRun.merged ? '2026-10-30T00:00:00Z' : null,
           });
         }
-        return { data: prs.filter((p) => p.head.ref === ref).map(copy).reverse() };
+        const data = view.listed ? prs.filter((p) => p.head.ref === ref).map(copy).reverse() : [];
+        opts.afterList?.(prs, view);
+        return { data };
       },
       create: async ({ head, base, title, body }) => {
         writes.push('create');
@@ -694,14 +703,15 @@ function githubPulls(opts: {
         return { data: answer };
       },
       update: async ({ pull_number, title, body }) => {
-        writes.push('update');
-        const pr = prs.find((p) => p.number === pull_number)!;
+        writes.push(`update:${pull_number}`);
+        const pr = prs.find((p) => p.number === pull_number);
+        if (pr === undefined) throw { status: 404, message: 'Not Found' };
         Object.assign(pr, { title, body });
         return { data: { ...copy(pr), merged: pr.merged_at !== null } };
       },
     },
   });
-  return { prs, writes, heads, octokitFor };
+  return { prs, writes, heads, view, octokitFor };
 }
 
 // The executor "dies" after the PR is opened but before it is recorded, or
@@ -737,6 +747,7 @@ function githubForge(
       }
       return pr;
     },
+    updatePullRequestContent: (scope, input) => github.updatePullRequestContent(scope, input),
     findPullRequest: async (scope, input) => {
       if (readCrashPending && pulls.writes.length > 0) {
         readCrashPending = false;
@@ -972,6 +983,82 @@ for (const c of changedAfterCreate) {
         number: 1, url: 'https://github.com/acme/web/pull/1', headBranch: a.branch, baseBranch: c.base,
         headSha: pulls.heads.get(a.branch), state: c.state, merged: c.merged,
       });
+      assert.deepEqual(f.failures[0]!['recorded'], {
+        number: 1, url: 'https://github.com/acme/web/pull/1', headBranch: a.branch, baseBranch: 'main',
+      });
+    } finally {
+      await client.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+}
+
+// A run repairs its recorded PR by that PR's number. Through the GitHub adapter
+// and port: a stale owner's title lands on PR #1 right after it is opened, so
+// the run's check finds it to repair; right after that check a human closes #1
+// and opens #2 on the attempt's head branch, or GitHub stops listing #1. The
+// repair is one write naming #1 — nothing is selected again, nothing created —
+// and the read after it fails the task with what it found.
+const humanOpened = (branch: string): StoredPr => ({
+  number: 2, html_url: 'https://github.com/acme/web/pull/2', head: { ref: branch }, base: { ref: 'main' },
+  title: 'opened by a human', body: 'not the attempt\'s', state: 'open', merged_at: null,
+});
+
+const afterTheCheck = [
+  {
+    name: 'is closed and replaced by a human',
+    act: (prs: StoredPr[]) => {
+      prs[0]!.state = 'closed';
+      prs.push(humanOpened(prs[0]!.head.ref));
+    },
+    gap: (branch: string) => `the forge shows PR #2 for ${branch}, not the recorded PR #1`,
+    found: { number: 2, state: 'open' },
+  },
+  {
+    name: 'is no longer listed',
+    act: (_prs: StoredPr[], view: { listed: boolean }) => { view.listed = false; },
+    gap: (branch: string) => `the forge shows no pull request for ${branch}`,
+    found: null,
+  },
+] as const;
+
+for (const c of afterTheCheck) {
+  test(`through the GitHub adapter and port, a run whose recorded PR ${c.name} while it is repaired writes only that PR`, async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'asep-repair-by-number-'));
+    const client = await PgliteClient.create();
+    try {
+      await migrate(client);
+      let checking = false;
+      const pulls = githubPulls({
+        afterCreate: (pr) => { pr.title = 'a stale owner\'s title'; checking = true; },
+        afterList: (prs, view) => {
+          if (!checking) return;
+          checking = false;
+          c.act(prs, view);
+        },
+      });
+      const gh = await onGitHub(dir);
+      const sandbox = await fakeDockerSandbox(join(dir, 'sandbox'));
+      const run = runVerticalSlice({
+        client, sandbox, dir: join(dir, 'run'), checkCommand: checkCommandFor,
+        forge: githubForge(client, gh.local, pulls, false),
+        onWorkspaceCreated: (p) => gh.local.setWorktree(p),
+        repository: gh.repository,
+      });
+      await assert.rejects(run, /completion stopped early at 'upsert-pr': publication incomplete: /);
+      const a = await theAttempt(client);
+      assert.deepEqual(pulls.writes, ['create', 'update:1'], 'the repair is one write, naming the recorded PR');
+      assert.ok(!pulls.writes.some((w) => w.endsWith(':2')), 'the write log never names #2');
+      assert.deepEqual(pulls.prs.slice(1), c.found === null ? [] : [humanOpened(a.branch)],
+        'another PR is as the human opened it, and none was created');
+      const f = await failedOnRecord(client, a.taskId, a.attemptId);
+      assert.equal(f.status, 'FAILED');
+      assert.equal(f.prRows, 0, 'neither PR is persisted');
+      assert.equal(f.failures.length, 1);
+      assert.equal(f.failures[0]!['outcome'], 'publication-incomplete');
+      assert.equal(f.failures[0]!['reason'], c.gap(a.branch));
+      const found = f.failures[0]!['found'] as { number: number; state: string } | null;
+      assert.deepEqual(found === null ? null : { number: found.number, state: found.state }, c.found);
       assert.deepEqual(f.failures[0]!['recorded'], {
         number: 1, url: 'https://github.com/acme/web/pull/1', headBranch: a.branch, baseBranch: 'main',
       });

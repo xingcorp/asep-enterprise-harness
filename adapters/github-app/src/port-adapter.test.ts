@@ -254,6 +254,44 @@ test('HIGH-008: a binding outside the caller scope is rejected before any forge 
     }),
     /scope violation/,
   );
+  await assert.rejects(
+    () => port.updatePullRequestContent(otherScope, { repositoryBindingId: BINDING, number: 1, title: 't', body: 'b' }),
+    /scope violation/,
+  );
+});
+
+// The recorded PR's title and body through the port: the adapter's one update
+// naming the PR by its number, narrowed to the port's ref shape.
+test('a PR updated through the port by its number is the only PR written, in the port ref shape', async () => {
+  const prs = [7, 8].map((number) => ({
+    number, html_url: `https://github.com/acme/web/pull/${number}`, head: { ref: attemptBranchStr }, base: { ref: 'main' },
+    title: 'old', body: 'old', state: number === 7 ? 'closed' : 'open', merged: false,
+  }));
+  const calls: string[] = [];
+  const octokitFor = (): OctokitLike => ({
+    pulls: {
+      list: async () => { calls.push('list'); return { data: prs }; },
+      create: async () => { calls.push('create'); throw new Error('an update must not create'); },
+      update: async ({ pull_number, title, body }) => {
+        calls.push(`update:${pull_number}`);
+        const pr = prs.find((p) => p.number === pull_number)!;
+        Object.assign(pr, { title, body });
+        return { data: pr };
+      },
+    },
+  });
+  const port: ForgeProvider = new GitHubAppForgePort(
+    new GitHubAppForgeProvider(new GitHubAppCredentialProvider({ appId: 1, privateKey: 'PEM', installationId: 9 }, fakeAuth()),
+      octokitFor, ['github.com']),
+    scopedResolver('/tmp/wt'),
+  );
+  const written = await port.updatePullRequestContent(scope, { repositoryBindingId: BINDING, number: 7, title: 'T', body: 'B' });
+  assert.deepEqual(calls, ['update:7']);
+  assert.deepEqual(written, {
+    number: 7, url: 'https://github.com/acme/web/pull/7', headBranch: attemptBranchStr, baseBranch: 'main',
+    state: 'closed', merged: false,
+  });
+  assert.deepEqual([prs[1]!.title, prs[1]!.body], ['old', 'old'], 'PR #8 is not written');
 });
 
 // ---------------------------------------------------------------------------
@@ -384,10 +422,12 @@ test('H5: the port exposes no merge capability', () => {
   // to be added here deliberately and justified. The two reconcile methods are
   // READ-ONLY lookups the crash-recovery protocol needs (disp. P2-FINAL-HIGH-006):
   // `resolveRef` is an ls-remote and `findPullRequest` is a PR query — neither
-  // publishes anything, and neither can merge. The two write capabilities remain
-  // exactly push + PR upsert.
+  // publishes anything, and neither can merge. The write capabilities are push,
+  // the PR upsert, and the update of a recorded PR's title and body by its
+  // number — the repair of a PR the attempt already opened, which can neither
+  // create nor merge.
   assert.deepEqual(methods, [
-    'findPullRequest', 'pushBranch', 'resolveRef', 'upsertPullRequest',
+    'findPullRequest', 'pushBranch', 'resolveRef', 'updatePullRequestContent', 'upsertPullRequest',
   ]);
 });
 

@@ -115,6 +115,12 @@ function world(
       remote.afterUpsert?.();
       return written;
     },
+    updatePullRequestContent: async (_s, i) => {
+      calls.push('forge.pr.update');
+      if (remote.pr?.number !== i.number) throw new Error(`no pull request #${i.number}`);
+      remote.pr = { ...remote.pr, title: i.title, body: i.body };
+      return remote.pr;
+    },
     resolveRef: async () => { calls.push('forge.resolve'); return remote.ref; },
     findPullRequest: async () => {
       calls.push('forge.find');
@@ -242,7 +248,9 @@ test('a resume rewrites a PR a late writer changed after its upsert, on record, 
   assert.equal(remote.pr?.title, content.title);
   assert.equal(remote.pr?.body, content.body);
   assert.equal(actions.filter((a) => a.action === 'forge.reconcile').length, 1);
-  assert.ok(calls.indexOf('task.status:WAITING_FOR_HUMAN_REVIEW') > calls.lastIndexOf('forge.pr'),
+  assert.equal(calls.filter((c) => c === 'forge.pr.update').length, 1, 'the repair is one write by number');
+  assert.equal(calls.filter((c) => c === 'forge.pr.write').length, 1, 'only the attempt\'s own upsert went by branch');
+  assert.ok(calls.indexOf('task.status:WAITING_FOR_HUMAN_REVIEW') > calls.indexOf('forge.pr.update'),
     'the PR is repaired before the terminal state');
 });
 
@@ -304,7 +312,7 @@ for (const c of unreviewable) {
     assert.ok(calls.includes('task.status:FAILED'));
     assert.ok(!calls.includes('task.status:WAITING_FOR_HUMAN_REVIEW'));
     assert.ok(!calls.includes('pr.persist'), 'no PR row is recorded');
-    assert.ok(!calls.includes('forge.pr.write'), 'the PR is never reopened or edited');
+    assert.ok(!calls.includes('forge.pr.write') && !calls.includes('forge.pr.update'), 'the PR is never reopened or edited');
     assert.deepEqual(remote.pr, before);
     assert.equal(actions.filter((a) => a.action === 'forge.reconcile').length, 0);
     const transitions = actions.filter((a) => a.action === 'task.status.transition');
@@ -340,7 +348,7 @@ test('a resume of a task already under review leaves it there when its PR was cl
   assert.equal(r.taskStatus, 'WAITING_FOR_HUMAN_REVIEW');
   assert.ok(!calls.some((c) => c.startsWith('task.status:')), 'review has no harness transition');
   assert.ok(!calls.includes('pr.persist'));
-  assert.ok(!calls.includes('forge.pr.write'));
+  assert.ok(!calls.includes('forge.pr.write') && !calls.includes('forge.pr.update'));
 });
 
 // What the resume persists is the PR it checked against the attempt's record.
@@ -363,6 +371,7 @@ test('a resume that finds another PR on the attempt\'s branch writes nothing to 
   assert.equal(r.prNumber, 7, 'the attempt\'s PR is the recorded one');
   assert.ok(!calls.includes('pr.persist'), 'no PR row is recorded');
   assert.equal(calls.filter((c) => c === 'forge.pr.write').length, 1, 'only the attempt\'s own upsert wrote');
+  assert.ok(!calls.includes('forge.pr.update'), 'and no repair wrote');
   assert.equal(remote.pr?.title, 'opened by a human', 'PR #8 is left as the human made it');
   const failed = actions.find((a) => a.action === 'task.status.transition')?.detail as Record<string, unknown>;
   assert.deepEqual(failed['found'], {

@@ -164,6 +164,20 @@ class LocalBareForgeProvider implements ForgeProvider {
     return pr;
   }
 
+  // The title and body of the PR numbered `number`, and nothing else.
+  async updatePullRequestContent(_scope: TenantScope, input: {
+    repositoryBindingId: RepositoryBindingId;
+    number: number;
+    title: string;
+    body: string;
+  }): Promise<PullRequestRef> {
+    const existing = [...this.prs.values()].find((p) => p.number === input.number);
+    if (existing === undefined) throw new Error(`no pull request #${input.number}`);
+    const pr: PullRequestRef = { ...existing, title: input.title, body: input.body };
+    this.prs.set(pr.headBranch, pr);
+    return pr;
+  }
+
   // Crash-recovery reconciliation (HIGH-006): read-only lookups against the REAL
   // bare remote / the in-memory PR table, so the pipeline can tell "the effect
   // landed" from "it never ran" without re-pushing or re-opening.
@@ -443,6 +457,7 @@ for (const [label, make] of unclaimedSandboxes) {
       const forge: ForgeProvider = {
         pushBranch: async () => { forgeCalls.push('push'); },
         upsertPullRequest: async () => { forgeCalls.push('pr'); throw new Error('must not be reached'); },
+        updatePullRequestContent: async () => { forgeCalls.push('pr'); throw new Error('must not be reached'); },
         resolveRef: async () => { forgeCalls.push('resolve'); return null; },
         findPullRequest: async () => { forgeCalls.push('find'); return null; },
       };
@@ -499,6 +514,7 @@ test('the vertical slice refuses a handle stripped down to its isolation claim, 
     const forge: ForgeProvider = {
       pushBranch: async () => { forgeCalls.push('push'); },
       upsertPullRequest: async () => { forgeCalls.push('pr'); throw new Error('must not be reached'); },
+      updatePullRequestContent: async () => { forgeCalls.push('pr'); throw new Error('must not be reached'); },
       resolveRef: async () => { forgeCalls.push('resolve'); return null; },
       findPullRequest: async () => { forgeCalls.push('find'); return null; },
     };

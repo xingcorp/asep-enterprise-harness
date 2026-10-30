@@ -673,8 +673,10 @@ class MemorySideEffectLog implements SideEffectLog {
 // the recorded inputs are what each call asked the forge to write.
 type PushCall = Parameters<ForgeProvider['pushBranch']>[1];
 type UpsertCall = Parameters<ForgeProvider['upsertPullRequest']>[1];
+type UpdateCall = Parameters<ForgeProvider['updatePullRequestContent']>[1];
 type FakeForge = ForgeProvider & {
-  pushes: number; upserts: number; pushCalls: PushCall[]; upsertCalls: UpsertCall[];
+  pushes: number; upserts: number; updates: number;
+  pushCalls: PushCall[]; upsertCalls: UpsertCall[]; updateCalls: UpdateCall[];
 };
 function fakeForge(
   pr: PullRequestRef,
@@ -682,19 +684,29 @@ function fakeForge(
 ): FakeForge {
   const pushCalls: PushCall[] = [];
   const upsertCalls: UpsertCall[] = [];
+  const updateCalls: UpdateCall[] = [];
   // Unless a test seeds it, the forge holds the PR once one was written, with
   // the content last written to it.
   let held: PullRequestRef | null = remote.pr !== undefined ? remote.pr : null;
   return {
     get pushes() { return pushCalls.length; },
     get upserts() { return upsertCalls.length; },
+    get updates() { return updateCalls.length; },
     pushCalls,
     upsertCalls,
+    updateCalls,
     async pushBranch(_s: TenantScope, i: PushCall) { pushCalls.push(i); },
     async upsertPullRequest(_s: TenantScope, i: UpsertCall) {
       upsertCalls.push(i);
       held = { ...(held ?? pr), title: i.title, body: i.body };
       return { ...pr, title: i.title, body: i.body };
+    },
+    // Writes the PR it holds when the number is that PR's.
+    async updatePullRequestContent(_s: TenantScope, i: UpdateCall) {
+      updateCalls.push(i);
+      if (held === null || held.number !== i.number) throw new Error(`no pull request #${i.number}`);
+      held = { ...held, title: i.title, body: i.body };
+      return held;
     },
     async resolveRef() { return remote.ref ?? null; },
     async findPullRequest() { return held; },
@@ -1015,7 +1027,7 @@ test('reconcilePullRequestStep keeps a PR that already is the facts\' PR', async
   const res = await reconcilePullRequestStep(remoteInput(forge, observe));
   assert.equal(res.repaired, false);
   assert.deepEqual(res.pr, { ...prRef, ...content });
-  assert.equal(forge.upserts, 0);
+  assert.equal(forge.upserts + forge.updates, 0);
   assert.equal(seen.length, 0);
 });
 
@@ -1031,9 +1043,10 @@ test('reconcilePullRequestStep rewrites a diverged PR from the facts, on record,
     const forge = fakeForge(prRef, { pr: found });
     const res = await reconcilePullRequestStep(remoteInput(forge, observe));
     assert.equal(res.repaired, true, name);
-    assert.deepEqual(forge.upsertCalls, [{
-      repositoryBindingId: bindingId, headBranch: 'asep/attempt-1', base: 'main', ...content,
-    }], name);
+    // One write, naming the recorded PR by its number, with the facts' title
+    // and body; nothing goes through the branch-keyed upsert.
+    assert.deepEqual(forge.updateCalls, [{ repositoryBindingId: bindingId, number: 7, ...content }], name);
+    assert.equal(forge.upserts, 0, name);
     assert.equal(seen.length, 1, name);
     assert.equal(seen[0]!.span, 'forge.pull_request', name);
     assert.equal(seen[0]!.action, 'forge.reconcile', name);
@@ -1071,7 +1084,7 @@ test('reconcilePullRequestStep writes nothing to a closed, merged or retargeted 
     assert.equal(res.repaired, false, name);
     assert.match(res.gap ?? '', gap, name);
     assert.deepEqual(res.pr, found, name);
-    assert.equal(forge.upserts, 0, `${name}: never reopened, edited or retargeted`);
+    assert.equal(forge.upserts + forge.updates, 0, `${name}: never reopened, edited or retargeted`);
     assert.equal(seen.length, 0, name);
   }
 });
@@ -1117,7 +1130,7 @@ test('reconcilePullRequestStep writes nothing to a PR that is not the recorded o
     assert.equal(res.repaired, false, name);
     assert.match(res.gap ?? '', gap, name);
     assert.deepEqual(res.pr, found, name);
-    assert.equal(forge.upserts, 0, `${name}: nothing written, nothing created`);
+    assert.equal(forge.upserts + forge.updates, 0, `${name}: nothing written, nothing created`);
     assert.equal(seen.length, 0, name);
   }
 });
@@ -1130,13 +1143,98 @@ test('reconcilePullRequestStep reports a gap when the PR read back after its wri
   let reads = 0;
   const res = await reconcilePullRequestStep(remoteInput({
     ...forge,
-    upsertPullRequest: forge.upsertPullRequest,
     findPullRequest: async () => (reads++ === 0 ? prRef : closed),
   }, observe));
-  assert.equal(forge.upserts, 1);
+  assert.equal(forge.updates, 1);
   assert.equal(res.repaired, true);
   assert.match(res.gap ?? '', /PR #7 is closed/);
   assert.deepEqual(res.pr, closed, 'the observation that failed, not what was written');
+});
+
+// A forge holding several PRs for the attempt's branch, which selects one for
+// the branch as GitHub does: the open one, else the newest. `listed: false`
+// stands in for a list that no longer shows the branch's PRs although each
+// still answers by its number. Every write is logged with the PR it named.
+function branchForge(prs: PullRequestRef[]) {
+  const writes: string[] = [];
+  const view = { listed: true };
+  const forBranch = (): PullRequestRef | undefined => (view.listed
+    ? prs.find((p) => p.state === 'open') ?? prs.at(-1) : undefined);
+  const forge: ForgeProvider = {
+    async pushBranch() { throw new Error('no push in this test'); },
+    async resolveRef() { return null; },
+    async findPullRequest() { return forBranch() ?? null; },
+    async upsertPullRequest(_s, i) {
+      const open = forBranch();
+      if (open === undefined || open.state !== 'open') {
+        const number = Math.max(0, ...prs.map((p) => p.number)) + 1;
+        writes.push(`create:${number}`);
+        const pr = { ...prRef, number, url: `https://forge.invalid/pr/${number}`, title: i.title, body: i.body };
+        prs.push(pr);
+        return pr;
+      }
+      writes.push(`update:${open.number}`);
+      const at = prs.indexOf(open);
+      prs[at] = { ...open, title: i.title, body: i.body };
+      return prs[at]!;
+    },
+    async updatePullRequestContent(_s, i) {
+      writes.push(`update:${i.number}`);
+      const at = prs.findIndex((p) => p.number === i.number);
+      if (at < 0) throw new Error(`no pull request #${i.number}`);
+      prs[at] = { ...prs[at]!, title: i.title, body: i.body };
+      return prs[at]!;
+    },
+  };
+  return { forge, writes, view };
+}
+
+// Between reconcile's check of the recorded PR #7 and its write, a human closes
+// #7 and opens #8 on the same branch. The write names #7 by its number, so #8
+// is never written; the read after the write shows #8, which is the gap.
+test('reconcilePullRequestStep writes the recorded PR by its number: a PR opened in its place is never written', async () => {
+  const content = pullRequestContent(pullRequestFactsOf(prFacts));
+  const prs: PullRequestRef[] = [{ ...prRef, title: 'a stale owner\'s title', body: 'a stale owner\'s body' }];
+  const { forge, writes } = branchForge(prs);
+  const opened: PullRequestRef = {
+    ...prRef, number: 8, url: 'https://forge.invalid/pr/8', title: 'opened by a human', body: 'not the attempt\'s',
+  };
+  const observe: ObserveBoundary = async (_boundary, fn) => {
+    prs[0] = { ...prs[0]!, state: 'closed' };
+    prs.push({ ...opened });
+    return fn();
+  };
+  const res = await reconcilePullRequestStep(remoteInput(forge, observe));
+  assert.deepEqual(writes, ['update:7'], 'one write, naming the recorded PR');
+  assert.deepEqual(prs[1], opened, 'PR #8 is as the human opened it');
+  assert.equal(res.repaired, true);
+  assert.equal(res.gap, 'the forge shows PR #8 for asep/attempt-1, not the recorded PR #7');
+  assert.deepEqual(res.pr, opened, 'the observation that failed');
+  // What is left of the race: the recorded PR's own title and body, written
+  // after the human closed it — never reopened.
+  assert.deepEqual(
+    { title: prs[0]!.title, body: prs[0]!.body, state: prs[0]!.state },
+    { ...content, state: 'closed' },
+  );
+});
+
+// Between the check and the write the forge stops listing the branch's PRs,
+// though the recorded PR is still there by its number. Nothing is created: the
+// write names the recorded PR, and the read after it, which shows none, is the
+// gap.
+test('reconcilePullRequestStep creates nothing when the forge stops showing the recorded PR after its check', async () => {
+  const prs: PullRequestRef[] = [{ ...prRef, title: 'a stale owner\'s title', body: 'a stale owner\'s body' }];
+  const { forge, writes, view } = branchForge(prs);
+  const observe: ObserveBoundary = async (_boundary, fn) => {
+    view.listed = false;
+    return fn();
+  };
+  const res = await reconcilePullRequestStep(remoteInput(forge, observe));
+  assert.deepEqual(writes, ['update:7'], 'no create: the one write names the recorded PR');
+  assert.equal(prs.length, 1, 'no second PR');
+  assert.equal(res.repaired, true);
+  assert.equal(res.gap, 'the forge shows no pull request for asep/attempt-1');
+  assert.equal(res.pr, null);
 });
 
 // --- setReviewStep (I1/I2) --------------------------------------------------
@@ -1754,6 +1852,10 @@ test('M3/Fault5 (pipeline): a forge rate-limit STOPS the pipeline and opens NO p
       throw e;
     },
     async upsertPullRequest() {
+      upserts += 1;
+      return prRef;
+    },
+    async updatePullRequestContent() {
       upserts += 1;
       return prRef;
     },

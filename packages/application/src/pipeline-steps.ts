@@ -1048,7 +1048,9 @@ export async function upsertPrStep(input: UpsertPrStepInput): Promise<UpsertPrSt
 // commit, the PR open on it with pullRequestContent of the facts and the base.
 // Each repair is a privileged effect of its own ('forge.reconcile'), recorded
 // with what was found. The branch is repaired with a compare-and-set on the
-// value found, so a writer racing the repair is refused, not overwritten.
+// value found, so a writer racing the repair is refused, not overwritten. The
+// PR is repaired by the recorded PR's number, so the write cannot land on
+// another PR for the branch, and nothing is ever created.
 // ---------------------------------------------------------------------------
 
 export interface ReconcileRemoteInput {
@@ -1113,11 +1115,17 @@ export interface ReconcilePullRequestResult {
 /**
  * Read the attempt's PR, make its title and body the facts' if it is the
  * recorded PR and a reviewable publication, and read it again after any
- * repair. Only the recorded PR, open, unmerged, on the attempt's base and
- * showing its commit is ever written; anything else — no PR, another PR on the
- * branch, a PR a human closed, merged or retargeted — is reported as a gap,
- * as found, and nothing is written. The returned PR is the last read: what
- * the caller completes is exactly what was checked.
+ * repair. The repair is one write naming the recorded PR by its number:
+ * nothing is selected again by branch and nothing is created, so a PR a human
+ * opens in its place between the check and the write is never written. What
+ * the check finds that is not the recorded PR, open, unmerged, on the
+ * attempt's base and showing its commit — no PR, another PR on the branch, a
+ * PR a human closed, merged or retargeted — is reported as a gap, as found,
+ * and nothing is written. A human may still close, merge or retarget the
+ * recorded PR between the check and the write; its title and body then land
+ * on it as the human left it, and the read after the write reports the gap.
+ * The returned PR is the last read: what the caller completes is exactly what
+ * was checked.
  */
 export async function reconcilePullRequestStep(input: ReconcilePullRequestInput): Promise<ReconcilePullRequestResult> {
   const content = pullRequestContent(input.facts);
@@ -1141,10 +1149,9 @@ export async function reconcilePullRequestStep(input: ReconcilePullRequestInput)
         },
       },
     },
-    () => input.forge.upsertPullRequest(input.scope, {
+    () => input.forge.updatePullRequestContent(input.scope, {
       repositoryBindingId: input.repositoryBindingId,
-      headBranch: input.branch,
-      base: input.facts.base,
+      number: input.recorded.number,
       title: content.title,
       body: content.body,
     }),

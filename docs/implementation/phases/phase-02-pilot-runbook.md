@@ -376,17 +376,20 @@ merged code is possible because nothing is auto-merged.
   harness only ever pushes the attempt's pinned commit; once the branch
   exists, the lease refuses a stale push that still expects it absent,
   whatever that push carries. Its PR text is the same function of the
-  attempt's facts. The resume reconciles the branch and an open PR on the
-  attempt's base with those facts before the task reaches review. Each repair
-  is an `audit_events` row with action `forge.reconcile` naming what it found;
-  review them for the attempt before the human review. An open PR edited by
-  hand afterwards is repaired only by another resume.
+  attempt's facts. The resume reconciles the branch and the recorded PR with
+  those facts before the task reaches review; the PR is written only by its
+  recorded number, never one chosen again by branch, and none is created.
+  Each repair is an `audit_events` row with action `forge.reconcile` naming
+  what it found; review them for the attempt before the human review. An open
+  PR edited by hand afterwards is repaired only by another resume.
 - **A PR closed, merged or retargeted by a human:** the harness never reopens
   or retargets a PR, and does not write to one it reads closed, merged or on
   another base. A human may still close, merge or retarget the PR between the
-  adapter's read and its title/body write; that write then lands on the PR as
-  the human left it, possibly one that just closed (a residual read/write race:
-  GitHub has no compare-and-set for a PR update, R30). A run or resume then
+  adapter's read and its title/body write, or between the check and a repair's
+  write by the recorded number; that write then lands on the attempt's own PR
+  as the human left it, possibly one that just closed (a residual read/write
+  race: GitHub has no compare-and-set for a PR update, R30). It never lands on
+  another PR a human opened on the branch. A run or resume then
   reads the PR again, finds it not reviewable and fails the task: an
   `audit_events` row with action `task.status.transition` whose detail has
   `to: FAILED`, `outcome: publication-incomplete`, the reason, the PR found
