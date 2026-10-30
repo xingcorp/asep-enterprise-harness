@@ -175,8 +175,10 @@ test('a group whose leader has exited is ended only while every member left show
     assert.equal(stillRunning(ours.member), false);
   } finally {
     finish(ours.entry);
-    finish(unproven.entry);
+    // Its stranger first, by the stranger's own identity; then nothing of the
+    // group is left, and its record goes.
     endProcess(identityOf(unproven.member, { token: memberToken }) ?? { pid: unproven.member, group: false, token: memberToken });
+    finish(unproven.entry);
   }
 });
 
