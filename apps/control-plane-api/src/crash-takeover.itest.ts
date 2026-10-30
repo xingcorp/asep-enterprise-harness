@@ -49,7 +49,7 @@ import {
   type SqlClient, type SqlExecutor,
 } from '@asep/persistence';
 import { pushStep, upsertPrStep, pullRequestFactsOf } from '@asep/application';
-import { DockerSandboxProvider } from '@asep/command-runner';
+import { DockerSandboxProvider, monotonicNow } from '@asep/command-runner';
 import { runGit, attemptBranch } from '@asep/git-worktree';
 import { seedMirror, createBareRemote, LocalBareForgeProvider } from '@asep/local-doubles';
 import {
@@ -294,13 +294,13 @@ function registerTests(): void {
         assert.equal(untouched['owner_lease_id'], c.deadLease);
 
         // --- 2. wait for the lease to expire, then take over ------------------
-        const deadline = Date.now() + LEASE_TTL_MS + 15_000;
+        const deadline = monotonicNow() + LEASE_TTL_MS + 15_000;
         for (;;) {
           const r = await client.query(
             `select expires_at <= now() as expired from workspace_leases where id = $1`, [c.deadLease],
           );
           if (r.rows[0]!['expired'] === true) break;
-          assert.ok(Date.now() < deadline, 'the dead lease never expired');
+          assert.ok(monotonicNow() < deadline, 'the dead lease never expired');
           await new Promise((res) => setTimeout(res, 250));
         }
         const r = await resume();
@@ -428,11 +428,11 @@ function registerTests(): void {
         };
       };
       const waitOut = async (leaseId: string) => {
-        for (const deadline = Date.now() + TTL + 10_000; ;) {
+        for (const deadline = monotonicNow() + TTL + 10_000; ;) {
           const r = await client.query(
             'select expires_at <= clock_timestamp() as expired from workspace_leases where id = $1', [leaseId]);
           if (r.rows[0]!['expired'] === true) return;
-          assert.ok(Date.now() < deadline, 'the paused executor\'s lease never lapsed');
+          assert.ok(monotonicNow() < deadline, 'the paused executor\'s lease never lapsed');
           await new Promise((res) => setTimeout(res, 100));
         }
       };

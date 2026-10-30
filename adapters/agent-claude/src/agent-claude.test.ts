@@ -908,9 +908,9 @@ function runClientPid(h: Harness, role: string): number {
 const START_WAIT_MS = 60_000;
 
 async function until(what: string, ok: () => boolean, ms = START_WAIT_MS): Promise<void> {
-  const end = Date.now() + ms;
+  const end = monotonicNow() + ms;
   while (!ok()) {
-    if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
+    if (monotonicNow() > end) throw new Error(`timed out waiting for ${what}`);
     await new Promise((r) => setTimeout(r, 25));
   }
 }

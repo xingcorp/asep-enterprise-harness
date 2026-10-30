@@ -33,6 +33,7 @@ import {
   TrustedCommandRunner, COMMAND_STOP_BOUND_MS, COMMAND_REMOVAL_BOUND_MS, type CommandLifecycleEvent,
 } from './command-runner.js';
 import { DockerSandboxProvider, type SandboxHandleEx } from './sandbox.js';
+import { monotonicNow } from './container-teardown.js';
 import type { CommandSpec } from '@asep/ports';
 import type { OrganizationId, ProjectId, TenantScope, WorkspaceId } from '@asep/contracts';
 
@@ -296,9 +297,9 @@ function containersLabelled(label: string, runningOnly = false): Promise<string[
 }
 
 async function until(what: string, ok: () => Promise<boolean>, ms = 60_000): Promise<void> {
-  const end = Date.now() + ms;
+  const end = monotonicNow() + ms;
   while (!(await ok())) {
-    if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
+    if (monotonicNow() > end) throw new Error(`timed out waiting for ${what}`);
     await new Promise((r) => setTimeout(r, 200));
   }
 }
