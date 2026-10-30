@@ -1074,6 +1074,8 @@ interface StreamingRequest {
   // Writes more of the request body; ends it.
   send(text: string): void;
   end(): void;
+  // The response's status, once its status line has arrived.
+  status(): number | undefined;
   // What has arrived of the response.
   text(): string;
   // Resolves when its connection closed (performance.now()), with whether the
@@ -1085,12 +1087,14 @@ interface StreamingRequest {
 // sends `part-1;` and keeps the body open.
 function streamingRequest(port: number): StreamingRequest {
   let text = '';
+  let status: number | undefined;
   const req = http.request({
     host: '127.0.0.1', port, method: 'POST', path: '/v1/messages', agent: false,
     headers: { 'content-type': 'application/json' },
   });
   const closed = new Promise<{ at: number; whole: boolean }>((resolve) => {
     req.on('response', (res) => {
+      status = res.statusCode;
       res.on('data', (d: Buffer) => { text += d.toString('utf8'); });
       res.on('close', () => resolve({ at: performance.now(), whole: res.complete }));
     });
@@ -1104,6 +1108,7 @@ function streamingRequest(port: number): StreamingRequest {
     end: () => {
       if (!req.destroyed) req.end();
     },
+    status: () => status,
     text: () => text,
     closed,
   };
@@ -1217,6 +1222,7 @@ test('a response that begins only after the deadline reaches the agent not at al
     await within(p.expired, 5_000, 'the proxy ending');
     const cut = await within(stream.closed, 5_000, 'the request being cut');
     assert.equal(cut.whole, false);
+    assert.equal(stream.status(), undefined, 'not even its status line reached the agent');
     assert.equal(stream.text(), '', 'nothing of the response reached the agent');
     assert.equal(p.expiredCalls(), 1);
   } finally {
