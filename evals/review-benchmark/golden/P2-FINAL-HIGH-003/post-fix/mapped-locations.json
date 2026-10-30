@@ -1,0 +1,27 @@
+[
+  {
+    "file": "apps/control-plane-api/src/vertical-integration.test.ts",
+    "lineStart": 183,
+    "lineEnd": 199
+  },
+  {
+    "file": "apps/control-plane-api/src/vertical-integration.test.ts",
+    "lineStart": 211,
+    "lineEnd": 213
+  },
+  {
+    "file": "packages/application/src/execute-task.test.ts",
+    "lineStart": 115,
+    "lineEnd": 127
+  },
+  {
+    "file": "packages/application/src/execute-task.ts",
+    "lineStart": 148,
+    "lineEnd": 153
+  },
+  {
+    "file": "packages/application/src/execute-task.ts",
+    "lineStart": 165,
+    "lineEnd": 177
+  }
+]

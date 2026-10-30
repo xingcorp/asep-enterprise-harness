@@ -7,7 +7,8 @@
   "include": [
     "runner/**/*.ts",
     "schema/**/*.ts",
-    "review-corpus/**/*.ts"
+    "review-corpus/**/*.ts",
+    "review-benchmark/**/*.ts"
   ],
   "references": [
     {
