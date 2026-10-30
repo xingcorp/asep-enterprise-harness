@@ -19,7 +19,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { readFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -28,7 +28,7 @@ import { discoverTestFiles, REQUIRED_SUITES, suiteMarker, missingRequiredSuites,
 // @ts-expect-error — .mjs helpers have no type declarations; we test their runtime contract.
 import { runCanonicalTests } from './run-canonical-tests.mjs';
 // @ts-expect-error — .mjs helpers have no type declarations; we test their runtime contract.
-import { endProcess, identityOf, shownGone, spawnRecorded, stillRunning, unregister } from './lib/process-registry.mjs';
+import { endProcess, identityOf, shownGone, spawnRecorded, stillRunning, unregister, RECORD_VERSION } from './lib/process-registry.mjs';
 
 // Machine-readable suite marker (kept consistent with the other suites, though
 // this file is not itself in the required set).
@@ -60,7 +60,7 @@ import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { spawnRecorded } from ${JSON.stringify(REGISTRY_MODULE)};
+import { spawnRecorded, RECORD_VERSION } from ${JSON.stringify(REGISTRY_MODULE)};
 import { REQUIRED_SUITES, suiteMarker } from ${JSON.stringify(SUITES_MODULE)};
 for (const id of Object.keys(REQUIRED_SUITES)) console.log(suiteMarker(id));
 const memberToken = randomUUID();
@@ -77,7 +77,7 @@ if (${unproven}) {
 child.unref();
 const ended = spawnSync(process.execPath, ['-e', '']).pid;
 writeFileSync(join(process.env.ASEP_PROCESS_REGISTRY, ended + '.json'),
-  JSON.stringify({ pid: ended, group: true, token: randomUUID(), startedAt: 'Thu Jan  1 00:00:00 1970' }));
+  JSON.stringify({ version: RECORD_VERSION, pid: ended, group: true, token: randomUUID(), startedAt: 'Thu Jan  1 00:00:00 1970' }));
 writeFileSync(${JSON.stringify(pidFile)}, JSON.stringify(left));
 `;
 
@@ -186,6 +186,38 @@ test('a leftover of an earlier run that cannot be shown gone fails the run, and 
     const stranger = identityOf(member, { token: memberToken });
     if (stranger !== undefined) endProcess(stranger);
     for (const entry of [plain.entry, leader.entry]) if (shownGone(endProcess(entry))) unregister(entry.pid);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('an earlier run\'s record that does not fully identify its process fails the run, naming it, and is never acted on', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'asep-runner-registry-'));
+  const root = join(dir, 'registry');
+  const fixture = join(dir, 'starts-nothing.test.mjs');
+  writeFileSync(fixture, STARTS_NOTHING);
+  // A run whose runner died, with a record its process runs on under.
+  const dead = spawnSync(process.execPath, ['-e', '']).pid;
+  const live = spawnRecorded(process.execPath, ['-e', 'setTimeout(() => {}, 60_000)'], { detached: true, stdio: 'ignore' }) as {
+    child: { unref(): void }; entry: { pid: number };
+  };
+  live.child.unref();
+  const run = join(root, 'legacy-run');
+  try {
+    mkdirSync(run, { recursive: true });
+    writeFileSync(join(run, 'owner.json'), JSON.stringify({ pid: dead, startedAt: 'Thu Jan  1 00:00:00 1970' }));
+    // As the format before the token wrote it; and one that cannot be read.
+    writeFileSync(join(run, `${live.entry.pid}.json`), JSON.stringify({ pid: live.entry.pid, group: true, marker: 'asep-fake-container-x' }));
+    writeFileSync(join(run, 'torn.json'), '{"pid": ');
+    const r = runOn(fixture, root);
+    assert.equal(r.code, 1, `the run fails: ${r.stderr}`);
+    assert.ok(r.stderr.includes(`  - pid ${live.entry.pid} of run legacy-run: unknown — its record is not of format version `
+      + `${RECORD_VERSION}, so it was left alone\n`), r.stderr);
+    assert.ok(r.stderr.includes('  - record torn.json of run legacy-run: unknown — its record cannot be read, so it was left alone\n'),
+      r.stderr);
+    assert.equal(stillRunning(live.entry.pid, true), true, 'its process was not signalled');
+    assert.deepEqual(readdirSync(run).sort(), [`${live.entry.pid}.json`, 'owner.json', 'torn.json'].sort(), 'and the records stay');
+  } finally {
+    if (shownGone(endProcess(live.entry))) unregister(live.entry.pid);
     rmSync(dir, { recursive: true, force: true });
   }
 });

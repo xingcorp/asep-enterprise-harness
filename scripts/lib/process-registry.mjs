@@ -7,7 +7,7 @@
 // the same for every run whose runner is gone.
 //
 //   <root>/<run>/owner.json   the runner that owns the run: { pid, startedAt }
-//   <root>/<run>/<pid>.json   one process: { pid, group, token, startedAt }
+//   <root>/<run>/<pid>.json   one process: { version, pid, group, token, startedAt }
 //
 // <root> belongs to one checkout (tmpdir()/asep-process-registry/<hash of its
 // real path>), so a run never touches another checkout's processes. Without
@@ -23,6 +23,12 @@
 // group) ends the whole group; once its leader has exited, what is left of the
 // group is ended only if every member shows the token (members inherit it) and
 // started no earlier than the leader.
+//
+// A record without full identity is never acted on. One that cannot be read,
+// or lacks this format's version (RECORD_VERSION), a pid, whether it leads a
+// group, a non-empty token or a start time — a record of an earlier format
+// among them — is 'unknown': nothing is signalled, the record stays, and the
+// cleanup fails, saying which record and why.
 //
 // Unknown is not absence. When the process table cannot be read — `ps` fails,
 // by its status, a spawn error or a signal, or a process's environment cannot
@@ -45,6 +51,10 @@ export const PS_ENV = 'ASEP_PROCESS_TABLE_PS';
 
 // How long a killed process may take to be shown gone.
 export const END_WAIT_MS = 2_000;
+
+// The format of the records written here. A record without it — of an earlier
+// format, or of none — is never acted on.
+export const RECORD_VERSION = 1;
 
 export function registryRoot(repoRoot) {
   const hash = createHash('sha256').update(realpathSync(repoRoot)).digest('hex').slice(0, 12);
@@ -89,8 +99,8 @@ function probe(target) {
 
 // What the process table shows of `pid`: { state } with 'absent', 'foreign'
 // (another user's, so never one started here), 'exited' (it waits to be
-// reaped), 'running' (with its startedAt), or 'unknown' (the table could not be
-// read).
+// reaped, with the startedAt it still shows), 'running' (with its startedAt),
+// or 'unknown' (the table could not be read).
 function look(pid) {
   const first = probe(pid);
   if (first !== 'present') return { state: first };
@@ -100,14 +110,15 @@ function look(pid) {
     // Gone meanwhile — `ps` fails for a missing pid too — or not readable.
     return { state: probe(pid) === 'absent' ? 'absent' : 'unknown' };
   }
-  if (m[2].startsWith('Z')) return { state: 'exited' };
+  if (m[2].startsWith('Z')) return { state: 'exited', startedAt: m[3] };
   return { state: 'running', startedAt: m[3] };
 }
 
 const PROC_ENVIRON = existsSync('/proc/self/environ');
 
-// The token in `pid`'s environment: its value, null when the environment the
-// table shows has none, undefined when its environment cannot be read.
+// The token in `pid`'s environment: its value ('' when it is set empty), null
+// when the environment the table shows has none, undefined when its
+// environment cannot be read.
 function tokenOf(pid) {
   if (PROC_ENVIRON) {
     let raw;
@@ -124,8 +135,29 @@ function tokenOf(pid) {
   const withEnv = ps(['-E', '-ww', '-o', 'command=', '-p', String(pid)]);
   const without = ps(['-ww', '-o', 'command=', '-p', String(pid)]);
   if (withEnv === undefined || without === undefined || withEnv.trim() === without.trim()) return undefined;
-  const found = [...withEnv.slice(without.trimEnd().length).matchAll(new RegExp(`(?:^|\\s)${TOKEN_ENV}=(\\S+)`, 'g'))];
+  const found = [...withEnv.slice(without.trimEnd().length).matchAll(new RegExp(`(?:^|\\s)${TOKEN_ENV}=(\\S*)`, 'g'))];
   return found.length === 0 ? null : found.at(-1)[1];
+}
+
+// Whether `shown`, the token the process table shows, is the recorded `token`:
+// never when no token, or an empty one, was recorded.
+const tokenMatches = (shown, token) => typeof token === 'string' && token !== '' && shown === token;
+
+/**
+ * Why `entry` does not fully identify a process, so that it is never acted on;
+ * undefined when it does: it has this format's version, a pid, whether it leads
+ * a group, a non-empty token and a start time.
+ */
+export function identityGap(entry) {
+  if (entry === null || typeof entry !== 'object') return 'its record cannot be read';
+  if (entry.version !== RECORD_VERSION) return `its record is not of format version ${RECORD_VERSION}`;
+  if (!Number.isSafeInteger(entry.pid) || entry.pid <= 0) return 'its record has no pid';
+  if (typeof entry.group !== 'boolean') return 'its record does not say whether it leads a group';
+  if (typeof entry.token !== 'string' || entry.token === '') return 'its record has no token';
+  if (typeof entry.startedAt !== 'string' || Number.isNaN(Date.parse(entry.startedAt))) {
+    return 'its record has no start time';
+  }
+  return undefined;
 }
 
 // The members of process group `pgid` that have not exited, as { pid,
@@ -142,26 +174,32 @@ function membersOf(pgid) {
 
 /**
  * What identifies `pid`, started with `token` in its environment — with
- * `group`, as the leader of its own group: { pid, group, token, startedAt }.
- * Throws when the process table does not show it with that token, so that it
- * could not be told apart from another process later. A process that has
- * already exited is identified by its token alone if it led a group (its
- * members carry it), and not at all otherwise: nothing of it is left.
+ * `group`, as the leader of its own group: { version, pid, group, token,
+ * startedAt }. Throws when the process table does not show it with that
+ * token, so that it could not be told apart from another process later. A
+ * process that has already exited is identified, if it led a group, by its
+ * token (its members carry it) and the start time it shows while it waits to
+ * be reaped; otherwise not at all: nothing of it is left.
  */
 export function identityOf(pid, { token, group = false }) {
-  const leader = look(pid);
+  let leader = look(pid);
   if (leader.state === 'running') {
     const shown = tokenOf(pid);
-    if (shown === token) return { pid, group, token, startedAt: leader.startedAt };
+    if (tokenMatches(shown, token)) return { version: RECORD_VERSION, pid, group, token, startedAt: leader.startedAt };
     // Unless it exited meanwhile, it cannot be told apart.
-    if (['running', 'unknown', 'foreign'].includes(look(pid).state)) {
+    leader = look(pid);
+    if (['running', 'unknown', 'foreign'].includes(leader.state)) {
       throw new Error(`process ${pid} does not show its token in the process table `
         + `(${shown === undefined ? 'its environment cannot be read' : 'it shows another, or none'}), so it cannot be recorded`);
     }
   } else if (leader.state === 'unknown' || leader.state === 'foreign') {
     throw new Error(`process ${pid} cannot be read in the process table, so it cannot be recorded`);
   }
-  return group ? { pid, group, token } : undefined;
+  if (!group || (leader.state === 'absent' && probe(-pid) === 'absent')) return undefined;
+  const entry = { version: RECORD_VERSION, pid, group, token, startedAt: leader.startedAt };
+  const gap = identityGap(entry);
+  if (gap !== undefined) throw new Error(`process ${pid} has exited and cannot be recorded: ${gap}`);
+  return entry;
 }
 
 // Whether anything of `entry` still runs: 'absent', 'present' or 'unknown'.
@@ -178,17 +216,17 @@ function presence({ pid, group = false, startedAt }) {
   return members.length > 0 ? 'present' : 'absent';
 }
 
-// Whether `entry` is still the process recorded: 'ours' when its pid shows its
-// start time and its token — or, for a group whose leader has exited, every
-// member left shows the token and started no earlier; 'gone' when nothing of
-// it is left; 'not-ours' when its pid is another process's now; 'unknown' when
-// the table does not tell.
-function identify({ pid, group = false, token, startedAt }) {
+// Whether `entry`, a record with full identity (identityGap), is still the
+// process recorded: 'ours' when its pid shows its start time and its token —
+// or, for a group whose leader has exited, every member left shows the token
+// and started no earlier; 'gone' when nothing of it is left; 'not-ours' when
+// its pid is another process's now; 'unknown' when the table does not tell.
+function identify({ pid, group, token, startedAt }) {
   let leader = look(pid);
   if (leader.state === 'running') {
-    if (startedAt === undefined || leader.startedAt !== startedAt) return 'not-ours';
+    if (leader.startedAt !== startedAt) return 'not-ours';
     const shown = tokenOf(pid);
-    if (shown === token) return 'ours';
+    if (tokenMatches(shown, token)) return 'ours';
     leader = look(pid);
     if (leader.state === 'running' && leader.startedAt === startedAt) return shown === undefined ? 'unknown' : 'not-ours';
     // Otherwise it exited meanwhile, and what is left is judged below.
@@ -200,10 +238,10 @@ function identify({ pid, group = false, token, startedAt }) {
   const members = membersOf(pid);
   if (members === undefined) return 'unknown';
   if (members.length === 0) return 'gone';
-  const since = startedAt === undefined ? -Infinity : Date.parse(startedAt);
+  const since = Date.parse(startedAt);
   for (const m of members) {
     const at = Date.parse(m.startedAt);
-    if (Number.isNaN(since) || Number.isNaN(at) || at < since || tokenOf(m.pid) !== token) return 'unknown';
+    if (Number.isNaN(since) || Number.isNaN(at) || at < since || !tokenMatches(tokenOf(m.pid), token)) return 'unknown';
   }
   return 'ours';
 }
@@ -223,11 +261,13 @@ export function stillRunning(pid, group = false) {
  * leads — if it is still that process (see the header), and wait until it is
  * shown gone. 'gone': nothing was left to end; 'ended': it was killed and is
  * gone; 'not-ours': its pid is another process's now, which was left alone;
- * 'unknown': the process table did not tell, and nothing was signalled — or,
- * after the signal, whether it is gone; 'still-running': killed, but not shown
- * gone within `waitMs`. `kill` sends the signal.
+ * 'unknown': the record does not fully identify a process (identityGap) or the
+ * process table did not tell, and nothing was signalled — or, after the
+ * signal, the table did not tell whether it is gone; 'still-running': killed,
+ * but not shown gone within `waitMs`. `kill` sends the signal.
  */
 export function endProcess(entry, { waitMs = END_WAIT_MS, kill = (target, signal) => process.kill(target, signal) } = {}) {
+  if (identityGap(entry) !== undefined) return 'unknown';
   const who = identify(entry);
   if (who !== 'ours') return who;
   for (const target of entry.group ? [-entry.pid, entry.pid] : [entry.pid]) {
@@ -255,7 +295,9 @@ export const shownGone = (outcome) => outcome === 'gone' || outcome === 'ended' 
 /**
  * End every process recorded in `dir` (one `<pid>.json` each) with `end`,
  * removing the record of each one shown gone; returns each record with what
- * became of it.
+ * became of it. A record that does not fully identify a process (identityGap)
+ * is never handed to `end`: it stays, as 'unknown', with its file's name,
+ * `record`, and `why`.
  */
 export function endRecorded(dir, end = endProcess) {
   let names;
@@ -266,8 +308,19 @@ export function endRecorded(dir, end = endProcess) {
   }
   const out = [];
   for (const name of names.filter((n) => n.endsWith('.json') && n !== 'owner.json')) {
-    const entry = readEntry(join(dir, name));
-    if (entry === undefined || !Number.isSafeInteger(entry.pid)) continue;
+    let entry;
+    try {
+      entry = JSON.parse(readFileSync(join(dir, name), 'utf8'));
+    } catch (err) {
+      // Forgotten meanwhile, once its process was shown gone.
+      if (err.code === 'ENOENT') continue;
+      entry = undefined;
+    }
+    const why = identityGap(entry);
+    if (why !== undefined) {
+      out.push({ ...(typeof entry === 'object' ? entry : {}), record: name, outcome: 'unknown', why });
+      continue;
+    }
     const outcome = end(entry);
     if (shownGone(outcome)) rmSync(join(dir, name), { force: true });
     out.push({ ...entry, outcome });

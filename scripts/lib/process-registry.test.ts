@@ -15,14 +15,14 @@ import { fileURLToPath } from 'node:url';
 import {
   endProcess, endRecorded, identityOf, register, registryRoot, registryShimLine, shownGone, spawnRecorded, stillRunning,
   unregister, withProcessRegistry,
-  PS_ENV, REGISTRY_ENV, TOKEN_ENV,
+  PS_ENV, RECORD_VERSION, REGISTRY_ENV, TOKEN_ENV,
   // @ts-expect-error — .mjs helper has no type declarations; we test its runtime contract.
 } from './process-registry.mjs';
 // @ts-expect-error — .mjs helper has no type declarations; we test its runtime contract.
 import { TEST_ROOTS } from './canonical-tests.mjs';
 
 // What identifies a recorded process.
-interface Entry { pid: number; group: boolean; token: string; startedAt?: string }
+interface Entry { version: number; pid: number; group: boolean; token: string; startedAt: string }
 
 // What the processes here run: they hold for a minute at most, so that one a
 // failed test leaves behind does not outlive it by long.
@@ -141,11 +141,11 @@ test('a pid whose process does not show the recorded start time and token is lef
     const args = (pid: number) => spawnSync('ps', ['-ww', '-o', 'args=', '-p', String(pid)], { encoding: 'utf8' }).stdout.trim();
     assert.equal(args(bare.pid!), args(ours.pid));
     assert.equal(args(near.pid!), args(ours.pid));
+    const entryOf = (pid: number, startedAt: string): Entry => ({ version: RECORD_VERSION, pid, group: true, token: ours.token, startedAt });
     const others: readonly [string, Entry][] = [
-      ['no token at all', { pid: bare.pid!, group: true, token: ours.token, startedAt: startOf(bare.pid!) }],
-      ['a token that differs in its last character', { pid: near.pid!, group: true, token: ours.token, startedAt: startOf(near.pid!) }],
-      ['the token, but another start time', { pid: ours.pid, group: true, token: ours.token, startedAt: LONG_AGO }],
-      ['the token, but no start time recorded', { pid: ours.pid, group: true, token: ours.token }],
+      ['no token at all', entryOf(bare.pid!, startOf(bare.pid!))],
+      ['a token that differs in its last character', entryOf(near.pid!, startOf(near.pid!))],
+      ['the token, but another start time', entryOf(ours.pid, LONG_AGO)],
     ];
     for (const [what, entry] of others) {
       assert.equal(endProcess(entry), 'not-ours', what);
@@ -237,7 +237,7 @@ test('a process whose environment the table does not show cannot be shown to be 
   const token = randomUUID();
   const sleeper = spawn('/bin/sleep', ['60'], { stdio: 'ignore', env: { [TOKEN_ENV]: token } });
   try {
-    const entry = { pid: sleeper.pid!, group: false, token, startedAt: startOf(sleeper.pid!) };
+    const entry = { version: RECORD_VERSION, pid: sleeper.pid!, group: false, token, startedAt: startOf(sleeper.pid!) };
     if (hidden) {
       assert.throws(() => identityOf(sleeper.pid, { token }), /its environment cannot be read/);
       assert.equal(endProcess(entry), 'unknown');
@@ -248,6 +248,100 @@ test('a process whose environment the table does not show cannot be shown to be 
     }
   } finally {
     sleeper.kill('SIGKILL');
+  }
+});
+
+test('a record that does not fully identify its process — one of an earlier format among them — is never acted on, and stays', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'asep-registry-records-'));
+  const live = recorded();
+  const leaderless = await group({ leaderExits: true });
+  // A `ps` that cannot read any process's environment.
+  const ps = join(dir, 'ps-no-environment');
+  writeFileSync(ps, '#!/bin/sh\ncase " $* " in *" -E "*) exit 1;; esac\nexec ps "$@"\n');
+  chmodSync(ps, 0o755);
+  // As the format before the token wrote a record: a marker, no token, no
+  // start time.
+  const marked = (pid: number) => JSON.stringify({ pid, group: true, marker: `asep-fake-container-${randomUUID()}` });
+  const unversioned = { pid: live.pid, group: live.group, token: live.token, startedAt: live.startedAt };
+  const records: readonly { what: string; pid: number; text: string; why: string }[] = [
+    { what: 'an earlier format, for a leader that runs', pid: live.pid, text: marked(live.pid),
+      why: `its record is not of format version ${RECORD_VERSION}` },
+    { what: 'an earlier format, for a group whose leader has exited and whose member\'s environment cannot be read',
+      pid: leaderless.entry.pid, text: marked(leaderless.entry.pid), why: `its record is not of format version ${RECORD_VERSION}` },
+    { what: 'the format before the version: token and start time, no version', pid: live.pid, text: JSON.stringify(unversioned),
+      why: `its record is not of format version ${RECORD_VERSION}` },
+    { what: 'no token', pid: live.pid, text: JSON.stringify({ ...live, token: undefined }), why: 'its record has no token' },
+    { what: 'an empty token', pid: live.pid, text: JSON.stringify({ ...live, token: '' }), why: 'its record has no token' },
+    { what: 'no start time', pid: live.pid, text: JSON.stringify({ ...live, startedAt: undefined }), why: 'its record has no start time' },
+    { what: 'a start time that is none', pid: live.pid, text: JSON.stringify({ ...live, startedAt: 'soon' }),
+      why: 'its record has no start time' },
+    { what: 'no word on its group', pid: live.pid, text: JSON.stringify({ ...live, group: undefined }),
+      why: 'its record does not say whether it leads a group' },
+    { what: 'no pid', pid: live.pid, text: JSON.stringify({ ...live, pid: undefined }), why: 'its record has no pid' },
+    { what: 'a record that cannot be read', pid: live.pid, text: '{"pid": ', why: 'its record cannot be read' },
+  ];
+  const before = process.env[PS_ENV];
+  try {
+    process.env[PS_ENV] = ps;
+    try {
+      for (const [i, r] of records.entries()) {
+        const run = join(dir, `run-${i}`);
+        mkdirSync(run);
+        writeFileSync(join(run, `${r.pid}.json`), r.text);
+        if (r.text.endsWith('}')) assert.equal(endProcess(JSON.parse(r.text)), 'unknown', r.what);
+        const found = endRecorded(run) as Record<string, unknown>[];
+        assert.deepEqual(found.map((e) => [e['record'], e['outcome'], e['why']]), [[`${r.pid}.json`, 'unknown', r.why]], r.what);
+        assert.deepEqual(readdirSync(run), [`${r.pid}.json`], `${r.what}: the record stays`);
+      }
+    } finally {
+      if (before === undefined) delete process.env[PS_ENV];
+      else process.env[PS_ENV] = before;
+    }
+    assert.equal(stillRunning(live.pid, true), true, 'nothing was signalled');
+    assert.equal(stillRunning(leaderless.member), true, 'nothing of the group was signalled');
+  } finally {
+    finish(live);
+    finish(leaderless.entry);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a process is recorded only by a token it shows, and never by an empty one', () => {
+  const empty = lone({ [TOKEN_ENV]: '' });
+  try {
+    assert.throws(() => identityOf(empty.pid!, { token: '', group: true }),
+      /does not show its token in the process table \(it shows another, or none\), so it cannot be recorded/);
+    const entry = { version: RECORD_VERSION, pid: empty.pid!, group: true, token: '', startedAt: startOf(empty.pid!) };
+    assert.equal(endProcess(entry), 'unknown', 'a record with an empty token is never acted on');
+    assert.equal(stillRunning(empty.pid!), true, 'and it was not signalled');
+  } finally {
+    empty.kill('SIGKILL');
+  }
+});
+
+test('a group whose leader exited before it was recorded is recorded by the start time the leader still shows, and ended', () => {
+  // The leader starts a member of its group and exits at once. This process
+  // does not reap it while it does not return to its event loop, so until then
+  // the table shows it exited, with its start time.
+  const token = randomUUID();
+  const script = `require('node:child_process').spawn(process.execPath, ['-e', '${HOLD}'], { stdio: 'ignore' }); process.exit(0);`;
+  const leader = spawn(process.execPath, ['-e', script], {
+    detached: true, stdio: 'ignore', env: { PATH: process.env['PATH'], [TOKEN_ENV]: token },
+  });
+  let entry: Entry | undefined;
+  try {
+    const exited = () => spawnSync('ps', ['-o', 'stat=', '-p', String(leader.pid)], { encoding: 'utf8' }).stdout.trim().startsWith('Z');
+    const until = Date.now() + 10_000;
+    while (!exited() && Date.now() < until) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+    assert.ok(exited(), 'the leader has exited, and waits to be reaped');
+    entry = identityOf(leader.pid!, { token, group: true }) as Entry;
+    register(entry);
+    assert.deepEqual(entry, { version: RECORD_VERSION, pid: leader.pid, group: true, token, startedAt: startOf(leader.pid!) });
+    assert.equal(stillRunning(leader.pid!, true), true, 'its member runs on in its group');
+    assert.equal(endProcess(entry), 'ended');
+    assert.equal(stillRunning(leader.pid!, true), false, 'nothing of its group runs');
+  } finally {
+    finish(entry);
   }
 });
 
@@ -479,6 +573,11 @@ const SPAWNS_NOT_RECORDED: readonly { file: string; match: string; why: string }
   {
     file: 'scripts/lib/process-registry.test.ts', match: "child_process').spawn",
     why: 'a member of a recorded group',
+  },
+  {
+    file: 'scripts/lib/process-registry.test.ts', match: "(process.execPath, ['-e', script], {",
+    why: 'a leader that exits at once, recorded by its test with identityOf after it has exited and before it is reaped — '
+      + 'the test\'s point; its member holds a minute at most',
   },
   {
     file: 'scripts/lib/process-registry.test.ts', match: "('/bin/sleep'",

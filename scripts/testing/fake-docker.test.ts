@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  endProcess, endRecorded, identityOf, shownGone, spawnRecorded, stillRunning, unregister, PS_ENV, REGISTRY_ENV,
+  endProcess, endRecorded, identityOf, shownGone, spawnRecorded, stillRunning, unregister, PS_ENV, RECORD_VERSION, REGISTRY_ENV,
   // @ts-expect-error — .mjs helper has no type declarations; we test its runtime contract.
 } from '../lib/process-registry.mjs';
 import {
@@ -116,8 +116,9 @@ test('every container is in the run\'s process registry while it runs, and leave
     const removed = await startContainer(state, 'removed', registryEnv(registry));
     started.push(removed);
     const entry = JSON.parse(readFileSync(join(registry, `${removed.pid}.json`), 'utf8')) as Record<string, unknown>;
-    const { pid, group, token, startedAt } = removed.record;
-    assert.deepEqual(entry, { pid, group, token, startedAt }, 'the registry has what identifies the container');
+    const { version, pid, group, token, startedAt } = removed.record;
+    assert.deepEqual(entry, { version, pid, group, token, startedAt }, 'the registry has what identifies the container');
+    assert.equal(version, RECORD_VERSION);
     assert.equal(group, true);
     assert.match(String(token), /^[0-9a-f-]{36}$/);
     assert.deepEqual(identityOf(removed.pid, { token, group: true }), entry,

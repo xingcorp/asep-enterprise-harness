@@ -144,12 +144,13 @@ export function runCanonicalTests(opts = {}) {
 // recorded processes were still running, and every record with what became of
 // it ('gone': its process had already ended; 'not-ours': its pid is another
 // process's now; 'unknown': it could not be shown to be the process recorded,
-// or gone); and whether one, of this run or an earlier one, was not shown
-// gone.
+// or gone — or its record does not fully identify a process, and why); and
+// whether one, of this run or an earlier one, was not shown gone.
 function describeLeftovers(earlier, left) {
   const running = (records) => records.filter((e) => e.outcome === 'ended' || e.outcome === 'still-running').length;
-  const line = (e) => `  - pid ${e.pid}${e.owner ? ', the runner' : ''}${e.run !== undefined ? ` of run ${e.run}` : ''}`
-    + `: ${e.outcome}\n`;
+  const which = (e) => (Number.isSafeInteger(e.pid) ? `pid ${e.pid}` : `record ${e.record}`);
+  const line = (e) => `  - ${which(e)}${e.owner ? ', the runner' : ''}${e.run !== undefined ? ` of run ${e.run}` : ''}`
+    + `: ${e.outcome}${e.why !== undefined ? ` — ${e.why}, so it was left alone` : ''}\n`;
   const text = `canonical-tests: process registry: found running ${running(earlier)} process(es) of earlier runs `
     + `and ${running(left)} of this run\n${[...earlier, ...left].map(line).join('')}`;
   return { text, stuck: [...earlier, ...left].some((e) => !shownGone(e.outcome)) };
