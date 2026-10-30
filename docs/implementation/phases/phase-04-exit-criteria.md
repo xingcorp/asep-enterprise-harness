@@ -1,4 +1,4 @@
-# Phase 4 — Exit Criteria (LOCKED v7 pending controller confirmation, machine-checkable)
+# Phase 4 — Exit Criteria (LOCKED v7, controller-confirmed, machine-checkable)
 
 > Phase 4 reaches a verdict only from a clean checkout. Base `00a6889`; v1 reviewed at `a2a7b8a`; v2 lock-checked at
 > `3201335` (v3 folds it: E1, E9, E12–E14, G8, H6, H7, I10, I12, I13, L3); v3 and the pre-S0 code reviewed at `9e3a1c3`

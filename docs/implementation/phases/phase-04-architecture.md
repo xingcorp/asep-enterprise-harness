@@ -1,4 +1,4 @@
-# Phase 4 — Architecture (LOCKED v7, pending controller confirmation)
+# Phase 4 — Architecture (LOCKED v7, controller-confirmed)
 
 > Companion to `phase-04-plan.md`. Base `00a6889`; v1 reviewed at `a2a7b8a`; v2 lock-checked at `3201335`; v3 reviewed at `9e3a1c3` (v4: budget and unsafe paths §8, egress paths §9, finding identity, changed-line predicate and scanner recheck §11); v4 re-checked at `7cc20f4` (v5: final-byte budget §8, identity encoding, no-downgrade reconciliation and effective scanner recheck §11); v5 re-checked at `fb2e432` (v6, R32: `includedBytes` as the stored size §8, scanner-recheck closure deferred and SARIF references resolved or flagged §11); v6 re-checked at `d0907b9` (v7, R37: SARIF logs not parsed, one human-only `sarif-unparsed` finding per log and no machine disposition of a SARIF finding §11). Thesis unchanged from the ADRs: an
 > agent cannot approve its own work (README thesis 3), every framework sits behind a port (ADR 0005),

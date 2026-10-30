@@ -1,4 +1,4 @@
-# Phase 4 — Data Model (LOCKED v7, pending controller confirmation)
+# Phase 4 — Data Model (LOCKED v7, controller-confirmed)
 
 > Companion to `phase-04-plan.md`. PostgreSQL 17 (digest-pinned in `compose.yaml`). Base `00a6889`; v1 reviewed at
 > `a2a7b8a`; v2 lock-checked at `3201335`; v3 reviewed at `9e3a1c3` (v4: §2.1 identity, §2.3 budget, §2.4 closure

@@ -1,4 +1,4 @@
-# Phase 4 — Threat Model Delta (LOCKED v7, pending controller confirmation)
+# Phase 4 — Threat Model Delta (LOCKED v7, controller-confirmed)
 
 > Delta over `docs/operations/security-threat-model.md` and `phase-02-threat-model-delta.md`. Phase 4 adds the
 > first **external model call made by the trusted harness about untrusted content**, a second credential class,

@@ -1,6 +1,6 @@
-# Phase 4 — Independent Assurance — Plan (LOCKED v7, pending controller confirmation)
+# Phase 4 — Independent Assurance — Plan (LOCKED v7, controller-confirmed)
 
-> Status: **LOCKED v7 (pending controller confirmation).** v6, its slot block and the code fixes at `d0907b9` received
+> Status: **LOCKED v7 (controller-confirmed, R41, 2026-10-30).** v6, its slot block and the code fixes at `d0907b9` received
 > an independent re-check (`phase-04-review-codex-v6.md`, Codex `gpt-6.1-sol`, REQUEST_CHANGES 0.98, **`HAND-OFF:
 > READY`**: every v5 plan and slot finding folded, the block type-checks with 18/18 controls and its helper rejects 27/27
 > hostile payloads, every v5 code finding resolved except SARIF ingestion; new 1 plan LOW, 1 slot LOW, 2 code HIGH and
@@ -21,6 +21,13 @@
 > (§13), the history exemption is proven against a path that contains it (§7.5), and persistence and replay hydrate
 > only states reached through recorded dispositions (§13; S8 and S12 in §21). Dispositions are in
 > `phase-04-review-log.md` ("Review v7").
+>
+> Controller confirmation (R41, 2026-10-30): the pre-S0 pure core (the pure parts of S3–S7, S19 provenance and
+> excerpts) is accepted at `27927d9` (controller `verify:all` exit 0, 627 pass, 0 fail, 0 skipped; the review's
+> guard-limited-to-`OPEN` mutant fails a domain test; the slot block is still sha256 `9cc21c98…`) and v7 is LOCKED.
+> R41 releases exactly the S19 freeze (§7.5, §7.8) and the S20 pure core (§21.1); everything staged after S0/S1 or
+> G-P2 stays blocked, SR-X8 and the preregistration capture included, and bundle mode stays off until the controller
+> supplies the bundle path.
 >
 > v6 status, kept for the record: **LOCKED v6 (pending controller confirmation)**, superseded by v7 before it was
 > confirmed. v5, its slot block and the code fixes at `fb2e432` received
@@ -2586,7 +2593,7 @@ migration (data model §3.6).
    `…MEASUREMENT_PENDING…`. Neither `gpt-6.1-sol` nor the comparator has been probed by the lane (not verified); the gateway's request alteration is verified by the controller (U-3).
 4. **Phase 2 agent-runtime repair**: S22. Without it the verdict carries `ASSURANCE_ONLY_LOOP`.
 5. **Pilot repository**: DF-6 only.
-6. **Controller confirmation of v7**: the S19 freeze and every S20 part wait for it; the slot block is `HAND-OFF: READY` and its release to Lane A (G-LB) follows the controller's diff check against `023f16dc…` (§7.8, R18, R23, R28, R32, R37).
+6. **Controller confirmation of v7**: given by R41 (2026-10-30), which releases the S19 freeze and the S20 pure core; G-LB was released by R39 with the slot block at sha256 `9cc21c98…` (§7.8, R18, R23, R28, R32, R37, R39, R41).
 
 None blocks plan lock.
 
@@ -2595,7 +2602,7 @@ None blocks plan lock.
 ## Output
 
 ```text
-PLAN_STATUS: LOCKED v7 (pending controller confirmation)
+PLAN_STATUS: LOCKED v7 (controller-confirmed, R41)
 BASE_SHA: 00a68895d205122767167942326e2e0466571059 (Phase 2 not accepted)
 REVIEWED_V1: a2a7b8ad09a5389339fc3ef7131ae7b2b294d97f — Codex REQUEST_CHANGES 0.99 (1 CRITICAL, 8 HIGH, 5 MEDIUM, 1 LOW), all dispositioned
 REVIEWED_V2: 32013356e0845354f40ac6f63925f928637d6fb3 — Codex gpt-6.1-sol lock-check REQUEST_CHANGES 0.97 (14/15 v1 folded, v1 MED-001 partial; new 2 HIGH, 8 MEDIUM), all dispositioned
@@ -2623,5 +2630,5 @@ NEW_THIRD_PARTY_DEPENDENCIES: none
 GATING: shadow only in Phase 4 (user decision); gating/promotion/thresholds/R2 admission deferred
 SLOT_BLOCK: v7 (R18, R19, R23, R28, R29, R32, R37) — HAND-OFF READY at d0907b9 (sha256 023f16dc…3a04d); v7 changes only the wording of the StatelessConformanceFixture doc comment (sha256 recorded in the review log); type-checked against the real built @asep/contracts, @asep/ports and AdmissionResult with 18 negative controls; envelope helper executed from the block text on the RLC-01 fixtures, money included; release to Lane A (G-LB) after the controller's diff check
 SHARED_SURFACE_REQUESTS: §19 (S0 4, ports 3, contracts 6 (+ SR-C3 withdrawn, SR-C5 moved to S0), migrations 3 (+ 0201_run_events withdrawn), fencing CR-F1, gates 4 (both runners), dictionary 2 + loader, other 8, controller 3)
-READY_FOR_IMPLEMENTATION: pure-core parts of S3–S7 and S19 (provenance and excerpts) per §21.1; S19 freeze and S20 after v7 confirmation; integration parts after Phase 2 acceptance, Lane A S0 and per-step controller release
+READY_FOR_IMPLEMENTATION: pure-core parts of S3–S7 and S19 (provenance and excerpts) per §21.1, accepted at 27927d9; S19 freeze and S20 pure core released by R41; integration parts after Phase 2 acceptance, Lane A S0 and per-step controller release
 ```

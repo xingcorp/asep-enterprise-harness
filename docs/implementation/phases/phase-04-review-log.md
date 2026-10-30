@@ -23,6 +23,8 @@
 > v7 re-check: the re-check of v7 and its code fixes (`phase-04-review-codex-v7.md`, Codex `gpt-6.1-sol`, snapshot
 > `287ed0f`, ACCEPT_WITH_CHANGES 0.96) and controller decisions R39 and R40 are dispositioned in "Review v7" below;
 > the plan stays v7.
+> v7 confirmed: the controller accepted the pre-S0 pure core at `27927d9` and confirmed the v7 lock (R41); see
+> "Controller confirmation of v7" below.
 >
 > Each finding is dispositioned `ACCEPTED` / `PARTIALLY_ACCEPTED` / `REJECTED_WITH_EVIDENCE`. Nothing was
 > auto-accepted: each finding's cited code was re-read before deciding. An accepted finding names its design
@@ -1559,6 +1561,20 @@ lock and releases the S19 freeze and the S20 pure core (integration parts still 
 
 ---
 
+## Controller confirmation of v7 (R41, 2026-10-30)
+
+Lane B closed R40 at `27927d9`. The controller's check at that head: `verify:all` exit 0, 627 pass, 0 fail, 0 skipped,
+60 files, 37 required suites; the only production change since `287ed0f` is `check-report.ts` (diff read); the review's
+"guard limited to `OPEN`" mutant, applied by the controller, fails 1 of 7 domain tests; the slot block is still sha256
+`9cc21c98…`. The pre-S0 pure core (the pure parts of S3–S7, S19 provenance and excerpts) is accepted and plan v7 is
+LOCKED. R41 releases exactly two things: the S19 freeze (plan §7.5, §7.8: packet-dependent eligibility, the
+`no-location` rule, `corpusSha256`, the manifest) and the S20 pure core (matcher, category table, post-fix mapping,
+Wilson intervals, floors, the corpus builder variant with `{ verdict: 'NOT_RECORDED', environment: null, checks: [] }`,
+the golden historical item). Everything staged after S0/S1 or G-P2 stays blocked, SR-X8 (evals project references)
+and the preregistration capture included. Bundle mode stays off: the controller has not supplied the bundle path.
+
+---
+
 ## Disposition template
 
 ```text
@@ -1587,6 +1603,6 @@ v6 record: **LOCKED v6 (pending controller confirmation)**, superseded by v7 bef
 found `HAND-OFF: READY`.
 
 v7 re-check record: ACCEPT_WITH_CHANGES 0.96 at `287ed0f`; R39 released G-LB with the block at sha256 `9cc21c98…`;
-R40 applied ("Review v7"); the lock is confirmed by the controller once the R40 code fixes are checked.
+R40 applied ("Review v7"); the controller checked the R40 fixes at `27927d9` and confirmed the lock (R41).
 
-**PLAN_STATUS: LOCKED v7 (pending controller confirmation)**
+**PLAN_STATUS: LOCKED v7 (controller-confirmed, R41)**

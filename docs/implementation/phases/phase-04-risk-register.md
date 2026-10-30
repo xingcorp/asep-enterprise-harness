@@ -1,4 +1,4 @@
-# Phase 4 — Risk Register (LOCKED v7, pending controller confirmation)
+# Phase 4 — Risk Register (LOCKED v7, controller-confirmed)
 
 > Delivery, design and measurement risks for independent assurance. Base `00a6889`; v1 reviewed at `a2a7b8a`; v2
 > lock-checked at `3201335` (v3 adds PR4-32…PR4-36 and amends PR4-07, PR4-28); v3 reviewed at `9e3a1c3` (v4 adds
