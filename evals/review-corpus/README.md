@@ -35,6 +35,13 @@ bind to the provenance-stage `corpusSha256`, and nothing here is the frozen corp
   rule C) and `post-fix-negative` (resolved at the next re-review with a known post-fix tree). Fix commits are
   provenance only and never decide a use; an item that names no fix commit (15 included residuals) is used for its
   residual status only and is never described as fixed.
+- Each included item carries the `synthetic` fields its provenance determines (plan §7.8): the rule (P for a first
+  occurrence, C for a residual), the cycle's task id, round and review kind, the base and reviewed SHAs, rule C's
+  repair base and repair-delta range and its prior-finding candidates (every included item labelled at the previous
+  cycle), and the post-fix side of a negative. The fields every packet shares (identity, work orders by phase, the
+  `NOT_RECORDED` execution) are recorded once; `pendingPacketFields` lists the fields only the runtime packet code can
+  fill, which the final freeze adds. A residual after a cycle whose reviewed tree is unknown has no repair base and
+  carries `blockedBy: "previous-cycle-tree-unknown"` (nine items).
 - `annotations.json` holds, per finding id of an included item, Lane B's gold category (category table
   `corpus-categories/v1`), its one-line rationale and the defect class. The freeze refuses a missing, stray or
   invalid annotation.

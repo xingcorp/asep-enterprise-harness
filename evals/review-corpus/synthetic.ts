@@ -8,9 +8,11 @@
 // lists, and the execution manifest is NOT_RECORDED. Every finding-id token in a text part is
 // masked to `X`s of its own length, so no label leaks and no line or byte offset moves. Pure.
 //
-// The record here is the fresh-review one (rule P). The re-review record of a residual item
-// (round 2, its repair base and prior findings) and the chunk ids that name each attempt come
-// with the packet plan, once the evals package is bound to the runtime packet code.
+// `syntheticRecord` is the whole record of one fresh review (rule P), as the golden item
+// carries it. The freeze records, per corpus item, the fields its provenance determines, rule
+// C's re-review fields included; the fields that need a packet (chunk ids, the chunk filter on
+// prior findings, their fingerprints and text, the masks applied) come with the packet plan,
+// once the evals package is bound to the runtime packet code.
 
 import { createHash } from 'node:crypto';
 
@@ -38,11 +40,13 @@ export interface LabelledId {
   readonly id: string;
 }
 
-const labelled = (label: string): LabelledId => ({ label, id: syntheticId(label) });
+export function labelledId(label: string): LabelledId {
+  return { label, id: syntheticId(label) };
+}
 
 /** The attempt identity of one chunk's packet, `corpus:attempt:<chunk id>`. */
 export function attemptIdentity(chunkId: string): LabelledId {
-  return labelled(`corpus:attempt:${chunkId}`);
+  return labelledId(`corpus:attempt:${chunkId}`);
 }
 
 // Matching is leftmost, so a long-form id is one token from its first character, never a long form
@@ -79,6 +83,19 @@ export function corpusObjective(phase: number, title: string): string {
   return `Phase ${phase} (${title}) at the reviewed commit. The phase plan, exit criteria and code are part of the change; review the change against them.`;
 }
 
+/** The synthetic work order of a phase: its objective, every list empty, every path allowed. */
+export function syntheticWorkOrder(phase: number, title: string): SyntheticRecord['workOrder'] {
+  return {
+    objective: corpusObjective(phase, title),
+    requirementIds: [],
+    requirements: [],
+    allowedPaths: ['**'],
+    forbiddenChanges: [],
+    architectureInvariants: [],
+    acceptanceCheckIds: [],
+  };
+}
+
 export interface SyntheticRecord {
   /** Collection's key of the cycle the packets replay. */
   readonly cycle: string;
@@ -110,24 +127,16 @@ export function syntheticRecord(cycle: string, phase: number, title: string): Sy
   return {
     cycle,
     identity: {
-      organizationId: labelled('corpus:org'),
-      projectId: labelled('corpus:project'),
-      repositoryBindingId: labelled('corpus:binding'),
-      runId: labelled('corpus:run'),
-      taskId: labelled(`corpus:task:${cycle}`),
+      organizationId: labelledId('corpus:org'),
+      projectId: labelledId('corpus:project'),
+      repositoryBindingId: labelledId('corpus:binding'),
+      runId: labelledId('corpus:run'),
+      taskId: labelledId(`corpus:task:${cycle}`),
     },
     risk: 'R1',
     round: 1,
     reviewKind: 'fresh',
-    workOrder: {
-      objective: corpusObjective(phase, title),
-      requirementIds: [],
-      requirements: [],
-      allowedPaths: ['**'],
-      forbiddenChanges: [],
-      architectureInvariants: [],
-      acceptanceCheckIds: [],
-    },
+    workOrder: syntheticWorkOrder(phase, title),
     execution: CORPUS_EXECUTION,
     priorFindings: [],
   };

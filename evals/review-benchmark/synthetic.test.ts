@@ -7,7 +7,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CYCLES, failingExcerpts } from '../review-corpus/collect.js';
 import { RULE_P_DIFF_FLAGS, mappingSection } from '../review-corpus/freeze.js';
-import { CORPUS_EXECUTION, attemptIdentity, corpusObjective, crockford128, maskFindingIds, phaseTitle, syntheticId, syntheticRecord } from './synthetic.js';
+import { CORPUS_EXECUTION, attemptIdentity, corpusObjective, crockford128, maskFindingIds, phaseTitle, syntheticId, syntheticRecord } from '../review-corpus/synthetic.js';
 
 console.log('SUITE-ID: asep-suite:review-benchmark');
 

@@ -110,6 +110,122 @@ test('an item without a fix commit is used for its residual status only', () => 
   );
 });
 
+test('every included item carries the synthetic fields its provenance determines', () => {
+  const { body } = committedManifest();
+  const entry = (id: string) => body.items.find((i) => i.id === id)!;
+  const [B, R1, R2] = ['e046885ad9f800f8d0c7a1fee965f9e670baee96', '2e61f2447f6812f9ed795a5195a25861ada1c50b', '061ec236dacb985c77afa29205bf8bc0a185a49e'];
+  const objective = (phase: number, title: string) =>
+    `Phase ${phase} (${title}) at the reviewed commit. The phase plan, exit criteria and code are part of the change; review the change against them.`;
+  const workOrder = (phase: number, title: string) => ({
+    objective: objective(phase, title),
+    requirementIds: [],
+    requirements: [],
+    allowedPaths: ['**'],
+    forbiddenChanges: [],
+    architectureInvariants: [],
+    acceptanceCheckIds: [],
+  });
+
+  // The fields every packet shares. Ids are reference values computed outside this code base (Python).
+  assert.deepEqual(
+    { ...body.synthetic, pendingPacketFields: undefined },
+    {
+      identity: {
+        organizationId: { label: 'corpus:org', id: '28RYVJXRSBE47VFTM1VZ39R9HY' },
+        projectId: { label: 'corpus:project', id: '0W0462GQ0GRREABGMCXRH0C0D2' },
+        repositoryBindingId: { label: 'corpus:binding', id: '69CA9EKP8SJZWA8AJB3VBF6QJP' },
+        runId: { label: 'corpus:run', id: '7GYQTFNF1WJ8ER0KAQ83XDXRF9' },
+      },
+      risk: 'R1',
+      workOrders: { '1': workOrder(1, 'Evaluation and contracts'), '2': workOrder(2, 'Single-agent vertical slice') },
+      execution: { verdict: 'NOT_RECORDED', environment: null, checks: [] },
+      pendingPacketFields: undefined,
+    },
+  );
+  assert.ok(body.synthetic.pendingPacketFields.length > 0);
+
+  // A first occurrence: rule P, a fresh review of its reviewed tree, and its post-fix negative.
+  assert.deepEqual(entry('P2-FINAL-HIGH-003@2e61f24').synthetic, {
+    rule: 'P',
+    cycle: 'p2-final',
+    taskId: { label: 'corpus:task:p2-final', id: '0E64H7H23NFT2605AYZM46V86H' },
+    round: 1,
+    reviewKind: 'fresh',
+    taskBaseSha: B,
+    resultSha: R1,
+    repairBaseSha: null,
+    repairDelta: null,
+    priorCandidates: [],
+    negative: { taskBaseSha: B, resultSha: R2 },
+    blockedBy: null,
+  });
+
+  // A residual: rule C, a re-review of round 2 on the previous cycle's tree, every included item labelled there a
+  // prior candidate (the 14 first occurrences of the final review; P2-FINAL-MED-005 there is excluded).
+  const residual = entry('P2-FINAL-HIGH-005@061ec23').synthetic!;
+  assert.deepEqual({ ...residual, priorCandidates: residual.priorCandidates.map((p) => p.itemId) }, {
+    rule: 'C',
+    cycle: 'p2-rereview-2',
+    taskId: { label: 'corpus:task:p2-rereview-2', id: '68CW73FPC9QGCZ2Z12HSPHG18R' },
+    round: 2,
+    reviewKind: 're-review',
+    taskBaseSha: B,
+    resultSha: R2,
+    repairBaseSha: R1,
+    repairDelta: { from: R1, to: R2 },
+    priorCandidates: [
+      ...['HIGH-001', 'HIGH-002', 'HIGH-003', 'HIGH-004', 'HIGH-005', 'HIGH-006', 'HIGH-007', 'HIGH-008', 'HIGH-009'],
+      ...['MED-001', 'MED-002', 'MED-003', 'MED-004', 'MED-006'],
+    ].map((s) => `P2-FINAL-${s}@2e61f24`),
+    negative: null,
+    blockedBy: null,
+  });
+  assert.deepEqual(
+    residual.priorCandidates.find((p) => p.itemId === 'P2-FINAL-HIGH-003@2e61f24'),
+    {
+      itemId: 'P2-FINAL-HIGH-003@2e61f24',
+      id: '32MW0CQNND1C648HZZEEZ4SCXG',
+      source: 'model',
+      raisedBy: 'labeller:codex-gpt-5.6-sol',
+      severity: 'HIGH',
+      category: 'CORRECTNESS',
+      file: 'apps/control-plane-api/src/vertical-integration.test.ts',
+      lineStart: 183,
+      lineEnd: 199,
+      grounded: true,
+      lifecycleState: 'OPEN',
+    },
+  );
+
+  // A residual after a cycle whose tree is unknown has no repair base: its re-review packet cannot be built.
+  const blocked = body.items.filter((i) => i.synthetic?.blockedBy === 'previous-cycle-tree-unknown');
+  assert.equal(blocked.length, 9, 'one after the first Phase 1 final review, eight after Phase 2 re-review v4');
+  assert.ok(blocked.some((i) => i.id === 'P1-FINAL-HIGH-003@7dea09c'));
+  for (const i of blocked) {
+    assert.deepEqual([i.synthetic!.rule, i.synthetic!.repairBaseSha, i.synthetic!.repairDelta, i.synthetic!.priorCandidates], ['C', null, null, []], i.id);
+  }
+
+  // Every included item: the rule follows the instance kind; an excluded item has no record.
+  const inputs = treeInputs(ROOT);
+  for (const e of body.items) {
+    if (e.excluded !== null) {
+      assert.equal(e.synthetic, null, e.id);
+      continue;
+    }
+    const item = JSON.parse(new TextDecoder().decode(inputs.itemFiles.get(`${e.id}.json`)!)) as CorpusItem;
+    const s = e.synthetic!;
+    const ruleC = item.instanceKind === 'residual';
+    assert.deepEqual([s.rule, s.round, s.reviewKind], ruleC ? ['C', 2, 're-review'] : ['P', 1, 'fresh'], e.id);
+    assert.deepEqual([s.taskBaseSha, s.resultSha], [item.baseSha, item.reviewedSha], e.id);
+    assert.equal(s.taskId.label, `corpus:task:${s.cycle}`, e.id);
+    assert.equal(s.negative === null, e.mapping === null, e.id);
+  }
+  assert.deepEqual(
+    [body.items.filter((i) => i.synthetic?.rule === 'P').length, body.items.filter((i) => i.synthetic?.rule === 'C').length],
+    [17, 29],
+  );
+});
+
 test('the freeze rules apply in order and every exclusion is counted', () => {
   const { body } = committedManifest();
   const reason = (id: string) => body.items.find((i) => i.id === id)!.excluded?.reason ?? null;

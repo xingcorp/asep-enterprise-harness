@@ -124,7 +124,7 @@
     "fc93bbedc4e0d21fa749f681233a415d7f11cebf6f965ae2669ecc635b317454",
     "fd6406294c8aee4e604b36112bc3af2d83245ca08e3227597f679aaffaeff5ab"
   ],
-  "corpusSha256": "7095e8fc1909be8ea7478a71d49ca4bbabe652c35368b2c84fc5fe3f5fd2bbe2",
+  "corpusSha256": "6314c0460546b5d4458fe45b30d292d75a2fee9bb0510123f5c54ac0fa4cd380",
   "counts": {
     "excluded": {
       "leakage-filtered": 3,
@@ -333,6 +333,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "HIGH",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -357,6 +358,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "HIGH",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -381,6 +383,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "MEDIUM",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -405,6 +408,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "CRITICAL",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -429,6 +433,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "HIGH",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -453,6 +458,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "HIGH",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -477,6 +483,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "HIGH",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -501,6 +508,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "HIGH",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -525,6 +533,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "HIGH",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -549,6 +558,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "HIGH",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -573,6 +583,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "HIGH",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -597,6 +608,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "MEDIUM",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -621,6 +633,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "MEDIUM",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -645,6 +658,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "CRITICAL",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -669,6 +683,7 @@
       "reachability": "reachable",
       "set": "prompt-development",
       "severity": "HIGH",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -693,6 +708,7 @@
       "reachability": "reachable",
       "set": "prompt-development",
       "severity": "HIGH",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -733,6 +749,26 @@
       "reachability": "reachable",
       "set": "prompt-development",
       "severity": "MEDIUM",
+      "synthetic": {
+        "blockedBy": null,
+        "cycle": "p1-rereview-4",
+        "negative": {
+          "resultSha": "e7a2d4e2b7eac96a5cfc94ed207a2babf2d6e50c",
+          "taskBaseSha": "83ba33db16072f05fb27f00f34cebd6774cb771a"
+        },
+        "priorCandidates": [],
+        "repairBaseSha": null,
+        "repairDelta": null,
+        "resultSha": "97d1e4ec815e11c33a9abeae45b8fa740ade7615",
+        "reviewKind": "fresh",
+        "round": 1,
+        "rule": "P",
+        "taskBaseSha": "83ba33db16072f05fb27f00f34cebd6774cb771a",
+        "taskId": {
+          "id": "287ZQTAFSSENFXZJYPPDZXNMMS",
+          "label": "corpus:task:p1-rereview-4"
+        }
+      },
       "uses": [
         "rediscovery",
         "post-fix-negative"
@@ -760,6 +796,7 @@
       "reachability": "reachable",
       "set": "prompt-development",
       "severity": "HIGH",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -784,6 +821,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "CRITICAL",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -808,6 +846,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "HIGH",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -832,6 +871,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "HIGH",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -856,6 +896,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "MEDIUM",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -880,6 +921,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "MEDIUM",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -904,6 +946,7 @@
       "reachability": "reachable",
       "set": "prompt-development",
       "severity": "CRITICAL",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -928,6 +971,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "CRITICAL",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -952,6 +996,7 @@
       "reachability": "reachable",
       "set": "prompt-development",
       "severity": "HIGH",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -976,6 +1021,7 @@
       "reachability": "reachable",
       "set": "prompt-development",
       "severity": "HIGH",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -1000,6 +1046,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "HIGH",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -1024,6 +1071,7 @@
       "reachability": "reachable",
       "set": "prompt-development",
       "severity": "HIGH",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -1048,6 +1096,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "HIGH",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -1076,6 +1125,26 @@
       "reachability": "reachable",
       "set": "prompt-development",
       "severity": "HIGH",
+      "synthetic": {
+        "blockedBy": "previous-cycle-tree-unknown",
+        "cycle": "p1-rereview-2",
+        "negative": {
+          "resultSha": "1af1cff0dde456b935a5886e9895ae4ebbeeec58",
+          "taskBaseSha": "83ba33db16072f05fb27f00f34cebd6774cb771a"
+        },
+        "priorCandidates": [],
+        "repairBaseSha": null,
+        "repairDelta": null,
+        "resultSha": "7dea09ca473e61190ae08499c7616b70fdbb690d",
+        "reviewKind": "re-review",
+        "round": 2,
+        "rule": "C",
+        "taskBaseSha": "83ba33db16072f05fb27f00f34cebd6774cb771a",
+        "taskId": {
+          "id": "4MTEYE2HJQX2GTTYRNX412EPY0",
+          "label": "corpus:task:p1-rereview-2"
+        }
+      },
       "uses": [
         "residual-status",
         "post-fix-negative"
@@ -1103,6 +1172,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "HIGH",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -1127,6 +1197,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "HIGH",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -1151,6 +1222,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "HIGH",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -1175,6 +1247,7 @@
       "reachability": "reachable",
       "set": "prompt-development",
       "severity": "MEDIUM",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -1199,6 +1272,7 @@
       "reachability": "reachable",
       "set": "prompt-development",
       "severity": "MEDIUM",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -1223,6 +1297,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "MEDIUM",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -1247,6 +1322,7 @@
       "reachability": "reachable",
       "set": "prompt-development",
       "severity": "MEDIUM",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -1271,6 +1347,7 @@
       "reachability": "reachable",
       "set": "prompt-development",
       "severity": "MEDIUM",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -1295,6 +1372,7 @@
       "reachability": "reachable",
       "set": "prompt-development",
       "severity": "MEDIUM",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -1319,6 +1397,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "MEDIUM",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -1343,6 +1422,7 @@
       "reachability": "reachable",
       "set": "prompt-development",
       "severity": "MEDIUM",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -1367,6 +1447,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "MEDIUM",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -1391,6 +1472,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "MEDIUM",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -1415,6 +1497,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "HIGH",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -1439,6 +1522,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "HIGH",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -1463,6 +1547,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "HIGH",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -1487,6 +1572,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "HIGH",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -1511,6 +1597,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "HIGH",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -1535,6 +1622,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "HIGH",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -1559,6 +1647,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "HIGH",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -1583,6 +1672,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "HIGH",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -1607,6 +1697,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "MEDIUM",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -1631,6 +1722,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "MEDIUM",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -1655,6 +1747,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "MEDIUM",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -1679,6 +1772,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "MEDIUM",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -1703,6 +1797,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "MEDIUM",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -1727,6 +1822,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "MEDIUM",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -1751,6 +1847,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "CRITICAL",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -1775,6 +1872,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "MEDIUM",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -1799,6 +1897,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "MEDIUM",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -1823,6 +1922,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "LOW",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -1847,6 +1947,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "LOW",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -1871,6 +1972,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "HIGH",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -1895,6 +1997,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "HIGH",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -1919,6 +2022,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "HIGH",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -1943,6 +2047,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "HIGH",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -1967,6 +2072,7 @@
       "reachability": "reachable",
       "set": "prompt-development",
       "severity": "CRITICAL",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -1991,6 +2097,7 @@
       "reachability": "reachable",
       "set": "prompt-development",
       "severity": "CRITICAL",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -2015,6 +2122,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "HIGH",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -2039,6 +2147,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "HIGH",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -2063,6 +2172,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "HIGH",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -2087,6 +2197,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "HIGH",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -2111,6 +2222,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "MEDIUM",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -2135,6 +2247,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "HIGH",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -2159,6 +2272,7 @@
       "reachability": "unavailable",
       "set": "prompt-development",
       "severity": "MEDIUM",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -2183,6 +2297,7 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "HIGH",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -2229,6 +2344,26 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "HIGH",
+      "synthetic": {
+        "blockedBy": null,
+        "cycle": "p2-final",
+        "negative": {
+          "resultSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+          "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96"
+        },
+        "priorCandidates": [],
+        "repairBaseSha": null,
+        "repairDelta": null,
+        "resultSha": "2e61f2447f6812f9ed795a5195a25861ada1c50b",
+        "reviewKind": "fresh",
+        "round": 1,
+        "rule": "P",
+        "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+        "taskId": {
+          "id": "0E64H7H23NFT2605AYZM46V86H",
+          "label": "corpus:task:p2-final"
+        }
+      },
       "uses": [
         "rediscovery",
         "post-fix-negative"
@@ -2253,6 +2388,209 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "HIGH",
+      "synthetic": {
+        "blockedBy": null,
+        "cycle": "p2-rereview-2",
+        "negative": null,
+        "priorCandidates": [
+          {
+            "category": "EVIDENCE_INTEGRITY",
+            "file": ".github/workflows/ci.yml",
+            "grounded": true,
+            "id": "5QH65GWH18ZM9PD1PMR1K1F8AA",
+            "itemId": "P2-FINAL-HIGH-001@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 45,
+            "lineStart": 16,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "SECURITY",
+            "file": "adapters/agent-claude/src/claude-provider.ts",
+            "grounded": true,
+            "id": "1R7S2R505VWGMYPTDJC0E3ZCE1",
+            "itemId": "P2-FINAL-HIGH-002@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 68,
+            "lineStart": 54,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "apps/control-plane-api/src/vertical-integration.test.ts",
+            "grounded": true,
+            "id": "32MW0CQNND1C648HZZEEZ4SCXG",
+            "itemId": "P2-FINAL-HIGH-003@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 199,
+            "lineStart": 183,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "SECURITY",
+            "file": "apps/control-plane-api/src/app.ts",
+            "grounded": true,
+            "id": "15FDQ6C7BGARV3BHV8DWPM196E",
+            "itemId": "P2-FINAL-HIGH-004@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 92,
+            "lineStart": 87,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/persistence/src/artifact-store.ts",
+            "grounded": true,
+            "id": "54ZY4H7Z1KVWXDDDBPB1JN9Y8W",
+            "itemId": "P2-FINAL-HIGH-005@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 123,
+            "lineStart": 112,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/persistence/src/side-effect-log.test.ts",
+            "grounded": true,
+            "id": "05V3J6DFQ7XZFP3CK5KFWJ7V5B",
+            "itemId": "P2-FINAL-HIGH-006@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 189,
+            "lineStart": 49,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "SECURITY",
+            "file": "adapters/agent-claude/src/agent-claude.test.ts",
+            "grounded": true,
+            "id": "056V2ZSBAZST3VRR1EVDZCTM0G",
+            "itemId": "P2-FINAL-HIGH-007@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 283,
+            "lineStart": 271,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "ARCHITECTURE",
+            "file": "adapters/github-app/src/forge-provider.ts",
+            "grounded": true,
+            "id": "3189B41ZJ71E27A40SXAXY4T3P",
+            "itemId": "P2-FINAL-HIGH-008@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 164,
+            "lineStart": 129,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "EVIDENCE_INTEGRITY",
+            "file": "scripts/pilot/verify-pilot-manifest.mjs",
+            "grounded": true,
+            "id": "50CXWP89G5703PM7ZZYRP0MJ6N",
+            "itemId": "P2-FINAL-HIGH-009@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 110,
+            "lineStart": 92,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "TEST_QUALITY",
+            "file": "adapters/persistence/package.json",
+            "grounded": true,
+            "id": "34KBPAEK74NYEN92X82RFQR118",
+            "itemId": "P2-FINAL-MED-001@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 19,
+            "lineStart": 12,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/github-app/src/credential-provider.ts",
+            "grounded": true,
+            "id": "0KP81BSEA00P8V779231DFX84Y",
+            "itemId": "P2-FINAL-MED-002@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 93,
+            "lineStart": 87,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "SPEC",
+            "file": "packages/observability/src/audit.ts",
+            "grounded": true,
+            "id": "7G9YBPVAN62R9R0VNQXMS9RMNX",
+            "itemId": "P2-FINAL-MED-003@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 58,
+            "lineStart": 54,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "ARCHITECTURE",
+            "file": "apps/control-plane-api/src/app.ts",
+            "grounded": true,
+            "id": "7RFE1VH9AKZMDNF88ZQVNGCS23",
+            "itemId": "P2-FINAL-MED-004@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 161,
+            "lineStart": 87,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "TEST_QUALITY",
+            "file": "docs/implementation/phases/phase-02-pilot-rehearsal.md",
+            "grounded": true,
+            "id": "5WNMAK8GCSBS9H0QR0HGH36NCA",
+            "itemId": "P2-FINAL-MED-006@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 9,
+            "lineStart": 3,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          }
+        ],
+        "repairBaseSha": "2e61f2447f6812f9ed795a5195a25861ada1c50b",
+        "repairDelta": {
+          "from": "2e61f2447f6812f9ed795a5195a25861ada1c50b",
+          "to": "061ec236dacb985c77afa29205bf8bc0a185a49e"
+        },
+        "resultSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+        "reviewKind": "re-review",
+        "round": 2,
+        "rule": "C",
+        "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+        "taskId": {
+          "id": "68CW73FPC9QGCZ2Z12HSPHG18R",
+          "label": "corpus:task:p2-rereview-2"
+        }
+      },
       "uses": [
         "residual-status"
       ]
@@ -2276,6 +2614,23 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "HIGH",
+      "synthetic": {
+        "blockedBy": null,
+        "cycle": "p2-final",
+        "negative": null,
+        "priorCandidates": [],
+        "repairBaseSha": null,
+        "repairDelta": null,
+        "resultSha": "2e61f2447f6812f9ed795a5195a25861ada1c50b",
+        "reviewKind": "fresh",
+        "round": 1,
+        "rule": "P",
+        "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+        "taskId": {
+          "id": "0E64H7H23NFT2605AYZM46V86H",
+          "label": "corpus:task:p2-final"
+        }
+      },
       "uses": [
         "rediscovery"
       ]
@@ -2299,6 +2654,183 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "HIGH",
+      "synthetic": {
+        "blockedBy": null,
+        "cycle": "p2-rereview-3",
+        "negative": null,
+        "priorCandidates": [
+          {
+            "category": "SECURITY",
+            "file": "adapters/agent-claude/src/claude-provider.ts",
+            "grounded": true,
+            "id": "1R7S2R505VWGMYPTDJC0E3ZCE1",
+            "itemId": "P2-FINAL-HIGH-002@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 141,
+            "lineStart": 120,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "SECURITY",
+            "file": "apps/control-plane-api/src/app.ts",
+            "grounded": true,
+            "id": "15FDQ6C7BGARV3BHV8DWPM196E",
+            "itemId": "P2-FINAL-HIGH-004@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 101,
+            "lineStart": 92,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/persistence/src/migrations.ts",
+            "grounded": true,
+            "id": "54ZY4H7Z1KVWXDDDBPB1JN9Y8W",
+            "itemId": "P2-FINAL-HIGH-005@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 260,
+            "lineStart": 245,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/persistence/src/side-effect-log.test.ts",
+            "grounded": true,
+            "id": "05V3J6DFQ7XZFP3CK5KFWJ7V5B",
+            "itemId": "P2-FINAL-HIGH-006@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 235,
+            "lineStart": 215,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "ARCHITECTURE",
+            "file": "adapters/github-app/src/port-adapter.ts",
+            "grounded": true,
+            "id": "3189B41ZJ71E27A40SXAXY4T3P",
+            "itemId": "P2-FINAL-HIGH-008@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 112,
+            "lineStart": 60,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "EVIDENCE_INTEGRITY",
+            "file": "scripts/pilot/verify-pilot-manifest.mjs",
+            "grounded": true,
+            "id": "50CXWP89G5703PM7ZZYRP0MJ6N",
+            "itemId": "P2-FINAL-HIGH-009@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 356,
+            "lineStart": 228,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/github-app/src/credential-provider.ts",
+            "grounded": true,
+            "id": "0KP81BSEA00P8V779231DFX84Y",
+            "itemId": "P2-FINAL-MED-002@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 93,
+            "lineStart": 87,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "SPEC",
+            "file": "apps/control-plane-api/src/vertical-slice.itest.ts",
+            "grounded": true,
+            "id": "7G9YBPVAN62R9R0VNQXMS9RMNX",
+            "itemId": "P2-FINAL-MED-003@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 198,
+            "lineStart": 163,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "ARCHITECTURE",
+            "file": "apps/control-plane-api/src/app.ts",
+            "grounded": true,
+            "id": "7RFE1VH9AKZMDNF88ZQVNGCS23",
+            "itemId": "P2-FINAL-MED-004@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 172,
+            "lineStart": 96,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "TEST_QUALITY",
+            "file": "adapters/agent-claude/src/claude-provider.ts",
+            "grounded": true,
+            "id": "5WNMAK8GCSBS9H0QR0HGH36NCA",
+            "itemId": "P2-FINAL-MED-006@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 169,
+            "lineStart": 90,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "TEST_QUALITY",
+            "file": "adapters/persistence/src/object-store.ts",
+            "grounded": true,
+            "id": "10BVHY4WQE2BCMTJVCCQ4Q17BC",
+            "itemId": "P2-REREVIEW-MED-NEW-001@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 44,
+            "lineStart": 31,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "EVIDENCE_INTEGRITY",
+            "file": "scripts/integration/lib.mjs",
+            "grounded": true,
+            "id": "45MNR1QAPRKMWPRMFBMJC53RRN",
+            "itemId": "P2-REREVIEW-MED-NEW-002@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 39,
+            "lineStart": 31,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          }
+        ],
+        "repairBaseSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+        "repairDelta": {
+          "from": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+          "to": "594b6287416ab6f18b18adb9a152bdba1c6278be"
+        },
+        "resultSha": "594b6287416ab6f18b18adb9a152bdba1c6278be",
+        "reviewKind": "re-review",
+        "round": 2,
+        "rule": "C",
+        "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+        "taskId": {
+          "id": "01JTDCMQ14QGVD3TWZXT590HVX",
+          "label": "corpus:task:p2-rereview-3"
+        }
+      },
       "uses": [
         "residual-status"
       ]
@@ -2322,6 +2854,23 @@
       "reachability": "private-bundle-only",
       "set": "reporting",
       "severity": "HIGH",
+      "synthetic": {
+        "blockedBy": "previous-cycle-tree-unknown",
+        "cycle": "p2-rereview-5",
+        "negative": null,
+        "priorCandidates": [],
+        "repairBaseSha": null,
+        "repairDelta": null,
+        "resultSha": "bb11d0086108fc439d69c1d50e6ddcf009409198",
+        "reviewKind": "re-review",
+        "round": 2,
+        "rule": "C",
+        "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+        "taskId": {
+          "id": "704YRY6F97RWN32KHTV0YZHPJG",
+          "label": "corpus:task:p2-rereview-5"
+        }
+      },
       "uses": [
         "residual-status"
       ]
@@ -2364,6 +2913,26 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "HIGH",
+      "synthetic": {
+        "blockedBy": null,
+        "cycle": "p2-final",
+        "negative": {
+          "resultSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+          "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96"
+        },
+        "priorCandidates": [],
+        "repairBaseSha": null,
+        "repairDelta": null,
+        "resultSha": "2e61f2447f6812f9ed795a5195a25861ada1c50b",
+        "reviewKind": "fresh",
+        "round": 1,
+        "rule": "P",
+        "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+        "taskId": {
+          "id": "0E64H7H23NFT2605AYZM46V86H",
+          "label": "corpus:task:p2-final"
+        }
+      },
       "uses": [
         "rediscovery",
         "post-fix-negative"
@@ -2413,6 +2982,212 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "HIGH",
+      "synthetic": {
+        "blockedBy": null,
+        "cycle": "p2-rereview-2",
+        "negative": {
+          "resultSha": "594b6287416ab6f18b18adb9a152bdba1c6278be",
+          "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96"
+        },
+        "priorCandidates": [
+          {
+            "category": "EVIDENCE_INTEGRITY",
+            "file": ".github/workflows/ci.yml",
+            "grounded": true,
+            "id": "5QH65GWH18ZM9PD1PMR1K1F8AA",
+            "itemId": "P2-FINAL-HIGH-001@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 45,
+            "lineStart": 16,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "SECURITY",
+            "file": "adapters/agent-claude/src/claude-provider.ts",
+            "grounded": true,
+            "id": "1R7S2R505VWGMYPTDJC0E3ZCE1",
+            "itemId": "P2-FINAL-HIGH-002@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 68,
+            "lineStart": 54,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "apps/control-plane-api/src/vertical-integration.test.ts",
+            "grounded": true,
+            "id": "32MW0CQNND1C648HZZEEZ4SCXG",
+            "itemId": "P2-FINAL-HIGH-003@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 199,
+            "lineStart": 183,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "SECURITY",
+            "file": "apps/control-plane-api/src/app.ts",
+            "grounded": true,
+            "id": "15FDQ6C7BGARV3BHV8DWPM196E",
+            "itemId": "P2-FINAL-HIGH-004@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 92,
+            "lineStart": 87,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/persistence/src/artifact-store.ts",
+            "grounded": true,
+            "id": "54ZY4H7Z1KVWXDDDBPB1JN9Y8W",
+            "itemId": "P2-FINAL-HIGH-005@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 123,
+            "lineStart": 112,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/persistence/src/side-effect-log.test.ts",
+            "grounded": true,
+            "id": "05V3J6DFQ7XZFP3CK5KFWJ7V5B",
+            "itemId": "P2-FINAL-HIGH-006@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 189,
+            "lineStart": 49,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "SECURITY",
+            "file": "adapters/agent-claude/src/agent-claude.test.ts",
+            "grounded": true,
+            "id": "056V2ZSBAZST3VRR1EVDZCTM0G",
+            "itemId": "P2-FINAL-HIGH-007@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 283,
+            "lineStart": 271,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "ARCHITECTURE",
+            "file": "adapters/github-app/src/forge-provider.ts",
+            "grounded": true,
+            "id": "3189B41ZJ71E27A40SXAXY4T3P",
+            "itemId": "P2-FINAL-HIGH-008@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 164,
+            "lineStart": 129,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "EVIDENCE_INTEGRITY",
+            "file": "scripts/pilot/verify-pilot-manifest.mjs",
+            "grounded": true,
+            "id": "50CXWP89G5703PM7ZZYRP0MJ6N",
+            "itemId": "P2-FINAL-HIGH-009@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 110,
+            "lineStart": 92,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "TEST_QUALITY",
+            "file": "adapters/persistence/package.json",
+            "grounded": true,
+            "id": "34KBPAEK74NYEN92X82RFQR118",
+            "itemId": "P2-FINAL-MED-001@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 19,
+            "lineStart": 12,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/github-app/src/credential-provider.ts",
+            "grounded": true,
+            "id": "0KP81BSEA00P8V779231DFX84Y",
+            "itemId": "P2-FINAL-MED-002@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 93,
+            "lineStart": 87,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "SPEC",
+            "file": "packages/observability/src/audit.ts",
+            "grounded": true,
+            "id": "7G9YBPVAN62R9R0VNQXMS9RMNX",
+            "itemId": "P2-FINAL-MED-003@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 58,
+            "lineStart": 54,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "ARCHITECTURE",
+            "file": "apps/control-plane-api/src/app.ts",
+            "grounded": true,
+            "id": "7RFE1VH9AKZMDNF88ZQVNGCS23",
+            "itemId": "P2-FINAL-MED-004@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 161,
+            "lineStart": 87,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "TEST_QUALITY",
+            "file": "docs/implementation/phases/phase-02-pilot-rehearsal.md",
+            "grounded": true,
+            "id": "5WNMAK8GCSBS9H0QR0HGH36NCA",
+            "itemId": "P2-FINAL-MED-006@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 9,
+            "lineStart": 3,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          }
+        ],
+        "repairBaseSha": "2e61f2447f6812f9ed795a5195a25861ada1c50b",
+        "repairDelta": {
+          "from": "2e61f2447f6812f9ed795a5195a25861ada1c50b",
+          "to": "061ec236dacb985c77afa29205bf8bc0a185a49e"
+        },
+        "resultSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+        "reviewKind": "re-review",
+        "round": 2,
+        "rule": "C",
+        "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+        "taskId": {
+          "id": "68CW73FPC9QGCZ2Z12HSPHG18R",
+          "label": "corpus:task:p2-rereview-2"
+        }
+      },
       "uses": [
         "residual-status",
         "post-fix-negative"
@@ -2437,6 +3212,23 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "HIGH",
+      "synthetic": {
+        "blockedBy": null,
+        "cycle": "p2-final",
+        "negative": null,
+        "priorCandidates": [],
+        "repairBaseSha": null,
+        "repairDelta": null,
+        "resultSha": "2e61f2447f6812f9ed795a5195a25861ada1c50b",
+        "reviewKind": "fresh",
+        "round": 1,
+        "rule": "P",
+        "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+        "taskId": {
+          "id": "0E64H7H23NFT2605AYZM46V86H",
+          "label": "corpus:task:p2-final"
+        }
+      },
       "uses": [
         "rediscovery"
       ]
@@ -2460,6 +3252,209 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "HIGH",
+      "synthetic": {
+        "blockedBy": null,
+        "cycle": "p2-rereview-2",
+        "negative": null,
+        "priorCandidates": [
+          {
+            "category": "EVIDENCE_INTEGRITY",
+            "file": ".github/workflows/ci.yml",
+            "grounded": true,
+            "id": "5QH65GWH18ZM9PD1PMR1K1F8AA",
+            "itemId": "P2-FINAL-HIGH-001@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 45,
+            "lineStart": 16,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "SECURITY",
+            "file": "adapters/agent-claude/src/claude-provider.ts",
+            "grounded": true,
+            "id": "1R7S2R505VWGMYPTDJC0E3ZCE1",
+            "itemId": "P2-FINAL-HIGH-002@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 68,
+            "lineStart": 54,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "apps/control-plane-api/src/vertical-integration.test.ts",
+            "grounded": true,
+            "id": "32MW0CQNND1C648HZZEEZ4SCXG",
+            "itemId": "P2-FINAL-HIGH-003@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 199,
+            "lineStart": 183,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "SECURITY",
+            "file": "apps/control-plane-api/src/app.ts",
+            "grounded": true,
+            "id": "15FDQ6C7BGARV3BHV8DWPM196E",
+            "itemId": "P2-FINAL-HIGH-004@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 92,
+            "lineStart": 87,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/persistence/src/artifact-store.ts",
+            "grounded": true,
+            "id": "54ZY4H7Z1KVWXDDDBPB1JN9Y8W",
+            "itemId": "P2-FINAL-HIGH-005@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 123,
+            "lineStart": 112,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/persistence/src/side-effect-log.test.ts",
+            "grounded": true,
+            "id": "05V3J6DFQ7XZFP3CK5KFWJ7V5B",
+            "itemId": "P2-FINAL-HIGH-006@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 189,
+            "lineStart": 49,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "SECURITY",
+            "file": "adapters/agent-claude/src/agent-claude.test.ts",
+            "grounded": true,
+            "id": "056V2ZSBAZST3VRR1EVDZCTM0G",
+            "itemId": "P2-FINAL-HIGH-007@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 283,
+            "lineStart": 271,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "ARCHITECTURE",
+            "file": "adapters/github-app/src/forge-provider.ts",
+            "grounded": true,
+            "id": "3189B41ZJ71E27A40SXAXY4T3P",
+            "itemId": "P2-FINAL-HIGH-008@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 164,
+            "lineStart": 129,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "EVIDENCE_INTEGRITY",
+            "file": "scripts/pilot/verify-pilot-manifest.mjs",
+            "grounded": true,
+            "id": "50CXWP89G5703PM7ZZYRP0MJ6N",
+            "itemId": "P2-FINAL-HIGH-009@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 110,
+            "lineStart": 92,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "TEST_QUALITY",
+            "file": "adapters/persistence/package.json",
+            "grounded": true,
+            "id": "34KBPAEK74NYEN92X82RFQR118",
+            "itemId": "P2-FINAL-MED-001@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 19,
+            "lineStart": 12,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/github-app/src/credential-provider.ts",
+            "grounded": true,
+            "id": "0KP81BSEA00P8V779231DFX84Y",
+            "itemId": "P2-FINAL-MED-002@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 93,
+            "lineStart": 87,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "SPEC",
+            "file": "packages/observability/src/audit.ts",
+            "grounded": true,
+            "id": "7G9YBPVAN62R9R0VNQXMS9RMNX",
+            "itemId": "P2-FINAL-MED-003@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 58,
+            "lineStart": 54,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "ARCHITECTURE",
+            "file": "apps/control-plane-api/src/app.ts",
+            "grounded": true,
+            "id": "7RFE1VH9AKZMDNF88ZQVNGCS23",
+            "itemId": "P2-FINAL-MED-004@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 161,
+            "lineStart": 87,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "TEST_QUALITY",
+            "file": "docs/implementation/phases/phase-02-pilot-rehearsal.md",
+            "grounded": true,
+            "id": "5WNMAK8GCSBS9H0QR0HGH36NCA",
+            "itemId": "P2-FINAL-MED-006@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 9,
+            "lineStart": 3,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          }
+        ],
+        "repairBaseSha": "2e61f2447f6812f9ed795a5195a25861ada1c50b",
+        "repairDelta": {
+          "from": "2e61f2447f6812f9ed795a5195a25861ada1c50b",
+          "to": "061ec236dacb985c77afa29205bf8bc0a185a49e"
+        },
+        "resultSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+        "reviewKind": "re-review",
+        "round": 2,
+        "rule": "C",
+        "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+        "taskId": {
+          "id": "68CW73FPC9QGCZ2Z12HSPHG18R",
+          "label": "corpus:task:p2-rereview-2"
+        }
+      },
       "uses": [
         "residual-status"
       ]
@@ -2483,6 +3478,23 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "HIGH",
+      "synthetic": {
+        "blockedBy": null,
+        "cycle": "p2-final",
+        "negative": null,
+        "priorCandidates": [],
+        "repairBaseSha": null,
+        "repairDelta": null,
+        "resultSha": "2e61f2447f6812f9ed795a5195a25861ada1c50b",
+        "reviewKind": "fresh",
+        "round": 1,
+        "rule": "P",
+        "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+        "taskId": {
+          "id": "0E64H7H23NFT2605AYZM46V86H",
+          "label": "corpus:task:p2-final"
+        }
+      },
       "uses": [
         "rediscovery"
       ]
@@ -2506,6 +3518,183 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "HIGH",
+      "synthetic": {
+        "blockedBy": null,
+        "cycle": "p2-rereview-3",
+        "negative": null,
+        "priorCandidates": [
+          {
+            "category": "SECURITY",
+            "file": "adapters/agent-claude/src/claude-provider.ts",
+            "grounded": true,
+            "id": "1R7S2R505VWGMYPTDJC0E3ZCE1",
+            "itemId": "P2-FINAL-HIGH-002@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 141,
+            "lineStart": 120,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "SECURITY",
+            "file": "apps/control-plane-api/src/app.ts",
+            "grounded": true,
+            "id": "15FDQ6C7BGARV3BHV8DWPM196E",
+            "itemId": "P2-FINAL-HIGH-004@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 101,
+            "lineStart": 92,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/persistence/src/migrations.ts",
+            "grounded": true,
+            "id": "54ZY4H7Z1KVWXDDDBPB1JN9Y8W",
+            "itemId": "P2-FINAL-HIGH-005@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 260,
+            "lineStart": 245,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/persistence/src/side-effect-log.test.ts",
+            "grounded": true,
+            "id": "05V3J6DFQ7XZFP3CK5KFWJ7V5B",
+            "itemId": "P2-FINAL-HIGH-006@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 235,
+            "lineStart": 215,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "ARCHITECTURE",
+            "file": "adapters/github-app/src/port-adapter.ts",
+            "grounded": true,
+            "id": "3189B41ZJ71E27A40SXAXY4T3P",
+            "itemId": "P2-FINAL-HIGH-008@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 112,
+            "lineStart": 60,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "EVIDENCE_INTEGRITY",
+            "file": "scripts/pilot/verify-pilot-manifest.mjs",
+            "grounded": true,
+            "id": "50CXWP89G5703PM7ZZYRP0MJ6N",
+            "itemId": "P2-FINAL-HIGH-009@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 356,
+            "lineStart": 228,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/github-app/src/credential-provider.ts",
+            "grounded": true,
+            "id": "0KP81BSEA00P8V779231DFX84Y",
+            "itemId": "P2-FINAL-MED-002@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 93,
+            "lineStart": 87,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "SPEC",
+            "file": "apps/control-plane-api/src/vertical-slice.itest.ts",
+            "grounded": true,
+            "id": "7G9YBPVAN62R9R0VNQXMS9RMNX",
+            "itemId": "P2-FINAL-MED-003@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 198,
+            "lineStart": 163,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "ARCHITECTURE",
+            "file": "apps/control-plane-api/src/app.ts",
+            "grounded": true,
+            "id": "7RFE1VH9AKZMDNF88ZQVNGCS23",
+            "itemId": "P2-FINAL-MED-004@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 172,
+            "lineStart": 96,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "TEST_QUALITY",
+            "file": "adapters/agent-claude/src/claude-provider.ts",
+            "grounded": true,
+            "id": "5WNMAK8GCSBS9H0QR0HGH36NCA",
+            "itemId": "P2-FINAL-MED-006@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 169,
+            "lineStart": 90,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "TEST_QUALITY",
+            "file": "adapters/persistence/src/object-store.ts",
+            "grounded": true,
+            "id": "10BVHY4WQE2BCMTJVCCQ4Q17BC",
+            "itemId": "P2-REREVIEW-MED-NEW-001@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 44,
+            "lineStart": 31,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "EVIDENCE_INTEGRITY",
+            "file": "scripts/integration/lib.mjs",
+            "grounded": true,
+            "id": "45MNR1QAPRKMWPRMFBMJC53RRN",
+            "itemId": "P2-REREVIEW-MED-NEW-002@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 39,
+            "lineStart": 31,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          }
+        ],
+        "repairBaseSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+        "repairDelta": {
+          "from": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+          "to": "594b6287416ab6f18b18adb9a152bdba1c6278be"
+        },
+        "resultSha": "594b6287416ab6f18b18adb9a152bdba1c6278be",
+        "reviewKind": "re-review",
+        "round": 2,
+        "rule": "C",
+        "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+        "taskId": {
+          "id": "01JTDCMQ14QGVD3TWZXT590HVX",
+          "label": "corpus:task:p2-rereview-3"
+        }
+      },
       "uses": [
         "residual-status"
       ]
@@ -2529,6 +3718,23 @@
       "reachability": "private-bundle-only",
       "set": "reporting",
       "severity": "HIGH",
+      "synthetic": {
+        "blockedBy": "previous-cycle-tree-unknown",
+        "cycle": "p2-rereview-5",
+        "negative": null,
+        "priorCandidates": [],
+        "repairBaseSha": null,
+        "repairDelta": null,
+        "resultSha": "bb11d0086108fc439d69c1d50e6ddcf009409198",
+        "reviewKind": "re-review",
+        "round": 2,
+        "rule": "C",
+        "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+        "taskId": {
+          "id": "704YRY6F97RWN32KHTV0YZHPJG",
+          "label": "corpus:task:p2-rereview-5"
+        }
+      },
       "uses": [
         "residual-status"
       ]
@@ -2555,6 +3761,7 @@
       "reachability": "unavailable",
       "set": "reporting",
       "severity": "HIGH",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -2576,6 +3783,209 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "HIGH",
+      "synthetic": {
+        "blockedBy": null,
+        "cycle": "p2-rereview-2",
+        "negative": null,
+        "priorCandidates": [
+          {
+            "category": "EVIDENCE_INTEGRITY",
+            "file": ".github/workflows/ci.yml",
+            "grounded": true,
+            "id": "5QH65GWH18ZM9PD1PMR1K1F8AA",
+            "itemId": "P2-FINAL-HIGH-001@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 45,
+            "lineStart": 16,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "SECURITY",
+            "file": "adapters/agent-claude/src/claude-provider.ts",
+            "grounded": true,
+            "id": "1R7S2R505VWGMYPTDJC0E3ZCE1",
+            "itemId": "P2-FINAL-HIGH-002@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 68,
+            "lineStart": 54,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "apps/control-plane-api/src/vertical-integration.test.ts",
+            "grounded": true,
+            "id": "32MW0CQNND1C648HZZEEZ4SCXG",
+            "itemId": "P2-FINAL-HIGH-003@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 199,
+            "lineStart": 183,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "SECURITY",
+            "file": "apps/control-plane-api/src/app.ts",
+            "grounded": true,
+            "id": "15FDQ6C7BGARV3BHV8DWPM196E",
+            "itemId": "P2-FINAL-HIGH-004@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 92,
+            "lineStart": 87,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/persistence/src/artifact-store.ts",
+            "grounded": true,
+            "id": "54ZY4H7Z1KVWXDDDBPB1JN9Y8W",
+            "itemId": "P2-FINAL-HIGH-005@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 123,
+            "lineStart": 112,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/persistence/src/side-effect-log.test.ts",
+            "grounded": true,
+            "id": "05V3J6DFQ7XZFP3CK5KFWJ7V5B",
+            "itemId": "P2-FINAL-HIGH-006@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 189,
+            "lineStart": 49,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "SECURITY",
+            "file": "adapters/agent-claude/src/agent-claude.test.ts",
+            "grounded": true,
+            "id": "056V2ZSBAZST3VRR1EVDZCTM0G",
+            "itemId": "P2-FINAL-HIGH-007@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 283,
+            "lineStart": 271,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "ARCHITECTURE",
+            "file": "adapters/github-app/src/forge-provider.ts",
+            "grounded": true,
+            "id": "3189B41ZJ71E27A40SXAXY4T3P",
+            "itemId": "P2-FINAL-HIGH-008@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 164,
+            "lineStart": 129,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "EVIDENCE_INTEGRITY",
+            "file": "scripts/pilot/verify-pilot-manifest.mjs",
+            "grounded": true,
+            "id": "50CXWP89G5703PM7ZZYRP0MJ6N",
+            "itemId": "P2-FINAL-HIGH-009@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 110,
+            "lineStart": 92,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "TEST_QUALITY",
+            "file": "adapters/persistence/package.json",
+            "grounded": true,
+            "id": "34KBPAEK74NYEN92X82RFQR118",
+            "itemId": "P2-FINAL-MED-001@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 19,
+            "lineStart": 12,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/github-app/src/credential-provider.ts",
+            "grounded": true,
+            "id": "0KP81BSEA00P8V779231DFX84Y",
+            "itemId": "P2-FINAL-MED-002@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 93,
+            "lineStart": 87,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "SPEC",
+            "file": "packages/observability/src/audit.ts",
+            "grounded": true,
+            "id": "7G9YBPVAN62R9R0VNQXMS9RMNX",
+            "itemId": "P2-FINAL-MED-003@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 58,
+            "lineStart": 54,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "ARCHITECTURE",
+            "file": "apps/control-plane-api/src/app.ts",
+            "grounded": true,
+            "id": "7RFE1VH9AKZMDNF88ZQVNGCS23",
+            "itemId": "P2-FINAL-MED-004@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 161,
+            "lineStart": 87,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "TEST_QUALITY",
+            "file": "docs/implementation/phases/phase-02-pilot-rehearsal.md",
+            "grounded": true,
+            "id": "5WNMAK8GCSBS9H0QR0HGH36NCA",
+            "itemId": "P2-FINAL-MED-006@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 9,
+            "lineStart": 3,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          }
+        ],
+        "repairBaseSha": "2e61f2447f6812f9ed795a5195a25861ada1c50b",
+        "repairDelta": {
+          "from": "2e61f2447f6812f9ed795a5195a25861ada1c50b",
+          "to": "061ec236dacb985c77afa29205bf8bc0a185a49e"
+        },
+        "resultSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+        "reviewKind": "re-review",
+        "round": 2,
+        "rule": "C",
+        "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+        "taskId": {
+          "id": "68CW73FPC9QGCZ2Z12HSPHG18R",
+          "label": "corpus:task:p2-rereview-2"
+        }
+      },
       "uses": [
         "residual-status"
       ]
@@ -2599,6 +4009,23 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "HIGH",
+      "synthetic": {
+        "blockedBy": null,
+        "cycle": "p2-final",
+        "negative": null,
+        "priorCandidates": [],
+        "repairBaseSha": null,
+        "repairDelta": null,
+        "resultSha": "2e61f2447f6812f9ed795a5195a25861ada1c50b",
+        "reviewKind": "fresh",
+        "round": 1,
+        "rule": "P",
+        "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+        "taskId": {
+          "id": "0E64H7H23NFT2605AYZM46V86H",
+          "label": "corpus:task:p2-final"
+        }
+      },
       "uses": [
         "rediscovery"
       ]
@@ -2622,6 +4049,183 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "HIGH",
+      "synthetic": {
+        "blockedBy": null,
+        "cycle": "p2-rereview-3",
+        "negative": null,
+        "priorCandidates": [
+          {
+            "category": "SECURITY",
+            "file": "adapters/agent-claude/src/claude-provider.ts",
+            "grounded": true,
+            "id": "1R7S2R505VWGMYPTDJC0E3ZCE1",
+            "itemId": "P2-FINAL-HIGH-002@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 141,
+            "lineStart": 120,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "SECURITY",
+            "file": "apps/control-plane-api/src/app.ts",
+            "grounded": true,
+            "id": "15FDQ6C7BGARV3BHV8DWPM196E",
+            "itemId": "P2-FINAL-HIGH-004@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 101,
+            "lineStart": 92,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/persistence/src/migrations.ts",
+            "grounded": true,
+            "id": "54ZY4H7Z1KVWXDDDBPB1JN9Y8W",
+            "itemId": "P2-FINAL-HIGH-005@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 260,
+            "lineStart": 245,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/persistence/src/side-effect-log.test.ts",
+            "grounded": true,
+            "id": "05V3J6DFQ7XZFP3CK5KFWJ7V5B",
+            "itemId": "P2-FINAL-HIGH-006@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 235,
+            "lineStart": 215,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "ARCHITECTURE",
+            "file": "adapters/github-app/src/port-adapter.ts",
+            "grounded": true,
+            "id": "3189B41ZJ71E27A40SXAXY4T3P",
+            "itemId": "P2-FINAL-HIGH-008@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 112,
+            "lineStart": 60,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "EVIDENCE_INTEGRITY",
+            "file": "scripts/pilot/verify-pilot-manifest.mjs",
+            "grounded": true,
+            "id": "50CXWP89G5703PM7ZZYRP0MJ6N",
+            "itemId": "P2-FINAL-HIGH-009@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 356,
+            "lineStart": 228,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/github-app/src/credential-provider.ts",
+            "grounded": true,
+            "id": "0KP81BSEA00P8V779231DFX84Y",
+            "itemId": "P2-FINAL-MED-002@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 93,
+            "lineStart": 87,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "SPEC",
+            "file": "apps/control-plane-api/src/vertical-slice.itest.ts",
+            "grounded": true,
+            "id": "7G9YBPVAN62R9R0VNQXMS9RMNX",
+            "itemId": "P2-FINAL-MED-003@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 198,
+            "lineStart": 163,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "ARCHITECTURE",
+            "file": "apps/control-plane-api/src/app.ts",
+            "grounded": true,
+            "id": "7RFE1VH9AKZMDNF88ZQVNGCS23",
+            "itemId": "P2-FINAL-MED-004@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 172,
+            "lineStart": 96,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "TEST_QUALITY",
+            "file": "adapters/agent-claude/src/claude-provider.ts",
+            "grounded": true,
+            "id": "5WNMAK8GCSBS9H0QR0HGH36NCA",
+            "itemId": "P2-FINAL-MED-006@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 169,
+            "lineStart": 90,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "TEST_QUALITY",
+            "file": "adapters/persistence/src/object-store.ts",
+            "grounded": true,
+            "id": "10BVHY4WQE2BCMTJVCCQ4Q17BC",
+            "itemId": "P2-REREVIEW-MED-NEW-001@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 44,
+            "lineStart": 31,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "EVIDENCE_INTEGRITY",
+            "file": "scripts/integration/lib.mjs",
+            "grounded": true,
+            "id": "45MNR1QAPRKMWPRMFBMJC53RRN",
+            "itemId": "P2-REREVIEW-MED-NEW-002@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 39,
+            "lineStart": 31,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          }
+        ],
+        "repairBaseSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+        "repairDelta": {
+          "from": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+          "to": "594b6287416ab6f18b18adb9a152bdba1c6278be"
+        },
+        "resultSha": "594b6287416ab6f18b18adb9a152bdba1c6278be",
+        "reviewKind": "re-review",
+        "round": 2,
+        "rule": "C",
+        "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+        "taskId": {
+          "id": "01JTDCMQ14QGVD3TWZXT590HVX",
+          "label": "corpus:task:p2-rereview-3"
+        }
+      },
       "uses": [
         "residual-status"
       ]
@@ -2645,6 +4249,23 @@
       "reachability": "private-bundle-only",
       "set": "reporting",
       "severity": "HIGH",
+      "synthetic": {
+        "blockedBy": "previous-cycle-tree-unknown",
+        "cycle": "p2-rereview-5",
+        "negative": null,
+        "priorCandidates": [],
+        "repairBaseSha": null,
+        "repairDelta": null,
+        "resultSha": "bb11d0086108fc439d69c1d50e6ddcf009409198",
+        "reviewKind": "re-review",
+        "round": 2,
+        "rule": "C",
+        "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+        "taskId": {
+          "id": "704YRY6F97RWN32KHTV0YZHPJG",
+          "label": "corpus:task:p2-rereview-5"
+        }
+      },
       "uses": [
         "residual-status"
       ]
@@ -2671,6 +4292,7 @@
       "reachability": "unavailable",
       "set": "reporting",
       "severity": "HIGH",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -2717,6 +4339,26 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "HIGH",
+      "synthetic": {
+        "blockedBy": null,
+        "cycle": "p2-final",
+        "negative": {
+          "resultSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+          "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96"
+        },
+        "priorCandidates": [],
+        "repairBaseSha": null,
+        "repairDelta": null,
+        "resultSha": "2e61f2447f6812f9ed795a5195a25861ada1c50b",
+        "reviewKind": "fresh",
+        "round": 1,
+        "rule": "P",
+        "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+        "taskId": {
+          "id": "0E64H7H23NFT2605AYZM46V86H",
+          "label": "corpus:task:p2-final"
+        }
+      },
       "uses": [
         "rediscovery",
         "post-fix-negative"
@@ -2741,6 +4383,209 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "HIGH",
+      "synthetic": {
+        "blockedBy": null,
+        "cycle": "p2-rereview-2",
+        "negative": null,
+        "priorCandidates": [
+          {
+            "category": "EVIDENCE_INTEGRITY",
+            "file": ".github/workflows/ci.yml",
+            "grounded": true,
+            "id": "5QH65GWH18ZM9PD1PMR1K1F8AA",
+            "itemId": "P2-FINAL-HIGH-001@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 45,
+            "lineStart": 16,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "SECURITY",
+            "file": "adapters/agent-claude/src/claude-provider.ts",
+            "grounded": true,
+            "id": "1R7S2R505VWGMYPTDJC0E3ZCE1",
+            "itemId": "P2-FINAL-HIGH-002@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 68,
+            "lineStart": 54,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "apps/control-plane-api/src/vertical-integration.test.ts",
+            "grounded": true,
+            "id": "32MW0CQNND1C648HZZEEZ4SCXG",
+            "itemId": "P2-FINAL-HIGH-003@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 199,
+            "lineStart": 183,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "SECURITY",
+            "file": "apps/control-plane-api/src/app.ts",
+            "grounded": true,
+            "id": "15FDQ6C7BGARV3BHV8DWPM196E",
+            "itemId": "P2-FINAL-HIGH-004@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 92,
+            "lineStart": 87,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/persistence/src/artifact-store.ts",
+            "grounded": true,
+            "id": "54ZY4H7Z1KVWXDDDBPB1JN9Y8W",
+            "itemId": "P2-FINAL-HIGH-005@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 123,
+            "lineStart": 112,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/persistence/src/side-effect-log.test.ts",
+            "grounded": true,
+            "id": "05V3J6DFQ7XZFP3CK5KFWJ7V5B",
+            "itemId": "P2-FINAL-HIGH-006@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 189,
+            "lineStart": 49,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "SECURITY",
+            "file": "adapters/agent-claude/src/agent-claude.test.ts",
+            "grounded": true,
+            "id": "056V2ZSBAZST3VRR1EVDZCTM0G",
+            "itemId": "P2-FINAL-HIGH-007@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 283,
+            "lineStart": 271,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "ARCHITECTURE",
+            "file": "adapters/github-app/src/forge-provider.ts",
+            "grounded": true,
+            "id": "3189B41ZJ71E27A40SXAXY4T3P",
+            "itemId": "P2-FINAL-HIGH-008@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 164,
+            "lineStart": 129,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "EVIDENCE_INTEGRITY",
+            "file": "scripts/pilot/verify-pilot-manifest.mjs",
+            "grounded": true,
+            "id": "50CXWP89G5703PM7ZZYRP0MJ6N",
+            "itemId": "P2-FINAL-HIGH-009@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 110,
+            "lineStart": 92,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "TEST_QUALITY",
+            "file": "adapters/persistence/package.json",
+            "grounded": true,
+            "id": "34KBPAEK74NYEN92X82RFQR118",
+            "itemId": "P2-FINAL-MED-001@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 19,
+            "lineStart": 12,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/github-app/src/credential-provider.ts",
+            "grounded": true,
+            "id": "0KP81BSEA00P8V779231DFX84Y",
+            "itemId": "P2-FINAL-MED-002@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 93,
+            "lineStart": 87,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "SPEC",
+            "file": "packages/observability/src/audit.ts",
+            "grounded": true,
+            "id": "7G9YBPVAN62R9R0VNQXMS9RMNX",
+            "itemId": "P2-FINAL-MED-003@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 58,
+            "lineStart": 54,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "ARCHITECTURE",
+            "file": "apps/control-plane-api/src/app.ts",
+            "grounded": true,
+            "id": "7RFE1VH9AKZMDNF88ZQVNGCS23",
+            "itemId": "P2-FINAL-MED-004@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 161,
+            "lineStart": 87,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "TEST_QUALITY",
+            "file": "docs/implementation/phases/phase-02-pilot-rehearsal.md",
+            "grounded": true,
+            "id": "5WNMAK8GCSBS9H0QR0HGH36NCA",
+            "itemId": "P2-FINAL-MED-006@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 9,
+            "lineStart": 3,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          }
+        ],
+        "repairBaseSha": "2e61f2447f6812f9ed795a5195a25861ada1c50b",
+        "repairDelta": {
+          "from": "2e61f2447f6812f9ed795a5195a25861ada1c50b",
+          "to": "061ec236dacb985c77afa29205bf8bc0a185a49e"
+        },
+        "resultSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+        "reviewKind": "re-review",
+        "round": 2,
+        "rule": "C",
+        "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+        "taskId": {
+          "id": "68CW73FPC9QGCZ2Z12HSPHG18R",
+          "label": "corpus:task:p2-rereview-2"
+        }
+      },
       "uses": [
         "residual-status"
       ]
@@ -2764,6 +4609,23 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "HIGH",
+      "synthetic": {
+        "blockedBy": null,
+        "cycle": "p2-final",
+        "negative": null,
+        "priorCandidates": [],
+        "repairBaseSha": null,
+        "repairDelta": null,
+        "resultSha": "2e61f2447f6812f9ed795a5195a25861ada1c50b",
+        "reviewKind": "fresh",
+        "round": 1,
+        "rule": "P",
+        "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+        "taskId": {
+          "id": "0E64H7H23NFT2605AYZM46V86H",
+          "label": "corpus:task:p2-final"
+        }
+      },
       "uses": [
         "rediscovery"
       ]
@@ -2787,6 +4649,183 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "HIGH",
+      "synthetic": {
+        "blockedBy": null,
+        "cycle": "p2-rereview-3",
+        "negative": null,
+        "priorCandidates": [
+          {
+            "category": "SECURITY",
+            "file": "adapters/agent-claude/src/claude-provider.ts",
+            "grounded": true,
+            "id": "1R7S2R505VWGMYPTDJC0E3ZCE1",
+            "itemId": "P2-FINAL-HIGH-002@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 141,
+            "lineStart": 120,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "SECURITY",
+            "file": "apps/control-plane-api/src/app.ts",
+            "grounded": true,
+            "id": "15FDQ6C7BGARV3BHV8DWPM196E",
+            "itemId": "P2-FINAL-HIGH-004@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 101,
+            "lineStart": 92,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/persistence/src/migrations.ts",
+            "grounded": true,
+            "id": "54ZY4H7Z1KVWXDDDBPB1JN9Y8W",
+            "itemId": "P2-FINAL-HIGH-005@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 260,
+            "lineStart": 245,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/persistence/src/side-effect-log.test.ts",
+            "grounded": true,
+            "id": "05V3J6DFQ7XZFP3CK5KFWJ7V5B",
+            "itemId": "P2-FINAL-HIGH-006@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 235,
+            "lineStart": 215,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "ARCHITECTURE",
+            "file": "adapters/github-app/src/port-adapter.ts",
+            "grounded": true,
+            "id": "3189B41ZJ71E27A40SXAXY4T3P",
+            "itemId": "P2-FINAL-HIGH-008@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 112,
+            "lineStart": 60,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "EVIDENCE_INTEGRITY",
+            "file": "scripts/pilot/verify-pilot-manifest.mjs",
+            "grounded": true,
+            "id": "50CXWP89G5703PM7ZZYRP0MJ6N",
+            "itemId": "P2-FINAL-HIGH-009@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 356,
+            "lineStart": 228,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/github-app/src/credential-provider.ts",
+            "grounded": true,
+            "id": "0KP81BSEA00P8V779231DFX84Y",
+            "itemId": "P2-FINAL-MED-002@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 93,
+            "lineStart": 87,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "SPEC",
+            "file": "apps/control-plane-api/src/vertical-slice.itest.ts",
+            "grounded": true,
+            "id": "7G9YBPVAN62R9R0VNQXMS9RMNX",
+            "itemId": "P2-FINAL-MED-003@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 198,
+            "lineStart": 163,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "ARCHITECTURE",
+            "file": "apps/control-plane-api/src/app.ts",
+            "grounded": true,
+            "id": "7RFE1VH9AKZMDNF88ZQVNGCS23",
+            "itemId": "P2-FINAL-MED-004@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 172,
+            "lineStart": 96,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "TEST_QUALITY",
+            "file": "adapters/agent-claude/src/claude-provider.ts",
+            "grounded": true,
+            "id": "5WNMAK8GCSBS9H0QR0HGH36NCA",
+            "itemId": "P2-FINAL-MED-006@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 169,
+            "lineStart": 90,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "TEST_QUALITY",
+            "file": "adapters/persistence/src/object-store.ts",
+            "grounded": true,
+            "id": "10BVHY4WQE2BCMTJVCCQ4Q17BC",
+            "itemId": "P2-REREVIEW-MED-NEW-001@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 44,
+            "lineStart": 31,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "EVIDENCE_INTEGRITY",
+            "file": "scripts/integration/lib.mjs",
+            "grounded": true,
+            "id": "45MNR1QAPRKMWPRMFBMJC53RRN",
+            "itemId": "P2-REREVIEW-MED-NEW-002@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 39,
+            "lineStart": 31,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          }
+        ],
+        "repairBaseSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+        "repairDelta": {
+          "from": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+          "to": "594b6287416ab6f18b18adb9a152bdba1c6278be"
+        },
+        "resultSha": "594b6287416ab6f18b18adb9a152bdba1c6278be",
+        "reviewKind": "re-review",
+        "round": 2,
+        "rule": "C",
+        "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+        "taskId": {
+          "id": "01JTDCMQ14QGVD3TWZXT590HVX",
+          "label": "corpus:task:p2-rereview-3"
+        }
+      },
       "uses": [
         "residual-status"
       ]
@@ -2810,6 +4849,23 @@
       "reachability": "private-bundle-only",
       "set": "reporting",
       "severity": "HIGH",
+      "synthetic": {
+        "blockedBy": "previous-cycle-tree-unknown",
+        "cycle": "p2-rereview-5",
+        "negative": null,
+        "priorCandidates": [],
+        "repairBaseSha": null,
+        "repairDelta": null,
+        "resultSha": "bb11d0086108fc439d69c1d50e6ddcf009409198",
+        "reviewKind": "re-review",
+        "round": 2,
+        "rule": "C",
+        "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+        "taskId": {
+          "id": "704YRY6F97RWN32KHTV0YZHPJG",
+          "label": "corpus:task:p2-rereview-5"
+        }
+      },
       "uses": [
         "residual-status"
       ]
@@ -2836,6 +4892,7 @@
       "reachability": "unavailable",
       "set": "reporting",
       "severity": "HIGH",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -2857,6 +4914,209 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "HIGH",
+      "synthetic": {
+        "blockedBy": null,
+        "cycle": "p2-rereview-2",
+        "negative": null,
+        "priorCandidates": [
+          {
+            "category": "EVIDENCE_INTEGRITY",
+            "file": ".github/workflows/ci.yml",
+            "grounded": true,
+            "id": "5QH65GWH18ZM9PD1PMR1K1F8AA",
+            "itemId": "P2-FINAL-HIGH-001@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 45,
+            "lineStart": 16,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "SECURITY",
+            "file": "adapters/agent-claude/src/claude-provider.ts",
+            "grounded": true,
+            "id": "1R7S2R505VWGMYPTDJC0E3ZCE1",
+            "itemId": "P2-FINAL-HIGH-002@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 68,
+            "lineStart": 54,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "apps/control-plane-api/src/vertical-integration.test.ts",
+            "grounded": true,
+            "id": "32MW0CQNND1C648HZZEEZ4SCXG",
+            "itemId": "P2-FINAL-HIGH-003@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 199,
+            "lineStart": 183,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "SECURITY",
+            "file": "apps/control-plane-api/src/app.ts",
+            "grounded": true,
+            "id": "15FDQ6C7BGARV3BHV8DWPM196E",
+            "itemId": "P2-FINAL-HIGH-004@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 92,
+            "lineStart": 87,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/persistence/src/artifact-store.ts",
+            "grounded": true,
+            "id": "54ZY4H7Z1KVWXDDDBPB1JN9Y8W",
+            "itemId": "P2-FINAL-HIGH-005@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 123,
+            "lineStart": 112,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/persistence/src/side-effect-log.test.ts",
+            "grounded": true,
+            "id": "05V3J6DFQ7XZFP3CK5KFWJ7V5B",
+            "itemId": "P2-FINAL-HIGH-006@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 189,
+            "lineStart": 49,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "SECURITY",
+            "file": "adapters/agent-claude/src/agent-claude.test.ts",
+            "grounded": true,
+            "id": "056V2ZSBAZST3VRR1EVDZCTM0G",
+            "itemId": "P2-FINAL-HIGH-007@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 283,
+            "lineStart": 271,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "ARCHITECTURE",
+            "file": "adapters/github-app/src/forge-provider.ts",
+            "grounded": true,
+            "id": "3189B41ZJ71E27A40SXAXY4T3P",
+            "itemId": "P2-FINAL-HIGH-008@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 164,
+            "lineStart": 129,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "EVIDENCE_INTEGRITY",
+            "file": "scripts/pilot/verify-pilot-manifest.mjs",
+            "grounded": true,
+            "id": "50CXWP89G5703PM7ZZYRP0MJ6N",
+            "itemId": "P2-FINAL-HIGH-009@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 110,
+            "lineStart": 92,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "TEST_QUALITY",
+            "file": "adapters/persistence/package.json",
+            "grounded": true,
+            "id": "34KBPAEK74NYEN92X82RFQR118",
+            "itemId": "P2-FINAL-MED-001@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 19,
+            "lineStart": 12,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/github-app/src/credential-provider.ts",
+            "grounded": true,
+            "id": "0KP81BSEA00P8V779231DFX84Y",
+            "itemId": "P2-FINAL-MED-002@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 93,
+            "lineStart": 87,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "SPEC",
+            "file": "packages/observability/src/audit.ts",
+            "grounded": true,
+            "id": "7G9YBPVAN62R9R0VNQXMS9RMNX",
+            "itemId": "P2-FINAL-MED-003@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 58,
+            "lineStart": 54,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "ARCHITECTURE",
+            "file": "apps/control-plane-api/src/app.ts",
+            "grounded": true,
+            "id": "7RFE1VH9AKZMDNF88ZQVNGCS23",
+            "itemId": "P2-FINAL-MED-004@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 161,
+            "lineStart": 87,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "TEST_QUALITY",
+            "file": "docs/implementation/phases/phase-02-pilot-rehearsal.md",
+            "grounded": true,
+            "id": "5WNMAK8GCSBS9H0QR0HGH36NCA",
+            "itemId": "P2-FINAL-MED-006@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 9,
+            "lineStart": 3,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          }
+        ],
+        "repairBaseSha": "2e61f2447f6812f9ed795a5195a25861ada1c50b",
+        "repairDelta": {
+          "from": "2e61f2447f6812f9ed795a5195a25861ada1c50b",
+          "to": "061ec236dacb985c77afa29205bf8bc0a185a49e"
+        },
+        "resultSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+        "reviewKind": "re-review",
+        "round": 2,
+        "rule": "C",
+        "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+        "taskId": {
+          "id": "68CW73FPC9QGCZ2Z12HSPHG18R",
+          "label": "corpus:task:p2-rereview-2"
+        }
+      },
       "uses": [
         "residual-status"
       ]
@@ -2880,6 +5140,23 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "HIGH",
+      "synthetic": {
+        "blockedBy": null,
+        "cycle": "p2-final",
+        "negative": null,
+        "priorCandidates": [],
+        "repairBaseSha": null,
+        "repairDelta": null,
+        "resultSha": "2e61f2447f6812f9ed795a5195a25861ada1c50b",
+        "reviewKind": "fresh",
+        "round": 1,
+        "rule": "P",
+        "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+        "taskId": {
+          "id": "0E64H7H23NFT2605AYZM46V86H",
+          "label": "corpus:task:p2-final"
+        }
+      },
       "uses": [
         "rediscovery"
       ]
@@ -2903,6 +5180,183 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "HIGH",
+      "synthetic": {
+        "blockedBy": null,
+        "cycle": "p2-rereview-3",
+        "negative": null,
+        "priorCandidates": [
+          {
+            "category": "SECURITY",
+            "file": "adapters/agent-claude/src/claude-provider.ts",
+            "grounded": true,
+            "id": "1R7S2R505VWGMYPTDJC0E3ZCE1",
+            "itemId": "P2-FINAL-HIGH-002@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 141,
+            "lineStart": 120,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "SECURITY",
+            "file": "apps/control-plane-api/src/app.ts",
+            "grounded": true,
+            "id": "15FDQ6C7BGARV3BHV8DWPM196E",
+            "itemId": "P2-FINAL-HIGH-004@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 101,
+            "lineStart": 92,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/persistence/src/migrations.ts",
+            "grounded": true,
+            "id": "54ZY4H7Z1KVWXDDDBPB1JN9Y8W",
+            "itemId": "P2-FINAL-HIGH-005@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 260,
+            "lineStart": 245,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/persistence/src/side-effect-log.test.ts",
+            "grounded": true,
+            "id": "05V3J6DFQ7XZFP3CK5KFWJ7V5B",
+            "itemId": "P2-FINAL-HIGH-006@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 235,
+            "lineStart": 215,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "ARCHITECTURE",
+            "file": "adapters/github-app/src/port-adapter.ts",
+            "grounded": true,
+            "id": "3189B41ZJ71E27A40SXAXY4T3P",
+            "itemId": "P2-FINAL-HIGH-008@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 112,
+            "lineStart": 60,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "EVIDENCE_INTEGRITY",
+            "file": "scripts/pilot/verify-pilot-manifest.mjs",
+            "grounded": true,
+            "id": "50CXWP89G5703PM7ZZYRP0MJ6N",
+            "itemId": "P2-FINAL-HIGH-009@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 356,
+            "lineStart": 228,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/github-app/src/credential-provider.ts",
+            "grounded": true,
+            "id": "0KP81BSEA00P8V779231DFX84Y",
+            "itemId": "P2-FINAL-MED-002@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 93,
+            "lineStart": 87,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "SPEC",
+            "file": "apps/control-plane-api/src/vertical-slice.itest.ts",
+            "grounded": true,
+            "id": "7G9YBPVAN62R9R0VNQXMS9RMNX",
+            "itemId": "P2-FINAL-MED-003@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 198,
+            "lineStart": 163,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "ARCHITECTURE",
+            "file": "apps/control-plane-api/src/app.ts",
+            "grounded": true,
+            "id": "7RFE1VH9AKZMDNF88ZQVNGCS23",
+            "itemId": "P2-FINAL-MED-004@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 172,
+            "lineStart": 96,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "TEST_QUALITY",
+            "file": "adapters/agent-claude/src/claude-provider.ts",
+            "grounded": true,
+            "id": "5WNMAK8GCSBS9H0QR0HGH36NCA",
+            "itemId": "P2-FINAL-MED-006@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 169,
+            "lineStart": 90,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "TEST_QUALITY",
+            "file": "adapters/persistence/src/object-store.ts",
+            "grounded": true,
+            "id": "10BVHY4WQE2BCMTJVCCQ4Q17BC",
+            "itemId": "P2-REREVIEW-MED-NEW-001@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 44,
+            "lineStart": 31,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "EVIDENCE_INTEGRITY",
+            "file": "scripts/integration/lib.mjs",
+            "grounded": true,
+            "id": "45MNR1QAPRKMWPRMFBMJC53RRN",
+            "itemId": "P2-REREVIEW-MED-NEW-002@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 39,
+            "lineStart": 31,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          }
+        ],
+        "repairBaseSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+        "repairDelta": {
+          "from": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+          "to": "594b6287416ab6f18b18adb9a152bdba1c6278be"
+        },
+        "resultSha": "594b6287416ab6f18b18adb9a152bdba1c6278be",
+        "reviewKind": "re-review",
+        "round": 2,
+        "rule": "C",
+        "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+        "taskId": {
+          "id": "01JTDCMQ14QGVD3TWZXT590HVX",
+          "label": "corpus:task:p2-rereview-3"
+        }
+      },
       "uses": [
         "residual-status"
       ]
@@ -2926,6 +5380,23 @@
       "reachability": "private-bundle-only",
       "set": "reporting",
       "severity": "HIGH",
+      "synthetic": {
+        "blockedBy": "previous-cycle-tree-unknown",
+        "cycle": "p2-rereview-5",
+        "negative": null,
+        "priorCandidates": [],
+        "repairBaseSha": null,
+        "repairDelta": null,
+        "resultSha": "bb11d0086108fc439d69c1d50e6ddcf009409198",
+        "reviewKind": "re-review",
+        "round": 2,
+        "rule": "C",
+        "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+        "taskId": {
+          "id": "704YRY6F97RWN32KHTV0YZHPJG",
+          "label": "corpus:task:p2-rereview-5"
+        }
+      },
       "uses": [
         "residual-status"
       ]
@@ -2952,6 +5423,7 @@
       "reachability": "unavailable",
       "set": "reporting",
       "severity": "HIGH",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -2998,6 +5470,26 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "MEDIUM",
+      "synthetic": {
+        "blockedBy": null,
+        "cycle": "p2-final",
+        "negative": {
+          "resultSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+          "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96"
+        },
+        "priorCandidates": [],
+        "repairBaseSha": null,
+        "repairDelta": null,
+        "resultSha": "2e61f2447f6812f9ed795a5195a25861ada1c50b",
+        "reviewKind": "fresh",
+        "round": 1,
+        "rule": "P",
+        "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+        "taskId": {
+          "id": "0E64H7H23NFT2605AYZM46V86H",
+          "label": "corpus:task:p2-final"
+        }
+      },
       "uses": [
         "rediscovery",
         "post-fix-negative"
@@ -3022,6 +5514,209 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "MEDIUM",
+      "synthetic": {
+        "blockedBy": null,
+        "cycle": "p2-rereview-2",
+        "negative": null,
+        "priorCandidates": [
+          {
+            "category": "EVIDENCE_INTEGRITY",
+            "file": ".github/workflows/ci.yml",
+            "grounded": true,
+            "id": "5QH65GWH18ZM9PD1PMR1K1F8AA",
+            "itemId": "P2-FINAL-HIGH-001@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 45,
+            "lineStart": 16,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "SECURITY",
+            "file": "adapters/agent-claude/src/claude-provider.ts",
+            "grounded": true,
+            "id": "1R7S2R505VWGMYPTDJC0E3ZCE1",
+            "itemId": "P2-FINAL-HIGH-002@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 68,
+            "lineStart": 54,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "apps/control-plane-api/src/vertical-integration.test.ts",
+            "grounded": true,
+            "id": "32MW0CQNND1C648HZZEEZ4SCXG",
+            "itemId": "P2-FINAL-HIGH-003@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 199,
+            "lineStart": 183,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "SECURITY",
+            "file": "apps/control-plane-api/src/app.ts",
+            "grounded": true,
+            "id": "15FDQ6C7BGARV3BHV8DWPM196E",
+            "itemId": "P2-FINAL-HIGH-004@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 92,
+            "lineStart": 87,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/persistence/src/artifact-store.ts",
+            "grounded": true,
+            "id": "54ZY4H7Z1KVWXDDDBPB1JN9Y8W",
+            "itemId": "P2-FINAL-HIGH-005@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 123,
+            "lineStart": 112,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/persistence/src/side-effect-log.test.ts",
+            "grounded": true,
+            "id": "05V3J6DFQ7XZFP3CK5KFWJ7V5B",
+            "itemId": "P2-FINAL-HIGH-006@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 189,
+            "lineStart": 49,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "SECURITY",
+            "file": "adapters/agent-claude/src/agent-claude.test.ts",
+            "grounded": true,
+            "id": "056V2ZSBAZST3VRR1EVDZCTM0G",
+            "itemId": "P2-FINAL-HIGH-007@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 283,
+            "lineStart": 271,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "ARCHITECTURE",
+            "file": "adapters/github-app/src/forge-provider.ts",
+            "grounded": true,
+            "id": "3189B41ZJ71E27A40SXAXY4T3P",
+            "itemId": "P2-FINAL-HIGH-008@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 164,
+            "lineStart": 129,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "EVIDENCE_INTEGRITY",
+            "file": "scripts/pilot/verify-pilot-manifest.mjs",
+            "grounded": true,
+            "id": "50CXWP89G5703PM7ZZYRP0MJ6N",
+            "itemId": "P2-FINAL-HIGH-009@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 110,
+            "lineStart": 92,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "TEST_QUALITY",
+            "file": "adapters/persistence/package.json",
+            "grounded": true,
+            "id": "34KBPAEK74NYEN92X82RFQR118",
+            "itemId": "P2-FINAL-MED-001@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 19,
+            "lineStart": 12,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/github-app/src/credential-provider.ts",
+            "grounded": true,
+            "id": "0KP81BSEA00P8V779231DFX84Y",
+            "itemId": "P2-FINAL-MED-002@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 93,
+            "lineStart": 87,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "SPEC",
+            "file": "packages/observability/src/audit.ts",
+            "grounded": true,
+            "id": "7G9YBPVAN62R9R0VNQXMS9RMNX",
+            "itemId": "P2-FINAL-MED-003@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 58,
+            "lineStart": 54,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "ARCHITECTURE",
+            "file": "apps/control-plane-api/src/app.ts",
+            "grounded": true,
+            "id": "7RFE1VH9AKZMDNF88ZQVNGCS23",
+            "itemId": "P2-FINAL-MED-004@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 161,
+            "lineStart": 87,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "TEST_QUALITY",
+            "file": "docs/implementation/phases/phase-02-pilot-rehearsal.md",
+            "grounded": true,
+            "id": "5WNMAK8GCSBS9H0QR0HGH36NCA",
+            "itemId": "P2-FINAL-MED-006@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 9,
+            "lineStart": 3,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          }
+        ],
+        "repairBaseSha": "2e61f2447f6812f9ed795a5195a25861ada1c50b",
+        "repairDelta": {
+          "from": "2e61f2447f6812f9ed795a5195a25861ada1c50b",
+          "to": "061ec236dacb985c77afa29205bf8bc0a185a49e"
+        },
+        "resultSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+        "reviewKind": "re-review",
+        "round": 2,
+        "rule": "C",
+        "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+        "taskId": {
+          "id": "68CW73FPC9QGCZ2Z12HSPHG18R",
+          "label": "corpus:task:p2-rereview-2"
+        }
+      },
       "uses": [
         "residual-status"
       ]
@@ -3045,6 +5740,23 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "MEDIUM",
+      "synthetic": {
+        "blockedBy": null,
+        "cycle": "p2-final",
+        "negative": null,
+        "priorCandidates": [],
+        "repairBaseSha": null,
+        "repairDelta": null,
+        "resultSha": "2e61f2447f6812f9ed795a5195a25861ada1c50b",
+        "reviewKind": "fresh",
+        "round": 1,
+        "rule": "P",
+        "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+        "taskId": {
+          "id": "0E64H7H23NFT2605AYZM46V86H",
+          "label": "corpus:task:p2-final"
+        }
+      },
       "uses": [
         "rediscovery"
       ]
@@ -3068,6 +5780,183 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "MEDIUM",
+      "synthetic": {
+        "blockedBy": null,
+        "cycle": "p2-rereview-3",
+        "negative": null,
+        "priorCandidates": [
+          {
+            "category": "SECURITY",
+            "file": "adapters/agent-claude/src/claude-provider.ts",
+            "grounded": true,
+            "id": "1R7S2R505VWGMYPTDJC0E3ZCE1",
+            "itemId": "P2-FINAL-HIGH-002@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 141,
+            "lineStart": 120,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "SECURITY",
+            "file": "apps/control-plane-api/src/app.ts",
+            "grounded": true,
+            "id": "15FDQ6C7BGARV3BHV8DWPM196E",
+            "itemId": "P2-FINAL-HIGH-004@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 101,
+            "lineStart": 92,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/persistence/src/migrations.ts",
+            "grounded": true,
+            "id": "54ZY4H7Z1KVWXDDDBPB1JN9Y8W",
+            "itemId": "P2-FINAL-HIGH-005@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 260,
+            "lineStart": 245,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/persistence/src/side-effect-log.test.ts",
+            "grounded": true,
+            "id": "05V3J6DFQ7XZFP3CK5KFWJ7V5B",
+            "itemId": "P2-FINAL-HIGH-006@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 235,
+            "lineStart": 215,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "ARCHITECTURE",
+            "file": "adapters/github-app/src/port-adapter.ts",
+            "grounded": true,
+            "id": "3189B41ZJ71E27A40SXAXY4T3P",
+            "itemId": "P2-FINAL-HIGH-008@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 112,
+            "lineStart": 60,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "EVIDENCE_INTEGRITY",
+            "file": "scripts/pilot/verify-pilot-manifest.mjs",
+            "grounded": true,
+            "id": "50CXWP89G5703PM7ZZYRP0MJ6N",
+            "itemId": "P2-FINAL-HIGH-009@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 356,
+            "lineStart": 228,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/github-app/src/credential-provider.ts",
+            "grounded": true,
+            "id": "0KP81BSEA00P8V779231DFX84Y",
+            "itemId": "P2-FINAL-MED-002@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 93,
+            "lineStart": 87,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "SPEC",
+            "file": "apps/control-plane-api/src/vertical-slice.itest.ts",
+            "grounded": true,
+            "id": "7G9YBPVAN62R9R0VNQXMS9RMNX",
+            "itemId": "P2-FINAL-MED-003@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 198,
+            "lineStart": 163,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "ARCHITECTURE",
+            "file": "apps/control-plane-api/src/app.ts",
+            "grounded": true,
+            "id": "7RFE1VH9AKZMDNF88ZQVNGCS23",
+            "itemId": "P2-FINAL-MED-004@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 172,
+            "lineStart": 96,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "TEST_QUALITY",
+            "file": "adapters/agent-claude/src/claude-provider.ts",
+            "grounded": true,
+            "id": "5WNMAK8GCSBS9H0QR0HGH36NCA",
+            "itemId": "P2-FINAL-MED-006@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 169,
+            "lineStart": 90,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "TEST_QUALITY",
+            "file": "adapters/persistence/src/object-store.ts",
+            "grounded": true,
+            "id": "10BVHY4WQE2BCMTJVCCQ4Q17BC",
+            "itemId": "P2-REREVIEW-MED-NEW-001@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 44,
+            "lineStart": 31,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "EVIDENCE_INTEGRITY",
+            "file": "scripts/integration/lib.mjs",
+            "grounded": true,
+            "id": "45MNR1QAPRKMWPRMFBMJC53RRN",
+            "itemId": "P2-REREVIEW-MED-NEW-002@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 39,
+            "lineStart": 31,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          }
+        ],
+        "repairBaseSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+        "repairDelta": {
+          "from": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+          "to": "594b6287416ab6f18b18adb9a152bdba1c6278be"
+        },
+        "resultSha": "594b6287416ab6f18b18adb9a152bdba1c6278be",
+        "reviewKind": "re-review",
+        "round": 2,
+        "rule": "C",
+        "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+        "taskId": {
+          "id": "01JTDCMQ14QGVD3TWZXT590HVX",
+          "label": "corpus:task:p2-rereview-3"
+        }
+      },
       "uses": [
         "residual-status"
       ]
@@ -3094,6 +5983,7 @@
       "reachability": "unavailable",
       "set": "reporting",
       "severity": "MEDIUM",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -3115,6 +6005,209 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "MEDIUM",
+      "synthetic": {
+        "blockedBy": null,
+        "cycle": "p2-rereview-2",
+        "negative": null,
+        "priorCandidates": [
+          {
+            "category": "EVIDENCE_INTEGRITY",
+            "file": ".github/workflows/ci.yml",
+            "grounded": true,
+            "id": "5QH65GWH18ZM9PD1PMR1K1F8AA",
+            "itemId": "P2-FINAL-HIGH-001@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 45,
+            "lineStart": 16,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "SECURITY",
+            "file": "adapters/agent-claude/src/claude-provider.ts",
+            "grounded": true,
+            "id": "1R7S2R505VWGMYPTDJC0E3ZCE1",
+            "itemId": "P2-FINAL-HIGH-002@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 68,
+            "lineStart": 54,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "apps/control-plane-api/src/vertical-integration.test.ts",
+            "grounded": true,
+            "id": "32MW0CQNND1C648HZZEEZ4SCXG",
+            "itemId": "P2-FINAL-HIGH-003@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 199,
+            "lineStart": 183,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "SECURITY",
+            "file": "apps/control-plane-api/src/app.ts",
+            "grounded": true,
+            "id": "15FDQ6C7BGARV3BHV8DWPM196E",
+            "itemId": "P2-FINAL-HIGH-004@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 92,
+            "lineStart": 87,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/persistence/src/artifact-store.ts",
+            "grounded": true,
+            "id": "54ZY4H7Z1KVWXDDDBPB1JN9Y8W",
+            "itemId": "P2-FINAL-HIGH-005@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 123,
+            "lineStart": 112,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/persistence/src/side-effect-log.test.ts",
+            "grounded": true,
+            "id": "05V3J6DFQ7XZFP3CK5KFWJ7V5B",
+            "itemId": "P2-FINAL-HIGH-006@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 189,
+            "lineStart": 49,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "SECURITY",
+            "file": "adapters/agent-claude/src/agent-claude.test.ts",
+            "grounded": true,
+            "id": "056V2ZSBAZST3VRR1EVDZCTM0G",
+            "itemId": "P2-FINAL-HIGH-007@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 283,
+            "lineStart": 271,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "ARCHITECTURE",
+            "file": "adapters/github-app/src/forge-provider.ts",
+            "grounded": true,
+            "id": "3189B41ZJ71E27A40SXAXY4T3P",
+            "itemId": "P2-FINAL-HIGH-008@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 164,
+            "lineStart": 129,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "EVIDENCE_INTEGRITY",
+            "file": "scripts/pilot/verify-pilot-manifest.mjs",
+            "grounded": true,
+            "id": "50CXWP89G5703PM7ZZYRP0MJ6N",
+            "itemId": "P2-FINAL-HIGH-009@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 110,
+            "lineStart": 92,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "TEST_QUALITY",
+            "file": "adapters/persistence/package.json",
+            "grounded": true,
+            "id": "34KBPAEK74NYEN92X82RFQR118",
+            "itemId": "P2-FINAL-MED-001@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 19,
+            "lineStart": 12,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/github-app/src/credential-provider.ts",
+            "grounded": true,
+            "id": "0KP81BSEA00P8V779231DFX84Y",
+            "itemId": "P2-FINAL-MED-002@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 93,
+            "lineStart": 87,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "SPEC",
+            "file": "packages/observability/src/audit.ts",
+            "grounded": true,
+            "id": "7G9YBPVAN62R9R0VNQXMS9RMNX",
+            "itemId": "P2-FINAL-MED-003@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 58,
+            "lineStart": 54,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "ARCHITECTURE",
+            "file": "apps/control-plane-api/src/app.ts",
+            "grounded": true,
+            "id": "7RFE1VH9AKZMDNF88ZQVNGCS23",
+            "itemId": "P2-FINAL-MED-004@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 161,
+            "lineStart": 87,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "TEST_QUALITY",
+            "file": "docs/implementation/phases/phase-02-pilot-rehearsal.md",
+            "grounded": true,
+            "id": "5WNMAK8GCSBS9H0QR0HGH36NCA",
+            "itemId": "P2-FINAL-MED-006@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 9,
+            "lineStart": 3,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          }
+        ],
+        "repairBaseSha": "2e61f2447f6812f9ed795a5195a25861ada1c50b",
+        "repairDelta": {
+          "from": "2e61f2447f6812f9ed795a5195a25861ada1c50b",
+          "to": "061ec236dacb985c77afa29205bf8bc0a185a49e"
+        },
+        "resultSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+        "reviewKind": "re-review",
+        "round": 2,
+        "rule": "C",
+        "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+        "taskId": {
+          "id": "68CW73FPC9QGCZ2Z12HSPHG18R",
+          "label": "corpus:task:p2-rereview-2"
+        }
+      },
       "uses": [
         "residual-status"
       ]
@@ -3138,6 +6231,23 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "MEDIUM",
+      "synthetic": {
+        "blockedBy": null,
+        "cycle": "p2-final",
+        "negative": null,
+        "priorCandidates": [],
+        "repairBaseSha": null,
+        "repairDelta": null,
+        "resultSha": "2e61f2447f6812f9ed795a5195a25861ada1c50b",
+        "reviewKind": "fresh",
+        "round": 1,
+        "rule": "P",
+        "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+        "taskId": {
+          "id": "0E64H7H23NFT2605AYZM46V86H",
+          "label": "corpus:task:p2-final"
+        }
+      },
       "uses": [
         "rediscovery"
       ]
@@ -3161,6 +6271,183 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "MEDIUM",
+      "synthetic": {
+        "blockedBy": null,
+        "cycle": "p2-rereview-3",
+        "negative": null,
+        "priorCandidates": [
+          {
+            "category": "SECURITY",
+            "file": "adapters/agent-claude/src/claude-provider.ts",
+            "grounded": true,
+            "id": "1R7S2R505VWGMYPTDJC0E3ZCE1",
+            "itemId": "P2-FINAL-HIGH-002@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 141,
+            "lineStart": 120,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "SECURITY",
+            "file": "apps/control-plane-api/src/app.ts",
+            "grounded": true,
+            "id": "15FDQ6C7BGARV3BHV8DWPM196E",
+            "itemId": "P2-FINAL-HIGH-004@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 101,
+            "lineStart": 92,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/persistence/src/migrations.ts",
+            "grounded": true,
+            "id": "54ZY4H7Z1KVWXDDDBPB1JN9Y8W",
+            "itemId": "P2-FINAL-HIGH-005@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 260,
+            "lineStart": 245,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/persistence/src/side-effect-log.test.ts",
+            "grounded": true,
+            "id": "05V3J6DFQ7XZFP3CK5KFWJ7V5B",
+            "itemId": "P2-FINAL-HIGH-006@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 235,
+            "lineStart": 215,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "ARCHITECTURE",
+            "file": "adapters/github-app/src/port-adapter.ts",
+            "grounded": true,
+            "id": "3189B41ZJ71E27A40SXAXY4T3P",
+            "itemId": "P2-FINAL-HIGH-008@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 112,
+            "lineStart": 60,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "EVIDENCE_INTEGRITY",
+            "file": "scripts/pilot/verify-pilot-manifest.mjs",
+            "grounded": true,
+            "id": "50CXWP89G5703PM7ZZYRP0MJ6N",
+            "itemId": "P2-FINAL-HIGH-009@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 356,
+            "lineStart": 228,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/github-app/src/credential-provider.ts",
+            "grounded": true,
+            "id": "0KP81BSEA00P8V779231DFX84Y",
+            "itemId": "P2-FINAL-MED-002@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 93,
+            "lineStart": 87,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "SPEC",
+            "file": "apps/control-plane-api/src/vertical-slice.itest.ts",
+            "grounded": true,
+            "id": "7G9YBPVAN62R9R0VNQXMS9RMNX",
+            "itemId": "P2-FINAL-MED-003@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 198,
+            "lineStart": 163,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "ARCHITECTURE",
+            "file": "apps/control-plane-api/src/app.ts",
+            "grounded": true,
+            "id": "7RFE1VH9AKZMDNF88ZQVNGCS23",
+            "itemId": "P2-FINAL-MED-004@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 172,
+            "lineStart": 96,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "TEST_QUALITY",
+            "file": "adapters/agent-claude/src/claude-provider.ts",
+            "grounded": true,
+            "id": "5WNMAK8GCSBS9H0QR0HGH36NCA",
+            "itemId": "P2-FINAL-MED-006@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 169,
+            "lineStart": 90,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "TEST_QUALITY",
+            "file": "adapters/persistence/src/object-store.ts",
+            "grounded": true,
+            "id": "10BVHY4WQE2BCMTJVCCQ4Q17BC",
+            "itemId": "P2-REREVIEW-MED-NEW-001@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 44,
+            "lineStart": 31,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "EVIDENCE_INTEGRITY",
+            "file": "scripts/integration/lib.mjs",
+            "grounded": true,
+            "id": "45MNR1QAPRKMWPRMFBMJC53RRN",
+            "itemId": "P2-REREVIEW-MED-NEW-002@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 39,
+            "lineStart": 31,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          }
+        ],
+        "repairBaseSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+        "repairDelta": {
+          "from": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+          "to": "594b6287416ab6f18b18adb9a152bdba1c6278be"
+        },
+        "resultSha": "594b6287416ab6f18b18adb9a152bdba1c6278be",
+        "reviewKind": "re-review",
+        "round": 2,
+        "rule": "C",
+        "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+        "taskId": {
+          "id": "01JTDCMQ14QGVD3TWZXT590HVX",
+          "label": "corpus:task:p2-rereview-3"
+        }
+      },
       "uses": [
         "residual-status"
       ]
@@ -3184,6 +6471,23 @@
       "reachability": "private-bundle-only",
       "set": "reporting",
       "severity": "MEDIUM",
+      "synthetic": {
+        "blockedBy": "previous-cycle-tree-unknown",
+        "cycle": "p2-rereview-5",
+        "negative": null,
+        "priorCandidates": [],
+        "repairBaseSha": null,
+        "repairDelta": null,
+        "resultSha": "bb11d0086108fc439d69c1d50e6ddcf009409198",
+        "reviewKind": "re-review",
+        "round": 2,
+        "rule": "C",
+        "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+        "taskId": {
+          "id": "704YRY6F97RWN32KHTV0YZHPJG",
+          "label": "corpus:task:p2-rereview-5"
+        }
+      },
       "uses": [
         "residual-status"
       ]
@@ -3210,6 +6514,7 @@
       "reachability": "unavailable",
       "set": "reporting",
       "severity": "MEDIUM",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -3231,6 +6536,209 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "MEDIUM",
+      "synthetic": {
+        "blockedBy": null,
+        "cycle": "p2-rereview-2",
+        "negative": null,
+        "priorCandidates": [
+          {
+            "category": "EVIDENCE_INTEGRITY",
+            "file": ".github/workflows/ci.yml",
+            "grounded": true,
+            "id": "5QH65GWH18ZM9PD1PMR1K1F8AA",
+            "itemId": "P2-FINAL-HIGH-001@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 45,
+            "lineStart": 16,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "SECURITY",
+            "file": "adapters/agent-claude/src/claude-provider.ts",
+            "grounded": true,
+            "id": "1R7S2R505VWGMYPTDJC0E3ZCE1",
+            "itemId": "P2-FINAL-HIGH-002@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 68,
+            "lineStart": 54,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "apps/control-plane-api/src/vertical-integration.test.ts",
+            "grounded": true,
+            "id": "32MW0CQNND1C648HZZEEZ4SCXG",
+            "itemId": "P2-FINAL-HIGH-003@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 199,
+            "lineStart": 183,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "SECURITY",
+            "file": "apps/control-plane-api/src/app.ts",
+            "grounded": true,
+            "id": "15FDQ6C7BGARV3BHV8DWPM196E",
+            "itemId": "P2-FINAL-HIGH-004@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 92,
+            "lineStart": 87,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/persistence/src/artifact-store.ts",
+            "grounded": true,
+            "id": "54ZY4H7Z1KVWXDDDBPB1JN9Y8W",
+            "itemId": "P2-FINAL-HIGH-005@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 123,
+            "lineStart": 112,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/persistence/src/side-effect-log.test.ts",
+            "grounded": true,
+            "id": "05V3J6DFQ7XZFP3CK5KFWJ7V5B",
+            "itemId": "P2-FINAL-HIGH-006@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 189,
+            "lineStart": 49,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "SECURITY",
+            "file": "adapters/agent-claude/src/agent-claude.test.ts",
+            "grounded": true,
+            "id": "056V2ZSBAZST3VRR1EVDZCTM0G",
+            "itemId": "P2-FINAL-HIGH-007@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 283,
+            "lineStart": 271,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "ARCHITECTURE",
+            "file": "adapters/github-app/src/forge-provider.ts",
+            "grounded": true,
+            "id": "3189B41ZJ71E27A40SXAXY4T3P",
+            "itemId": "P2-FINAL-HIGH-008@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 164,
+            "lineStart": 129,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "EVIDENCE_INTEGRITY",
+            "file": "scripts/pilot/verify-pilot-manifest.mjs",
+            "grounded": true,
+            "id": "50CXWP89G5703PM7ZZYRP0MJ6N",
+            "itemId": "P2-FINAL-HIGH-009@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 110,
+            "lineStart": 92,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "TEST_QUALITY",
+            "file": "adapters/persistence/package.json",
+            "grounded": true,
+            "id": "34KBPAEK74NYEN92X82RFQR118",
+            "itemId": "P2-FINAL-MED-001@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 19,
+            "lineStart": 12,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/github-app/src/credential-provider.ts",
+            "grounded": true,
+            "id": "0KP81BSEA00P8V779231DFX84Y",
+            "itemId": "P2-FINAL-MED-002@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 93,
+            "lineStart": 87,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "SPEC",
+            "file": "packages/observability/src/audit.ts",
+            "grounded": true,
+            "id": "7G9YBPVAN62R9R0VNQXMS9RMNX",
+            "itemId": "P2-FINAL-MED-003@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 58,
+            "lineStart": 54,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "ARCHITECTURE",
+            "file": "apps/control-plane-api/src/app.ts",
+            "grounded": true,
+            "id": "7RFE1VH9AKZMDNF88ZQVNGCS23",
+            "itemId": "P2-FINAL-MED-004@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 161,
+            "lineStart": 87,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "TEST_QUALITY",
+            "file": "docs/implementation/phases/phase-02-pilot-rehearsal.md",
+            "grounded": true,
+            "id": "5WNMAK8GCSBS9H0QR0HGH36NCA",
+            "itemId": "P2-FINAL-MED-006@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 9,
+            "lineStart": 3,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          }
+        ],
+        "repairBaseSha": "2e61f2447f6812f9ed795a5195a25861ada1c50b",
+        "repairDelta": {
+          "from": "2e61f2447f6812f9ed795a5195a25861ada1c50b",
+          "to": "061ec236dacb985c77afa29205bf8bc0a185a49e"
+        },
+        "resultSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+        "reviewKind": "re-review",
+        "round": 2,
+        "rule": "C",
+        "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+        "taskId": {
+          "id": "68CW73FPC9QGCZ2Z12HSPHG18R",
+          "label": "corpus:task:p2-rereview-2"
+        }
+      },
       "uses": [
         "residual-status"
       ]
@@ -3254,6 +6762,23 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "MEDIUM",
+      "synthetic": {
+        "blockedBy": null,
+        "cycle": "p2-final",
+        "negative": null,
+        "priorCandidates": [],
+        "repairBaseSha": null,
+        "repairDelta": null,
+        "resultSha": "2e61f2447f6812f9ed795a5195a25861ada1c50b",
+        "reviewKind": "fresh",
+        "round": 1,
+        "rule": "P",
+        "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+        "taskId": {
+          "id": "0E64H7H23NFT2605AYZM46V86H",
+          "label": "corpus:task:p2-final"
+        }
+      },
       "uses": [
         "rediscovery"
       ]
@@ -3277,6 +6802,183 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "MEDIUM",
+      "synthetic": {
+        "blockedBy": null,
+        "cycle": "p2-rereview-3",
+        "negative": null,
+        "priorCandidates": [
+          {
+            "category": "SECURITY",
+            "file": "adapters/agent-claude/src/claude-provider.ts",
+            "grounded": true,
+            "id": "1R7S2R505VWGMYPTDJC0E3ZCE1",
+            "itemId": "P2-FINAL-HIGH-002@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 141,
+            "lineStart": 120,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "SECURITY",
+            "file": "apps/control-plane-api/src/app.ts",
+            "grounded": true,
+            "id": "15FDQ6C7BGARV3BHV8DWPM196E",
+            "itemId": "P2-FINAL-HIGH-004@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 101,
+            "lineStart": 92,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/persistence/src/migrations.ts",
+            "grounded": true,
+            "id": "54ZY4H7Z1KVWXDDDBPB1JN9Y8W",
+            "itemId": "P2-FINAL-HIGH-005@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 260,
+            "lineStart": 245,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/persistence/src/side-effect-log.test.ts",
+            "grounded": true,
+            "id": "05V3J6DFQ7XZFP3CK5KFWJ7V5B",
+            "itemId": "P2-FINAL-HIGH-006@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 235,
+            "lineStart": 215,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "ARCHITECTURE",
+            "file": "adapters/github-app/src/port-adapter.ts",
+            "grounded": true,
+            "id": "3189B41ZJ71E27A40SXAXY4T3P",
+            "itemId": "P2-FINAL-HIGH-008@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 112,
+            "lineStart": 60,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "EVIDENCE_INTEGRITY",
+            "file": "scripts/pilot/verify-pilot-manifest.mjs",
+            "grounded": true,
+            "id": "50CXWP89G5703PM7ZZYRP0MJ6N",
+            "itemId": "P2-FINAL-HIGH-009@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 356,
+            "lineStart": 228,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/github-app/src/credential-provider.ts",
+            "grounded": true,
+            "id": "0KP81BSEA00P8V779231DFX84Y",
+            "itemId": "P2-FINAL-MED-002@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 93,
+            "lineStart": 87,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "SPEC",
+            "file": "apps/control-plane-api/src/vertical-slice.itest.ts",
+            "grounded": true,
+            "id": "7G9YBPVAN62R9R0VNQXMS9RMNX",
+            "itemId": "P2-FINAL-MED-003@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 198,
+            "lineStart": 163,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "ARCHITECTURE",
+            "file": "apps/control-plane-api/src/app.ts",
+            "grounded": true,
+            "id": "7RFE1VH9AKZMDNF88ZQVNGCS23",
+            "itemId": "P2-FINAL-MED-004@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 172,
+            "lineStart": 96,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "TEST_QUALITY",
+            "file": "adapters/agent-claude/src/claude-provider.ts",
+            "grounded": true,
+            "id": "5WNMAK8GCSBS9H0QR0HGH36NCA",
+            "itemId": "P2-FINAL-MED-006@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 169,
+            "lineStart": 90,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "TEST_QUALITY",
+            "file": "adapters/persistence/src/object-store.ts",
+            "grounded": true,
+            "id": "10BVHY4WQE2BCMTJVCCQ4Q17BC",
+            "itemId": "P2-REREVIEW-MED-NEW-001@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 44,
+            "lineStart": 31,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "EVIDENCE_INTEGRITY",
+            "file": "scripts/integration/lib.mjs",
+            "grounded": true,
+            "id": "45MNR1QAPRKMWPRMFBMJC53RRN",
+            "itemId": "P2-REREVIEW-MED-NEW-002@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 39,
+            "lineStart": 31,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          }
+        ],
+        "repairBaseSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+        "repairDelta": {
+          "from": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+          "to": "594b6287416ab6f18b18adb9a152bdba1c6278be"
+        },
+        "resultSha": "594b6287416ab6f18b18adb9a152bdba1c6278be",
+        "reviewKind": "re-review",
+        "round": 2,
+        "rule": "C",
+        "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+        "taskId": {
+          "id": "01JTDCMQ14QGVD3TWZXT590HVX",
+          "label": "corpus:task:p2-rereview-3"
+        }
+      },
       "uses": [
         "residual-status"
       ]
@@ -3300,6 +7002,23 @@
       "reachability": "private-bundle-only",
       "set": "reporting",
       "severity": "MEDIUM",
+      "synthetic": {
+        "blockedBy": "previous-cycle-tree-unknown",
+        "cycle": "p2-rereview-5",
+        "negative": null,
+        "priorCandidates": [],
+        "repairBaseSha": null,
+        "repairDelta": null,
+        "resultSha": "bb11d0086108fc439d69c1d50e6ddcf009409198",
+        "reviewKind": "re-review",
+        "round": 2,
+        "rule": "C",
+        "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+        "taskId": {
+          "id": "704YRY6F97RWN32KHTV0YZHPJG",
+          "label": "corpus:task:p2-rereview-5"
+        }
+      },
       "uses": [
         "residual-status"
       ]
@@ -3326,6 +7045,7 @@
       "reachability": "unavailable",
       "set": "reporting",
       "severity": "MEDIUM",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -3350,6 +7070,7 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "MEDIUM",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -3374,6 +7095,7 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "MEDIUM",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -3395,6 +7117,183 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "MEDIUM",
+      "synthetic": {
+        "blockedBy": null,
+        "cycle": "p2-rereview-3",
+        "negative": null,
+        "priorCandidates": [
+          {
+            "category": "SECURITY",
+            "file": "adapters/agent-claude/src/claude-provider.ts",
+            "grounded": true,
+            "id": "1R7S2R505VWGMYPTDJC0E3ZCE1",
+            "itemId": "P2-FINAL-HIGH-002@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 141,
+            "lineStart": 120,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "SECURITY",
+            "file": "apps/control-plane-api/src/app.ts",
+            "grounded": true,
+            "id": "15FDQ6C7BGARV3BHV8DWPM196E",
+            "itemId": "P2-FINAL-HIGH-004@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 101,
+            "lineStart": 92,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/persistence/src/migrations.ts",
+            "grounded": true,
+            "id": "54ZY4H7Z1KVWXDDDBPB1JN9Y8W",
+            "itemId": "P2-FINAL-HIGH-005@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 260,
+            "lineStart": 245,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/persistence/src/side-effect-log.test.ts",
+            "grounded": true,
+            "id": "05V3J6DFQ7XZFP3CK5KFWJ7V5B",
+            "itemId": "P2-FINAL-HIGH-006@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 235,
+            "lineStart": 215,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "ARCHITECTURE",
+            "file": "adapters/github-app/src/port-adapter.ts",
+            "grounded": true,
+            "id": "3189B41ZJ71E27A40SXAXY4T3P",
+            "itemId": "P2-FINAL-HIGH-008@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 112,
+            "lineStart": 60,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "EVIDENCE_INTEGRITY",
+            "file": "scripts/pilot/verify-pilot-manifest.mjs",
+            "grounded": true,
+            "id": "50CXWP89G5703PM7ZZYRP0MJ6N",
+            "itemId": "P2-FINAL-HIGH-009@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 356,
+            "lineStart": 228,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/github-app/src/credential-provider.ts",
+            "grounded": true,
+            "id": "0KP81BSEA00P8V779231DFX84Y",
+            "itemId": "P2-FINAL-MED-002@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 93,
+            "lineStart": 87,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "SPEC",
+            "file": "apps/control-plane-api/src/vertical-slice.itest.ts",
+            "grounded": true,
+            "id": "7G9YBPVAN62R9R0VNQXMS9RMNX",
+            "itemId": "P2-FINAL-MED-003@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 198,
+            "lineStart": 163,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "ARCHITECTURE",
+            "file": "apps/control-plane-api/src/app.ts",
+            "grounded": true,
+            "id": "7RFE1VH9AKZMDNF88ZQVNGCS23",
+            "itemId": "P2-FINAL-MED-004@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 172,
+            "lineStart": 96,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "TEST_QUALITY",
+            "file": "adapters/agent-claude/src/claude-provider.ts",
+            "grounded": true,
+            "id": "5WNMAK8GCSBS9H0QR0HGH36NCA",
+            "itemId": "P2-FINAL-MED-006@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 169,
+            "lineStart": 90,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "TEST_QUALITY",
+            "file": "adapters/persistence/src/object-store.ts",
+            "grounded": true,
+            "id": "10BVHY4WQE2BCMTJVCCQ4Q17BC",
+            "itemId": "P2-REREVIEW-MED-NEW-001@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 44,
+            "lineStart": 31,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "EVIDENCE_INTEGRITY",
+            "file": "scripts/integration/lib.mjs",
+            "grounded": true,
+            "id": "45MNR1QAPRKMWPRMFBMJC53RRN",
+            "itemId": "P2-REREVIEW-MED-NEW-002@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 39,
+            "lineStart": 31,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          }
+        ],
+        "repairBaseSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+        "repairDelta": {
+          "from": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+          "to": "594b6287416ab6f18b18adb9a152bdba1c6278be"
+        },
+        "resultSha": "594b6287416ab6f18b18adb9a152bdba1c6278be",
+        "reviewKind": "re-review",
+        "round": 2,
+        "rule": "C",
+        "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+        "taskId": {
+          "id": "01JTDCMQ14QGVD3TWZXT590HVX",
+          "label": "corpus:task:p2-rereview-3"
+        }
+      },
       "uses": [
         "residual-status"
       ]
@@ -3421,6 +7320,7 @@
       "reachability": "private-bundle-only",
       "set": "reporting",
       "severity": "MEDIUM",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -3445,6 +7345,7 @@
       "reachability": "unavailable",
       "set": "reporting",
       "severity": "MEDIUM",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -3466,6 +7367,209 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "MEDIUM",
+      "synthetic": {
+        "blockedBy": null,
+        "cycle": "p2-rereview-2",
+        "negative": null,
+        "priorCandidates": [
+          {
+            "category": "EVIDENCE_INTEGRITY",
+            "file": ".github/workflows/ci.yml",
+            "grounded": true,
+            "id": "5QH65GWH18ZM9PD1PMR1K1F8AA",
+            "itemId": "P2-FINAL-HIGH-001@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 45,
+            "lineStart": 16,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "SECURITY",
+            "file": "adapters/agent-claude/src/claude-provider.ts",
+            "grounded": true,
+            "id": "1R7S2R505VWGMYPTDJC0E3ZCE1",
+            "itemId": "P2-FINAL-HIGH-002@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 68,
+            "lineStart": 54,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "apps/control-plane-api/src/vertical-integration.test.ts",
+            "grounded": true,
+            "id": "32MW0CQNND1C648HZZEEZ4SCXG",
+            "itemId": "P2-FINAL-HIGH-003@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 199,
+            "lineStart": 183,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "SECURITY",
+            "file": "apps/control-plane-api/src/app.ts",
+            "grounded": true,
+            "id": "15FDQ6C7BGARV3BHV8DWPM196E",
+            "itemId": "P2-FINAL-HIGH-004@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 92,
+            "lineStart": 87,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/persistence/src/artifact-store.ts",
+            "grounded": true,
+            "id": "54ZY4H7Z1KVWXDDDBPB1JN9Y8W",
+            "itemId": "P2-FINAL-HIGH-005@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 123,
+            "lineStart": 112,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/persistence/src/side-effect-log.test.ts",
+            "grounded": true,
+            "id": "05V3J6DFQ7XZFP3CK5KFWJ7V5B",
+            "itemId": "P2-FINAL-HIGH-006@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 189,
+            "lineStart": 49,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "SECURITY",
+            "file": "adapters/agent-claude/src/agent-claude.test.ts",
+            "grounded": true,
+            "id": "056V2ZSBAZST3VRR1EVDZCTM0G",
+            "itemId": "P2-FINAL-HIGH-007@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 283,
+            "lineStart": 271,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "ARCHITECTURE",
+            "file": "adapters/github-app/src/forge-provider.ts",
+            "grounded": true,
+            "id": "3189B41ZJ71E27A40SXAXY4T3P",
+            "itemId": "P2-FINAL-HIGH-008@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 164,
+            "lineStart": 129,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "EVIDENCE_INTEGRITY",
+            "file": "scripts/pilot/verify-pilot-manifest.mjs",
+            "grounded": true,
+            "id": "50CXWP89G5703PM7ZZYRP0MJ6N",
+            "itemId": "P2-FINAL-HIGH-009@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 110,
+            "lineStart": 92,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "TEST_QUALITY",
+            "file": "adapters/persistence/package.json",
+            "grounded": true,
+            "id": "34KBPAEK74NYEN92X82RFQR118",
+            "itemId": "P2-FINAL-MED-001@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 19,
+            "lineStart": 12,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/github-app/src/credential-provider.ts",
+            "grounded": true,
+            "id": "0KP81BSEA00P8V779231DFX84Y",
+            "itemId": "P2-FINAL-MED-002@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 93,
+            "lineStart": 87,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "SPEC",
+            "file": "packages/observability/src/audit.ts",
+            "grounded": true,
+            "id": "7G9YBPVAN62R9R0VNQXMS9RMNX",
+            "itemId": "P2-FINAL-MED-003@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 58,
+            "lineStart": 54,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "ARCHITECTURE",
+            "file": "apps/control-plane-api/src/app.ts",
+            "grounded": true,
+            "id": "7RFE1VH9AKZMDNF88ZQVNGCS23",
+            "itemId": "P2-FINAL-MED-004@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 161,
+            "lineStart": 87,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "TEST_QUALITY",
+            "file": "docs/implementation/phases/phase-02-pilot-rehearsal.md",
+            "grounded": true,
+            "id": "5WNMAK8GCSBS9H0QR0HGH36NCA",
+            "itemId": "P2-FINAL-MED-006@2e61f24",
+            "lifecycleState": "OPEN",
+            "lineEnd": 9,
+            "lineStart": 3,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          }
+        ],
+        "repairBaseSha": "2e61f2447f6812f9ed795a5195a25861ada1c50b",
+        "repairDelta": {
+          "from": "2e61f2447f6812f9ed795a5195a25861ada1c50b",
+          "to": "061ec236dacb985c77afa29205bf8bc0a185a49e"
+        },
+        "resultSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+        "reviewKind": "re-review",
+        "round": 2,
+        "rule": "C",
+        "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+        "taskId": {
+          "id": "68CW73FPC9QGCZ2Z12HSPHG18R",
+          "label": "corpus:task:p2-rereview-2"
+        }
+      },
       "uses": [
         "residual-status"
       ]
@@ -3489,6 +7593,23 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "MEDIUM",
+      "synthetic": {
+        "blockedBy": null,
+        "cycle": "p2-final",
+        "negative": null,
+        "priorCandidates": [],
+        "repairBaseSha": null,
+        "repairDelta": null,
+        "resultSha": "2e61f2447f6812f9ed795a5195a25861ada1c50b",
+        "reviewKind": "fresh",
+        "round": 1,
+        "rule": "P",
+        "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+        "taskId": {
+          "id": "0E64H7H23NFT2605AYZM46V86H",
+          "label": "corpus:task:p2-final"
+        }
+      },
       "uses": [
         "rediscovery"
       ]
@@ -3512,6 +7633,183 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "MEDIUM",
+      "synthetic": {
+        "blockedBy": null,
+        "cycle": "p2-rereview-3",
+        "negative": null,
+        "priorCandidates": [
+          {
+            "category": "SECURITY",
+            "file": "adapters/agent-claude/src/claude-provider.ts",
+            "grounded": true,
+            "id": "1R7S2R505VWGMYPTDJC0E3ZCE1",
+            "itemId": "P2-FINAL-HIGH-002@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 141,
+            "lineStart": 120,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "SECURITY",
+            "file": "apps/control-plane-api/src/app.ts",
+            "grounded": true,
+            "id": "15FDQ6C7BGARV3BHV8DWPM196E",
+            "itemId": "P2-FINAL-HIGH-004@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 101,
+            "lineStart": 92,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/persistence/src/migrations.ts",
+            "grounded": true,
+            "id": "54ZY4H7Z1KVWXDDDBPB1JN9Y8W",
+            "itemId": "P2-FINAL-HIGH-005@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 260,
+            "lineStart": 245,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/persistence/src/side-effect-log.test.ts",
+            "grounded": true,
+            "id": "05V3J6DFQ7XZFP3CK5KFWJ7V5B",
+            "itemId": "P2-FINAL-HIGH-006@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 235,
+            "lineStart": 215,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "ARCHITECTURE",
+            "file": "adapters/github-app/src/port-adapter.ts",
+            "grounded": true,
+            "id": "3189B41ZJ71E27A40SXAXY4T3P",
+            "itemId": "P2-FINAL-HIGH-008@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 112,
+            "lineStart": 60,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "EVIDENCE_INTEGRITY",
+            "file": "scripts/pilot/verify-pilot-manifest.mjs",
+            "grounded": true,
+            "id": "50CXWP89G5703PM7ZZYRP0MJ6N",
+            "itemId": "P2-FINAL-HIGH-009@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 356,
+            "lineStart": 228,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "HIGH",
+            "source": "model"
+          },
+          {
+            "category": "CORRECTNESS",
+            "file": "adapters/github-app/src/credential-provider.ts",
+            "grounded": true,
+            "id": "0KP81BSEA00P8V779231DFX84Y",
+            "itemId": "P2-FINAL-MED-002@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 93,
+            "lineStart": 87,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "SPEC",
+            "file": "apps/control-plane-api/src/vertical-slice.itest.ts",
+            "grounded": true,
+            "id": "7G9YBPVAN62R9R0VNQXMS9RMNX",
+            "itemId": "P2-FINAL-MED-003@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 198,
+            "lineStart": 163,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "ARCHITECTURE",
+            "file": "apps/control-plane-api/src/app.ts",
+            "grounded": true,
+            "id": "7RFE1VH9AKZMDNF88ZQVNGCS23",
+            "itemId": "P2-FINAL-MED-004@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 172,
+            "lineStart": 96,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "TEST_QUALITY",
+            "file": "adapters/agent-claude/src/claude-provider.ts",
+            "grounded": true,
+            "id": "5WNMAK8GCSBS9H0QR0HGH36NCA",
+            "itemId": "P2-FINAL-MED-006@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 169,
+            "lineStart": 90,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "TEST_QUALITY",
+            "file": "adapters/persistence/src/object-store.ts",
+            "grounded": true,
+            "id": "10BVHY4WQE2BCMTJVCCQ4Q17BC",
+            "itemId": "P2-REREVIEW-MED-NEW-001@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 44,
+            "lineStart": 31,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          },
+          {
+            "category": "EVIDENCE_INTEGRITY",
+            "file": "scripts/integration/lib.mjs",
+            "grounded": true,
+            "id": "45MNR1QAPRKMWPRMFBMJC53RRN",
+            "itemId": "P2-REREVIEW-MED-NEW-002@061ec23",
+            "lifecycleState": "OPEN",
+            "lineEnd": 39,
+            "lineStart": 31,
+            "raisedBy": "labeller:codex-gpt-5.6-sol",
+            "severity": "MEDIUM",
+            "source": "model"
+          }
+        ],
+        "repairBaseSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+        "repairDelta": {
+          "from": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+          "to": "594b6287416ab6f18b18adb9a152bdba1c6278be"
+        },
+        "resultSha": "594b6287416ab6f18b18adb9a152bdba1c6278be",
+        "reviewKind": "re-review",
+        "round": 2,
+        "rule": "C",
+        "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+        "taskId": {
+          "id": "01JTDCMQ14QGVD3TWZXT590HVX",
+          "label": "corpus:task:p2-rereview-3"
+        }
+      },
       "uses": [
         "residual-status"
       ]
@@ -3535,6 +7833,23 @@
       "reachability": "private-bundle-only",
       "set": "reporting",
       "severity": "MEDIUM",
+      "synthetic": {
+        "blockedBy": "previous-cycle-tree-unknown",
+        "cycle": "p2-rereview-5",
+        "negative": null,
+        "priorCandidates": [],
+        "repairBaseSha": null,
+        "repairDelta": null,
+        "resultSha": "bb11d0086108fc439d69c1d50e6ddcf009409198",
+        "reviewKind": "re-review",
+        "round": 2,
+        "rule": "C",
+        "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+        "taskId": {
+          "id": "704YRY6F97RWN32KHTV0YZHPJG",
+          "label": "corpus:task:p2-rereview-5"
+        }
+      },
       "uses": [
         "residual-status"
       ]
@@ -3561,6 +7876,7 @@
       "reachability": "unavailable",
       "set": "reporting",
       "severity": "MEDIUM",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -3585,6 +7901,7 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "CRITICAL",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -3609,6 +7926,7 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "HIGH",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -3633,6 +7951,7 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "HIGH",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -3657,6 +7976,7 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "HIGH",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -3681,6 +8001,7 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "HIGH",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -3705,6 +8026,7 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "HIGH",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -3729,6 +8051,7 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "HIGH",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -3753,6 +8076,7 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "HIGH",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -3777,6 +8101,7 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "HIGH",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -3801,6 +8126,7 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "HIGH",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -3825,6 +8151,7 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "HIGH",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -3849,6 +8176,7 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "LOW",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -3873,6 +8201,7 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "MEDIUM",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -3897,6 +8226,7 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "MEDIUM",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -3921,6 +8251,7 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "MEDIUM",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -3945,6 +8276,7 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "MEDIUM",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -3969,6 +8301,7 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "MEDIUM",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -3993,6 +8326,7 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "MEDIUM",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -4017,6 +8351,7 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "MEDIUM",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -4041,6 +8376,7 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "MEDIUM",
+      "synthetic": null,
       "uses": null
     },
     {
@@ -4075,6 +8411,26 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "MEDIUM",
+      "synthetic": {
+        "blockedBy": null,
+        "cycle": "p2-rereview-2",
+        "negative": {
+          "resultSha": "594b6287416ab6f18b18adb9a152bdba1c6278be",
+          "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96"
+        },
+        "priorCandidates": [],
+        "repairBaseSha": null,
+        "repairDelta": null,
+        "resultSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+        "reviewKind": "fresh",
+        "round": 1,
+        "rule": "P",
+        "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+        "taskId": {
+          "id": "68CW73FPC9QGCZ2Z12HSPHG18R",
+          "label": "corpus:task:p2-rereview-2"
+        }
+      },
       "uses": [
         "rediscovery",
         "post-fix-negative"
@@ -4106,6 +8462,26 @@
       "reachability": "reachable",
       "set": "reporting",
       "severity": "MEDIUM",
+      "synthetic": {
+        "blockedBy": null,
+        "cycle": "p2-rereview-2",
+        "negative": {
+          "resultSha": "594b6287416ab6f18b18adb9a152bdba1c6278be",
+          "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96"
+        },
+        "priorCandidates": [],
+        "repairBaseSha": null,
+        "repairDelta": null,
+        "resultSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+        "reviewKind": "fresh",
+        "round": 1,
+        "rule": "P",
+        "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+        "taskId": {
+          "id": "68CW73FPC9QGCZ2Z12HSPHG18R",
+          "label": "corpus:task:p2-rereview-2"
+        }
+      },
       "uses": [
         "rediscovery",
         "post-fix-negative"
@@ -4172,5 +8548,63 @@
     ]
   },
   "stage": "provenance",
-  "stageNote": "A provenance-stage freeze. The final freeze (packet eligibility with not-in-packet and egress-stopped, the full packet sources, the packet-dependent synthetic fields and the final corpusSha256) is made once the evals package is bound to the runtime packet code. Nothing may bind to this corpusSha256."
+  "stageNote": "A provenance-stage freeze. The final freeze (packet eligibility with not-in-packet and egress-stopped, the full packet sources, the packet-dependent synthetic fields and the final corpusSha256) is made once the evals package is bound to the runtime packet code. Nothing may bind to this corpusSha256.",
+  "synthetic": {
+    "execution": {
+      "checks": [],
+      "environment": null,
+      "verdict": "NOT_RECORDED"
+    },
+    "identity": {
+      "organizationId": {
+        "id": "28RYVJXRSBE47VFTM1VZ39R9HY",
+        "label": "corpus:org"
+      },
+      "projectId": {
+        "id": "0W0462GQ0GRREABGMCXRH0C0D2",
+        "label": "corpus:project"
+      },
+      "repositoryBindingId": {
+        "id": "69CA9EKP8SJZWA8AJB3VBF6QJP",
+        "label": "corpus:binding"
+      },
+      "runId": {
+        "id": "7GYQTFNF1WJ8ER0KAQ83XDXRF9",
+        "label": "corpus:run"
+      }
+    },
+    "pendingPacketFields": [
+      "identity.attemptId and roundKey: the chunk id of each packet",
+      "priorFindings: the chunk filter on the prior candidates (a prior is shown when its file is in the chunk)",
+      "priorFindings[].fingerprint: the runtime finding code",
+      "priorFindings[].evidence and requiredFix: the label text, split and masked",
+      "the masks applied to each packet part",
+      "the packet sources: chunk diffs, repair-delta sections and post-images"
+    ],
+    "risk": "R1",
+    "workOrders": {
+      "1": {
+        "acceptanceCheckIds": [],
+        "allowedPaths": [
+          "**"
+        ],
+        "architectureInvariants": [],
+        "forbiddenChanges": [],
+        "objective": "Phase 1 (Evaluation and contracts) at the reviewed commit. The phase plan, exit criteria and code are part of the change; review the change against them.",
+        "requirementIds": [],
+        "requirements": []
+      },
+      "2": {
+        "acceptanceCheckIds": [],
+        "allowedPaths": [
+          "**"
+        ],
+        "architectureInvariants": [],
+        "forbiddenChanges": [],
+        "objective": "Phase 2 (Single-agent vertical slice) at the reviewed commit. The phase plan, exit criteria and code are part of the change; review the change against them.",
+        "requirementIds": [],
+        "requirements": []
+      }
+    }
+  }
 }

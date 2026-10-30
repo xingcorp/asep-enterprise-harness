@@ -39,6 +39,7 @@ import {
   type GateRunner,
   type PublicationGate,
 } from './collect.js';
+import { CORPUS_EXECUTION, labelledId, phaseTitle, syntheticId, syntheticWorkOrder, type LabelledId, type SyntheticRecord } from './synthetic.js';
 
 export const MANIFEST_FILE = `${CORPUS_DIR}/manifest.json`;
 export const ANNOTATIONS_FILE = `${CORPUS_DIR}/annotations.json`;
@@ -225,6 +226,74 @@ function checkAnnotations(annotations: Annotations, annotated: ReadonlySet<strin
   }
 }
 
+// --- synthetic fields ---------------------------------------------------------------------------
+
+/**
+ * The synthetic fields of a corpus packet that only the runtime packet code can fill. The final
+ * freeze adds them; the provenance-stage manifest lists them.
+ */
+export const PENDING_PACKET_FIELDS = [
+  'identity.attemptId and roundKey: the chunk id of each packet',
+  'priorFindings: the chunk filter on the prior candidates (a prior is shown when its file is in the chunk)',
+  'priorFindings[].fingerprint: the runtime finding code',
+  'priorFindings[].evidence and requiredFix: the label text, split and masked',
+  'the masks applied to each packet part',
+  'the packet sources: chunk diffs, repair-delta sections and post-images',
+] as const;
+
+/** A review-finding record rule C shows as a prior finding, before the chunk filter. */
+export interface PriorCandidate {
+  readonly itemId: string;
+  /** The synthetic id of `corpus:finding:<findingId>`. */
+  readonly id: string;
+  readonly source: 'model';
+  readonly raisedBy: string;
+  readonly severity: CorpusItem['severity'];
+  readonly category: GoldCategory;
+  /** The first location at the previous cycle's reviewed tree. */
+  readonly file: string;
+  readonly lineStart: number | null;
+  readonly lineEnd: number | null;
+  readonly grounded: true;
+  readonly lifecycleState: 'OPEN';
+}
+
+/** The synthetic fields of one included item's packets that its provenance determines (plan §7.8). */
+export interface ItemSynthetic {
+  /** P: a fresh review of a first occurrence. C: a re-review of a residual's status. */
+  readonly rule: 'P' | 'C';
+  /** Collection's key of the item's cycle. */
+  readonly cycle: string;
+  readonly taskId: LabelledId;
+  readonly round: 1 | 2;
+  readonly reviewKind: 'fresh' | 're-review';
+  readonly taskBaseSha: string;
+  readonly resultSha: string;
+  /** Rule C: the previous cycle's reviewed tree; null when it is unknown. */
+  readonly repairBaseSha: string | null;
+  readonly repairDelta: { readonly from: string; readonly to: string } | null;
+  /** Rule C: every included item labelled at the previous cycle. */
+  readonly priorCandidates: readonly PriorCandidate[];
+  /** A post-fix negative's packet: a fresh review of the post-fix tree on the item's base. */
+  readonly negative: { readonly taskBaseSha: string; readonly resultSha: string } | null;
+  /** Set when a packet of the rule cannot be built from the provenance. */
+  readonly blockedBy: 'previous-cycle-tree-unknown' | null;
+}
+
+/** The synthetic fields every corpus packet shares. */
+export interface CorpusSynthetic {
+  readonly identity: Readonly<Record<'organizationId' | 'projectId' | 'repositoryBindingId' | 'runId', LabelledId>>;
+  readonly risk: 'R1';
+  /** By phase. */
+  readonly workOrders: Readonly<Record<string, SyntheticRecord['workOrder']>>;
+  readonly execution: typeof CORPUS_EXECUTION;
+  readonly pendingPacketFields: readonly string[];
+}
+
+function cycleKey(phase: number, cycle: number): string {
+  return (CYCLES.find((c) => c.phase === phase && c.cycle === cycle) ?? fail(`no cycle ${phase}:${cycle}`)).key;
+}
+
 // --- manifest -----------------------------------------------------------------------------------
 
 export interface ManifestMapping {
@@ -263,6 +332,8 @@ export interface ManifestItem {
   readonly defectClass: DefectClass | null;
   /** Null for an excluded item. */
   readonly uses: readonly ItemUse[] | null;
+  /** Null for an excluded item. */
+  readonly synthetic: ItemSynthetic | null;
   /** Negative candidates only: the item is resolved at the next re-review and its post-fix tree is known. */
   readonly mapping: readonly ManifestMapping[] | null;
 }
@@ -309,6 +380,7 @@ export interface ManifestBody {
     readonly appliedByPacketPlan: readonly ExclusionReason[];
   };
   readonly annotationsSha256: string;
+  readonly synthetic: CorpusSynthetic;
   readonly cycles: readonly ManifestCycle[];
   readonly items: readonly ManifestItem[];
   readonly counts: ManifestCounts;
@@ -379,6 +451,8 @@ export interface FreezeInputs {
   readonly itemFiles: ReadonlyMap<string, Uint8Array>;
   readonly annotationsBytes: Uint8Array;
   readonly blobNames: readonly string[];
+  /** docs/implementation/90-day-plan.md, which names each phase. */
+  readonly ninetyDayPlan: string;
   /** The whole-tree rule-P diff between two commits. */
   readonly diff: (from: string, to: string) => Uint8Array;
   /** The gates each candidate diff section fails, by its sha256. */
@@ -417,6 +491,79 @@ export function freezeCorpus(inputs: FreezeInputs): FrozenCorpus {
   const failing = inputs.gates(candidates);
   const mappingBlobs = new Map([...candidates].filter(([sha]) => (failing.get(sha) ?? []).length === 0));
 
+  const cycles = new Map<string, ManifestCycle>();
+  for (const { item } of decided) {
+    const key = `${item.phase}:${String(item.cycle).padStart(3, '0')}`;
+    const record: ManifestCycle = {
+      phase: item.phase,
+      cycle: item.cycle,
+      reviewKind: item.reviewKind,
+      doc: item.provenance.doc,
+      reviewedSha: item.reviewedSha,
+      reviewedShaSource: item.reviewedShaSource,
+      baseSha: item.baseSha,
+      postFixSha: item.postFixSha,
+      reachability: item.reachability,
+      items: (cycles.get(key)?.items ?? 0) + 1,
+    };
+    const seen = cycles.get(key);
+    if (seen !== undefined && JSON.stringify({ ...seen, items: 0 }) !== JSON.stringify({ ...record, items: 0 })) fail(`${item.id} disagrees with its cycle's trees`);
+    cycles.set(key, record);
+  }
+
+  // Rule C's prior candidates: the included items labelled at each cycle, with the record a re-review shows.
+  const priorsByCycle = new Map<string, PriorCandidate[]>();
+  for (const { item, excluded } of decided) {
+    if (excluded !== null) continue;
+    const first = item.locations[0]!;
+    const key = `${item.phase}:${item.cycle}`;
+    priorsByCycle.set(key, [
+      ...(priorsByCycle.get(key) ?? []),
+      {
+        itemId: item.id,
+        id: syntheticId(`corpus:finding:${item.findingId}`),
+        source: 'model',
+        raisedBy: `labeller:${labelOrigin(item).labelSource}`,
+        severity: item.severity,
+        category: annotations.findings[item.findingId]!.goldCategory,
+        file: first.file,
+        lineStart: first.lineStart,
+        lineEnd: first.lineEnd,
+        grounded: true,
+        lifecycleState: 'OPEN',
+      },
+    ]);
+  }
+
+  const itemSynthetic = (item: CorpusItem, negative: boolean): ItemSynthetic => {
+    const cycle = cycleKey(item.phase, item.cycle);
+    const common = {
+      cycle,
+      taskId: labelledId(`corpus:task:${cycle}`),
+      taskBaseSha: item.baseSha!,
+      resultSha: item.reviewedSha!,
+      negative: negative ? { taskBaseSha: item.baseSha!, resultSha: item.postFixSha! } : null,
+    };
+    if (item.instanceKind === 'first-occurrence') {
+      return { rule: 'P', ...common, round: 1, reviewKind: 'fresh', repairBaseSha: null, repairDelta: null, priorCandidates: [], blockedBy: null };
+    }
+    // Rule C re-reviews the residual's own tree against the cycle it re-reviews, the one before it.
+    const previous = Math.max(...CYCLES.filter((c) => c.phase === item.phase && c.cycle > 0 && c.cycle < item.cycle).map((c) => c.cycle));
+    const record = cycles.get(`${item.phase}:${String(previous).padStart(3, '0')}`) ?? fail(`${item.id}: no item records cycle ${item.phase}:${previous}`);
+    const repairBaseSha = record.reviewedSha;
+    return {
+      rule: 'C',
+      ...common,
+      round: 2,
+      reviewKind: 're-review',
+      repairBaseSha,
+      repairDelta: repairBaseSha === null ? null : { from: repairBaseSha, to: item.reviewedSha! },
+      // A cycle whose tree is unknown has every item excluded, so it has no candidates.
+      priorCandidates: [...(priorsByCycle.get(`${item.phase}:${previous}`) ?? [])],
+      blockedBy: repairBaseSha === null ? 'previous-cycle-tree-unknown' : null,
+    };
+  };
+
   const manifestItems = decided.map(({ item, sha256, excluded }): ManifestItem => {
     const a = excluded === null ? annotations.findings[item.findingId]! : null;
     const mapping =
@@ -443,29 +590,10 @@ export function freezeCorpus(inputs: FreezeInputs): FrozenCorpus {
       goldCategoryRationale: a?.rationale ?? null,
       defectClass: a?.defectClass ?? null,
       uses: excluded !== null ? null : [item.instanceKind === 'first-occurrence' ? 'rediscovery' : 'residual-status', ...(mapping === null ? [] : ['post-fix-negative' as const])],
+      synthetic: excluded !== null ? null : itemSynthetic(item, mapping !== null),
       mapping,
     };
   });
-
-  const cycles = new Map<string, ManifestCycle>();
-  for (const { item } of decided) {
-    const key = `${item.phase}:${String(item.cycle).padStart(3, '0')}`;
-    const record: ManifestCycle = {
-      phase: item.phase,
-      cycle: item.cycle,
-      reviewKind: item.reviewKind,
-      doc: item.provenance.doc,
-      reviewedSha: item.reviewedSha,
-      reviewedShaSource: item.reviewedShaSource,
-      baseSha: item.baseSha,
-      postFixSha: item.postFixSha,
-      reachability: item.reachability,
-      items: (cycles.get(key)?.items ?? 0) + 1,
-    };
-    const seen = cycles.get(key);
-    if (seen !== undefined && JSON.stringify({ ...seen, items: 0 }) !== JSON.stringify({ ...record, items: 0 })) fail(`${item.id} disagrees with its cycle's trees`);
-    cycles.set(key, record);
-  }
 
   const included = manifestItems.filter((i) => i.excluded === null);
   const body: ManifestBody = {
@@ -482,6 +610,20 @@ export function freezeCorpus(inputs: FreezeInputs): FrozenCorpus {
       appliedByPacketPlan: [...PACKET_PLAN_EXCLUSIONS],
     },
     annotationsSha256: sha256Hex(inputs.annotationsBytes),
+    synthetic: {
+      identity: {
+        organizationId: labelledId('corpus:org'),
+        projectId: labelledId('corpus:project'),
+        repositoryBindingId: labelledId('corpus:binding'),
+        runId: labelledId('corpus:run'),
+      },
+      risk: 'R1',
+      workOrders: Object.fromEntries(
+        [...new Set(decided.map((d) => d.item.phase))].sort().map((phase) => [String(phase), syntheticWorkOrder(phase, phaseTitle(inputs.ninetyDayPlan, phase))]),
+      ),
+      execution: CORPUS_EXECUTION,
+      pendingPacketFields: [...PENDING_PACKET_FIELDS],
+    },
     cycles: [...cycles].sort(([a], [b]) => byText(a, b)).map(([, c]) => c),
     items: manifestItems,
     counts: {
@@ -509,6 +651,7 @@ export function treeInputs(root: string, git = new GitReader(root), runGate: Gat
     itemFiles: new Map(readdirSync(join(root, ITEMS_DIR)).map((name) => [name, new Uint8Array(readFileSync(join(root, ITEMS_DIR, name)))])),
     annotationsBytes: new Uint8Array(readFileSync(join(root, ANNOTATIONS_FILE))),
     blobNames: readdirSync(join(root, BLOBS_DIR)),
+    ninetyDayPlan: readFileSync(join(root, 'docs/implementation/90-day-plan.md'), 'utf8'),
     diff: (from, to) => git.diff(RULE_P_DIFF_FLAGS, from, to),
     gates: (candidates) => failingExcerpts(root, candidates, runGate),
   };
