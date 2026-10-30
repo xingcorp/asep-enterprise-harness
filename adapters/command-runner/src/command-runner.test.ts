@@ -14,7 +14,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PgliteClient, migrate, ContentAddressedArtifactStore, FilesystemObjectStore } from '@asep/persistence';
 import type { SqlClient } from '@asep/persistence';
-import { TrustedCommandRunner, COMMAND_REMOVAL_BOUND_MS, type CommandLifecycleEvent } from './command-runner.js';
+import { TrustedCommandRunner, COMMAND_REMOVAL_BOUND_MS, type CommandLifecycleEvent, type SpawnClient } from './command-runner.js';
 import { BoundedCapture, TRUNCATION_MARKER } from './bounded-capture.js';
 import { resolveEnvironment, UnknownEnvironmentProfileError } from './environment-profiles.js';
 import {
@@ -474,7 +474,7 @@ interface FakeDaemon {
 // `refuseRm` makes every `docker rm` and `docker kill` fail, as a daemon that
 // cannot stop or remove a container; `hangPs` makes every `docker ps` hang, as
 // a daemon that never says what is left.
-async function fakeDaemon(dir: string, refuseRm = false, hangPs = false): Promise<FakeDaemon> {
+async function fakeDaemon(dir: string, refuseRm = false, hangPs = false, psErr?: string): Promise<FakeDaemon> {
   const state = join(dir, 'docker-state');
   const docker = join(dir, 'docker');
   const pids = join(dir, 'client-pids');
@@ -483,6 +483,8 @@ async function fakeDaemon(dir: string, refuseRm = false, hangPs = false): Promis
     `echo "$$ $1" >> "${pids}"`,
     ...(refuseRm ? ['case "$1" in rm|kill) echo "Error response from daemon: removal refused" >&2; exit 1;; esac'] : []),
     ...(hangPs ? ['case "$1" in ps) exec sleep 600;; esac'] : []),
+    // A `ps` the daemon cannot answer: an error on stderr, nothing listed.
+    ...(psErr !== undefined ? [`case "$1" in ps) echo '${psErr}' >&2; exit 1;; esac`] : []),
     `exec "${process.execPath}" "${FAKE_DOCKER}" --state "${state}" "$@"`,
     '',
   ].join('\n'), { mode: 0o755 });
@@ -717,6 +719,83 @@ test('a container the daemon cannot show gone within the removal bound fails the
     assert.ok(gaveUp >= COMMAND_REMOVAL_BOUND_MS - 50 && gaveUp <= COMMAND_REMOVAL_BOUND_MS + 5_000,
       `the run failed ${gaveUp} ms after its client ended, not at the ${COMMAND_REMOVAL_BOUND_MS} ms bound`);
     assert.deepEqual(seen.filter((e) => e.phase === 'removed'), []);
+  } finally {
+    await client.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// What a daemon that cannot answer says, none of it an answer about the
+// container: no access to its socket, no daemon at all, an error of its own.
+const DAEMON_ERRORS = [
+  ['permission denied', 'permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock: dial unix /var/run/docker.sock: connect: permission denied'],
+  ['daemon unreachable', 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?'],
+  ['an unrelated error', 'Error response from daemon: i/o timeout'],
+] as const;
+
+// The runner shows its container gone only by a `docker ps -a` that lists none
+// with its label. A `ps` that fails — whatever its error says — lists nothing,
+// and is no answer: the run fails, and nothing is reported removed.
+for (const [name, said] of DAEMON_ERRORS) {
+  test(`a removal whose docker ps fails with ${name} is no proof: the run fails and nothing is reported removed`, { timeout: 120_000 }, async () => {
+    const { client, store, scope, dir } = await harness();
+    try {
+      const d = await fakeDaemon(dir, false, false, said);
+      const seen: CommandLifecycleEvent[] = [];
+      let message = '';
+      await assert.rejects(
+        new TrustedCommandRunner(scope, store, undefined, (e) => { seen.push(e); })
+          .run(spec({ cwd: d.wt }), await dockerHandle(d)),
+        (err: Error) => { message = err.message; return err instanceof SandboxTeardownError; },
+      );
+      assert.ok(message.includes(`docker ps failed: ${said}; calls: ps -aq at +0ms: exit 1 after `), message);
+      assert.deepEqual(seen.filter((e) => e.phase === 'removed'), [], 'not shown gone, not reported removed');
+    } finally {
+      await client.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+}
+
+// A client that fails after it started may have left its container: the
+// container is removed and shown gone, and the client's own error is what the
+// run throws. A client that never started made nothing, and nothing is asked.
+test('a client that errs after it started has its container removed and shown gone, and its error is thrown', async () => {
+  const { client, store, scope, dir } = await harness();
+  try {
+    const d = await fakeDaemon(dir);
+    const seen: CommandLifecycleEvent[] = [];
+    const lost = new Error('read EIO');
+    // The real client, which starts the container; once the container runs, the
+    // client reports an error and dies, as a client whose pipe broke would.
+    const failing: SpawnClient = (command, args, options) => {
+      const child = spawn(command, args, options);
+      void until('the container to start', () => d.containers().length === 1).then(() => {
+        child.emit('error', lost);
+        child.kill('SIGKILL');
+      });
+      return child;
+    };
+    const running = new TrustedCommandRunner(scope, store, undefined, (e) => { seen.push(e); }, failing)
+      .run(spec({ ...LONG, cwd: d.wt }), await dockerHandle(d));
+    await assert.rejects(running, (err: unknown) => err === lost);
+    assert.deepEqual(d.containers(), [], 'the container is gone');
+    assert.deepEqual(seen.filter((e) => e.phase === 'removed').length, 1, 'and reported removed once shown gone');
+    assert.deepEqual(d.invocations().map((a) => a[0]), ['version', 'run', 'ps', 'rm', 'ps'],
+      'the sandbox probe, the run, then the removal: listed, removed, listed none');
+
+    // Never started: nothing to remove, nothing asked, the error as it was.
+    const neverStarts: SpawnClient = (_command, args, options) => spawn(join(dir, 'no-such-docker'), args, options);
+    const handle = await dockerHandle(d);
+    const before = d.invocations().length;
+    const seen2: CommandLifecycleEvent[] = [];
+    await assert.rejects(
+      new TrustedCommandRunner(scope, store, undefined, (e) => { seen2.push(e); }, neverStarts)
+        .run(spec({ cwd: d.wt }), handle),
+      (err: unknown) => (err as { code?: string }).code === 'ENOENT',
+    );
+    assert.equal(d.invocations().length, before, 'no docker call was made for it');
+    assert.deepEqual(seen2.filter((e) => e.phase === 'removed'), []);
   } finally {
     await client.close();
     await rm(dir, { recursive: true, force: true });
@@ -985,6 +1064,32 @@ test('a removal that fails names each docker call it made, with its timing, end 
     + 'inspect --type at +40ms: exit 0 after 60ms (spawn 2ms, bound 960ms); '
     + 'rm -f at +200ms: exit 0 after 40ms (spawn 2ms, bound 800ms); '
     + 'inspect --type at +240ms: exit 0 after 60ms (spawn 2ms, bound 760ms)');
+});
+
+// Only "no such container" from inspect shows a container gone. An inspect
+// that fails with anything else on stderr — the daemon's socket refused, no
+// daemon, an error of its own — is no answer about the container, after an rm
+// that succeeded or one that failed alike; nor is a `ps` that fails.
+test('an inspect or ps that fails with any other error is never taken for absence', async () => {
+  for (const [name, said] of DAEMON_ERRORS) {
+    for (const rmCode of [0, 1]) {
+      let now = 0;
+      const clock: TeardownClock = { now: () => now, sleep: async (ms) => { now += ms; } };
+      const inspectFails: DockerCall = async (argv) => {
+        now += 10;
+        if (argv[0] === 'rm') return { code: rmCode, stdout: rmCode === 0 ? 'c-1\n' : '', stderr: rmCode === 0 ? '' : said };
+        return { code: 1, stdout: '', stderr: `${said}\n` };
+      };
+      const byName = await removeContainerShownGone(inspectFails, 'c-1', 2_000, { clock, attempts: 3 });
+      assert.ok((byName ?? '').includes(`could not be shown removed in time: docker inspect failed: ${said}`),
+        `${name}, rm exit ${rmCode}: ${byName}`);
+    }
+    let now = 0;
+    const clock: TeardownClock = { now: () => now, sleep: async (ms) => { now += ms; } };
+    const psFails: DockerCall = async () => { now += 10; return { code: 1, stdout: '', stderr: said }; };
+    const byLabel = await removeLabelledContainers(psFails, 'asep.container=c-1', { until: 2_000, clock, attempts: 3 });
+    assert.ok((byLabel ?? '').includes(`docker ps failed: ${said}`), `${name}: ${byLabel}`);
+  }
 });
 
 // Removal on virtual time: what the removal helpers do with their deadline.

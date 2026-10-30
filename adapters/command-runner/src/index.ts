@@ -14,7 +14,7 @@ export {
   ENVIRONMENT_PROFILES, resolveEnvironment, UnknownEnvironmentProfileError,
 } from './environment-profiles.js';
 
-export type { CommandRunnerConfig, CommandLifecycleEvent, CommandLifecyclePhase } from './command-runner.js';
+export type { CommandRunnerConfig, CommandLifecycleEvent, CommandLifecyclePhase, SpawnClient } from './command-runner.js';
 export {
   TrustedCommandRunner, SandboxHandleNotProvenError, COMMAND_STOP_BOUND_MS, COMMAND_REMOVAL_BOUND_MS,
 } from './command-runner.js';

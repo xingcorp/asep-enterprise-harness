@@ -174,7 +174,7 @@ interface Harness {
 async function harness(opts: {
   echoKey?: boolean; workOrder?: unknown; refuseRemoval?: boolean; hangKill?: boolean;
   keepAgent?: boolean; agentRmErrs?: boolean; hangInspect?: boolean;
-  netCreate?: 'hangs-after' | 'errs-after' | 'refused'; proxyHangs?: boolean;
+  netCreate?: 'hangs-after' | 'errs-after' | 'refused'; proxyHangs?: boolean; inspectErr?: string;
 } = {}): Promise<Harness> {
   // Real paths: the provider resolves the worktree with realpath(3).
   const dir = await realpath(await mkdtemp(join(tmpdir(), 'claude-provider-')));
@@ -191,8 +191,9 @@ async function harness(opts: {
   // `hangInspect` for one that never answers whether a container exists, and
   // with `netCreate` for one that creates the agent network and then never
   // answers ('hangs-after') or answers with an error ('errs-after'), or
-  // refuses to create it ('refused'), and with `proxyHangs` for one whose
-  // proxy client never starts its container.
+  // refuses to create it ('refused'), with `proxyHangs` for one whose proxy
+  // client never starts its container, and with `inspectErr` for one whose
+  // inspect fails with that error.
   const fake = `"${process.execPath}" "${FAKE_DOCKER}" --state "${state}" "$@"`;
   await writeFile(docker, [
     '#!/bin/sh',
@@ -208,6 +209,7 @@ async function harness(opts: {
     ] : []),
     ...(opts.hangInspect ? ['case "$1" in inspect) exec sleep 600;; esac'] : []),
     ...(opts.proxyHangs ? ['case "$1 $*" in "run "*asep.role=egress-proxy*) exec sleep 600;; esac'] : []),
+    ...(opts.inspectErr !== undefined ? [`case "$1" in inspect) echo '${opts.inspectErr}' >&2; exit 1;; esac`] : []),
     ...(opts.netCreate === 'hangs-after' ? [`case "$1 $2" in "network create") ${fake} >/dev/null; exec sleep 600;; esac`] : []),
     ...(opts.netCreate === 'errs-after' ? [
       `case "$1 $2" in "network create") ${fake} >/dev/null; echo "Error response from daemon: lost the answer" >&2; exit 1;; esac`,
@@ -1085,6 +1087,30 @@ test('G3: an agent removal the daemon cannot show within its bound fails the att
     await h.close();
   }
 });
+
+// Only "no such container" from inspect shows the agent gone. An inspect that
+// fails with another error — the daemon's socket refused, no daemon, an error
+// of its own — says nothing about the container: the attempt fails and the
+// agent is never reported removed.
+const INSPECT_ERRORS = [
+  ['permission denied', 'permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock: dial unix /var/run/docker.sock: connect: permission denied'],
+  ['daemon unreachable', 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?'],
+  ['an unrelated error', 'Error response from daemon: i/o timeout'],
+] as const;
+for (const [name, said] of INSPECT_ERRORS) {
+  test(`G3: an agent whose inspect fails with ${name} is never reported removed, and the attempt fails`, { timeout: 120_000 }, async () => {
+    const h = await harness({ inspectErr: said });
+    try {
+      const obs = await (await h.provider('ok')).execute(request(h));
+      assert.equal(obs.status, 'FAILED', obs.knownLimitations.join('; '));
+      assert.ok(obs.knownLimitations.join(' ').includes(`could not be shown removed in time: docker inspect failed: ${said}`),
+        obs.knownLimitations.join('; '));
+      assert.deepEqual(h.lifecycle.filter((e) => e.phase === 'agent-removed'), [], showTimeline(h.lifecycle));
+    } finally {
+      await h.close();
+    }
+  });
+}
 
 // A create the client cannot confirm may still have been made: the network is
 // named and labelled before it is asked for and swept by both whatever the

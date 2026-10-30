@@ -14,7 +14,8 @@
 // SandboxTeardownError rather than return beside a container it cannot show
 // gone.
 
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcessByStdio, type SpawnOptionsWithStdioTuple, type StdioNull, type StdioPipe } from 'node:child_process';
+import type { Readable } from 'node:stream';
 import { createHash } from 'node:crypto';
 import type { TenantScope } from '@asep/contracts';
 import type {
@@ -82,6 +83,11 @@ export const COMMAND_STOP_BOUND_MS = DOCKER_CALL_TIMEOUT_MS;
  */
 export const COMMAND_REMOVAL_BOUND_MS = DOCKER_CALL_TIMEOUT_MS;
 
+/** How the runner starts a command's client: node's spawn, as it calls it. */
+export type SpawnClient = (
+  command: string, args: readonly string[], options: SpawnOptionsWithStdioTuple<StdioNull, StdioPipe, StdioPipe>,
+) => ChildProcessByStdio<null, Readable, Readable>;
+
 // The runner needs the scope to store artifacts. It is constructed per attempt
 // with a scope + artifact store, then run() is called per command.
 export class TrustedCommandRunner implements CommandRunner {
@@ -96,6 +102,9 @@ export class TrustedCommandRunner implements CommandRunner {
     // the stop apart from the start. Whatever it does or throws changes nothing
     // about the run. Production passes none.
     private readonly observeLifecycle?: (event: CommandLifecycleEvent) => void,
+    // Starts each command's client. A test may wrap it, to make a client fail
+    // after it started; production passes none.
+    private readonly spawnClient: SpawnClient = spawn,
   ) {}
 
   private mark(phase: CommandLifecyclePhase, reason?: 'timeout' | 'aborted'): void {
@@ -172,7 +181,7 @@ export class TrustedCommandRunner implements CommandRunner {
       // process group so we can signal the whole group on timeout/cancel. When
       // running in-container the cwd is irrelevant to docker itself (it uses
       // -w), so we only set cwd for the host-spawn path.
-      const child = spawn(exe, argv, {
+      const child = this.spawnClient(exe, argv, {
         cwd: inContainer ? undefined : spec.cwd,
         env: clientEnv,
         shell: false,
