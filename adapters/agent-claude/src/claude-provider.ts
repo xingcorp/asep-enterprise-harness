@@ -376,6 +376,12 @@ function setupCallFailure(args: readonly string[], r: DockerResult): string {
   return said === '' ? how : `${said} (${how})`;
 }
 
+// A `docker kill` that failed for a reason other than the container being
+// already gone or stopped.
+function killFailed(r: DockerResult): boolean {
+  return r.code !== 0 && !/no such container|is not running/i.test(r.stderr);
+}
+
 // Remove every network carrying `label` and confirm none is left; undefined when
 // gone, else why not. (Its containers must already be gone.)
 async function removeLabelledNetworks(docker: DockerCall, label: string): Promise<string | undefined> {
@@ -723,7 +729,8 @@ export class ClaudeCodingProvider implements CodingAgentProvider {
         const bound = Math.min(PROXY_START_TIMEOUT_MS, Math.max(1, deadline - monotonicNow()));
         const timer = setTimeout(
           () => finish(`egress proxy did not become ready in time: waited ${Math.round(monotonicNow() - startedAt)}ms `
-            + `of its ${Math.round(bound)}ms bound (spawn ${Math.round(spawnMs)}ms), `
+            + `of its ${Math.round(bound)}ms bound (${child.pid !== undefined ? `pid ${child.pid}, ` : ''}`
+            + `spawn ${Math.round(spawnMs)}ms), `
             + `${out === '' ? 'with nothing on its stdout' : `with ${out.length} bytes on its stdout`}`),
           bound,
         );
@@ -786,7 +793,11 @@ export class ClaudeCodingProvider implements CodingAgentProvider {
         else rec.leftovers.push(left);
       }
       if (created.proxy) {
-        await docker(['kill', proxyName]);
+        const killArgs = ['kill', proxyName];
+        const killed = await docker(killArgs);
+        if (killFailed(killed)) {
+          rec.teardown.push(`egress proxy ${proxyName} not killed: ${setupCallFailure(killArgs, killed)}`);
+        }
         proxyChild?.kill('SIGKILL');
         await Promise.race([proxyClosed, new Promise((r) => setTimeout(r, 5_000))]);
         await this.remove(proxyName, rec);
@@ -861,7 +872,12 @@ export class ClaudeCodingProvider implements CodingAgentProvider {
         if (ended !== undefined) return;
         ended = end;
         rec.stoppedAt = mark('stop', { reason: end.kind === 'timeout' || end.kind === 'aborted' ? end.kind : 'violation' });
-        void runDocker(this.docker, ['kill', name]).finally(() => {
+        const killArgs = ['kill', name];
+        void runDocker(this.docker, killArgs).then((r) => {
+          // Not a stop of its own — the removal by name that follows shows it
+          // gone or fails the attempt — but what the daemon said is kept.
+          if (killFailed(r)) rec.teardown.push(`agent ${name} not killed at its stop: ${setupCallFailure(killArgs, r)}`);
+        }).finally(() => {
           mark('agent-killed');
           child.kill('SIGKILL');
         });

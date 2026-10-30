@@ -170,9 +170,11 @@ export class TrustedCommandRunner implements CommandRunner {
     // Whether a client process was started at all: a client that failed to
     // spawn made no container; one that started may have, however it ends.
     let spawned = false;
-    // When the client was spawned and when it ended, for a teardown failure.
+    // Which client it was, when it was spawned and when it ended, for a
+    // teardown failure.
     const clientStartedAt = monotonicNow();
     let clientEndedAt = clientStartedAt;
+    let clientPid: number | undefined;
     const ran = new Promise<{
       exitCode: number | null; signal: string | null; timedOut: boolean;
     }>((resolve, reject) => {
@@ -189,6 +191,7 @@ export class TrustedCommandRunner implements CommandRunner {
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       spawned = child.pid !== undefined;
+      clientPid = child.pid;
       this.mark('spawned');
 
       let timedOut = false;
@@ -275,7 +278,8 @@ export class TrustedCommandRunner implements CommandRunner {
       const ended = clientError !== undefined ? 'with a client error'
         : result.signal ? `on signal ${result.signal}` : `with exit ${result.exitCode}`;
       return new SandboxTeardownError(`verification container ${container}`,
-        `${reason}; its client ended ${ended} after ${Math.round(clientEndedAt - clientStartedAt)}ms, `
+        `${reason}; its client${clientPid !== undefined ? ` (pid ${clientPid})` : ''} ended ${ended} `
+        + `after ${Math.round(clientEndedAt - clientStartedAt)}ms, `
         + `and the removal began ${Math.round(removalStartedAt - clientEndedAt)}ms later`);
     };
     if (clientError !== undefined) {

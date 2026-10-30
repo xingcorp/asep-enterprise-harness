@@ -21,15 +21,18 @@ export interface DockerResult {
 
 /**
  * One docker client call as its caller saw it, every moment read from
- * monotonicNow(): when it was spawned, how long the spawn itself took (it is
- * synchronous), how long until the client closed, the bound it was given, and
- * — when its caller killed it at that bound — how long after the spawn the
- * kill ran. A kill that runs well after its bound shows the caller's event
- * loop was held, not the client.
+ * monotonicNow(): the client's process id, when it was spawned, how long the
+ * spawn itself took (it is synchronous), how long until the client closed, the
+ * bound it was given, and — when its caller killed it at that bound — how long
+ * after the spawn the kill ran. A kill that runs well after its bound shows the
+ * caller's event loop was held, not the client. The process id ties the call
+ * to what the operating system recorded about that process.
  */
 export interface DockerCallRecord {
   // Its first words: `ps -aq`, `rm -f`, `network create`.
   readonly argv: string;
+  // The client's process id; none when the client never started.
+  readonly pid?: number;
   readonly startedAt: number;
   readonly spawnMs: number;
   readonly durationMs: number;
@@ -98,7 +101,8 @@ export function dockerCaller(
       child.kill('SIGKILL');
     }, cutMs);
     const call = (): DockerCallRecord => ({
-      argv: dockerArgvHead(args), startedAt, spawnMs, durationMs: monotonicNow() - startedAt, cutMs,
+      argv: dockerArgvHead(args), ...(child.pid !== undefined ? { pid: child.pid } : {}),
+      startedAt, spawnMs, durationMs: monotonicNow() - startedAt, cutMs,
       ...(cutAfterMs !== undefined ? { cutAfterMs } : {}), spawned: child.pid !== undefined,
     });
     child.stdout.on('data', (d: Buffer) => { if (stdout.length < MAX_OUTPUT) stdout += d.toString('utf8'); });
@@ -119,16 +123,17 @@ const ms = (n: number): string => `${Math.round(n)}ms`;
 /**
  * One docker call, for the reason a caller reports: what it was, when it
  * started relative to `since`, how it ended and how long it took, against its
- * bound — `ps -aq at +12ms: signal SIGKILL after 30004ms (spawn 3ms, bound
- * 30000ms, cut at 30001ms)`. A result with no record says so.
+ * bound — `ps -aq at +12ms: signal SIGKILL after 30004ms (pid 4711, spawn 3ms,
+ * bound 30000ms, cut at 30001ms)`. A result with no record says so.
  */
 export function describeDockerCall(args: readonly string[], r: DockerResult, since: number): string {
   const end = r.signal ? `signal ${r.signal}` : `exit ${r.code}`;
   const c = r.call;
   if (c === undefined) return `${dockerArgvHead(args)}: ${end} (untimed)`;
+  const pid = c.pid !== undefined ? `pid ${c.pid}, ` : '';
   const cut = c.cutAfterMs !== undefined ? `, cut at ${ms(c.cutAfterMs)}` : '';
   return `${c.argv} at +${ms(c.startedAt - since)}: ${end} after ${ms(c.durationMs)} `
-    + `(spawn ${ms(c.spawnMs)}, bound ${ms(c.cutMs)}${cut})`;
+    + `(${pid}spawn ${ms(c.spawnMs)}, bound ${ms(c.cutMs)}${cut})`;
 }
 
 /**

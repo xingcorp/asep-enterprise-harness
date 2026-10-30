@@ -43,7 +43,7 @@ import {
 import {
   DOCKER_CALL_TIMEOUT_MS, removeContainerShownGone, monotonicNow, type DockerCall, type TeardownClock,
 } from '@asep/command-runner';
-import type { ArtifactStore, AgentExecuteRequest, ToolPolicyProfile } from '@asep/ports';
+import type { ArtifactStore, AgentAttemptObservation, AgentExecuteRequest, ToolPolicyProfile } from '@asep/ports';
 import type {
   OrganizationId, ProjectId, TenantScope, WorkspaceId, AttemptId, ArtifactRef,
 } from '@asep/contracts';
@@ -317,6 +317,13 @@ function showTimeline(t: Timeline): string {
     + `${e.deadline !== undefined ? `, deadline at +${e.deadline - t0} ms` : ''}`).join('\n');
 }
 
+// What a failed status assertion prints: the observation's own account of the
+// attempt and, when given, its moments.
+function showObservation(obs: AgentAttemptObservation, t: Timeline = []): string {
+  const why = obs.knownLimitations.length > 0 ? obs.knownLimitations.join('; ') : '(no known limitations)';
+  return `status ${obs.status}: ${obs.summary}\n  ${why}${t.length > 0 ? `\n${showTimeline(t)}` : ''}`;
+}
+
 function phaseOf(t: Timeline, phase: AgentLifecyclePhase): AgentLifecycleEvent {
   const found = t.filter((e) => e.phase === phase);
   assert.equal(found.length, 1, `exactly one '${phase}' moment:\n${showTimeline(t)}`);
@@ -572,7 +579,7 @@ test('credential material in the provider output is redacted and fails the attem
   const h = await harness({ echoKey: true });
   try {
     const obs = await (await h.provider('model-call')).execute(request(h));
-    assert.equal(obs.status, 'FAILED');
+    assert.equal(obs.status, 'FAILED', showObservation(obs));
     assert.match(obs.knownLimitations.join(' '), /model credential appeared in the event stream and was redacted/);
     const stream = await eventStream(h, obs.eventArtifactRefs);
     assert.ok(!stream.includes(h.secret), 'the stored stream is redacted');
@@ -588,13 +595,13 @@ test('an unusable credential fails closed before any container starts', async ()
   try {
     await chmod(h.keyFile, 0o644);
     const loose = await (await h.provider('ok')).execute(request(h));
-    assert.equal(loose.status, 'FAILED');
+    assert.equal(loose.status, 'FAILED', showObservation(loose));
     assert.match(loose.knownLimitations.join(' '), /accessible to group\/other/);
     assert.deepEqual(h.invocations(), [], 'docker was never asked to do anything');
 
     const empty: ModelCredentialProvider = { credentialFor: async () => ({ apiKey: '  ', baseUrl: h.upstream.url }) };
     const none = await (await h.provider('ok', {}, empty)).execute(request(h));
-    assert.equal(none.status, 'FAILED');
+    assert.equal(none.status, 'FAILED', showObservation(none));
     assert.match(none.knownLimitations.join(' '), /no usable key/);
     const badUrl: ModelCredentialProvider = { credentialFor: async () => ({ apiKey: 'k', baseUrl: 'file:///etc' }) };
     assert.equal((await (await h.provider('ok', {}, badUrl)).execute(request(h))).status, 'FAILED');
@@ -752,13 +759,13 @@ test('G6: a permission denial is reported, an API retry is noted, an agent claim
   const h = await harness();
   try {
     const denied = await (await h.provider('denied')).execute(request(h));
-    assert.equal(denied.status, 'AGENT_DONE');
+    assert.equal(denied.status, 'AGENT_DONE', showObservation(denied));
     assert.ok(denied.knownLimitations.includes('permission denied: Bash'));
     const notices = await (await h.provider('notices')).execute(request(h));
     assert.equal(notices.status, 'AGENT_DONE', notices.knownLimitations.join('; '));
     assert.ok(notices.knownLimitations.includes('model API retried 1 time(s)'));
     const claims = await (await h.provider('claims-commit')).execute(request(h));
-    assert.equal(claims.status, 'AGENT_DONE');
+    assert.equal(claims.status, 'AGENT_DONE', showObservation(claims));
     assert.equal(claims.summary, 'I committed abcdef and pushed to main', 'kept only as advisory text');
     for (const k of ['attemptId', 'resultSha', 'changedFiles']) {
       assert.equal((claims as unknown as Record<string, unknown>)[k], undefined);
@@ -774,7 +781,7 @@ test('G3: the tool-call budget is enforced while the agent runs', async () => {
     const obs = await (await h.provider('tool-flood')).execute(
       request(h, { budget: { ...BUDGET, maxToolCalls: 3 } }),
     );
-    assert.equal(obs.status, 'BUDGET_EXHAUSTED');
+    assert.equal(obs.status, 'BUDGET_EXHAUSTED', showObservation(obs, h.lifecycle));
     assert.match(obs.knownLimitations.join(' '), /tool-call budget of 3 exceeded/);
     assert.equal(obs.usage.toolCalls, 4, 'stopped at the first call over the budget');
     // Stopped by the tool-call budget, not the wall clock, and removed in time.
@@ -814,7 +821,7 @@ test('G3: cancellation stops a running agent promptly; an already-aborted signal
     const cancelledAt = monotonicNow();
     ac.abort();
     const obs = await p;
-    assert.equal(obs.status, 'BLOCKED');
+    assert.equal(obs.status, 'BLOCKED', showObservation(obs));
     assert.match(obs.knownLimitations.join(' '), /cancelled during execution/);
     // Stopped when the cancellation was delivered, and removed in time.
     assertStoppedInTime(h.lifecycle, 'aborted', cancelledAt);
@@ -824,7 +831,7 @@ test('G3: cancellation stops a running agent promptly; an already-aborted signal
     const pre = new AbortController();
     pre.abort();
     const blocked = await (await h.provider('hang')).execute(request(h, { signal: pre.signal }));
-    assert.equal(blocked.status, 'BLOCKED');
+    assert.equal(blocked.status, 'BLOCKED', showObservation(blocked));
     assert.equal(h.invocations().length, before, 'nothing was started');
   } finally {
     await h.close();
@@ -948,6 +955,10 @@ test('G3: an attempt whose containers cannot be shown removed fails closed', asy
     assert.equal(obs.status, 'FAILED', 'not BLOCKED: a container may still be running beside the worktree');
     assert.match(obs.summary, /could not be shown removed/);
     assert.match(obs.knownLimitations.join(' '), /labelled asep\.attempt=.* could not be shown removed/);
+    // What the daemon answered to the proxy's kill is kept, with the call.
+    assert.match(obs.knownLimitations.join(' '), new RegExp('teardown: egress proxy asep-egress-\\S+ not killed: '
+      + 'Error response from daemon: removal refused \\(kill asep-egress-\\S+ at \\+0ms: exit 1 after \\d+ms '
+      + '\\(pid \\d+, spawn \\d+ms, bound 30000ms\\)\\)'));
   } finally {
     ac.abort();
     // The attempt's own teardown restores its input directory; let it finish
@@ -1014,6 +1025,10 @@ test('G3: an agent the daemon keeps while answering its removal with success is 
     assert.equal(obs.status, 'FAILED', obs.knownLimitations.join('; '));
     assert.match(obs.knownLimitations.join(' '),
       /container asep-agent-\S+ could not be shown removed in time: docker inspect still shows it/);
+    // The stop's own kill failed, and what the daemon said is kept.
+    assert.match(obs.knownLimitations.join(' '), new RegExp('teardown: agent asep-agent-\\S+ not killed at its stop: '
+      + 'Error response from daemon: cannot kill \\(kill asep-agent-\\S+ at \\+0ms: exit 1 after \\d+ms '
+      + '\\(pid \\d+, spawn \\d+ms, bound 30000ms\\)\\)'));
     assert.deepEqual(h.lifecycle.filter((e) => e.phase === 'agent-removed'), [], showTimeline(h.lifecycle));
     assert.throws(() => assertStoppedInTime(h.lifecycle, 'aborted'), /exactly one 'agent-removed' moment/);
   } finally {
@@ -1073,8 +1088,8 @@ test('G3: an agent removal the daemon cannot show within its bound fails the att
     // Call by call: the rm answered (the container went with its client), the
     // inspect was killed by its caller at its bound.
     assert.match(obs.knownLimitations.join(' '), new RegExp('docker inspect failed: killed by SIGKILL at its bound; '
-      + 'calls: rm -f at \\+0ms: exit \\d+ after \\d+ms \\(spawn \\d+ms, bound \\d+ms\\); '
-      + 'inspect --type at \\+\\d+ms: signal SIGKILL after \\d+ms \\(spawn \\d+ms, bound \\d+ms, cut at \\d+ms\\)'));
+      + 'calls: rm -f at \\+0ms: exit \\d+ after \\d+ms \\(pid \\d+, spawn \\d+ms, bound \\d+ms\\); '
+      + 'inspect --type at \\+\\d+ms: signal SIGKILL after \\d+ms \\(pid \\d+, spawn \\d+ms, bound \\d+ms, cut at \\d+ms\\)'));
     assert.deepEqual(h.lifecycle.filter((e) => e.phase === 'agent-removed'), [], showTimeline(h.lifecycle));
     // The removal was given its whole bound. The teardown after it (proxy,
     // label sweeps, network) is not bounded by the product and slows with
@@ -1129,9 +1144,9 @@ for (const netCreate of ['errs-after', 'hangs-after', 'refused'] as const) {
       assert.match(obs.summary, /did not start: docker network create failed/);
       // How the call ended and how long it took, against its bound.
       assert.match(obs.summary, {
-        'hangs-after': /its client was cut at the docker-call timeout: network create at \+0ms: signal SIGKILL after \d+ms \(spawn \d+ms, bound 30000ms, cut at \d+ms\)/,
-        'errs-after': /lost the answer \(network create at \+0ms: exit 1 after \d+ms \(spawn \d+ms, bound 30000ms\)\)/,
-        refused: /refused \(network create at \+0ms: exit 1 after \d+ms \(spawn \d+ms, bound 30000ms\)\)/,
+        'hangs-after': /its client was cut at the docker-call timeout: network create at \+0ms: signal SIGKILL after \d+ms \(pid \d+, spawn \d+ms, bound 30000ms, cut at \d+ms\)/,
+        'errs-after': /lost the answer \(network create at \+0ms: exit 1 after \d+ms \(pid \d+, spawn \d+ms, bound 30000ms\)\)/,
+        refused: /refused \(network create at \+0ms: exit 1 after \d+ms \(pid \d+, spawn \d+ms, bound 30000ms\)\)/,
       }[netCreate]);
       assert.deepEqual(h.lifecycle.map((e) => e.phase), ['started', 'torn-down'], 'nothing past the network was started');
       // The client's own log: the refusing daemon answers before the fake records the call.
@@ -1157,7 +1172,7 @@ test('an egress proxy that never becomes ready fails the attempt, with how long 
   try {
     const obs = await (await h.provider('ok')).execute(request(h, { budget: { ...BUDGET, maxWallClockMinutes: 0.05 } }));
     assert.equal(obs.status, 'FAILED', obs.knownLimitations.join('; '));
-    const m = /egress proxy did not become ready in time: waited (\d+)ms of its (\d+)ms bound \(spawn \d+ms\), with nothing on its stdout/
+    const m = /egress proxy did not become ready in time: waited (\d+)ms of its (\d+)ms bound \(pid \d+, spawn \d+ms\), with nothing on its stdout/
       .exec(obs.summary);
     assert.ok(m, obs.summary);
     // Its bound is what was left of the 3 s budget, and it was waited out.
@@ -1272,7 +1287,7 @@ test('inputs whose bytes do not match their refs are never mounted', async () =>
       scope, tampered,
     );
     const obs = await provider.execute(request(h));
-    assert.equal(obs.status, 'FAILED');
+    assert.equal(obs.status, 'FAILED', showObservation(obs));
     assert.match(obs.knownLimitations.join(' '), new RegExp(`hashes to [0-9a-f]{64}, not the referenced ${h.workRef.sha256}`));
     assert.deepEqual(h.invocations(), []);
     assertTornDown(h);
@@ -1289,7 +1304,7 @@ test('a daemon that does not isolate the agent network from the host fails the a
     await mkdir(h.state, { recursive: true });
     await writeFile(join(h.state, 'daemon-ignores-gateway-mode'), '');
     const obs = await (await h.provider('ok')).execute(request(h));
-    assert.equal(obs.status, 'FAILED');
+    assert.equal(obs.status, 'FAILED', showObservation(obs));
     assert.match(obs.knownLimitations.join(' '), /agent network is not isolated from the host/);
     assert.ok(!verbs(h.invocations()).includes('run'), 'no proxy or agent ever started');
     assert.equal(readFileSync(join(h.wt, 'feature.txt'), { encoding: 'utf8', flag: 'a+' }), '', 'the agent did nothing');
@@ -1326,16 +1341,16 @@ test('docker trouble fails closed and still tears down what was started', async 
   const h = await harness();
   try {
     const noDocker = await (await h.provider('ok', { dockerBinary: join(h.dir, 'no-such-docker') })).execute(request(h));
-    assert.equal(noDocker.status, 'FAILED');
+    assert.equal(noDocker.status, 'FAILED', showObservation(noDocker));
     assert.match(noDocker.knownLimitations.join(' '), /docker network create failed/);
 
     const noEgress = await (await h.provider('ok', { egressNetwork: 'no-such-network' })).execute(request(h));
-    assert.equal(noEgress.status, 'FAILED');
+    assert.equal(noEgress.status, 'FAILED', showObservation(noEgress));
     assert.match(noEgress.knownLimitations.join(' '), /egress proxy exited 125 before it was ready/);
     assertTornDown(h);
 
     const noWorktree = await (await h.provider('ok', { workdirFor: () => join(h.dir, 'missing') })).execute(request(h));
-    assert.equal(noWorktree.status, 'FAILED');
+    assert.equal(noWorktree.status, 'FAILED', showObservation(noWorktree));
     assert.match(noWorktree.knownLimitations.join(' '), /leased worktree unavailable/);
   } finally {
     await h.close();

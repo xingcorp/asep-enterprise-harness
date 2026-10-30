@@ -24,7 +24,7 @@ import {
 } from './sandbox.js';
 import {
   SandboxTeardownError, removeLabelledContainers, removeContainerShownGone, monotonicNow, dockerCaller,
-  type DockerCall, type DockerResult, type TeardownClock,
+  describeDockerCall, type DockerCall, type DockerResult, type TeardownClock,
 } from './container-teardown.js';
 import { SandboxHandleNotProvenError } from './command-runner.js';
 import { spawn } from 'node:child_process';
@@ -374,7 +374,7 @@ test('F5: the docker probe gets only the client environment, and an unreachable 
         workspaceId: 'W'.repeat(26) as never, readOnlyPaths: [], writablePaths: [dir], attemptId: ATTEMPT as never,
       }),
       (err: Error) => err instanceof SandboxUnavailableError
-        && /docker CLI or daemon not reachable: Cannot connect to the Docker daemon \(version --format at \+0ms: exit 1 after \d+ms \(spawn \d+ms, bound 30000ms\)\)$/
+        && /docker CLI or daemon not reachable: Cannot connect to the Docker daemon \(version --format at \+0ms: exit 1 after \d+ms \(pid \d+, spawn \d+ms, bound 30000ms\)\)$/
           .test(err.message),
     );
     const env = readFileSync(seen, 'utf8');
@@ -712,8 +712,8 @@ test('a container the daemon cannot show gone within the removal bound fails the
     // The error says what each removal call did: here the one `ps`, killed by
     // its caller at its bound, and how the command's client went before it.
     assert.match(message, new RegExp('docker ps failed: killed by SIGKILL at its bound; calls: '
-      + 'ps -aq at \\+0ms: signal SIGKILL after \\d+ms \\(spawn \\d+ms, bound \\d+ms, cut at \\d+ms\\)'));
-    assert.match(message, /; its client ended with exit 0 after \d+ms, and the removal began \d+ms later$/);
+      + 'ps -aq at \\+0ms: signal SIGKILL after \\d+ms \\(pid \\d+, spawn \\d+ms, bound \\d+ms, cut at \\d+ms\\)'));
+    assert.match(message, /; its client \(pid \d+\) ended with exit 0 after \d+ms, and the removal began \d+ms later$/);
     const exited = seen.find((e) => e.phase === 'exited')!;
     const gaveUp = monotonicNow() - exited.at;
     assert.ok(gaveUp >= COMMAND_REMOVAL_BOUND_MS - 50 && gaveUp <= COMMAND_REMOVAL_BOUND_MS + 5_000,
@@ -995,9 +995,17 @@ test('a genuine handle still runs where its provider put it', async () => {
   }
 });
 
+// How late a timer may fire on a loaded host, and how long a client killed with
+// SIGKILL may take to be seen closed: the allowances of the cut's upper bounds
+// below. The stop path, measured against the real daemon at load average up to
+// 112, acted at most 4 ms after its timer was due.
+const TIMER_LATENESS_MS = 500;
+const KILL_TO_CLOSE_MS = 400;
+
 // Every docker client call reports how it ended and how long it took against
-// its bound: the signal that ended its client, when one did, and whether its
-// caller killed it at that bound.
+// its bound: the signal that ended its client, when one did, whether its
+// caller killed it at that bound — no earlier and not much later — and the
+// client's process id.
 test('a docker call records the signal that ended its client, its duration and the bound it was cut at', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'asep-docker-call-'));
   try {
@@ -1012,8 +1020,14 @@ test('a docker call records the signal that ended its client, its duration and t
     assert.equal(cut.call?.argv, 'ps -aq');
     assert.equal(cut.call?.cutMs, 300);
     assert.equal(cut.call?.spawned, true);
-    assert.ok((cut.call?.cutAfterMs ?? 0) >= 299, `killed at ${cut.call?.cutAfterMs} ms`);
-    assert.ok((cut.call?.durationMs ?? 0) >= (cut.call?.cutAfterMs ?? Infinity));
+    const cutAfter = cut.call?.cutAfterMs ?? NaN;
+    assert.ok(cutAfter >= 299 && cutAfter <= 300 + TIMER_LATENESS_MS, `killed at ${cutAfter} ms against its 300 ms bound`);
+    const duration = cut.call?.durationMs ?? NaN;
+    assert.ok(duration >= cutAfter && duration <= 300 + TIMER_LATENESS_MS + KILL_TO_CLOSE_MS,
+      `the cut call took ${duration} ms, killed at ${cutAfter} ms`);
+    assert.ok(Number.isSafeInteger(cut.call?.pid) && cut.call!.pid! > 0, `the client's pid is recorded: ${cut.call?.pid}`);
+    assert.match(describeDockerCall(['ps', '-aq'], cut, cut.call!.startedAt),
+      new RegExp(`^ps -aq at \\+0ms: signal SIGKILL after \\d+ms \\(pid ${cut.call!.pid}, spawn \\d+ms, bound 300ms, cut at \\d+ms\\)$`));
 
     const exited = await dockerCaller(exits, { PATH: '/usr/bin:/bin' }, 20_000)(['rm', '-f', 'c-1']);
     assert.deepEqual([exited.code, exited.signal, exited.stderr], [3, null, 'refused\n']);
@@ -1024,6 +1038,7 @@ test('a docker call records the signal that ended its client, its duration and t
     const missing = await dockerCaller(join(dir, 'missing'), { PATH: '/usr/bin:/bin' })(['ps', '-aq']);
     assert.equal(missing.code, -1);
     assert.equal(missing.call?.spawned, false);
+    assert.equal(missing.call?.pid, undefined, 'a client that never started has no pid');
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
