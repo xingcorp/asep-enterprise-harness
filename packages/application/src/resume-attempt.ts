@@ -61,7 +61,7 @@ import { isTaskTerminal } from '@asep/domain';
 import { admitRisk } from './risk-admission.js';
 import {
   pushStep, upsertPrStep, evidenceStep, settleCommitStep, reconcileBranchStep, reconcilePullRequestStep,
-  pullRequestFactsOf, pullRequestFound, type ReconcileRemoteInput,
+  pullRequestFactsOf, pullRequestFound, pullRequestRecorded, type ReconcileRemoteInput,
 } from './pipeline-steps.js';
 import type { SlicePullRequestPort } from './vertical-slice-workflow.js';
 
@@ -346,29 +346,29 @@ async function resumeUnderLease(
   // --- before the terminal transition: the remote is what the facts say -------
   // A stale owner may have written to the forge after the records moved here;
   // whatever it left, the branch and the PR are made the facts' again — unless
-  // the PR is no longer the attempt's to write.
+  // the PR the forge shows is not the attempt's recorded, reviewable PR. What
+  // is persisted below is the forge's observation, checked against the record.
   const branch = await reconcileBranchStep(remote, 'repair');
-  const reconciled = await reconcilePullRequestStep(remote);
+  const reconciled = await reconcilePullRequestStep({ ...remote, recorded: upsert.pr });
   const pr = reconciled.pr;
-  if (pr.number !== upsert.pr.number) {
-    throw new Error(`the attempt's PR is #${pr.number} on the forge, not the recorded #${upsert.pr.number} — refusing to guess which is the attempt's`);
-  }
+  const shown = reconciled.gap === undefined && pr !== null ? pr : upsert.pr;
   const published = {
     commitSha,
     evidenceArtifactId: evidenceRef.artifactId,
     evidenceSha256: evidenceRef.sha256,
-    prNumber: pr.number,
-    prHeadBranch: pr.headBranch,
-    prBaseBranch: pr.baseBranch,
+    prNumber: shown.number,
+    prHeadBranch: shown.headBranch,
+    prBaseBranch: shown.baseBranch,
     pushAdopted: push.adopted,
     prAdopted: upsert.adopted,
     branchRepaired: before.repaired || branch.repaired,
     prRepaired: reconciled.repaired,
   };
 
-  // --- a PR that is not a reviewable publication: the task fails --------------
-  if (reconciled.gap !== undefined) {
-    const reason = `publication incomplete: ${reconciled.gap}`;
+  // --- no reviewable publication of the recorded PR: the task fails -----------
+  if (reconciled.gap !== undefined || pr === null) {
+    const gap = reconciled.gap ?? `the forge shows no pull request for ${input.branch}`;
+    const reason = `publication incomplete: ${gap}`;
     // Already at review (an earlier resume completed it): a PR closed since is
     // its reviewer's decision, and the harness has no transition past review.
     // Otherwise the task fails from where the dead executor left it, exactly as
@@ -381,8 +381,9 @@ async function resumeUnderLease(
         span: 'task.execute',
         action: 'task.status.transition',
         detail: {
-          to: 'FAILED', outcome: 'publication-incomplete', reason: reconciled.gap,
-          found: pullRequestFound(pr), expectedBase: base, commitSha, resumed: true,
+          to: 'FAILED', outcome: 'publication-incomplete', reason: gap,
+          found: pullRequestFound(pr), recorded: pullRequestRecorded(upsert.pr),
+          expectedBase: base, commitSha, resumed: true,
         },
       },
       async () => {

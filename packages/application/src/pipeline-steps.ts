@@ -877,12 +877,53 @@ export function pullRequestGap(pr: PullRequestRef, facts: PullRequestFacts): str
   return undefined;
 }
 
+/** The attempt's PR as its pr-upsert record holds it. */
+export type RecordedPullRequest = Pick<PullRequestRef, 'number' | 'url' | 'headBranch' | 'baseBranch'>;
+
+/**
+ * Why what the forge shows for the attempt's branch is not the attempt's
+ * recorded, reviewable publication, or undefined when it is: the recorded PR
+ * (number, url, head and base branch), open, unmerged, on the attempt's base
+ * (pullRequestGap) and showing the attempt's commit. Nothing shown, or a
+ * different PR on the same branch, is a gap; so is a head commit the forge did
+ * not report.
+ */
+export function publicationGap(
+  observed: PullRequestRef | null, recorded: RecordedPullRequest, facts: PullRequestFacts,
+): string | undefined {
+  if (observed === null) return `the forge shows no pull request for ${recorded.headBranch}`;
+  const which = `PR #${observed.number}`;
+  if (observed.number !== recorded.number) {
+    return `the forge shows ${which} for ${recorded.headBranch}, not the recorded PR #${recorded.number}`;
+  }
+  if (observed.url !== recorded.url) return `${which} is at ${observed.url}, not the recorded ${recorded.url}`;
+  if (observed.headBranch !== recorded.headBranch) {
+    return `${which} is for ${observed.headBranch}, not the recorded ${recorded.headBranch}`;
+  }
+  const state = pullRequestGap(observed, facts);
+  if (state !== undefined) return state;
+  if (observed.baseBranch !== recorded.baseBranch) {
+    return `${which} targets ${observed.baseBranch}, not the recorded base ${recorded.baseBranch}`;
+  }
+  if (observed.headSha === undefined) return `${which}: the forge did not report its head commit`;
+  if (observed.headSha !== facts.commitSha) {
+    return `${which} shows ${observed.headSha}, not the attempt's commit ${facts.commitSha}`;
+  }
+  return undefined;
+}
+
 /** What a PR was found to be, for the audit record of a publication that failed. */
-export function pullRequestFound(pr: PullRequestRef): Readonly<Record<string, unknown>> {
+export function pullRequestFound(pr: PullRequestRef | null): Readonly<Record<string, unknown>> | null {
+  if (pr === null) return null;
   return {
     number: pr.number, url: pr.url, headBranch: pr.headBranch, baseBranch: pr.baseBranch,
-    state: pr.state ?? null, merged: pr.merged ?? null,
+    headSha: pr.headSha ?? null, state: pr.state ?? null, merged: pr.merged ?? null,
   };
+}
+
+/** The recorded PR, for the same audit record. */
+export function pullRequestRecorded(pr: RecordedPullRequest): Readonly<Record<string, unknown>> {
+  return { number: pr.number, url: pr.url, headBranch: pr.headBranch, baseBranch: pr.baseBranch };
 }
 
 export interface UpsertPrStepResult {
@@ -1053,36 +1094,48 @@ export async function reconcileBranchStep(
   return { found, repaired: true };
 }
 
+export interface ReconcilePullRequestInput extends ReconcileRemoteInput {
+  // The attempt's PR as its record holds it: the only PR ever written to.
+  readonly recorded: RecordedPullRequest;
+}
+
 export interface ReconcilePullRequestResult {
-  readonly pr: PullRequestRef;
+  // What the forge shows for the attempt's branch after any repair: the one
+  // observation a caller may complete to review and persist. Null when the
+  // forge shows none.
+  readonly pr: PullRequestRef | null;
   readonly repaired: boolean;
-  // Set when the PR is not the attempt's reviewable publication
-  // (pullRequestGap): the caller must not complete to review.
+  // Set when that observation is not the attempt's recorded, reviewable
+  // publication (publicationGap): the caller must not complete to review.
   readonly gap?: string;
 }
 
 /**
- * Make the attempt's PR exist with the facts' content, and say whether it is
- * a reviewable publication. Only an open, unmerged PR on the attempt's base is
- * ever written: a closed or merged one is a human's decision and a PR on
- * another base is not the attempt's, so either is reported as a gap, as found.
+ * Read the attempt's PR, make its title and body the facts' if it is the
+ * recorded PR and a reviewable publication, and read it again after any
+ * repair. Only the recorded PR, open, unmerged, on the attempt's base and
+ * showing its commit is ever written; anything else — no PR, another PR on the
+ * branch, a PR a human closed, merged or retargeted — is reported as a gap,
+ * as found, and nothing is written. The returned PR is the last read: what
+ * the caller completes is exactly what was checked.
  */
-export async function reconcilePullRequestStep(input: ReconcileRemoteInput): Promise<ReconcilePullRequestResult> {
+export async function reconcilePullRequestStep(input: ReconcilePullRequestInput): Promise<ReconcilePullRequestResult> {
   const content = pullRequestContent(input.facts);
-  const found = await input.forge.findPullRequest(input.scope, {
+  const read = (): Promise<PullRequestRef | null> => input.forge.findPullRequest(input.scope, {
     repositoryBindingId: input.repositoryBindingId, headBranch: input.branch,
   });
-  if (found !== null) {
-    const gap = pullRequestGap(found, input.facts);
-    if (gap !== undefined) return { pr: found, repaired: false, gap };
-    if (found.title === content.title && found.body === content.body) return { pr: found, repaired: false };
+  const found = await read();
+  const before = publicationGap(found, input.recorded, input.facts);
+  if (found === null || before !== undefined) {
+    return { pr: found, repaired: false, ...(before !== undefined ? { gap: before } : {}) };
   }
-  const pr = await input.observe(
+  if (found.title === content.title && found.body === content.body) return { pr: found, repaired: false };
+  await input.observe(
     {
       span: 'forge.pull_request', action: 'forge.reconcile',
       detail: {
         target: 'pull-request', headBranch: input.branch, base: input.facts.base,
-        found: found === null ? null : {
+        found: {
           number: found.number, baseBranch: found.baseBranch,
           titleMatches: found.title === content.title, bodyMatches: found.body === content.body,
         },
@@ -1096,8 +1149,9 @@ export async function reconcilePullRequestStep(input: ReconcileRemoteInput): Pro
       body: content.body,
     }),
   );
-  const gap = pullRequestGap(pr, input.facts);
-  return { pr, repaired: true, ...(gap !== undefined ? { gap } : {}) };
+  const observed = await read();
+  const gap = publicationGap(observed, input.recorded, input.facts);
+  return { pr: observed, repaired: true, ...(gap !== undefined ? { gap } : {}) };
 }
 
 // ---------------------------------------------------------------------------
@@ -1208,13 +1262,19 @@ export interface CompleteToReviewResult {
   readonly stoppedAt: CompletionStop;
   // Why the driver stopped where it did, when a step said.
   readonly reason?: string;
-  // Set when the PR is not a reviewable publication (pullRequestGap): what was
-  // found instead. The caller fails the task; it never completes it to review.
+  // Set when what the forge shows is not the attempt's recorded, reviewable
+  // publication (publicationGap). The caller fails the task; it never
+  // completes it to review.
   readonly gap?: string;
   readonly verify: VerifyStepResult;
   readonly commitSha?: string;
   readonly evidence?: EvidenceStepResult;
   readonly push?: PushStepResult;
+  // The attempt's PR as its record holds it, once the upsert step recorded one.
+  readonly recorded?: RecordedPullRequest;
+  // On completion: the PR as the forge showed it at the final read, the one to
+  // persist. On a gap: what the forge showed instead, if anything. On an
+  // upsert stop: the step's answer.
   readonly pr?: PullRequestRef;
   readonly task?: TaskAggregate;
 }
@@ -1362,19 +1422,27 @@ export async function completeToReview(
       pr: upsert.pr,
     };
   }
-  // Only an open, unmerged PR on the attempt's base is a publication to review.
-  // A PR adopted from its record carries no state, so the forge is asked.
-  const shown = upsert.pr.state !== undefined
-    ? upsert.pr
-    : await input.forge.findPullRequest(input.scope, {
-      repositoryBindingId: input.repositoryBindingId, headBranch: input.branch,
-    });
-  const facts = pullRequestFactsOf({
-    taskId: input.taskId, attemptId: input.attemptId, commitSha: commit.commitSha,
-    evidenceId: committedEvidenceId, base: input.base,
+  // The PR is read again after its record, never taken from the upsert's
+  // answer or the record: only the recorded PR, open, unmerged, on the
+  // attempt's base and showing its commit is a publication to review, and the
+  // PR completed and persisted is exactly that read.
+  const recorded: RecordedPullRequest = {
+    number: upsert.pr.number, url: upsert.pr.url, headBranch: upsert.pr.headBranch, baseBranch: upsert.pr.baseBranch,
+  };
+  const published = await reconcilePullRequestStep({
+    forge: input.forge,
+    scope: input.scope,
+    repositoryBindingId: input.repositoryBindingId,
+    branch: input.branch,
+    facts: pullRequestFactsOf({
+      taskId: input.taskId, attemptId: input.attemptId, commitSha: commit.commitSha,
+      evidenceId: committedEvidenceId, base: input.base,
+    }),
+    observe,
+    recorded,
   });
-  const gap = shown === null ? `no pull request for ${input.branch} on the forge` : pullRequestGap(shown, facts);
-  if (gap !== undefined) {
+  if (published.gap !== undefined || published.pr === null) {
+    const gap = published.gap ?? `the forge shows no pull request for ${input.branch}`;
     return {
       stoppedAt: 'upsert-pr',
       reason: `publication incomplete: ${gap}`,
@@ -1383,7 +1451,8 @@ export async function completeToReview(
       commitSha: commit.commitSha,
       evidence,
       push,
-      pr: shown ?? upsert.pr,
+      recorded,
+      ...(published.pr !== null ? { pr: published.pr } : {}),
     };
   }
 
@@ -1396,7 +1465,8 @@ export async function completeToReview(
     commitSha: commit.commitSha,
     evidence,
     push,
-    pr: upsert.pr,
+    recorded,
+    pr: published.pr,
     task: review.task,
   };
 }

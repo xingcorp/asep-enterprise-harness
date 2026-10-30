@@ -60,11 +60,13 @@ import {
   reconcilePullRequestStep,
   pullRequestFactsOf,
   pullRequestGap,
+  publicationGap,
   RemoteBranchDivergedError,
   setReviewStep,
   completeToReview,
   EvidenceIdentityMismatchError,
   type ObserveBoundary,
+  type RecordedPullRequest,
   type VerificationCheckSpec,
   type VerificationProvenance,
 } from './pipeline-steps.js';
@@ -680,16 +682,22 @@ function fakeForge(
 ): FakeForge {
   const pushCalls: PushCall[] = [];
   const upsertCalls: UpsertCall[] = [];
+  // Unless a test seeds it, the forge holds the PR once one was written, with
+  // the content last written to it.
+  let held: PullRequestRef | null = remote.pr !== undefined ? remote.pr : null;
   return {
     get pushes() { return pushCalls.length; },
     get upserts() { return upsertCalls.length; },
     pushCalls,
     upsertCalls,
     async pushBranch(_s: TenantScope, i: PushCall) { pushCalls.push(i); },
-    async upsertPullRequest(_s: TenantScope, i: UpsertCall) { upsertCalls.push(i); return pr; },
+    async upsertPullRequest(_s: TenantScope, i: UpsertCall) {
+      upsertCalls.push(i);
+      held = { ...(held ?? pr), title: i.title, body: i.body };
+      return { ...pr, title: i.title, body: i.body };
+    },
     async resolveRef() { return remote.ref ?? null; },
-    // Unless a test seeds it, the forge holds the PR once one was written.
-    async findPullRequest() { return remote.pr !== undefined ? remote.pr : (upsertCalls.length > 0 ? pr : null); },
+    async findPullRequest() { return held; },
   };
 }
 
@@ -698,8 +706,14 @@ const prRef: PullRequestRef = {
   url: 'https://forge.invalid/pr/7',
   headBranch: 'asep/attempt-1',
   baseBranch: 'main',
+  headSha: 'd'.repeat(40),
   state: 'open',
   merged: false,
+};
+
+// What the attempt's ledger holds for its PR.
+const recordedPr: RecordedPullRequest = {
+  number: 7, url: 'https://forge.invalid/pr/7', headBranch: 'asep/attempt-1', baseBranch: 'main',
 };
 
 // What an attempt's PR is made of: its head and base, and the facts its
@@ -964,7 +978,7 @@ function recordingObserve() {
 function remoteInput(forge: ForgeProvider, observe: ObserveBoundary) {
   return {
     forge, scope, repositoryBindingId: bindingId, branch: 'asep/attempt-1',
-    facts: pullRequestFactsOf(prFacts), observe,
+    facts: pullRequestFactsOf(prFacts), observe, recorded: recordedPr,
   };
 }
 
@@ -1000,15 +1014,14 @@ test('reconcilePullRequestStep keeps a PR that already is the facts\' PR', async
   const forge = fakeForge(prRef, { pr: { ...prRef, ...content } });
   const res = await reconcilePullRequestStep(remoteInput(forge, observe));
   assert.equal(res.repaired, false);
-  assert.equal(res.pr.number, 7);
+  assert.deepEqual(res.pr, { ...prRef, ...content });
   assert.equal(forge.upserts, 0);
   assert.equal(seen.length, 0);
 });
 
-test('reconcilePullRequestStep rewrites a missing or diverged PR from the facts, on record', async () => {
+test('reconcilePullRequestStep rewrites a diverged PR from the facts, on record, and returns what it read back', async () => {
   const content = pullRequestContent(pullRequestFactsOf(prFacts));
-  const cases: readonly (readonly [string, PullRequestRef | null])[] = [
-    ['absent', null],
+  const cases: readonly (readonly [string, PullRequestRef])[] = [
     ['other title', { ...prRef, ...content, title: 'written by someone else' }],
     ['other body', { ...prRef, ...content, body: `${content.body}fencing-epoch: 2\n` }],
     ['no content read', prRef],
@@ -1024,9 +1037,9 @@ test('reconcilePullRequestStep rewrites a missing or diverged PR from the facts,
     assert.equal(seen.length, 1, name);
     assert.equal(seen[0]!.span, 'forge.pull_request', name);
     assert.equal(seen[0]!.action, 'forge.reconcile', name);
-    assert.equal((seen[0]!.detail['found'] as { number?: number } | null)?.number ?? null,
-      found === null ? null : 7, name);
+    assert.equal((seen[0]!.detail['found'] as { number?: number }).number, 7, name);
     assert.equal(res.gap, undefined, name);
+    assert.deepEqual(res.pr, { ...found, ...content }, `${name}: the PR as read back after the write`);
   }
 });
 
@@ -1063,12 +1076,67 @@ test('reconcilePullRequestStep writes nothing to a closed, merged or retargeted 
   }
 });
 
-test('reconcilePullRequestStep reports a gap when the PR it wrote is not reviewable', async () => {
+test('publicationGap: the PR shown must be the recorded PR, reviewable, at the attempt\'s commit', () => {
+  const facts = pullRequestFactsOf(prFacts);
+  assert.equal(publicationGap(prRef, recordedPr, facts), undefined);
+  assert.equal(publicationGap(null, recordedPr, facts), 'the forge shows no pull request for asep/attempt-1');
+  assert.equal(publicationGap({ ...prRef, number: 8, url: 'https://forge.invalid/pr/8' }, recordedPr, facts),
+    'the forge shows PR #8 for asep/attempt-1, not the recorded PR #7');
+  assert.equal(publicationGap({ ...prRef, url: 'https://forge.invalid/other/7' }, recordedPr, facts),
+    'PR #7 is at https://forge.invalid/other/7, not the recorded https://forge.invalid/pr/7');
+  assert.equal(publicationGap({ ...prRef, headBranch: 'asep/attempt-2' }, recordedPr, facts),
+    'PR #7 is for asep/attempt-2, not the recorded asep/attempt-1');
+  assert.equal(publicationGap({ ...prRef, state: 'closed', merged: true }, recordedPr, facts), 'PR #7 is merged');
+  assert.equal(publicationGap(prRef, { ...recordedPr, baseBranch: 'release/2' }, facts),
+    'PR #7 targets main, not the recorded base release/2');
+  assert.equal(publicationGap({ ...prRef, headSha: 'e'.repeat(40) }, recordedPr, facts),
+    `PR #7 shows ${'e'.repeat(40)}, not the attempt's commit ${'d'.repeat(40)}`);
+  const { headSha: _h, ...noHead } = prRef;
+  assert.equal(publicationGap(noHead, recordedPr, facts), 'PR #7: the forge did not report its head commit');
+});
+
+function withoutHeadSha(pr: PullRequestRef): PullRequestRef {
+  const { headSha: _h, ...rest } = pr;
+  return rest;
+}
+
+test('reconcilePullRequestStep writes nothing to a PR that is not the recorded one, nor creates a missing one', async () => {
+  const content = pullRequestContent(pullRequestFactsOf(prFacts));
+  const cases: readonly (readonly [string, PullRequestRef | null, RegExp])[] = [
+    ['absent', null, /shows no pull request/],
+    ['another PR on the branch', { ...prRef, number: 8, url: 'https://forge.invalid/pr/8', title: 'stale' },
+      /shows PR #8 for asep\/attempt-1, not the recorded PR #7/],
+    ['another URL', { ...prRef, url: 'https://forge.invalid/other/7', title: 'stale' }, /not the recorded https/],
+    ['another head commit', { ...prRef, ...content, headSha: 'e'.repeat(40) }, /not the attempt's commit/],
+    ['head commit unreported', withoutHeadSha({ ...prRef, ...content }), /did not report its head commit/],
+  ];
+  for (const [name, found, gap] of cases) {
+    const { seen, observe } = recordingObserve();
+    const forge = fakeForge(prRef, { pr: found });
+    const res = await reconcilePullRequestStep(remoteInput(forge, observe));
+    assert.equal(res.repaired, false, name);
+    assert.match(res.gap ?? '', gap, name);
+    assert.deepEqual(res.pr, found, name);
+    assert.equal(forge.upserts, 0, `${name}: nothing written, nothing created`);
+    assert.equal(seen.length, 0, name);
+  }
+});
+
+test('reconcilePullRequestStep reports a gap when the PR read back after its write is no longer reviewable', async () => {
   const { observe } = recordingObserve();
-  const forge = fakeForge({ ...prRef, state: 'closed', merged: false }, { pr: null });
-  const res = await reconcilePullRequestStep(remoteInput(forge, observe));
+  const forge = fakeForge(prRef, { pr: prRef });
+  // A human closes the PR between the repair's write and the read after it.
+  const closed = { ...prRef, title: 'x', body: 'y', state: 'closed' as const, merged: false };
+  let reads = 0;
+  const res = await reconcilePullRequestStep(remoteInput({
+    ...forge,
+    upsertPullRequest: forge.upsertPullRequest,
+    findPullRequest: async () => (reads++ === 0 ? prRef : closed),
+  }, observe));
+  assert.equal(forge.upserts, 1);
   assert.equal(res.repaired, true);
-  assert.match(res.gap ?? '', /is closed/);
+  assert.match(res.gap ?? '', /PR #7 is closed/);
+  assert.deepEqual(res.pr, closed, 'the observation that failed, not what was written');
 });
 
 // --- setReviewStep (I1/I2) --------------------------------------------------
@@ -1243,6 +1311,93 @@ test('completeToReview is crash-safe: a full re-run adopts the push+PR (single r
   const forge = shared.forge as FakeForge;
   assert.equal(forge.pushes, 1, 'exactly one push across both runs');
   assert.equal(forge.upserts, 1, 'exactly one PR upsert across both runs');
+});
+
+// What completion returns, and the caller persists, is the PR it read back and
+// checked against the attempt's record — never the upsert's answer or the
+// record itself.
+
+test('completeToReview returns the PR it read back after the record, not the upsert\'s answer', async () => {
+  const input = driverInput();
+  const forge = input.forge as FakeForge;
+  const observed: PullRequestRef[] = [];
+  const res = await completeToReview({
+    ...input,
+    forge: {
+      ...forge,
+      // The upsert answers with no state and no head commit, as a record would.
+      upsertPullRequest: async (s, i) => {
+        const { state: _s, merged: _m, headSha: _h, ...bare } = await forge.upsertPullRequest(s, i);
+        return bare;
+      },
+      findPullRequest: async (s, q) => {
+        const pr = await forge.findPullRequest(s, q);
+        if (pr !== null) observed.push(pr);
+        return pr;
+      },
+    },
+  });
+  assert.equal(res.stoppedAt, 'complete', res.reason);
+  assert.equal(observed.length, 1, 'read once after the record');
+  assert.equal(res.pr, observed[0], 'the very observation that was checked');
+  assert.equal(res.pr?.headSha, 'd'.repeat(40));
+  assert.deepEqual(res.recorded, recordedPr);
+});
+
+test('completeToReview stops when the forge shows another PR than the recorded one on the attempt\'s branch', async () => {
+  const shared = driverInput();
+  assert.equal((await completeToReview(shared)).stoppedAt, 'complete');
+  // Before the terminal write is persisted, a human closes PR #7 and opens #8
+  // on the same branch; the re-run adopts #7 from its record.
+  const forge = shared.forge as FakeForge;
+  const replacement: PullRequestRef = { ...prRef, number: 8, url: 'https://forge.invalid/pr/8', title: 'opened by a human' };
+  const again = await completeToReview({
+    ...shared,
+    forge: { ...forge, upsertPullRequest: forge.upsertPullRequest, findPullRequest: async () => replacement },
+  });
+  assert.equal(again.stoppedAt, 'upsert-pr');
+  assert.equal(again.reason, 'publication incomplete: the forge shows PR #8 for asep/attempt-1, not the recorded PR #7');
+  assert.equal(again.task, undefined, 'the task is not advanced to review');
+  assert.equal(again.pr, replacement, 'what was found is reported as found');
+  assert.deepEqual(again.recorded, recordedPr);
+  assert.equal(forge.upserts, 1, 'nothing is written to PR #8');
+});
+
+test('completeToReview stops when the PR changes while its record is written', async () => {
+  const changes: readonly (readonly [string, Partial<PullRequestRef>, RegExp])[] = [
+    ['closed', { state: 'closed', merged: false }, /^publication incomplete: PR #7 is closed$/],
+    ['merged', { state: 'closed', merged: true }, /^publication incomplete: PR #7 is merged$/],
+    ['retargeted', { baseBranch: 'release/2' }, /^publication incomplete: PR #7 targets release\/2/],
+    ['moved', { headSha: 'e'.repeat(40) }, /^publication incomplete: PR #7 shows e{40}, not the attempt's commit/],
+  ];
+  for (const [name, change, gap] of changes) {
+    const input = driverInput();
+    const forge = input.forge as FakeForge;
+    const log = input.log as MemorySideEffectLog;
+    // A human acts on the PR while the harness records it.
+    let human: Partial<PullRequestRef> = {};
+    const complete = log.complete.bind(log);
+    log.complete = async (s, i) => {
+      const done = await complete(s, i);
+      if (i.operation === 'pr-upsert') human = change;
+      return done;
+    };
+    const res = await completeToReview({
+      ...input,
+      forge: {
+        ...forge,
+        upsertPullRequest: forge.upsertPullRequest,
+        findPullRequest: async (s, q) => {
+          const pr = await forge.findPullRequest(s, q);
+          return pr === null ? null : { ...pr, ...human };
+        },
+      },
+    });
+    assert.equal(res.stoppedAt, 'upsert-pr', name);
+    assert.match(res.reason ?? '', gap, name);
+    assert.equal(res.task, undefined, `${name}: the task is not advanced to review`);
+    assert.equal(forge.upserts, 1, `${name}: nothing more is written`);
+  }
 });
 
 // HIGH-006 (cycle-4 residue): the evidence write is the ONE durable step that

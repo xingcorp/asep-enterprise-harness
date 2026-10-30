@@ -46,7 +46,8 @@ const bundle: EvidenceBundle = {
 // whether its commit is recorded under the attempt. `remote` is the forge's
 // branch and PR, which the forge double keeps as a forge would: a push is
 // compare-and-set, an upsert writes what it is given to an open PR on the base
-// given and leaves a PR a human closed, merged or retargeted as it found it.
+// given and leaves a PR a human closed, merged or retargeted as it found it,
+// and reports a PR's head commit as the branch's unless the PR says otherwise.
 interface Remote { ref: string | null; pr: PullRequestRef | null; afterUpsert?: (() => void) | undefined }
 function world(
   risk: RiskLevel, calls: string[],
@@ -115,7 +116,11 @@ function world(
       return written;
     },
     resolveRef: async () => { calls.push('forge.resolve'); return remote.ref; },
-    findPullRequest: async () => { calls.push('forge.find'); return remote.pr; },
+    findPullRequest: async () => {
+      calls.push('forge.find');
+      if (remote.pr === null) return null;
+      return remote.pr.headSha === undefined && remote.ref !== null ? { ...remote.pr, headSha: remote.ref } : remote.pr;
+    },
   };
   let status: TaskStatus = taskStatus;
   return {
@@ -307,8 +312,9 @@ for (const c of unreviewable) {
       to: 'FAILED', outcome: 'publication-incomplete', reason: r.reason?.replace('publication incomplete: ', ''),
       found: {
         number: 7, url: c.pr.url, headBranch: branch, baseBranch: c.pr.baseBranch,
-        state: c.pr.state, merged: c.pr.merged,
+        headSha: commitSha, state: c.pr.state, merged: c.pr.merged,
       },
+      recorded: { number: 7, url: c.pr.url, headBranch: branch, baseBranch: c.pr.baseBranch },
       expectedBase: base, commitSha, resumed: true,
     }]);
   });
@@ -335,4 +341,47 @@ test('a resume of a task already under review leaves it there when its PR was cl
   assert.ok(!calls.some((c) => c.startsWith('task.status:')), 'review has no harness transition');
   assert.ok(!calls.includes('pr.persist'));
   assert.ok(!calls.includes('forge.pr.write'));
+});
+
+// What the resume persists is the PR it checked against the attempt's record.
+// Another PR on the attempt's branch, or the recorded PR at another commit, is
+// not the attempt's publication: nothing is written to it and the task fails.
+
+test('a resume that finds another PR on the attempt\'s branch writes nothing to it and fails the task', async () => {
+  const calls: string[] = [];
+  const remote: Remote = { ref: commitSha, pr: null };
+  // A human closes the recorded PR #7 and opens #8 on the same branch.
+  remote.afterUpsert = () => {
+    remote.afterUpsert = undefined;
+    remote.pr = foundPr({ number: 8, url: 'https://example.invalid/pr/8', title: 'opened by a human' });
+  };
+  const { actions, input } = audited();
+  const r = await resumeAttemptToReview({ ...world('R0', calls, 'COMPLETED', true, remote), ...input });
+  assert.equal(r.stoppedAt, 'publication-incomplete');
+  assert.equal(r.reason, `publication incomplete: the forge shows PR #8 for ${branch}, not the recorded PR #7`);
+  assert.equal(r.taskStatus, 'FAILED');
+  assert.equal(r.prNumber, 7, 'the attempt\'s PR is the recorded one');
+  assert.ok(!calls.includes('pr.persist'), 'no PR row is recorded');
+  assert.equal(calls.filter((c) => c === 'forge.pr.write').length, 1, 'only the attempt\'s own upsert wrote');
+  assert.equal(remote.pr?.title, 'opened by a human', 'PR #8 is left as the human made it');
+  const failed = actions.find((a) => a.action === 'task.status.transition')?.detail as Record<string, unknown>;
+  assert.deepEqual(failed['found'], {
+    number: 8, url: 'https://example.invalid/pr/8', headBranch: branch, baseBranch: base,
+    headSha: commitSha, state: 'open', merged: false,
+  });
+  assert.deepEqual(failed['recorded'], { number: 7, url: 'https://example.invalid/pr/7', headBranch: branch, baseBranch: base });
+});
+
+test('a resume over the recorded PR at another commit fails the task without writing to it', async () => {
+  const calls: string[] = [];
+  const remote: Remote = { ref: commitSha, pr: null };
+  remote.afterUpsert = () => {
+    remote.afterUpsert = undefined;
+    remote.pr = { ...remote.pr!, headSha: 'e'.repeat(40) };
+  };
+  const r = await resumeAttemptToReview(world('R0', calls, 'COMPLETED', true, remote));
+  assert.equal(r.stoppedAt, 'publication-incomplete');
+  assert.equal(r.reason, `publication incomplete: PR #7 shows ${'e'.repeat(40)}, not the attempt's commit ${commitSha}`);
+  assert.equal(r.taskStatus, 'FAILED');
+  assert.ok(!calls.includes('pr.persist'));
 });

@@ -231,15 +231,20 @@ test('fault 5: a GitHub rate limit on the PR stops the run; after back-off the r
     const remote = await createBareRemote(join(dir, 'forge.git'));
     const local = new LocalBareForgeProvider(remote);
 
-    // GitHub's PR endpoint, rate-limited until `limited` is cleared.
+    // GitHub's PR endpoint, rate-limited until `limited` is cleared. Like
+    // GitHub, it lists a PR at its branch's tip, which it learns from the pushes.
     const prs: Array<{
-      number: number; html_url: string; head: { ref: string }; base: { ref: string }; state: 'open'; merged: false;
+      number: number; html_url: string; head: { ref: string; sha?: string }; base: { ref: string }; state: 'open'; merged: false;
     }> = [];
+    const heads = new Map<string, string>();
     let limited = true;
     let creates = 0;
     const octokitFor = (): OctokitLike => ({
       pulls: {
-        list: async ({ head }) => ({ data: prs.filter((pr) => head === `acme:${pr.head.ref}`) }),
+        list: async ({ head }) => ({
+          data: prs.filter((pr) => head === `acme:${pr.head.ref}`)
+            .map((pr) => ({ ...pr, head: { ref: pr.head.ref, ...(heads.has(pr.head.ref) ? { sha: heads.get(pr.head.ref)! } : {}) } })),
+        }),
         create: async ({ head, base }) => {
           creates += 1;
           if (limited) {
@@ -268,7 +273,10 @@ test('fault 5: a GitHub rate limit on the PR stops the run; after back-off the r
       }),
     );
     const forge: ForgeProvider = {
-      pushBranch: (scope, input) => local.pushBranch(scope, input),
+      pushBranch: async (scope, input) => {
+        await local.pushBranch(scope, input);
+        heads.set(input.branch, input.commitSha);
+      },
       resolveRef: (scope, input) => local.resolveRef(scope, input),
       upsertPullRequest: (scope, input) => github.upsertPullRequest(scope, input),
       findPullRequest: (scope, input) => github.findPullRequest(scope, input),

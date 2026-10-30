@@ -51,7 +51,7 @@ import type { SpanTracer, AuditSink } from '@asep/observability';
 import { governedExecution } from './governed-execution.js';
 import { completionObserver, fencedBy } from './completion-observer.js';
 import {
-  completeToReview, pullRequestFound, SandboxIsolationRequiredError,
+  completeToReview, pullRequestFound, pullRequestRecorded, SandboxIsolationRequiredError,
   type VerificationCheckSpec,
 } from './pipeline-steps.js';
 
@@ -529,11 +529,12 @@ export async function runVerticalSliceWorkflow(
         });
       },
     });
-    // A PR that is closed, merged or on another base is not a publication under
-    // review: the task fails, on record with what was found, and no PR row is
-    // written. The PR itself is left exactly as the forge holds it.
-    if (result.gap !== undefined && result.pr !== undefined) {
-      const found = result.pr;
+    // What the forge shows is not the attempt's recorded, reviewable PR — none,
+    // another PR, or one closed, merged or retargeted: the task fails, on
+    // record with what was found, and no PR row is written. The PR itself is
+    // left exactly as the forge holds it.
+    if (result.gap !== undefined) {
+      const found = result.pr ?? null;
       const gap = result.gap;
       let attemptVersion = attemptVersionAtStart;
       await observeFenced(
@@ -542,7 +543,9 @@ export async function runVerticalSliceWorkflow(
           action: 'task.status.transition',
           detail: {
             to: 'FAILED', outcome: 'publication-incomplete', reason: gap,
-            found: pullRequestFound(found), expectedBase: input.binding.defaultBaseBranch,
+            found: pullRequestFound(found),
+            recorded: result.recorded !== undefined ? pullRequestRecorded(result.recorded) : null,
+            expectedBase: input.binding.defaultBaseBranch,
             commitSha: result.commitSha ?? null,
           },
         },

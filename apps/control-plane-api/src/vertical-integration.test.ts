@@ -114,7 +114,8 @@ class FileWritingAgent implements CodingAgentProvider {
 // Fake GitHub: a REAL compare-and-set push to a local bare remote (pushing the
 // exact commit SHA to the safe ASEP-namespaced ref — a detached worktree has no
 // local branch to push) + an in-memory idempotent PR upsert that keeps what it
-// is given and reports the PR open. NO merge capability exists.
+// is given and reports the PR open, at its branch's commit on the remote. NO
+// merge capability exists.
 class LocalBareForgeProvider implements ForgeProvider {
   pushes = 0;
   private readonly prs = new Map<string, PullRequestRef>();
@@ -181,11 +182,14 @@ class LocalBareForgeProvider implements ForgeProvider {
     return /^[0-9a-f]{40}$/.test(sha) ? sha : null;
   }
 
-  async findPullRequest(_scope: TenantScope, input: {
+  async findPullRequest(scope: TenantScope, input: {
     repositoryBindingId: RepositoryBindingId;
     headBranch: string;
   }): Promise<PullRequestRef | null> {
-    return this.prs.get(input.headBranch) ?? null;
+    const pr = this.prs.get(input.headBranch);
+    if (pr === undefined) return null;
+    const headSha = await this.resolveRef(scope, { repositoryBindingId: input.repositoryBindingId, branch: input.headBranch });
+    return headSha === null ? pr : { ...pr, headSha };
   }
 }
 

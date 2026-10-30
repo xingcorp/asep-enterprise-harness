@@ -632,7 +632,8 @@ for (const h of humanActs) {
       assert.equal(f.prRows, 0, 'no PR row is recorded');
       assert.deepEqual(f.failures, [{
         to: 'FAILED', outcome: 'publication-incomplete', reason: r.reason!.replace('publication incomplete: ', ''),
-        found: { number: 1, url: 'https://local.forge/pr/1', headBranch: c.branch, ...h.found },
+        found: { number: 1, url: 'https://local.forge/pr/1', headBranch: c.branch, headSha: r.commitSha, ...h.found },
+        recorded: { number: 1, url: 'https://local.forge/pr/1', headBranch: c.branch, baseBranch: h.found.baseBranch },
         expectedBase: 'main', commitSha: r.commitSha, resumed: true,
       }]);
       // The task is closed: a further resume does nothing.
@@ -647,16 +648,26 @@ for (const h of humanActs) {
 
 // The reviewer's probe, end to end through the GitHub adapter and its port: the
 // pulls API reports the attempt's PR closed — merged or not — after the
-// executor died with the PR opened but unrecorded.
+// executor died with the PR opened but unrecorded. Like GitHub, the pulls API
+// reports a PR's head commit as its branch's tip, which the fake learns from
+// the pushes that reach the forge.
 interface StoredPr {
   number: number; html_url: string; head: { ref: string }; base: { ref: string };
   title?: string; body?: string; state: 'open' | 'closed'; merged_at: string | null;
 }
 
-function githubPulls(opts: { closedBeforeRun?: { merged: boolean } } = {}) {
+function githubPulls(opts: {
+  closedBeforeRun?: { merged: boolean };
+  // What a human does to the PR on GitHub right after it is opened.
+  afterCreate?: (pr: StoredPr, prs: StoredPr[]) => void;
+} = {}) {
   const prs: StoredPr[] = [];
   const writes: string[] = [];
-  const copy = (pr: StoredPr): StoredPr => structuredClone(pr);
+  const heads = new Map<string, string>();
+  const copy = (pr: StoredPr) => {
+    const sha = heads.get(pr.head.ref);
+    return { ...structuredClone(pr), head: { ref: pr.head.ref, ...(sha !== undefined ? { sha } : {}) } };
+  };
   const octokitFor = (): OctokitLike => ({
     pulls: {
       list: async ({ head }) => {
@@ -678,7 +689,9 @@ function githubPulls(opts: { closedBeforeRun?: { merged: boolean } } = {}) {
           head: { ref: head }, base: { ref: base }, title, body, state: 'open', merged_at: null,
         };
         prs.push(pr);
-        return { data: { ...copy(pr), merged: false } };
+        const answer = { ...copy(pr), merged: false };
+        opts.afterCreate?.(pr, prs);
+        return { data: answer };
       },
       update: async ({ pull_number, title, body }) => {
         writes.push('update');
@@ -688,11 +701,15 @@ function githubPulls(opts: { closedBeforeRun?: { merged: boolean } } = {}) {
       },
     },
   });
-  return { prs, writes, octokitFor };
+  return { prs, writes, heads, octokitFor };
 }
 
+// The executor "dies" after the PR is opened but before it is recorded, or
+// after it is recorded but before the PR is read back for completion.
+type GitHubCrash = 'after-pr' | 'after-pr-record' | false;
+
 function githubForge(
-  client: SqlClient, local: LocalBareForgeProvider, pulls: ReturnType<typeof githubPulls>, crashAfterPr: boolean,
+  client: SqlClient, local: LocalBareForgeProvider, pulls: ReturnType<typeof githubPulls>, crash: GitHubCrash,
 ): ForgeProvider {
   const credentials = new GitHubAppCredentialProvider(
     { appId: 1, privateKey: 'unused', installationId: 9 },
@@ -704,9 +721,13 @@ function githubForge(
       localRepoPathFor: () => { throw new Error('PR operations need no local repository'); },
     }),
   );
-  let crashPending = crashAfterPr;
+  let crashPending = crash === 'after-pr';
+  let readCrashPending = crash === 'after-pr-record';
   return {
-    pushBranch: (scope, input) => local.pushBranch(scope, input),
+    pushBranch: async (scope, input) => {
+      await local.pushBranch(scope, input);
+      pulls.heads.set(input.branch, input.commitSha);
+    },
     resolveRef: (scope, input) => local.resolveRef(scope, input),
     upsertPullRequest: async (scope, input) => {
       const pr = await github.upsertPullRequest(scope, input);
@@ -716,7 +737,13 @@ function githubForge(
       }
       return pr;
     },
-    findPullRequest: (scope, input) => github.findPullRequest(scope, input),
+    findPullRequest: async (scope, input) => {
+      if (readCrashPending && pulls.writes.length > 0) {
+        readCrashPending = false;
+        throw new SimulatedCrash('executor died after the PR was recorded');
+      }
+      return github.findPullRequest(scope, input);
+    },
   };
 }
 
@@ -768,7 +795,7 @@ for (const merged of [false, true]) {
       await assert.rejects(
         () => runVerticalSlice({
           client, sandbox, dir: join(dir, 'run'), checkCommand: checkCommandFor,
-          forge: githubForge(client, gh.local, pulls, true),
+          forge: githubForge(client, gh.local, pulls, 'after-pr'),
           onWorkspaceCreated: (p) => gh.local.setWorktree(p),
           repository: gh.repository,
         }),
@@ -796,7 +823,10 @@ for (const merged of [false, true]) {
       assert.equal(f.failures.length, 1);
       assert.deepEqual(f.failures[0]!['found'], {
         number: 1, url: 'https://github.com/acme/web/pull/1', headBranch: a.branch, baseBranch: 'main',
-        state: 'closed', merged,
+        headSha: r.commitSha, state: 'closed', merged,
+      });
+      assert.deepEqual(f.failures[0]!['recorded'], {
+        number: 1, url: 'https://github.com/acme/web/pull/1', headBranch: a.branch, baseBranch: 'main',
       });
     } finally {
       await client.close();
@@ -833,7 +863,151 @@ test('a run whose head branch already has a closed PR fails the task on record a
     assert.equal(f.failures[0]!['outcome'], 'publication-incomplete');
     assert.deepEqual(f.failures[0]!['found'], {
       number: 1, url: 'https://github.com/acme/web/pull/1', headBranch: a.branch, baseBranch: 'main',
-      state: 'closed', merged: false,
+      headSha: pulls.heads.get(a.branch), state: 'closed', merged: false,
+    });
+  } finally {
+    await client.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// What is completed and persisted is the PR read back and checked against the
+// attempt's record. Through the GitHub adapter and port: a human closes the
+// recorded PR #1 and opens #2 on the attempt's head branch while the executor
+// is dead with #1 recorded; the successor adopts #1 from its record, the forge
+// shows #2, and the task fails with nothing written to #2.
+test('through the GitHub adapter and port, a successor that finds another PR on the attempt\'s branch fails the task and writes nothing', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'asep-replaced-pr-'));
+  const client = await PgliteClient.create();
+  try {
+    await migrate(client);
+    const pulls = githubPulls();
+    const gh = await onGitHub(dir);
+    const sandbox = await fakeDockerSandbox(join(dir, 'sandbox'));
+    await assert.rejects(
+      () => runVerticalSlice({
+        client, sandbox, dir: join(dir, 'run'), checkCommand: checkCommandFor,
+        forge: githubForge(client, gh.local, pulls, 'after-pr-record'),
+        onWorkspaceCreated: (p) => gh.local.setWorktree(p),
+        repository: gh.repository,
+      }),
+      SimulatedCrash,
+    );
+    const a = await theAttempt(client);
+    const record = await client.query(
+      `select state from side_effect_records where attempt_id = $1 and operation = 'pr-upsert'`, [a.attemptId],
+    );
+    assert.equal(record.rows[0]!['state'], 'COMPLETED', 'PR #1 is recorded');
+    assert.deepEqual(pulls.writes, ['create']);
+    // A human closes PR #1 and opens #2 on the same head branch.
+    pulls.prs[0]!.state = 'closed';
+    pulls.prs.push({
+      number: 2, html_url: 'https://github.com/acme/web/pull/2', head: { ref: a.branch }, base: { ref: 'main' },
+      title: 'opened by a human', body: 'not the attempt\'s', state: 'open', merged_at: null,
+    });
+    const asLeft = structuredClone(pulls.prs);
+
+    const r = await resumeVerticalSlice({
+      client, dir: join(dir, 'run'), mirrorPath: gh.mirror, ...a,
+      forge: githubForge(client, gh.local, pulls, false),
+    });
+    assert.equal(r.stoppedAt, 'publication-incomplete', r.reason);
+    assert.equal(r.reason, `publication incomplete: the forge shows PR #2 for ${a.branch}, not the recorded PR #1`);
+    assert.equal(r.taskStatus, 'FAILED');
+    assert.equal(r.prAdopted, true, 'PR #1 came back from its record');
+    assert.equal(r.prNumber, 1);
+    assert.deepEqual(pulls.writes, ['create'], 'nothing was written to GitHub, least of all to PR #2');
+    assert.deepEqual(pulls.prs, asLeft);
+    const f = await failedOnRecord(client, a.taskId, a.attemptId);
+    assert.equal(f.status, 'FAILED');
+    assert.equal(f.prRows, 0, 'neither PR is persisted');
+    assert.equal(f.failures.length, 1);
+    assert.deepEqual(f.failures[0]!['found'], {
+      number: 2, url: 'https://github.com/acme/web/pull/2', headBranch: a.branch, baseBranch: 'main',
+      headSha: r.commitSha, state: 'open', merged: false,
+    });
+    assert.deepEqual(f.failures[0]!['recorded'], {
+      number: 1, url: 'https://github.com/acme/web/pull/1', headBranch: a.branch, baseBranch: 'main',
+    });
+  } finally {
+    await client.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// A fresh run reads its PR back after recording it: a PR a human closes, merges
+// or retargets right after it is opened is not completed, and never persisted.
+const changedAfterCreate = [
+  { name: 'closed', act: (pr: StoredPr) => { pr.state = 'closed'; }, gap: 'PR #1 is closed', state: 'closed', merged: false, base: 'main' },
+  { name: 'merged', act: (pr: StoredPr) => { pr.state = 'closed'; pr.merged_at = '2026-10-30T00:00:00Z'; }, gap: 'PR #1 is merged', state: 'closed', merged: true, base: 'main' },
+  { name: 'retargeted', act: (pr: StoredPr) => { pr.base = { ref: 'release/2' }; }, gap: 'PR #1 targets release/2, not the attempt\'s base main', state: 'open', merged: false, base: 'release/2' },
+] as const;
+
+for (const c of changedAfterCreate) {
+  test(`through the GitHub adapter and port, a run whose PR a human ${c.name} as it was recorded fails the task`, async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'asep-changed-pr-'));
+    const client = await PgliteClient.create();
+    try {
+      await migrate(client);
+      const pulls = githubPulls({ afterCreate: c.act });
+      const gh = await onGitHub(dir);
+      const sandbox = await fakeDockerSandbox(join(dir, 'sandbox'));
+      await assert.rejects(
+        () => runVerticalSlice({
+          client, sandbox, dir: join(dir, 'run'), checkCommand: checkCommandFor,
+          forge: githubForge(client, gh.local, pulls, false),
+          onWorkspaceCreated: (p) => gh.local.setWorktree(p),
+          repository: gh.repository,
+        }),
+        new RegExp(`completion stopped early at 'upsert-pr': publication incomplete: ${c.gap.replace(/[/]/g, '\\/')}`),
+      );
+      assert.deepEqual(pulls.writes, ['create'], 'nothing more was written');
+      const a = await theAttempt(client);
+      const f = await failedOnRecord(client, a.taskId, a.attemptId);
+      assert.equal(f.status, 'FAILED');
+      assert.equal(f.prRows, 0, 'never persisted OPEN');
+      assert.equal(f.failures.length, 1);
+      assert.equal(f.failures[0]!['reason'], c.gap);
+      assert.deepEqual(f.failures[0]!['found'], {
+        number: 1, url: 'https://github.com/acme/web/pull/1', headBranch: a.branch, baseBranch: c.base,
+        headSha: pulls.heads.get(a.branch), state: c.state, merged: c.merged,
+      });
+      assert.deepEqual(f.failures[0]!['recorded'], {
+        number: 1, url: 'https://github.com/acme/web/pull/1', headBranch: a.branch, baseBranch: 'main',
+      });
+    } finally {
+      await client.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+}
+
+test('through the GitHub adapter and port, a run whose PR the forge no longer shows after opening it fails the task', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'asep-missing-pr-'));
+  const client = await PgliteClient.create();
+  try {
+    await migrate(client);
+    const pulls = githubPulls({ afterCreate: (_pr, prs) => { prs.length = 0; } });
+    const gh = await onGitHub(dir);
+    const sandbox = await fakeDockerSandbox(join(dir, 'sandbox'));
+    await assert.rejects(
+      () => runVerticalSlice({
+        client, sandbox, dir: join(dir, 'run'), checkCommand: checkCommandFor,
+        forge: githubForge(client, gh.local, pulls, false),
+        onWorkspaceCreated: (p) => gh.local.setWorktree(p),
+        repository: gh.repository,
+      }),
+      /completion stopped early at 'upsert-pr': publication incomplete: the forge shows no pull request for /,
+    );
+    assert.deepEqual(pulls.writes, ['create'], 'the PR is not opened again');
+    const a = await theAttempt(client);
+    const f = await failedOnRecord(client, a.taskId, a.attemptId);
+    assert.equal(f.status, 'FAILED');
+    assert.equal(f.prRows, 0);
+    assert.equal(f.failures.length, 1);
+    assert.equal(f.failures[0]!['found'], null);
+    assert.deepEqual(f.failures[0]!['recorded'], {
+      number: 1, url: 'https://github.com/acme/web/pull/1', headBranch: a.branch, baseBranch: 'main',
     });
   } finally {
     await client.close();
