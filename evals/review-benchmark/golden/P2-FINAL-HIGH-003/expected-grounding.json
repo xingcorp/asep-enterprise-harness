@@ -1,0 +1,115 @@
+{
+  "note": "Per side, output and finding key: the grounding outcome (by hand) and the fingerprint (golden-oracle.py).",
+  "reviewed": {
+    "exact-and-near": {
+      "exact": {
+        "grounded": true,
+        "reason": null,
+        "fingerprint": "5917cc175a52e54005961ffe426a56d7e79137c50515095f25ddc0177510ba3b"
+      },
+      "near": {
+        "grounded": true,
+        "reason": null,
+        "fingerprint": "6b303d55ae59d1d9aa74b05d4c7acb235de3a9da1b9d779e8049489595545700"
+      }
+    },
+    "exact": {
+      "exact": {
+        "grounded": true,
+        "reason": null,
+        "fingerprint": "5917cc175a52e54005961ffe426a56d7e79137c50515095f25ddc0177510ba3b"
+      }
+    },
+    "far": {
+      "far": {
+        "grounded": true,
+        "reason": null,
+        "fingerprint": "6b303d55ae59d1d9aa74b05d4c7acb235de3a9da1b9d779e8049489595545700"
+      }
+    },
+    "near": {
+      "near": {
+        "grounded": true,
+        "reason": null,
+        "fingerprint": "6b303d55ae59d1d9aa74b05d4c7acb235de3a9da1b9d779e8049489595545700"
+      }
+    },
+    "other-file": {
+      "other-file": {
+        "grounded": true,
+        "reason": null,
+        "fingerprint": "9991270cf93c1aa454d92b1edb3ad34053ebe11ada9f7e322da7431dd440e57e"
+      }
+    },
+    "outside-file": {
+      "outside-file": {
+        "grounded": false,
+        "reason": "lines-outside-file",
+        "fingerprint": "316d6427cae8c08710804a48dc1199799fe274f85c178bc6281ffb89ec881910"
+      }
+    },
+    "wrong-category": {
+      "wrong-category": {
+        "grounded": true,
+        "reason": null,
+        "fingerprint": "1a60833c41186cee741df371168e22ca97fbc2034097a38c3ba1ac72a7926ca4"
+      }
+    }
+  },
+  "post-fix": {
+    "exact-and-near": {
+      "exact": {
+        "grounded": true,
+        "reason": null,
+        "fingerprint": "5917cc175a52e54005961ffe426a56d7e79137c50515095f25ddc0177510ba3b"
+      },
+      "near": {
+        "grounded": true,
+        "reason": null,
+        "fingerprint": "6b303d55ae59d1d9aa74b05d4c7acb235de3a9da1b9d779e8049489595545700"
+      }
+    },
+    "exact": {
+      "exact": {
+        "grounded": true,
+        "reason": null,
+        "fingerprint": "5917cc175a52e54005961ffe426a56d7e79137c50515095f25ddc0177510ba3b"
+      }
+    },
+    "far": {
+      "far": {
+        "grounded": true,
+        "reason": null,
+        "fingerprint": "6b303d55ae59d1d9aa74b05d4c7acb235de3a9da1b9d779e8049489595545700"
+      }
+    },
+    "near": {
+      "near": {
+        "grounded": true,
+        "reason": null,
+        "fingerprint": "6b303d55ae59d1d9aa74b05d4c7acb235de3a9da1b9d779e8049489595545700"
+      }
+    },
+    "other-file": {
+      "other-file": {
+        "grounded": true,
+        "reason": null,
+        "fingerprint": "9991270cf93c1aa454d92b1edb3ad34053ebe11ada9f7e322da7431dd440e57e"
+      }
+    },
+    "outside-file": {
+      "outside-file": {
+        "grounded": false,
+        "reason": "lines-outside-file",
+        "fingerprint": "316d6427cae8c08710804a48dc1199799fe274f85c178bc6281ffb89ec881910"
+      }
+    },
+    "wrong-category": {
+      "wrong-category": {
+        "grounded": true,
+        "reason": null,
+        "fingerprint": "1a60833c41186cee741df371168e22ca97fbc2034097a38c3ba1ac72a7926ca4"
+      }
+    }
+  }
+}

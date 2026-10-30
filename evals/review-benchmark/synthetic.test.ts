@@ -104,18 +104,19 @@ test('the synthetic work order, identity and execution follow the recipe', () =>
 });
 
 interface RoundTripPart {
-  readonly path: string;
+  readonly part: string;
   readonly sha256: string;
   readonly bytes: number;
   readonly masked: number;
 }
 
 interface RoundTripSide {
+  readonly chunk: string;
   readonly attempt: { readonly label: string; readonly id: string };
   readonly taskBaseSha: string;
   readonly resultSha: string;
   readonly diff: RoundTripPart;
-  readonly postImage: RoundTripPart;
+  readonly files: readonly (RoundTripPart & { readonly path: string; readonly status: string; readonly lineCount: number })[];
 }
 
 test('the golden item records its synthetic fields and round-trip parts, reproducible from git', () => {
@@ -124,49 +125,72 @@ test('the golden item records its synthetic fields and round-trip parts, reprodu
     reviewedSha: string;
     postFixSha: string;
     synthetic: unknown;
-    roundTrip: { file: string; sides: Readonly<Record<'reviewed' | 'post-fix', RoundTripSide>> };
+    roundTrip: { maxBytes: number; sides: Readonly<Record<'reviewed' | 'post-fix', RoundTripSide>> };
   };
   assert.deepEqual(golden.synthetic, RECORD);
-  assert.equal(golden.roundTrip.file, 'packages/application/src/execute-task.ts');
 
-  // The finding-id tokens each side's parts carry before masking, found by hand with grep.
-  const tokens = { reviewed: ['P2-PLAN-MED-003'], 'post-fix': ['P2-PLAN-MED-003', 'HIGH-007'] } as const;
+  // The hand-chosen chunk: the item's three cited files and the file the other-file output cites, in path order.
+  const files = [
+    'apps/control-plane-api/src/vertical-integration.test.ts',
+    'packages/application/src/execute-task.test.ts',
+    'packages/application/src/execute-task.ts',
+    'packages/application/src/index.ts',
+  ];
+  // Line counts by `wc -l`, and the finding-id tokens each part carries before masking, by `grep -oE`.
+  const lineCounts = { reviewed: [326, 202, 199, 56], 'post-fix': [364, 204, 204, 78] } as const;
+  const tokens = {
+    reviewed: [[], [], ['P2-PLAN-MED-003'], []],
+    'post-fix': [['HIGH-008', 'HIGH-008'], [], ['P2-PLAN-MED-003', 'HIGH-007'], []],
+  } as const;
+  const masked = (original: Uint8Array, list: readonly string[]) => {
+    let text = latin1(original);
+    for (const token of list) {
+      assert.ok(text.includes(token), token);
+      text = text.replace(token, 'X'.repeat(token.length));
+    }
+    return text;
+  };
   const resultOf = { reviewed: golden.reviewedSha, 'post-fix': golden.postFixSha } as const;
   const candidates = new Map<string, Uint8Array>();
   for (const side of ['reviewed', 'post-fix'] as const) {
     const record = golden.roundTrip.sides[side];
-    assert.deepEqual(record.attempt, { label: `corpus:attempt:p2-final/${side}/round-trip`, id: IDS[`corpus:attempt:p2-final/${side}/round-trip`] }, side);
+    const chunk = `p2-final/${side}/round-trip`;
+    assert.deepEqual(JSON.parse(readFileSync(join(ROOT, GOLDEN, side, 'chunks.json'), 'utf8')), [{ id: chunk, files }], side);
+    assert.equal(record.chunk, chunk, side);
+    assert.deepEqual(record.attempt, { label: `corpus:attempt:${chunk}`, id: IDS[`corpus:attempt:${chunk}`] }, side);
     assert.deepEqual([record.taskBaseSha, record.resultSha], [golden.baseSha, resultOf[side]], side);
 
-    // The file's section of the cycle's rule-P diff, and its post-image, as git has them.
+    // The chunk's diff is its files' sections of the cycle's rule-P diff, byte for byte, in path order.
     const whole = spawnSync('git', ['diff', ...RULE_P_DIFF_FLAGS, golden.baseSha, resultOf[side]], { cwd: ROOT, maxBuffer: 256 * 1024 * 1024 });
     assert.equal(whole.status, 0, side);
-    const section: Uint8Array = mappingSection(new Uint8Array(whole.stdout), golden.roundTrip.file).bytes!;
-    const single: SpawnSyncReturns<Buffer> = spawnSync('git', ['diff', ...RULE_P_DIFF_FLAGS, golden.baseSha, resultOf[side], '--', golden.roundTrip.file], { cwd: ROOT });
-    assert.equal(latin1(section), single.stdout.toString('latin1'), `${side}: the section is the file's own diff`);
-    const shown: SpawnSyncReturns<Buffer> = spawnSync('git', ['show', `${resultOf[side]}:${golden.roundTrip.file}`], { cwd: ROOT, maxBuffer: 64 * 1024 * 1024 });
-    assert.equal(shown.status, 0, side);
+    const sections = files.map((path) => mappingSection(new Uint8Array(whole.stdout), path).bytes!);
+    const diff = new Uint8Array(Buffer.concat(sections));
+    const own: SpawnSyncReturns<Buffer> = spawnSync('git', ['diff', ...RULE_P_DIFF_FLAGS, golden.baseSha, resultOf[side], '--', ...files], { cwd: ROOT });
+    assert.equal(latin1(diff), own.stdout.toString('latin1'), `${side}: the sections are the files' own diff`);
+    const parts: [RoundTripPart, Uint8Array, readonly string[]][] = [[record.diff, diff, tokens[side].flat()]];
 
-    for (const [part, original] of [
-      ['diff', section],
-      ['postImage', new Uint8Array(shown.stdout)],
-    ] as const) {
-      const recorded = record[part];
-      const committed = read(`${GOLDEN}/${recorded.path}`);
-      let expected = latin1(original);
-      for (const token of tokens[side]) {
-        assert.ok(expected.includes(token), `${side} ${part} carries ${token}`);
-        expected = expected.replaceAll(token, 'X'.repeat(token.length));
-      }
-      assert.equal(latin1(committed), expected, `${side} ${part}`);
-      assert.deepEqual(
-        [recorded.sha256, recorded.bytes, recorded.masked],
-        [sha256(committed), original.byteLength, maskFindingIds(original).masked],
-        `${side} ${part}`,
-      );
-      assert.equal(recorded.masked, tokens[side].length, `${side} ${part}`);
+    assert.deepEqual(
+      record.files.map((f) => [f.path, f.status, f.part, f.lineCount]),
+      files.map((path, i) => [path, 'A', `${side}/round-trip/file-${i}`, lineCounts[side][i]]),
+      side,
+    );
+    record.files.forEach((f, i) => {
+      const shown: SpawnSyncReturns<Buffer> = spawnSync('git', ['show', `${resultOf[side]}:${f.path}`], { cwd: ROOT, maxBuffer: 64 * 1024 * 1024 });
+      assert.equal(shown.status, 0, f.path);
+      parts.push([f, new Uint8Array(shown.stdout), tokens[side][i]!]);
+    });
+
+    const listing: string[] = [];
+    for (const [recorded, original, list] of parts) {
+      const committed = read(`${GOLDEN}/${recorded.part}`);
+      assert.equal(latin1(committed), masked(original, list), recorded.part);
+      assert.deepEqual([recorded.sha256, recorded.bytes, recorded.masked], [sha256(committed), original.byteLength, list.length], recorded.part);
+      assert.equal(maskFindingIds(original).masked, list.length, recorded.part);
+      listing.push(`${sha256(committed)}  ${recorded.part.slice(side.length + 1)}\n`);
       candidates.set(recorded.sha256, committed);
     }
+    // The packet-source listing names every part's digest, in packet order.
+    assert.equal(readFileSync(join(ROOT, GOLDEN, side, 'packet-sources.sha256'), 'utf8'), listing.join(''), side);
   }
   // Publication gates pass on every round-trip part.
   assert.deepEqual([...failingExcerpts(ROOT, candidates)], []);

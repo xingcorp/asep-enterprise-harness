@@ -101,10 +101,11 @@
     "priorFindings": []
   },
   "roundTrip": {
-    "description": "One corpus packet per side for the file the outputs are placed at: the file's section of the cycle's rule-P diff and its post-image, finding-id tokens masked. It proves that the packet validator and the prompt renderer accept the corpus packet shape. It is not a chunk: chunk ids, chunk packets and their digests come with the packet plan.",
-    "file": "packages/application/src/execute-task.ts",
+    "description": "One corpus packet per side for a chunk chosen by hand (each side's chunks.json): the item's three cited files and the file the other-file output cites. Its sources are those files' sections of the cycle's rule-P diff and their post-images, finding-id tokens masked. packet-sources.sha256, packet.sha256 and prompt.sha256 are computed by golden-oracle.py, an implementation of the recipe independent of the code under test. Per-cycle chunking over the full cycle source comes with the packet plan.",
+    "maxBytes": 400000,
     "sides": {
       "reviewed": {
+        "chunk": "p2-final/reviewed/round-trip",
         "attempt": {
           "label": "corpus:attempt:p2-final/reviewed/round-trip",
           "id": "2CEZ1DNGEXPNTQJGCHHFKVMAWT"
@@ -112,19 +113,52 @@
         "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
         "resultSha": "2e61f2447f6812f9ed795a5195a25861ada1c50b",
         "diff": {
-          "path": "reviewed/round-trip/execute-task.diff",
-          "sha256": "9d1cc67611901a230005e4ae9483d304cb76ce1084df33ada94b5ff8e3db5772",
-          "bytes": 7701,
+          "part": "reviewed/round-trip/diff",
+          "sha256": "7e1471d7901630be8de9e82ddaf0e75eb2dc498460bb7a906f773fd6c3976ec4",
+          "bytes": 32971,
           "masked": 1
         },
-        "postImage": {
-          "path": "reviewed/round-trip/execute-task.post-image",
-          "sha256": "7c18edf4b02cc9945460e8b52da97d45bfcfae87b39f8d3c98f487c385eed08d",
-          "bytes": 7282,
-          "masked": 1
-        }
+        "files": [
+          {
+            "path": "apps/control-plane-api/src/vertical-integration.test.ts",
+            "status": "A",
+            "part": "reviewed/round-trip/file-0",
+            "sha256": "0f5a0414f6e6e0387022f6f8d1d49a6eae060a382e32b9f1d114df8ba2d4a973",
+            "bytes": 15575,
+            "lineCount": 326,
+            "masked": 0
+          },
+          {
+            "path": "packages/application/src/execute-task.test.ts",
+            "status": "A",
+            "part": "reviewed/round-trip/file-1",
+            "sha256": "e3f84f852713aae42be744dd19fb87187b86d751f04c04479e69317f65668412",
+            "bytes": 6935,
+            "lineCount": 202,
+            "masked": 0
+          },
+          {
+            "path": "packages/application/src/execute-task.ts",
+            "status": "A",
+            "part": "reviewed/round-trip/file-2",
+            "sha256": "7c18edf4b02cc9945460e8b52da97d45bfcfae87b39f8d3c98f487c385eed08d",
+            "bytes": 7282,
+            "lineCount": 199,
+            "masked": 1
+          },
+          {
+            "path": "packages/application/src/index.ts",
+            "status": "A",
+            "part": "reviewed/round-trip/file-3",
+            "sha256": "3aa0d47b3a16251b9ef6304efcf3d2749e6eb15beba970d31e17e08200976ee9",
+            "bytes": 1478,
+            "lineCount": 56,
+            "masked": 0
+          }
+        ]
       },
       "post-fix": {
+        "chunk": "p2-final/post-fix/round-trip",
         "attempt": {
           "label": "corpus:attempt:p2-final/post-fix/round-trip",
           "id": "2NY3HBQPR44KBMW4Z1R04EEZ0P"
@@ -132,17 +166,49 @@
         "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
         "resultSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
         "diff": {
-          "path": "post-fix/round-trip/execute-task.diff",
-          "sha256": "7ae2e045bdc448a9f0f7a327c44395573b01b854f9995c6a8f0dffecbd02e79c",
-          "bytes": 8062,
-          "masked": 2
+          "part": "post-fix/round-trip/diff",
+          "sha256": "0d9ed1a065c25e9fbfc4b473e8e8b63f2763dd2b1cc5dcad1d8ae69449d2a50b",
+          "bytes": 36339,
+          "masked": 4
         },
-        "postImage": {
-          "path": "post-fix/round-trip/execute-task.post-image",
-          "sha256": "17977ec99e1709bed3d63b619709b3c1cea0a2833921c202e440dee6730afc5a",
-          "bytes": 7638,
-          "masked": 2
-        }
+        "files": [
+          {
+            "path": "apps/control-plane-api/src/vertical-integration.test.ts",
+            "status": "A",
+            "part": "post-fix/round-trip/file-0",
+            "sha256": "50ea42fcff51d72bc5f320e04c94861a0cf5a76d352b67f7353e66fefd0629d1",
+            "bytes": 18031,
+            "lineCount": 364,
+            "masked": 2
+          },
+          {
+            "path": "packages/application/src/execute-task.test.ts",
+            "status": "A",
+            "part": "post-fix/round-trip/file-1",
+            "sha256": "afac575fd59211b439969afaf30613133a8e7ecc66c384fe292a8da842d07f62",
+            "bytes": 6990,
+            "lineCount": 204,
+            "masked": 0
+          },
+          {
+            "path": "packages/application/src/execute-task.ts",
+            "status": "A",
+            "part": "post-fix/round-trip/file-2",
+            "sha256": "17977ec99e1709bed3d63b619709b3c1cea0a2833921c202e440dee6730afc5a",
+            "bytes": 7638,
+            "lineCount": 204,
+            "masked": 2
+          },
+          {
+            "path": "packages/application/src/index.ts",
+            "status": "A",
+            "part": "post-fix/round-trip/file-3",
+            "sha256": "bbb813fd33b3e7ecd7bc43a541f95b754359620f4c381070133e24470f36c54b",
+            "bytes": 1912,
+            "lineCount": 78,
+            "masked": 0
+          }
+        ]
       }
     }
   }

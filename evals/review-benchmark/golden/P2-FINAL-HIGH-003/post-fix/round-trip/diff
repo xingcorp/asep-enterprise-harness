@@ -1,0 +1,874 @@
+diff --git a/apps/control-plane-api/src/vertical-integration.test.ts b/apps/control-plane-api/src/vertical-integration.test.ts
+new file mode 100644
+index 0000000..2208d89
+--- /dev/null
++++ b/apps/control-plane-api/src/vertical-integration.test.ts
+@@ -0,0 +1,364 @@
++// Full vertical integration test (exit criterion K1). This is NOT a mocked
++// pipeline: it wires the REAL adapters end to end —
++//   - real PostgreSQL engine (in-process PGlite: genuine DDL, composite FKs,
++//     transactions);
++//   - real temp Git: a bare MIRROR seeded with a base commit + a real linked
++//     WORKTREE checked out at the pinned base SHA;
++//   - real content-addressed artifact store (PGlite metadata + filesystem bytes);
++//   - real preallocated-id EvidenceStore + real two-phase SideEffectLog;
++//   - real TrustedCommandRunner executing an actual `git status` verification
++//     command as argv (shell:false) into immutable artifacts;
++//   - real harness GitCommitter creating the commit with ASEP trailers;
++//   - a fake Claude that genuinely MUTATES the worktree (writes a file), and a
++//     fake GitHub that performs a REAL `git push` to a local bare remote and
++//     tracks PRs in memory (the two opt-in-live boundaries, per K1: "fake Claude
++//     + fake GitHub").
++//
++// It drives the governed sequence admission → agent → inspect → verify → commit
++// → evidence → push → PR → WAITING_FOR_HUMAN_REVIEW and asserts the trust
++// invariants hold on real state: resultSha == the harness commit SHA (D8), the
++// pushed ref in the remote points at that exact commit, the evidence bundle
++// round-trips, the commit carries the preallocated evidence id in its
++// ASEP-Evidence trailer, and the full PR → evidence → attempt → task → run
++// traceability chain resolves (K3).
++//
++// Machine-readable suite marker (K4) so a dropped/renamed suite turns the gate RED.
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import { createHash } from 'node:crypto';
++import { mkdtemp, rm, mkdir, writeFile, realpath } from 'node:fs/promises';
++import { tmpdir } from 'node:os';
++import { join, resolve } from 'node:path';
++import {
++  PgliteClient, migrate,
++  OrganizationRepository, ProjectRepository, RepositoryBindingRepository,
++  RunRepository, TaskRepository, AttemptRepository, SqlWorkspaceLeaseRepository,
++  ContentAddressedArtifactStore, FilesystemObjectStore,
++  ContentAddressedEvidenceStore, SqlSideEffectLog, PullRequestRepository,
++} from '@asep/persistence';
++import {
++  GitWorktreeManager, runGit, attemptBranch, safeRefspecFor,
++} from '@asep/git-worktree';
++import { TrustedCommandRunner, LocalUnsandboxedProvider } from '@asep/command-runner';
++import {
++  admissionStep, agentStep, inspectStep, completeToReview,
++  type VerificationCheckSpec,
++} from '@asep/application';
++import type {
++  ArtifactStore, ForgeProvider, PullRequestRef, CodingAgentProvider,
++  AgentExecuteRequest, AgentAttemptObservation, CommandSpec,
++} from '@asep/ports';
++import type {
++  TenantScope, RepositoryBindingId, AttemptId,
++} from '@asep/contracts';
++import type { TaskAggregate } from '@asep/domain';
++
++console.log('SUITE-ID: asep-suite:vertical-integration');
++
++function sha256Hex(bytes: Uint8Array): string {
++  return createHash('sha256').update(bytes).digest('hex');
++}
++
++// Seed a REAL bare mirror with a base commit; return { mirror, baseSha }.
++async function seedMirror(dir: string): Promise<{ mirror: string; baseSha: string }> {
++  const upstream = join(dir, 'upstream');
++  await mkdir(upstream, { recursive: true });
++  await runGit(['-C', upstream, 'init', '-q', '-b', 'main']);
++  await writeFile(join(upstream, 'README.md'), '# seed\n');
++  await runGit(['-C', upstream, 'add', '-A']);
++  await runGit(['-C', upstream, '-c', 'user.name=seed', '-c', 'user.email=seed@example.com',
++    'commit', '-m', 'seed']);
++  const baseSha = (await runGit(['-C', upstream, 'rev-parse', 'HEAD'])).stdout.trim();
++  const mirror = join(dir, 'mirror.git');
++  await runGit(['clone', '--bare', '-q', upstream, mirror]);
++  return { mirror, baseSha };
++}
++
++// Fake Claude: genuinely mutates the worktree (writes a file), then returns an
++// UNTRUSTED self-report only. The harness derives the real facts afterward.
++class FileWritingAgent implements CodingAgentProvider {
++  readonly providerId = 'fake-claude';
++  constructor(private readonly worktreePath: string) {}
++  async execute(req: AgentExecuteRequest): Promise<AgentAttemptObservation> {
++    await writeFile(join(this.worktreePath, 'feature.txt'), 'implemented by the agent\n');
++    return {
++      status: 'AGENT_DONE',
++      summary: `wrote feature.txt for ${req.workOrderRef.artifactId}`,
++      knownLimitations: [],
++      providerSessionId: `fake-session-${req.attemptId}`,
++      usage: { inputTokens: 1, outputTokens: 1, modelCostUsd: 0, toolCalls: 1, wallClockMs: 1 },
++      eventArtifactRefs: [],
++    };
++  }
++}
++
++// Fake GitHub: a REAL push to a local bare remote (pushing the exact commit SHA
++// to the safe ASEP-namespaced ref — a detached worktree has no local branch to
++// push) + an in-memory idempotent PR upsert. NO merge capability exists.
++class LocalBareForgeProvider implements ForgeProvider {
++  pushes = 0;
++  private readonly prs = new Map<string, PullRequestRef>();
++  private prCounter = 0;
++  constructor(
++    private readonly worktreePath: string,
++    private readonly remoteBarePath: string,
++  ) {}
++
++  async pushBranch(_scope: TenantScope, input: {
++    repositoryBindingId: RepositoryBindingId;
++    branch: string;
++    commitSha: string;
++    expectedRemoteSha?: string;
++  }): Promise<void> {
++    // Validate the branch through the same non-bypassable ref-safety policy the
++    // real adapter uses — a protected/malformed target is unrepresentable.
++    const safe = safeRefspecFor(input.branch, input.expectedRemoteSha);
++    // Push the EXACT commit SHA to the remote branch (works from detached HEAD).
++    await runGit(['-C', this.worktreePath, 'push', this.remoteBarePath,
++      `${input.commitSha}:refs/heads/${safe.branch}`]);
++    this.pushes++;
++  }
++
++  async upsertPullRequest(_scope: TenantScope, input: {
++    repositoryBindingId: RepositoryBindingId;
++    headBranch: string;
++    base: string;
++    title: string;
++    body: string;
++  }): Promise<PullRequestRef> {
++    const existing = this.prs.get(input.headBranch);
++    if (existing) return existing; // idempotent: no duplicate PR
++    const pr: PullRequestRef = {
++      number: ++this.prCounter,
++      url: `https://local.forge/pr/${this.prCounter}`,
++      headBranch: input.headBranch,
++      baseBranch: input.base,
++    };
++    this.prs.set(input.headBranch, pr);
++    return pr;
++  }
++}
++
++async function artifactStoreFor(client: PgliteClient, objectsDir: string): Promise<ArtifactStore> {
++  const objects = new FilesystemObjectStore(objectsDir);
++  return new ContentAddressedArtifactStore(client, objects);
++}
++
++test('K1: full vertical slice reaches WAITING_FOR_HUMAN_REVIEW with a real PR + evidence chain', async () => {
++  const dir = await mkdtemp(join(tmpdir(), 'asep-vertical-'));
++  const client = await PgliteClient.create();
++  try {
++    await migrate(client);
++
++    // --- real Git: bare mirror + a base commit ------------------------------
++    const { mirror, baseSha } = await seedMirror(dir);
++    const remoteBare = join(dir, 'remote.git');
++    await runGit(['init', '--bare', '-q', remoteBare]);
++
++    // --- real persistence: full tenancy + run/task/attempt chain ------------
++    const orgs = new OrganizationRepository(client);
++    const projects = new ProjectRepository(client);
++    const bindings = new RepositoryBindingRepository(client);
++    const runs = new RunRepository(client);
++    const tasks = new TaskRepository(client);
++    const attempts = new AttemptRepository(client);
++    const leases = new SqlWorkspaceLeaseRepository(client);
++
++    const org = await orgs.create({ name: 'Acme' });
++    const proj = await projects.create({ organizationId: org.id, name: 'web', defaultBranch: 'main' });
++    const scope: TenantScope = { organizationId: org.id, projectId: proj.id };
++    const binding = await bindings.create(scope, {
++      githubHost: 'github.com', githubOwner: 'acme', githubRepo: 'web', defaultBaseBranch: 'main',
++    });
++    const run = await runs.create(scope, { repositoryBindingId: binding.id, status: 'EXECUTING', risk: 'R0' });
++    const task = await tasks.create(scope, { runId: run.id, repositoryBindingId: binding.id, risk: 'R0', baseSha });
++    const attempt = await attempts.create(scope, { taskId: task.id, repositoryBindingId: binding.id, baseSha });
++
++    // --- real artifact store + the S9 evidence store + side-effect log ------
++    const artifacts = await artifactStoreFor(client, join(dir, 'objects'));
++    const objects = new FilesystemObjectStore(join(dir, 'objects'));
++    const evidenceStore = new ContentAddressedEvidenceStore(client, objects);
++    const sideEffectLog = new SqlSideEffectLog(client);
++
++    // --- real worktree manager: create a worktree pinned at the base SHA ----
++    const workspaceRoot = join(dir, 'wt');
++    await mkdir(workspaceRoot, { recursive: true });
++    const manager = new GitWorktreeManager(
++      { workspaceRoot, mirrorPath: mirror, repositoryBindingId: binding.id },
++      artifacts,
++    );
++    const branch = attemptBranch({ runId: run.id, taskId: task.id, attemptId: attempt.id });
++    const lease = await leases.acquire(scope, {
++      repositoryBindingId: binding.id, branch, attemptId: attempt.id, ttlMs: 60_000,
++    });
++    assert.ok('leaseId' in lease, 'lease must be granted');
++    const ws = await manager.create(scope, {
++      repositoryBindingId: binding.id, baseSha, leaseId: lease.leaseId,
++    });
++    // Reconstruct the contained worktree path (the fake agent/forge need it).
++    const wtPath = resolve(join(await realpath(workspaceRoot), binding.id, ws.workspaceId));
++
++    // --- store a real work-order + context-pack artifact --------------------
++    const woBytes = new TextEncoder().encode(JSON.stringify({ objective: 'add feature.txt' }));
++    const workOrderRef = await artifacts.put(scope, {
++      kind: 'work-order', content: woBytes, sha256: sha256Hex(woBytes), contentType: 'application/json',
++    });
++    const cpBytes = new TextEncoder().encode(JSON.stringify({ relevantFiles: ['feature.txt'] }));
++    const contextPackRef = await artifacts.put(scope, {
++      kind: 'context-pack', content: cpBytes, sha256: sha256Hex(cpBytes), contentType: 'application/json',
++    });
++
++    // --- STEP 1: admission (R0 is admitted for automation) ------------------
++    const admission = admissionStep('R0');
++    assert.equal(admission.status, 'OK');
++
++    // --- STEP 2: agent (real workspace mutation, untrusted self-report) -----
++    const agent = await agentStep({
++      provider: new FileWritingAgent(wtPath),
++      attemptId: attempt.id,
++      workOrderRef,
++      contextPackRef,
++      workspace: ws.capability,
++      budget: { maxTurns: 5, maxToolCalls: 10, maxCostUsd: 1, maxWallClockMinutes: 5 },
++      toolPolicy: { allowedTools: ['write'], disallowedTools: ['network'], networkProfile: 'no-network' },
++      signal: new AbortController().signal,
++    });
++    assert.equal(agent.status, 'OK');
++
++    // --- STEP 3: trusted inspection (harness-derived facts) -----------------
++    const inspect = await inspectStep({ inspector: manager, scope, workspace: ws.capability });
++    assert.equal(inspect.status, 'OK', 'clean worktree, agent did not overstep');
++    assert.ok(inspect.change.changedFiles.includes('feature.txt'), 'the agent-written file is observed');
++
++    // --- STEPS 4-9: verify → commit → evidence → push → PR → review ---------
++    const runner = new TrustedCommandRunner(scope, artifacts);
++    const sandbox = new LocalUnsandboxedProvider();
++    const forge = new LocalBareForgeProvider(wtPath, remoteBare);
++
++    const statusCheck = (id: string): CommandSpec => ({
++      executable: 'git',
++      args: ['status', '--porcelain'],
++      cwd: wtPath,
++      environmentProfile: 'verification-no-network',
++      timeoutMs: 60_000,
++      outputPolicy: { maxEvidenceBytes: 65_536, displayHeadBytes: 4096, displayTailBytes: 4096 },
++    });
++    // R0 mandates [L0, L1]; one real passing command per mandatory level.
++    const checks: VerificationCheckSpec[] = [
++      { id: 'L0-workspace', level: 'L0', category: 'workspace', mandatory: true, command: statusCheck('L0') },
++      { id: 'L1-static', level: 'L1', category: 'static', mandatory: true, command: statusCheck('L1') },
++    ];
++
++    const taskAggregate: TaskAggregate = { id: task.id, status: 'VERIFYING', version: task.version };
++
++    const result = await completeToReview({
++      change: inspect.change,
++      baseSha,
++      runner,
++      sandbox,
++      mount: { workspaceId: ws.workspaceId, readOnlyPaths: [], writablePaths: [wtPath] },
++      planId: 'plan-R0',
++      risk: 'R0',
++      checks,
++      committer: manager,
++      scope,
++      workspace: ws.capability,
++      allowedPaths: ['feature.txt'],
++      identity: { name: 'ASEP Bot', email: 'bot@asep.invalid' },
++      store: evidenceStore,
++      taskId: task.id,
++      attemptId: attempt.id,
++      environment: {
++        imageDigest: 'sha256:' + 'e'.repeat(64),
++        lockfileHash: 'f'.repeat(64),
++        nodeVersion: process.version,
++      },
++      forge,
++      log: sideEffectLog,
++      repositoryBindingId: binding.id,
++      branch,
++      base: 'main',
++      title: 'ASEP: add feature.txt',
++      body: 'Automated attempt reaching human review.',
++      leaseId: lease.leaseId,
++      task: taskAggregate,
++    });
++
++    // --- persist the AUTHORITATIVE transitions (XXXXXXXX) -------------------
++    // The driver produced the trusted facts; now persist them so I1/K3 are
++    // asserted on real DB rows, not transient objects. resultSha is the harness
++    // commit SHA; the evidence ref is attached to the attempt via the scoped
++    // composite FK; the task advances to the harness ceiling; the PR row is
++    // upserted carrying the scoped evidence ref.
++    const prs = new PullRequestRepository(client);
++    let attemptVersion = attempt.version;
++    attemptVersion = await attempts.setResultSha(scope, attempt.id, attemptVersion, result.commitSha!);
++    attemptVersion = await attempts.attachEvidence(scope, attempt.id, attemptVersion, result.evidence!.ref);
++    await tasks.updateStatus(scope, task.id, task.version, 'WAITING_FOR_HUMAN_REVIEW');
++    const prRow = await prs.upsert(scope, {
++      repositoryBindingId: binding.id,
++      attemptId: attempt.id,
++      forge: 'github',
++      number: result.pr!.number,
++      headBranch: result.pr!.headBranch,
++      baseBranch: result.pr!.baseBranch,
++      url: result.pr!.url,
++      state: 'OPEN',
++      evidenceRef: result.evidence!.ref,
++    });
++
++    // --- assert the whole slice landed on real state ------------------------
++    assert.equal(result.stoppedAt, 'complete', 'the pipeline reached the review gate');
++    assert.equal(result.task?.status, 'WAITING_FOR_HUMAN_REVIEW', 'harness ceiling (I1/I2)');
++    assert.match(result.commitSha ?? '', /^[0-9a-f]{40}$/, 'a real harness commit SHA');
++
++    // D8: resultSha == the harness commit SHA (never provider-reported).
++    assert.equal(result.evidence?.bundle.resultSha, result.commitSha, 'D8: resultSha is the commit SHA');
++
++    // The commit carries the preallocated evidence id in its ASEP-Evidence trailer.
++    const commitMsg = (await runGit(['-C', wtPath, 'log', '-1', '--format=%B'])).stdout;
++    assert.ok(commitMsg.includes('ASEP-Attempt:'), 'commit carries the attempt trailer');
++    assert.ok(commitMsg.includes(`ASEP-Evidence: ${result.evidence?.ref.artifactId}`),
++      'commit embeds the preallocated evidence id');
++
++    // The push produced exactly one ref in the REAL remote, pointing at the commit.
++    assert.equal(forge.pushes, 1, 'exactly one push');
++    const remoteSha = (await runGit(['-C', remoteBare, 'rev-parse', `refs/heads/${branch}`])).stdout.trim();
++    assert.equal(remoteSha, result.commitSha, 'the remote ref points at the harness commit');
++
++    // A real PR exists (no merge was ever attempted — the port has no merge method).
++    assert.ok((result.pr?.number ?? 0) >= 1, 'a PR was opened');
++    assert.equal(result.pr?.headBranch, branch);
++    assert.equal(result.pr?.baseBranch, 'main');
++
++    // K3: full traceability PR → evidence → attempt → task → run resolves on
++    // real persisted state.
++    const evidenceBack = await evidenceStore.getEvidence(scope, result.evidence!.ref.artifactId);
++    assert.equal(evidenceBack.attemptId, attempt.id, 'evidence → attempt');
++    assert.equal(evidenceBack.taskId, task.id, 'evidence → task');
++    const attemptRow = await attempts.getScoped(scope, attempt.id as AttemptId);
++    assert.equal(attemptRow.taskId, task.id, 'attempt → task');
++    const taskRow = await tasks.getScoped(scope, task.id);
++    assert.equal(taskRow.runId, run.id, 'task → run');
++    const runRow = await runs.getScoped(scope, run.id);
++    assert.equal(runRow.repositoryBindingId, binding.id, 'run → repository binding');
++
++    // XXXXXXXX: the authoritative transitions are PERSISTED, not transient.
++    // result_sha is the harness commit SHA on the attempt row.
++    assert.equal(attemptRow.resultSha, result.commitSha, 'attempt.result_sha == harness commit SHA (D8, persisted)');
++    // The attempt's evidence link resolves to the real evidence artifact, in scope.
++    assert.equal(attemptRow.evidenceArtifactId, result.evidence!.ref.artifactId, 'attempt → evidence artifact (persisted)');
++    assert.equal(attemptRow.evidenceSha256, result.evidence!.ref.sha256, 'attempt evidence sha256 pinned (persisted)');
++    // The task landed on the harness ceiling in the DB (I1/I2).
++    assert.equal(taskRow.status, 'WAITING_FOR_HUMAN_REVIEW', 'task.status persisted at the harness ceiling');
++    // The PR row persists PR → evidence and PR → attempt on real state.
++    const prBack = await prs.getByBranch(scope, binding.id, branch);
++    assert.equal(prBack.id, prRow.id, 'the PR row round-trips');
++    assert.equal(prBack.number, result.pr!.number, 'PR number persisted');
++    assert.equal(prBack.attemptId, attempt.id, 'PR → attempt (persisted)');
++    assert.equal(prBack.evidenceArtifactId, result.evidence!.ref.artifactId, 'PR → evidence artifact (persisted)');
++  } finally {
++    await client.close();
++    await rm(dir, { recursive: true, force: true });
++  }
++});
+diff --git a/packages/application/src/execute-task.test.ts b/packages/application/src/execute-task.test.ts
+new file mode 100644
+index 0000000..dd99929
+--- /dev/null
++++ b/packages/application/src/execute-task.test.ts
+@@ -0,0 +1,204 @@
++// execute-task pipeline tests (exit criteria B1, B4, plus trust rules).
++//
++// Uses in-test fakes for the CodingAgentProvider and GitChangeInspector ports —
++// the use case composes only against @asep/ports, so no real adapter is needed.
++// Proves:
++//   - a DEFERRED risk stops at admission, before the agent is ever invoked
++//     (no workspace/agent/push side effect);
++//   - a non-AGENT_DONE observation stops before inspection;
++//   - resultSha/changedFiles come from the trusted inspector, never the
++//     untrusted provider observation;
++//   - an agent that created a commit/ref or touched .git is stopped at inspect
++//     (harness owns commit identity);
++//   - each step is independently callable (Temporal-shaped composition, B4).
++
++import { test } from 'node:test';
++import assert from 'node:assert/strict';
++import type {
++  TenantScope,
++  AttemptId,
++  ArtifactRef,
++  Budget,
++  OrganizationId,
++  ProjectId,
++  WorkspaceId,
++} from '@asep/contracts';
++import type {
++  CodingAgentProvider,
++  AgentExecuteRequest,
++  AgentAttemptObservation,
++  GitChangeInspector,
++  GitChangeObservation,
++  WorkspaceCapability,
++  ToolPolicyProfile,
++} from '@asep/ports';
++import {
++  executeTask,
++  agentStep,
++  inspectStep,
++  admissionStep,
++} from './execute-task.js';
++
++const scope: TenantScope = {
++  organizationId: 'org-1' as OrganizationId,
++  projectId: 'proj-1' as ProjectId,
++};
++const workspace: WorkspaceCapability = {
++  workspaceId: 'ws-1' as WorkspaceId,
++  leaseId: 'lease-1',
++};
++const budget: Budget = {
++  maxTurns: 10,
++  maxToolCalls: 100,
++  maxCostUsd: 5,
++  maxWallClockMinutes: 15,
++};
++const toolPolicy: ToolPolicyProfile = {
++  allowedTools: ['read', 'write', 'bash'],
++  disallowedTools: ['network'],
++  networkProfile: 'no-network',
++};
++const workOrderRef: ArtifactRef = { artifactId: 'art-wo' as never, sha256: 'a'.repeat(64), kind: 'work-order' };
++const contextPackRef: ArtifactRef = { artifactId: 'art-cp' as never, sha256: 'b'.repeat(64), kind: 'context-pack' };
++
++function fakeProvider(observation: AgentAttemptObservation): CodingAgentProvider & { calls: AgentExecuteRequest[] } {
++  const calls: AgentExecuteRequest[] = [];
++  return {
++    providerId: 'fake',
++    calls,
++    async execute(req: AgentExecuteRequest): Promise<AgentAttemptObservation> {
++      calls.push(req);
++      return observation;
++    },
++  };
++}
++
++function fakeInspector(change: GitChangeObservation): GitChangeInspector {
++  return {
++    async inspect(): Promise<GitChangeObservation> {
++      return change;
++    },
++  };
++}
++
++const okObservation: AgentAttemptObservation = {
++  status: 'AGENT_DONE',
++  summary: 'done',
++  knownLimitations: [],
++  usage: { inputTokens: 1, outputTokens: 1, modelCostUsd: 0, toolCalls: 1, wallClockMs: 1 },
++  eventArtifactRefs: [],
++};
++
++const cleanChange: GitChangeObservation = {
++  headSha: 'c'.repeat(40),
++  changedFiles: ['src/foo.ts'],
++  createdRefs: [],
++  touchedGitDir: false,
++  baseSha: 'c'.repeat(40),
++  headMovedFromBase: false,
++  diff: { artifactId: 'art-diff' as never, sha256: 'd'.repeat(64), kind: 'git-diff' },
++};
++
++function agentInput(provider: CodingAgentProvider) {
++  return {
++    provider,
++    attemptId: 'attempt-1' as AttemptId,
++    workOrderRef,
++    contextPackRef,
++    workspace,
++    budget,
++    toolPolicy,
++    signal: new AbortController().signal,
++  };
++}
++
++test('DEFERRED risk stops at admission — agent is NEVER invoked (no side effect)', async () => {
++  const provider = fakeProvider(okObservation);
++  const result = await executeTask({
++    scope,
++    risk: 'R3',
++    agent: agentInput(provider),
++    inspector: fakeInspector(cleanChange),
++  });
++  assert.equal(result.admitted, false);
++  assert.equal(result.stoppedAt, 'admission');
++  assert.equal(result.reachedInspection, false);
++  // The gate must fail closed BEFORE the provider is touched.
++  assert.equal(provider.calls.length, 0, 'provider must not be invoked for a deferred risk');
++});
++
++test('R0 happy path reaches inspection and derives change from the trusted inspector', async () => {
++  const provider = fakeProvider(okObservation);
++  const result = await executeTask({
++    scope,
++    risk: 'R0',
++    agent: agentInput(provider),
++    inspector: fakeInspector(cleanChange),
++  });
++  assert.equal(result.admitted, true);
++  assert.equal(result.stoppedAt, 'complete');
++  assert.equal(result.reachedInspection, true);
++  assert.equal(provider.calls.length, 1);
++  // resultSha/changedFiles are the INSPECTOR's, not the provider's self-report.
++  assert.equal(result.change?.headSha, cleanChange.headSha);
++  assert.deepEqual(result.change?.changedFiles, ['src/foo.ts']);
++});
++
++test('the provider observation carries no resultSha/changedFiles/attemptId (untrusted shape)', async () => {
++  const provider = fakeProvider(okObservation);
++  const step = await agentStep(agentInput(provider));
++  const obs = step.observation as unknown as Record<string, unknown>;
++  assert.equal('resultSha' in obs, false);
++  assert.equal('changedFiles' in obs, false);
++  assert.equal('attemptId' in obs, false);
++});
++
++test('a non-AGENT_DONE observation stops before inspection', async () => {
++  const provider = fakeProvider({ ...okObservation, status: 'BUDGET_EXHAUSTED' });
++  const result = await executeTask({
++    scope,
++    risk: 'R0',
++    agent: agentInput(provider),
++    inspector: fakeInspector(cleanChange),
++  });
++  assert.equal(result.stoppedAt, 'agent');
++  assert.equal(result.reachedInspection, false);
++});
++
++test('agent that created a ref is STOPPED at inspect (harness owns commit identity)', async () => {
++  const dirtyChange: GitChangeObservation = { ...cleanChange, createdRefs: ['refs/heads/agent-made-this'] };
++  const step = await inspectStep({ inspector: fakeInspector(dirtyChange), scope, workspace });
++  assert.equal(step.status, 'STOP');
++});
++
++test('agent that touched .git is STOPPED at inspect', async () => {
++  const dirtyChange: GitChangeObservation = { ...cleanChange, touchedGitDir: true };
++  const step = await inspectStep({ inspector: fakeInspector(dirtyChange), scope, workspace });
++  assert.equal(step.status, 'STOP');
++});
++
++test('steps are independently callable (Temporal-shaped composition, B4)', async () => {
++  // Drive the pipeline one activity at a time, checkpointing between — proving
++  // no worker-only coupling and that a durable workflow could resume mid-run.
++  const admission = admissionStep('R0');
++  assert.equal(admission.status, 'OK');
++
++  const provider = fakeProvider(okObservation);
++  const agent = await agentStep(agentInput(provider));
++  assert.equal(agent.status, 'OK');
++
++  const inspect = await inspectStep({ inspector: fakeInspector(cleanChange), scope, workspace });
++  assert.equal(inspect.status, 'OK');
++});
++
++test('R1 is admitted but flags a required human independent review', async () => {
++  const provider = fakeProvider(okObservation);
++  const result = await executeTask({
++    scope,
++    risk: 'R1',
++    agent: agentInput(provider),
++    inspector: fakeInspector(cleanChange),
++  });
++  assert.equal(result.admitted, true);
++  assert.equal(result.requiresHumanIndependentReview, true);
++});
+diff --git a/packages/application/src/execute-task.ts b/packages/application/src/execute-task.ts
+new file mode 100644
+index 0000000..efb49a4
+--- /dev/null
++++ b/packages/application/src/execute-task.ts
+@@ -0,0 +1,204 @@
++// Provider-neutral task-execution use case (exit criteria B1, B4).
++//
++// This is the SINGLE authority for the Phase-2 execution pipeline. It lives in
++// the application layer — NOT in workers/* — so the same use case is callable
++// from the CLI, the current worker, and (Phase 3) a Temporal activity. It has
++// NO provider SDK, Fastify, pg, Octokit, AWS or Docker import: it composes only
++// against @asep/ports interfaces and @asep/policy / @asep/domain pure logic.
++//
++// The pipeline is decomposed into individually idempotent, resumable STEP use
++// cases (disp. XXXXXXXXXXXXXXX / exit B4). Each step:
++//   - takes the harness-owned TenantScope + attempt identity,
++//   - is a pure orchestration over ports (no hidden state),
++//   - returns a serialisable step result,
++// so a Temporal-shaped workflow can drive them at activity granularity and a
++// crash between steps resumes without replaying a completed side effect.
++//
++// Trust rules enforced here:
++//   - risk admission runs FIRST, before any workspace/agent/push side effect;
++//   - the provider result is an UNTRUSTED observation — resultSha/changedFiles
++//     come from the trusted GitChangeInspector, never the provider;
++//   - the harness owns the commit; the pipeline stops at WAITING_FOR_HUMAN_REVIEW
++//     (it never advances a Task to ACCEPTED/DONE — domain invariant I2).
++
++import type {
++  RiskLevel,
++  TenantScope,
++  AttemptId,
++  ArtifactRef,
++  Budget,
++} from '@asep/contracts';
++import type {
++  CodingAgentProvider,
++  AgentAttemptObservation,
++  WorkspaceCapability,
++  ToolPolicyProfile,
++  GitChangeInspector,
++  GitChangeObservation,
++} from '@asep/ports';
++import { admitRisk, type AdmissionResult } from './risk-admission.js';
++
++// ---------------------------------------------------------------------------
++// Step boundary types (all serialisable — no live handles leak across a step).
++// ---------------------------------------------------------------------------
++
++export type StepStatus = 'OK' | 'STOP';
++
++export interface AdmissionStepResult {
++  readonly step: 'admission';
++  readonly status: StepStatus;
++  readonly admission: AdmissionResult;
++}
++
++export interface AgentStepResult {
++  readonly step: 'agent';
++  readonly status: StepStatus;
++  readonly observation: AgentAttemptObservation;
++}
++
++export interface InspectStepResult {
++  readonly step: 'inspect';
++  readonly status: StepStatus;
++  // Harness-derived, trusted facts (NOT provider-reported).
++  readonly change: GitChangeObservation;
++}
++
++// ---------------------------------------------------------------------------
++// Step 1 — risk admission (fails closed before any side effect).
++// ---------------------------------------------------------------------------
++
++export function admissionStep(risk: RiskLevel): AdmissionStepResult {
++  const admission = admitRisk(risk);
++  return {
++    step: 'admission',
++    status: admission.admitted ? 'OK' : 'STOP',
++    admission,
++  };
++}
++
++// ---------------------------------------------------------------------------
++// Step 2 — agent invocation (untrusted self-report only).
++// ---------------------------------------------------------------------------
++
++export interface AgentStepInput {
++  readonly provider: CodingAgentProvider;
++  readonly attemptId: AttemptId;
++  readonly workOrderRef: ArtifactRef;
++  readonly contextPackRef: ArtifactRef;
++  readonly workspace: WorkspaceCapability;
++  readonly budget: Budget;
++  readonly toolPolicy: ToolPolicyProfile;
++  readonly signal: AbortSignal;
++}
++
++export async function agentStep(input: AgentStepInput): Promise<AgentStepResult> {
++  const observation = await input.provider.execute({
++    attemptId: input.attemptId,
++    workOrderRef: input.workOrderRef,
++    contextPackRef: input.contextPackRef,
++    workspace: input.workspace,
++    budget: input.budget,
++    toolPolicy: input.toolPolicy,
++    signal: input.signal,
++  });
++  // AGENT_DONE is the only status that continues the pipeline; anything else
++  // (FAILED/BLOCKED/BUDGET_EXHAUSTED) stops it. The provider CANNOT report
++  // success of the overall task — only that its own turn finished.
++  return {
++    step: 'agent',
++    status: observation.status === 'AGENT_DONE' ? 'OK' : 'STOP',
++    observation,
++  };
++}
++
++// ---------------------------------------------------------------------------
++// Step 3 — trusted Git inspection (derives resultSha/changedFiles).
++// ---------------------------------------------------------------------------
++
++export interface InspectStepInput {
++  readonly inspector: GitChangeInspector;
++  readonly scope: TenantScope;
++  readonly workspace: WorkspaceCapability;
++}
++
++export async function inspectStep(input: InspectStepInput): Promise<InspectStepResult> {
++  const change = await input.inspector.inspect(input.scope, input.workspace);
++  // An agent that created its own commit or touched .git is a policy violation:
++  // the harness owns commit identity. Stop the pipeline (the caller classifies
++  // it as policy-violation per §18) rather than trust the mutated state.
++  // XXXXXXXX: a detached-HEAD commit advances HEAD without creating a ref, so
++  // createdRefs stays empty and touchedGitDir stays false. headMovedFromBase is
++  // the trusted signal for that case — the harness owns commit identity, so ANY
++  // HEAD movement observed before the harness's own commit step is an overstep.
++  const agentOverstepped =
++    change.touchedGitDir || change.createdRefs.length > 0 || change.headMovedFromBase;
++  return {
++    step: 'inspect',
++    status: agentOverstepped ? 'STOP' : 'OK',
++    change,
++  };
++}
++
++// ---------------------------------------------------------------------------
++// Whole-pipeline convenience composition (used by the CLI / worker driver and
++// the Temporal-shaped fake in tests). Each step is still independently callable
++// so a durable workflow can checkpoint between them.
++// ---------------------------------------------------------------------------
++
++export interface ExecuteTaskInput {
++  readonly scope: TenantScope;
++  readonly risk: RiskLevel;
++  readonly agent: AgentStepInput;
++  readonly inspector: GitChangeInspector;
++}
++
++export interface ExecuteTaskResult {
++  readonly admitted: boolean;
++  readonly reachedInspection: boolean;
++  readonly admission: AdmissionResult;
++  readonly observation?: AgentAttemptObservation;
++  readonly change?: GitChangeObservation;
++  readonly stoppedAt: 'admission' | 'agent' | 'inspect' | 'complete';
++  readonly requiresHumanIndependentReview: boolean;
++}
++
++export async function executeTask(input: ExecuteTaskInput): Promise<ExecuteTaskResult> {
++  const admission = admissionStep(input.risk);
++  if (admission.status === 'STOP') {
++    return {
++      admitted: false,
++      reachedInspection: false,
++      admission: admission.admission,
++      stoppedAt: 'admission',
++      requiresHumanIndependentReview: admission.admission.requiresHumanIndependentReview,
++    };
++  }
++
++  const agent = await agentStep(input.agent);
++  if (agent.status === 'STOP') {
++    return {
++      admitted: true,
++      reachedInspection: false,
++      admission: admission.admission,
++      observation: agent.observation,
++      stoppedAt: 'agent',
++      requiresHumanIndependentReview: admission.admission.requiresHumanIndependentReview,
++    };
++  }
++
++  const inspect = await inspectStep({
++    inspector: input.inspector,
++    scope: input.scope,
++    workspace: input.agent.workspace,
++  });
++
++  return {
++    admitted: true,
++    reachedInspection: true,
++    admission: admission.admission,
++    observation: agent.observation,
++    change: inspect.change,
++    stoppedAt: inspect.status === 'STOP' ? 'inspect' : 'complete',
++    requiresHumanIndependentReview: admission.admission.requiresHumanIndependentReview,
++  };
++}
+diff --git a/packages/application/src/index.ts b/packages/application/src/index.ts
+new file mode 100644
+index 0000000..d55e071
+--- /dev/null
++++ b/packages/application/src/index.ts
+@@ -0,0 +1,78 @@
++// Public surface of @asep/application.
++//
++// The Phase-2 execution use case lives HERE (exit criterion B1), not in
++// workers/* or apps/*. It composes only against @asep/ports interfaces plus the
++// pure @asep/policy / @asep/domain logic — no provider SDK, Fastify, pg,
++// Octokit, AWS or Docker import (exit criterion B3, enforced by the extended
++// forbidden-imports fitness). The same use case is callable from the CLI, the
++// worker and a future Temporal activity (exit criterion B4).
++
++export {
++  admitRisk,
++  isAdmitted,
++  type AdmissionDecision,
++  type AdmissionResult,
++} from './risk-admission.js';
++
++export {
++  admissionStep,
++  agentStep,
++  inspectStep,
++  executeTask,
++  type StepStatus,
++  type AdmissionStepResult,
++  type AgentStepResult,
++  type AgentStepInput,
++  type InspectStepResult,
++  type InspectStepInput,
++  type ExecuteTaskInput,
++  type ExecuteTaskResult,
++} from './execute-task.js';
++
++export {
++  governedExecution,
++  type GovernedStop,
++  type GovernedExecutionInput,
++  type GovernedExecutionResult,
++} from './governed-execution.js';
++
++export {
++  createOrganization,
++  createProject,
++  createRepositoryBinding,
++  createRun,
++  createTask,
++  getTask,
++  type RegistrationRepositories,
++  type OrganizationCreatePort,
++  type ProjectCreatePort,
++  type BindingPort,
++  type RunPort,
++  type TaskPort,
++} from './registration.js';
++
++export {
++  verifyStep,
++  commitStep,
++  evidenceStep,
++  pushStep,
++  upsertPrStep,
++  setReviewStep,
++  completeToReview,
++  type VerificationCheckSpec,
++  type VerificationCheckExecution,
++  type VerifyStepInput,
++  type VerifyStepResult,
++  type CommitStepInput,
++  type CommitStepResult,
++  type EvidenceStepInput,
++  type EvidenceStepResult,
++  type PushStepInput,
++  type PushStepResult,
++  type UpsertPrStepInput,
++  type UpsertPrStepResult,
++  type SetReviewStepResult,
++  type CompletionStop,
++  type CompleteToReviewInput,
++  type CompleteToReviewResult,
++} from './pipeline-steps.js';

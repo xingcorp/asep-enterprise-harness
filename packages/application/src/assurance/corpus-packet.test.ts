@@ -1,11 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { AttemptId, OrganizationId, ProjectId, RepositoryBindingId, RunId, TaskId } from '@asep/contracts';
+import type { ArtifactId, AttemptId, OrganizationId, ProjectId, RepositoryBindingId, RunId, TaskId } from '@asep/contracts';
+import { loadReviewPolicy } from '@asep/policy';
 import { parseUnifiedDiff } from './diff.js';
+import { findingFingerprint } from './findings.js';
+import { groundFinding } from './grounding.js';
 import {
   PacketBuildError,
   assertPacketWhitelist,
@@ -14,8 +17,8 @@ import {
   type CorpusPacketSources,
   type PacketSources,
 } from './packet.js';
-import { packetNonce, renderReviewPrompt, reviewInstructions } from './prompt.js';
-import { fixtureWorld, refFor, utf8 } from './test-support.js';
+import { REVIEW_OUTPUT_SCHEMA, packetNonce, renderReviewPrompt, reviewInstructions, type ReviewOutput } from './prompt.js';
+import { fixtureWorld, utf8 } from './test-support.js';
 import type { ReviewPacket } from './local-types.js';
 
 console.log('SUITE-ID: asep-suite:review-packet');
@@ -135,7 +138,7 @@ interface LabelledId {
 }
 
 interface GoldenPart {
-  readonly path: string;
+  readonly part: string;
   readonly sha256: string;
 }
 
@@ -151,38 +154,99 @@ interface GoldenItem {
     readonly priorFindings: readonly [];
   };
   readonly roundTrip: {
-    readonly file: string;
+    readonly maxBytes: number;
     readonly sides: Readonly<
-      Record<'reviewed' | 'post-fix', { readonly attempt: LabelledId; readonly taskBaseSha: string; readonly resultSha: string; readonly diff: GoldenPart; readonly postImage: GoldenPart }>
+      Record<
+        'reviewed' | 'post-fix',
+        {
+          readonly chunk: string;
+          readonly attempt: LabelledId;
+          readonly taskBaseSha: string;
+          readonly resultSha: string;
+          readonly diff: GoldenPart;
+          readonly files: readonly (GoldenPart & { readonly path: string; readonly lineCount: number })[];
+        }
+      >
     >;
   };
 }
 
-test('the golden historical item round-trips through the packet validator and the prompt renderer on both sides', () => {
+type JsonSchema = {
+  readonly type?: string | readonly string[];
+  readonly enum?: readonly unknown[];
+  readonly required?: readonly string[];
+  readonly additionalProperties?: boolean;
+  readonly properties?: Readonly<Record<string, JsonSchema>>;
+  readonly items?: JsonSchema;
+};
+
+/** The subset of JSON Schema the review output schema uses; returns the first violation, or null. */
+function schemaViolation(value: unknown, schema: JsonSchema, path = 'output'): string | null {
+  const kind = value === null ? 'null' : Array.isArray(value) ? 'array' : Number.isInteger(value) ? 'integer' : typeof value;
+  const types = schema.type === undefined ? null : [schema.type].flat();
+  if (types !== null && !types.includes(kind) && !(kind === 'integer' && types.includes('number'))) return `${path} is ${kind}`;
+  if (schema.enum !== undefined && !schema.enum.includes(value)) return `${path} is outside its enum`;
+  if (kind === 'array' && schema.items !== undefined) {
+    for (const [i, item] of (value as unknown[]).entries()) {
+      const v = schemaViolation(item, schema.items, `${path}[${i}]`);
+      if (v !== null) return v;
+    }
+  }
+  if (kind === 'object') {
+    const obj = value as Record<string, unknown>;
+    for (const key of schema.required ?? []) if (!(key in obj)) return `${path}.${key} is missing`;
+    for (const [key, child] of Object.entries(obj)) {
+      const sub = schema.properties?.[key];
+      if (sub === undefined) {
+        if (schema.additionalProperties === false) return `${path}.${key} is not allowed`;
+        continue;
+      }
+      const v = schemaViolation(child, sub, `${path}.${key}`);
+      if (v !== null) return v;
+    }
+  }
+  return null;
+}
+
+type RecordedGrounding = Readonly<Record<string, Readonly<Record<string, Readonly<Record<string, { grounded: boolean; reason: string | null; fingerprint: string }>>>>>>;
+
+test('the golden historical item reproduces its recorded packet, prompt and grounding on both sides', () => {
   const golden = 'evals/review-benchmark/golden/P2-FINAL-HIGH-003';
-  const item = JSON.parse(readFileSync(join(REPO_ROOT, golden, 'item.json'), 'utf8')) as GoldenItem;
+  const read = (path: string) => new Uint8Array(readFileSync(join(REPO_ROOT, golden, path)));
+  const json = <T>(path: string) => JSON.parse(readFileSync(join(REPO_ROOT, golden, path), 'utf8')) as T;
+  const sha256 = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
+  // A `.sha256` file's first field: the digest the independent oracle computed.
+  const recordedDigest = (path: string) => readFileSync(join(REPO_ROOT, golden, path), 'utf8').split(/\s+/)[0]!;
+  const item = json<GoldenItem>('item.json');
   const { synthetic, roundTrip } = item;
+  const grounding = json<RecordedGrounding>('expected-grounding.json');
+  const policy = loadReviewPolicy();
   assert.deepEqual(synthetic.execution, NOT_RECORDED);
-  const read = (part: GoldenPart) => {
-    const bytes = new Uint8Array(readFileSync(join(REPO_ROOT, golden, part.path)));
-    assert.equal(createHash('sha256').update(bytes).digest('hex'), part.sha256, part.path);
-    return bytes;
-  };
 
   for (const side of ['reviewed', 'post-fix'] as const) {
     const record = roundTrip.sides[side];
-    const diff = read(record.diff);
-    const postImage = read(record.postImage);
-    const diffText = new TextDecoder('utf-8', { fatal: true }).decode(diff);
-    const postImageText = new TextDecoder('utf-8', { fatal: true }).decode(postImage);
-    const changed = parseUnifiedDiff(diffText);
+    const [chunk] = json<{ id: string; files: string[] }[]>(`${side}/chunks.json`);
+    assert.equal(chunk!.id, record.chunk, side);
+    assert.deepEqual(record.files.map((f) => f.path), chunk!.files, side);
+
+    // The packet sources are the parts the listing names, each with its digest.
+    const listing = readFileSync(join(REPO_ROOT, golden, side, 'packet-sources.sha256'), 'utf8');
+    const parts = [record.diff, ...record.files].map((part) => {
+      const bytes = read(part.part);
+      assert.equal(sha256(bytes), part.sha256, part.part);
+      assert.ok(listing.includes(`${part.sha256}  ${part.part.slice(side.length + 1)}\n`), part.part);
+      return bytes;
+    });
+    const [diff, ...postImages] = parts as [Uint8Array, ...Uint8Array[]];
+    const decode = (bytes: Uint8Array) => new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    const changed = parseUnifiedDiff(decode(diff));
     assert.deepEqual(
       changed.map((f) => [f.path, f.status, f.binary]),
-      [[roundTrip.file, 'A', false]],
+      chunk!.files.map((path) => [path, 'A', false]),
       side,
     );
-    const diffRef = refFor('review-diff', `golden-${side}-diff`, diff);
-    const blobRef = refFor('review-blob', `golden-${side}-file`, postImage);
+
+    const ref = (kind: string, sha: string) => ({ artifactId: sha as ArtifactId, sha256: sha, kind });
     const sources: CorpusPacketSources = {
       identity: {
         organizationId: synthetic.identity.organizationId.id as OrganizationId,
@@ -201,36 +265,39 @@ test('the golden historical item round-trips through the packet validator and th
         taskBaseSha: record.taskBaseSha,
         resultSha: record.resultSha,
         repairBaseSha: null,
-        cumulativeDiff: { ref: diffRef, bytes: diff.byteLength, overLimit: false, changedFiles: changed.map((f) => ({ path: f.path, status: 'A', binary: f.binary })) },
+        cumulativeDiff: { ref: ref('review-diff', record.diff.sha256), bytes: diff.byteLength, overLimit: false, changedFiles: changed.map((f) => ({ path: f.path, status: 'A', binary: f.binary })) },
         repairDelta: null,
-        postImages: [
-          { path: roundTrip.file, blob: blobRef, bytes: postImage.byteLength, lineCount: postImageText.replace(/\n$/, '').split('\n').length, omittedReason: null },
-        ],
+        postImages: record.files.map((f, i) => ({ path: f.path, blob: ref('review-blob', f.sha256), bytes: postImages[i]!.byteLength, lineCount: f.lineCount, omittedReason: null })),
       },
       priorFindings: synthetic.priorFindings,
     };
 
-    // The validator accepts the packet, whose execution is the one corpus shape.
-    const built = buildCorpusReviewPacket(sources, { maxBytes: 200000, excerptBytesPerStream: 4096, excerptBytesTotal: 65536 });
+    // The packet validator accepts the packet, and its digest is the one the independent oracle recorded.
+    const built = buildCorpusReviewPacket(sources, { maxBytes: roundTrip.maxBytes, excerptBytesPerStream: 4096, excerptBytesTotal: 65536 });
     assertPacketWhitelist(JSON.parse(new TextDecoder().decode(built.bytes)));
     assert.deepEqual(built.packet.execution, NOT_RECORDED, side);
-    assert.deepEqual(built.packet.workOrder, synthetic.workOrder, side);
-    assert.equal(built.packet.budget.overBudget, false, side);
+    assert.equal(built.sha256, recordedDigest(`${side}/packet.sha256`), `${side}: packet digest`);
 
-    // The renderer embeds the packet, the diff and the post-image, every line datamarked, and the
-    // instructions say what NOT_RECORDED means.
-    const prompt = renderReviewPrompt(built, new Map([
-      [diffRef.artifactId, diff],
-      [blobRef.artifactId, postImage],
-    ]));
-    const block = (part: string, text: string) =>
-      [`<<<UNTRUSTED ${prompt.nonce} ${part}>>>`, ...text.replace(/\n$/, '').split('\n').map((l) => `${prompt.nonce}| ${l}`), `<<<END ${prompt.nonce} ${part}>>>`].join('\n');
-    assert.ok(prompt.input.includes(block('diff', diffText)), `${side}: diff`);
-    assert.ok(prompt.input.includes(block('file-0', postImageText)), `${side}: post-image`);
-    assert.ok(prompt.instructions.includes('NOT_RECORDED'), side);
+    // The rendered prompt, rubric and output schema included, is the one the oracle recorded.
+    const contents = new Map(parts.map((bytes, i) => [[record.diff, ...record.files][i]!.sha256, bytes] as const));
+    const prompt = renderReviewPrompt(built, contents);
+    assert.equal(prompt.sha256, recordedDigest(`${side}/prompt.sha256`), `${side}: prompt digest`);
+    assert.doesNotMatch(new TextDecoder().decode(prompt.bytes), /\bP[0-9]+-[A-Z0-9]+(?:-[A-Z0-9]+)*-[0-9]{3}\b|\b(?:CRIT|CRITICAL|HIGH|MED|MEDIUM|LOW)-[0-9]{3}\b/, side);
 
-    // No finding-id token reaches the reviewer: the parts were masked before they were frozen.
-    const promptText = new TextDecoder().decode(prompt.bytes);
-    assert.doesNotMatch(promptText, /\bP[0-9]+-[A-Z0-9]+(?:-[A-Z0-9]+)*-[0-9]{3}\b|\b(?:CRIT|CRITICAL|HIGH|MED|MEDIUM|LOW)-[0-9]{3}\b/, side);
+    // Each scripted output is a valid model output; its findings ground as the golden files record.
+    const ctx = { packet: built.packet, diff: changed, repairDelta: null, minChars: policy.groundingMinChars };
+    const outputs = readdirSync(join(REPO_ROOT, golden, 'outputs', side)).map((f) => f.replace(/\.json$/, '')).sort();
+    assert.deepEqual(outputs, Object.keys(grounding[side]!).sort(), side);
+    for (const name of outputs) {
+      const output = json<ReviewOutput>(`outputs/${side}/${name}.json`);
+      assert.equal(schemaViolation(output, REVIEW_OUTPUT_SCHEMA as JsonSchema), null, `${side} ${name}`);
+      const recorded = grounding[side]![name]!;
+      assert.deepEqual(Object.keys(recorded).sort(), output.findings.map((f) => f.key).sort(), `${side} ${name}`);
+      for (const finding of output.findings) {
+        const outcome = groundFinding(ctx, finding);
+        const fingerprint = findingFingerprint({ category: finding.category, file: finding.file, lineStart: finding.lineStart, ruleId: null });
+        assert.deepEqual({ ...outcome, fingerprint }, recorded[finding.key], `${side} ${name} ${finding.key}`);
+      }
+    }
   }
 });

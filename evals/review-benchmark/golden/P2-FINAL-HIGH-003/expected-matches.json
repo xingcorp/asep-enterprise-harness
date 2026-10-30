@@ -1,6 +1,6 @@
 {
   "goldItem": "P2-FINAL-HIGH-003@2e61f24",
-  "note": "Per side and output, the finding keys each variant matches, finds duplicate or leaves unlabelled. On the post-fix side the gold item is the mapped location, and a match is a stale flag.",
+  "note": "Per side and output, the finding keys each variant matches, finds duplicate, leaves unlabelled, or cannot match because grounding refuted them (ungrounded). On the post-fix side the gold item is the mapped location, and a match is a stale flag.",
   "reviewed": {
     "exact": {
       "strict": {
@@ -8,14 +8,16 @@
           "exact"
         ],
         "duplicate": [],
-        "unlabelled": []
+        "unlabelled": [],
+        "ungrounded": []
       },
       "lenient": {
         "matched": [
           "exact"
         ],
         "duplicate": [],
-        "unlabelled": []
+        "unlabelled": [],
+        "ungrounded": []
       }
     },
     "near": {
@@ -24,14 +26,16 @@
           "near"
         ],
         "duplicate": [],
-        "unlabelled": []
+        "unlabelled": [],
+        "ungrounded": []
       },
       "lenient": {
         "matched": [
           "near"
         ],
         "duplicate": [],
-        "unlabelled": []
+        "unlabelled": [],
+        "ungrounded": []
       }
     },
     "far": {
@@ -40,14 +44,16 @@
         "duplicate": [],
         "unlabelled": [
           "far"
-        ]
+        ],
+        "ungrounded": []
       },
       "lenient": {
         "matched": [
           "far"
         ],
         "duplicate": [],
-        "unlabelled": []
+        "unlabelled": [],
+        "ungrounded": []
       }
     },
     "wrong-category": {
@@ -56,14 +62,16 @@
         "duplicate": [],
         "unlabelled": [
           "wrong-category"
-        ]
+        ],
+        "ungrounded": []
       },
       "lenient": {
         "matched": [
           "wrong-category"
         ],
         "duplicate": [],
-        "unlabelled": []
+        "unlabelled": [],
+        "ungrounded": []
       }
     },
     "other-file": {
@@ -72,14 +80,16 @@
         "duplicate": [],
         "unlabelled": [
           "other-file"
-        ]
+        ],
+        "ungrounded": []
       },
       "lenient": {
         "matched": [],
         "duplicate": [],
         "unlabelled": [
           "other-file"
-        ]
+        ],
+        "ungrounded": []
       }
     },
     "exact-and-near": {
@@ -90,7 +100,8 @@
         "duplicate": [
           "near"
         ],
-        "unlabelled": []
+        "unlabelled": [],
+        "ungrounded": []
       },
       "lenient": {
         "matched": [
@@ -99,7 +110,26 @@
         "duplicate": [
           "near"
         ],
-        "unlabelled": []
+        "unlabelled": [],
+        "ungrounded": []
+      }
+    },
+    "outside-file": {
+      "strict": {
+        "matched": [],
+        "duplicate": [],
+        "unlabelled": [],
+        "ungrounded": [
+          "outside-file"
+        ]
+      },
+      "lenient": {
+        "matched": [],
+        "duplicate": [],
+        "unlabelled": [],
+        "ungrounded": [
+          "outside-file"
+        ]
       }
     }
   },
@@ -110,14 +140,16 @@
           "exact"
         ],
         "duplicate": [],
-        "unlabelled": []
+        "unlabelled": [],
+        "ungrounded": []
       },
       "lenient": {
         "matched": [
           "exact"
         ],
         "duplicate": [],
-        "unlabelled": []
+        "unlabelled": [],
+        "ungrounded": []
       }
     },
     "near": {
@@ -126,14 +158,16 @@
           "near"
         ],
         "duplicate": [],
-        "unlabelled": []
+        "unlabelled": [],
+        "ungrounded": []
       },
       "lenient": {
         "matched": [
           "near"
         ],
         "duplicate": [],
-        "unlabelled": []
+        "unlabelled": [],
+        "ungrounded": []
       }
     },
     "far": {
@@ -142,14 +176,16 @@
         "duplicate": [],
         "unlabelled": [
           "far"
-        ]
+        ],
+        "ungrounded": []
       },
       "lenient": {
         "matched": [
           "far"
         ],
         "duplicate": [],
-        "unlabelled": []
+        "unlabelled": [],
+        "ungrounded": []
       }
     },
     "wrong-category": {
@@ -158,14 +194,16 @@
         "duplicate": [],
         "unlabelled": [
           "wrong-category"
-        ]
+        ],
+        "ungrounded": []
       },
       "lenient": {
         "matched": [
           "wrong-category"
         ],
         "duplicate": [],
-        "unlabelled": []
+        "unlabelled": [],
+        "ungrounded": []
       }
     },
     "other-file": {
@@ -174,14 +212,16 @@
         "duplicate": [],
         "unlabelled": [
           "other-file"
-        ]
+        ],
+        "ungrounded": []
       },
       "lenient": {
         "matched": [],
         "duplicate": [],
         "unlabelled": [
           "other-file"
-        ]
+        ],
+        "ungrounded": []
       }
     },
     "exact-and-near": {
@@ -192,7 +232,8 @@
         "duplicate": [
           "near"
         ],
-        "unlabelled": []
+        "unlabelled": [],
+        "ungrounded": []
       },
       "lenient": {
         "matched": [
@@ -201,7 +242,26 @@
         "duplicate": [
           "near"
         ],
-        "unlabelled": []
+        "unlabelled": [],
+        "ungrounded": []
+      }
+    },
+    "outside-file": {
+      "strict": {
+        "matched": [],
+        "duplicate": [],
+        "unlabelled": [],
+        "ungrounded": [
+          "outside-file"
+        ]
+      },
+      "lenient": {
+        "matched": [],
+        "duplicate": [],
+        "unlabelled": [],
+        "ungrounded": [
+          "outside-file"
+        ]
       }
     }
   }
