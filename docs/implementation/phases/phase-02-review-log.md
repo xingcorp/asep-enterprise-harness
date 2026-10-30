@@ -1701,10 +1701,10 @@ its symptom and recovery.
 | CYCLE11-HIGH-002 | ACCEPTED; cause found on the host, not fixed in the repository — every docker call reports its signal, duration and bound, and every removal failure its calls; the one unbounded docker call is bounded; with that evidence two red runs at `7017cfc` and a probe beside one show a Node launch held up to 40.7 s by the host's launch-policy queue; no bound raised, fault 3 unchanged | `a375f1e`, `bd08654` |
 | CYCLE11-MED-001 | ACCEPTED — inspect and ps errors are tests for agent and runner; the `/./` mutant is killed | `056457a` |
 | Concern 2 (runner client error after spawn) | ACCEPTED — a spawn seam; the probe is a test | `056457a` |
-| Concern 3 (head-SHA lag) | accepted as a Phase 2 limit (R43); runbook | docs commit |
+| Concern 3 (head-SHA lag) | accepted as a Phase 2 limit (R43); runbook | `7017cfc` |
 | Test polling bounds | moved to the monotonic clock, with two lease waits of the same kind | `a8f45ca` |
-| The loosened assertion in `6608d21` | named below | docs commit |
-| MED-005 | data model, threat model and runbook in `fab5760`; review log and report | docs commits |
+| The loosened assertion in `6608d21` | named below | `7017cfc` |
+| MED-005 | data model, threat model and runbook in `fab5760`; review log and report | `7017cfc`, `9585d33`, the report commit |
 | Gate failures in this cycle | `c67b25b` failed format-check, fixed; `7017cfc` failed twice by the host's launch-policy queue (CYCLE11-HIGH-002), not changed | `52d4d62` |
 
 Also: `c67b25b` adds the cycle-11 transcript with its provenance note.
@@ -1905,7 +1905,11 @@ not made in this cycle and left to the controller.
 the `docker version` probe a sandbox makes before it starts ran through
 `execFile` with no timeout and the whole process environment. It is now a
 bounded call with the client environment, and a refusal says how it ended.
-In production that bounds a CLI that hangs. Under this host's queue it turns
+Test: a variable set in the test process does not reach the probe, and an
+unreachable daemon is refused with the call's end, duration and bound.
+Mutation check: the probe given the whole environment; the refusal without
+how the probe ended — both killed. In production the bound covers a CLI that
+hangs. Under this host's queue it turns
 a slow pass (crash-between took 69.3 s in controller run 2) into a failure at
 the bound, which states what happened: the docker client did not answer in
 time.
