@@ -74,10 +74,20 @@ The Claude provider has no host-execution mode. Every attempt runs like this
    and it substitutes the key into each forwarded request. Its access log
    (method, path, status — never headers or bodies) is stored as the
    `claude-egress-log` artifact. It has a lifetime of its own: it is started
-   with `--expires-at` (the attempt's deadline plus 30 s), refuses every
-   request from then on and exits, and it exits at once when its stdin — its
-   link to the harness — closes. So the model key is never usable through a
-   leftover proxy past that expiry, even if the harness died.
+   with `--lifetime-ms`, what is left of the attempt's budget when it is
+   started plus 30 s, at most 4 h (it refuses to start with more), and counts
+   it on its own monotonic clock from its own start, so setting the system
+   clock back or forward does not move its end. At the end it refuses every
+   request, cuts every connection still open — a stream in progress included —
+   and exits; and it exits at once when its stdin — its link to the harness —
+   closes. A proxy not ready within its readiness bound (30 s, or what is left
+   of the budget if less) is killed. So, even if the harness died, the model
+   key is usable through a leftover proxy for at most
+   `min(remaining budget + 30 s, 4 h) + readiness bound`, whatever is done to
+   the wall clock. Not covered: a harness that dies while its proxy is still
+   starting, which leaves nothing to kill a late starter (that proxy's lifetime
+   runs from whenever it starts), and time the host spends asleep, which
+   neither clock counts.
 3. The agent container runs on the internal network only, as the harness user,
    with a read-only root filesystem, all capabilities dropped,
    `no-new-privileges`, PID/CPU/memory limits and no Docker socket. The leased
@@ -111,9 +121,9 @@ marked):
 
 Orphan sweep after a harness crash. The harness removes what it started only
 while it is alive; if its own process dies, its containers keep running until
-swept (nothing else is ever labelled this way). An egress proxy ends itself by
-its expiry at the latest, but the agent container and the attempt's network
-do not go by themselves, so the sweep is still needed:
+swept (nothing else is ever labelled this way). An egress proxy ends itself at
+the end of its lifetime at the latest (item 2), but the agent container and the
+attempt's network do not go by themselves, so the sweep is still needed:
 
 ```sh
 docker rm -f $(docker ps -aq --filter label=asep.role)

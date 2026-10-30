@@ -166,11 +166,12 @@ const PROXY_READY = /asep-egress-proxy listening (\d+)/;
 const PROXY_START_TIMEOUT_MS = 30_000;
 
 /**
- * How long past the attempt's deadline its egress proxy may still serve. The
- * agent is stopped at the deadline; the grace only covers a proxy container
- * whose clock runs behind the host's. From the deadline plus this on, the proxy
- * refuses every request and exits by itself, whether or not anything is left
- * to stop it (assets/egress-proxy.mjs).
+ * How much longer than what is left of the attempt's budget its egress proxy
+ * lives. The agent is stopped at the deadline; the grace keeps the proxy from
+ * ending first, so that the budget, not the proxy, is what ends an attempt.
+ * At the end of its lifetime, which it counts on its own monotonic clock, the
+ * proxy refuses every request, cuts what is open and exits by itself, whether
+ * or not anything is left to stop it (assets/egress-proxy.mjs).
  */
 export const PROXY_EXPIRY_GRACE_MS = 30_000;
 
@@ -180,6 +181,13 @@ export const PROXY_EXPIRY_GRACE_MS = 30_000;
  * moment on it refuses every request.
  */
 export const PROXY_EXIT_BOUND_MS = 2_000;
+
+/**
+ * The longest lifetime an egress proxy is given: four hours, the proxy's own
+ * MAX_LIFETIME_MS, beyond which it refuses to start. An attempt with a longer
+ * budget gets this, and its agent loses the model API when it is over.
+ */
+export const PROXY_MAX_LIFETIME_MS = 4 * 60 * 60_000;
 // What the agent holds instead of the credential. The proxy discards it.
 export const MODEL_KEY_PLACEHOLDER = 'asep-placeholder-the-egress-proxy-holds-the-real-key';
 // The only paths the proxy forwards (mirrors assets/egress-proxy.mjs).
@@ -330,8 +338,8 @@ export function buildAgentRunArgs(p: {
 }
 
 /**
- * Hardened `docker run` argv for the egress proxy container. `expiresAt` (epoch
- * milliseconds) is when the proxy stops serving and exits by itself.
+ * Hardened `docker run` argv for the egress proxy container. `lifetimeMs` is
+ * how long, from its own start, the proxy serves before it ends by itself.
  */
 export function buildProxyRunArgs(p: {
   readonly name: string;
@@ -339,7 +347,7 @@ export function buildProxyRunArgs(p: {
   readonly attemptId: string;
   readonly image: string;
   readonly upstream: string;
-  readonly expiresAt: number;
+  readonly lifetimeMs: number;
 }): string[] {
   return [
     'run', '--rm', '-i',
@@ -360,7 +368,7 @@ export function buildProxyRunArgs(p: {
     'node', PROXY_ASSET_IN_CONTAINER,
     '--listen', `0.0.0.0:${PROXY_PORT}`,
     '--upstream', p.upstream,
-    '--expires-at', String(p.expiresAt),
+    '--lifetime-ms', String(p.lifetimeMs),
   ];
 }
 
@@ -668,14 +676,6 @@ export class ClaudeCodingProvider implements CodingAgentProvider {
         contextPack: { path: contextPack.path, sha256: contextPack.sha256 },
       });
       const egressNetwork = sb.egressNetwork ?? 'bridge';
-      // The proxy's own lifetime, on the wall clock its container shares: the
-      // attempt's deadline plus the grace. It does not depend on this process
-      // being there to stop the proxy.
-      const proxyExpiresAt = Math.round(Date.now() + (deadline - monotonicNow()) + PROXY_EXPIRY_GRACE_MS);
-      const proxyArgs = buildProxyRunArgs({
-        name: proxyName, egressNetwork, attemptId: req.attemptId,
-        image: sb.proxyImage, upstream, expiresAt: proxyExpiresAt,
-      });
       rec.invocation = {
         providerId: this.providerId,
         model: this.cfg.model,
@@ -688,7 +688,6 @@ export class ClaudeCodingProvider implements CodingAgentProvider {
         inputs: rec.inputs.map(({ name, artifactId, sha256, path }) => ({ name, artifactId, sha256, path })),
         promptSha256: sha256Hex(prompt),
         agentDockerArgs: agentArgs,
-        proxyDockerArgs: proxyArgs,
       };
 
       if (req.signal.aborted) {
@@ -737,6 +736,18 @@ export class ClaudeCodingProvider implements CodingAgentProvider {
       // Named and labelled before it is asked for, so the teardown removes it
       // whatever its client answers.
       created.proxy = true;
+      // Its lifetime, relative, which the proxy counts on its own monotonic
+      // clock from its own start, so no change to any wall clock moves its end
+      // and it does not depend on this process being there to stop it: what is
+      // left of the budget now, plus the grace, at most the maximum. Counted
+      // from here, the end is late by no more than the proxy takes to start,
+      // and a proxy not ready within its bound below is killed.
+      const proxyArgs = buildProxyRunArgs({
+        name: proxyName, egressNetwork, attemptId: req.attemptId, image: sb.proxyImage, upstream,
+        lifetimeMs: Math.min(
+          Math.ceil(Math.max(1, deadline - monotonicNow())) + PROXY_EXPIRY_GRACE_MS, PROXY_MAX_LIFETIME_MS),
+      });
+      rec.invocation['proxyDockerArgs'] = proxyArgs;
       const proxyReady = await new Promise<string | undefined>((resolve) => {
         const startedAt = monotonicNow();
         const child = spawn(this.docker, proxyArgs, {

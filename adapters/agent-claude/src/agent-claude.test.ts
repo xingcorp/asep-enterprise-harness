@@ -34,7 +34,7 @@ import {
   ClaudeCodingProvider, FileModelCredentialProvider, AgentConfigError, MODEL_KEY_PLACEHOLDER,
   claudeToolGrant, ToolPolicyError, buildClaudeArgs, parseModelBaseUrl, ModelCredentialError,
   parseStream, MalformedEventError, redactSecrets, agentNetworkIsolationGap, AGENT_STOP_BOUND_MS,
-  AGENT_REMOVAL_BOUND_MS, agentRemovalDeadline, PROXY_EXPIRY_GRACE_MS, PROXY_EXIT_BOUND_MS,
+  AGENT_REMOVAL_BOUND_MS, agentRemovalDeadline, PROXY_EXPIRY_GRACE_MS, PROXY_EXIT_BOUND_MS, PROXY_MAX_LIFETIME_MS,
   type AgentSandboxConfig, type ModelCredentialProvider, type AgentLifecycleEvent, type AgentLifecyclePhase,
 } from './index.js';
 import {
@@ -183,6 +183,7 @@ async function harness(opts: {
   echoKey?: boolean; workOrder?: unknown; refuseRemoval?: boolean; hangKill?: boolean;
   keepAgent?: boolean; agentRmErrs?: boolean; hangInspect?: boolean;
   netCreate?: 'hangs-after' | 'errs-after' | 'refused'; proxyHangs?: boolean; inspectErr?: string;
+  slowNetworkInspectS?: number;
 } = {}): Promise<Harness> {
   // Real paths: the provider resolves the worktree with realpath(3).
   const dir = await realpath(await mkdtemp(join(tmpdir(), 'claude-provider-')));
@@ -200,8 +201,9 @@ async function harness(opts: {
   // with `netCreate` for one that creates the agent network and then never
   // answers ('hangs-after') or answers with an error ('errs-after'), or
   // refuses to create it ('refused'), with `proxyHangs` for one whose proxy
-  // client never starts its container, and with `inspectErr` for one whose
-  // inspect fails with that error.
+  // client never starts its container, with `inspectErr` for one whose
+  // inspect fails with that error, and with `slowNetworkInspectS` for one that
+  // takes that many seconds to describe a network.
   const fake = `"${process.execPath}" "${FAKE_DOCKER}" --state "${state}" "$@"`;
   await writeFile(docker, [
     '#!/bin/sh',
@@ -219,6 +221,8 @@ async function harness(opts: {
     ...(opts.hangInspect ? ['case "$1" in inspect) exec sleep 600;; esac'] : []),
     ...(opts.proxyHangs ? ['case "$1 $*" in "run "*asep.role=egress-proxy*) exec sleep 600;; esac'] : []),
     ...(opts.inspectErr !== undefined ? [`case "$1" in inspect) echo '${opts.inspectErr}' >&2; exit 1;; esac`] : []),
+    ...(opts.slowNetworkInspectS !== undefined
+      ? [`case "$1 $2" in "network inspect") sleep ${opts.slowNetworkInspectS};; esac`] : []),
     ...(opts.netCreate === 'hangs-after' ? [`case "$1 $2" in "network create") ${fake} >/dev/null; exec sleep 600;; esac`] : []),
     ...(opts.netCreate === 'errs-after' ? [
       `case "$1 $2" in "network create") ${fake} >/dev/null; echo "Error response from daemon: lost the answer" >&2; exit 1;; esac`,
@@ -431,9 +435,9 @@ test('a contained attempt: internal network, proxy, agent, teardown — and an u
   try {
     const provider = await h.provider('ok');
     assert.equal(provider.providerId, `claude:${MODEL}@cli-${CLI_VERSION}`);
-    const before = Date.now();
+    const before = performance.now();
     const obs = await provider.execute(request(h));
-    const after = Date.now();
+    const after = performance.now();
     assert.equal(obs.status, 'AGENT_DONE', obs.knownLimitations.join('; '));
     assert.equal(obs.summary, 'did the thing');
     assert.ok(obs.providerSessionId);
@@ -464,12 +468,14 @@ test('a contained attempt: internal network, proxy, agent, teardown — and an u
     assert.deepEqual(inspect, ['network', 'inspect', '--format', '{{json .}}', netName],
       'the isolation is confirmed from the daemon before anything is attached');
     assert.equal(proxy![proxy!.indexOf('--network') + 1], 'bridge', 'the proxy alone sits on the egress network');
-    // The proxy's own lifetime, on the wall clock: the attempt's deadline plus
-    // the grace, whatever becomes of the process that started it.
-    const expiresAt = Number(proxy![proxy!.indexOf('--expires-at') + 1]);
-    const lifetime = BUDGET.maxWallClockMinutes * 60_000 + PROXY_EXPIRY_GRACE_MS;
-    assert.ok(expiresAt >= before + lifetime - 50 && expiresAt <= after + lifetime + 50,
-      `the proxy expires at ${expiresAt}, not ${lifetime} ms after the attempt started (between ${before} and ${after})`);
+    // The proxy's own lifetime, relative, which it counts on its own clock: what
+    // was left of the budget when it was started, plus the grace — whatever
+    // becomes of the process that started it.
+    assert.ok(!proxy!.includes('--expires-at'), 'no wall-clock moment is handed over');
+    const lifetime = Number(proxy![proxy!.indexOf('--lifetime-ms') + 1]);
+    const full = BUDGET.maxWallClockMinutes * 60_000 + PROXY_EXPIRY_GRACE_MS;
+    assert.ok(Number.isSafeInteger(lifetime) && lifetime <= full && lifetime >= full - (after - before),
+      `the proxy lives ${lifetime} ms, not what was left of the ${full} ms (attempt took ${after - before} ms)`);
     assert.deepEqual(connect, ['network', 'connect', netName, proxy![proxy!.indexOf('--name') + 1]]);
     assert.equal(agent![agent!.indexOf('--network') + 1], netName, 'the agent sits on the internal network only');
     for (const flag of [['--read-only'], ['--cap-drop', 'ALL'], ['--security-opt', 'no-new-privileges']]) {
@@ -507,6 +513,37 @@ test('a contained attempt: internal network, proxy, agent, teardown — and an u
     assertTornDown(h);
   } finally {
     await h.close();
+  }
+});
+
+// The lifetime handed to the proxy, from the docker argv of one attempt.
+async function proxyLifetimeOf(h: Harness, maxWallClockMinutes: number): Promise<number> {
+  const obs = await (await h.provider('ok')).execute(request(h, { budget: { ...BUDGET, maxWallClockMinutes } }));
+  assert.equal(obs.status, 'AGENT_DONE', obs.knownLimitations.join('; '));
+  assertTornDown(h);
+  const proxy = argvOf(h.invocations()).find((a) => a[0] === 'run' && a.includes('asep.role=egress-proxy'))!;
+  return Number(proxy[proxy.indexOf('--lifetime-ms') + 1]);
+}
+
+test('the proxy lifetime is what is left of the budget when the proxy is started, plus the grace, at most the maximum', async () => {
+  // Counted when the proxy is started, not before the setup: a slow network
+  // setup comes off it, so the proxy's own start is the only time it adds.
+  const slow = await harness({ slowNetworkInspectS: 2 });
+  try {
+    const lifetime = await proxyLifetimeOf(slow, BUDGET.maxWallClockMinutes);
+    const full = BUDGET.maxWallClockMinutes * 60_000 + PROXY_EXPIRY_GRACE_MS;
+    assert.ok(lifetime <= full - 2_000, `the proxy lives ${lifetime} ms: the 2 s setup did not come off ${full} ms`);
+  } finally {
+    await slow.close();
+  }
+  // A budget beyond the maximum gets the maximum, which the proxy accepts.
+  const long = await harness();
+  try {
+    assert.equal(await proxyLifetimeOf(long, 24 * 60), PROXY_MAX_LIFETIME_MS);
+    assert.equal(PROXY_MAX_LIFETIME_MS, (await proxyModule()).MAX_LIFETIME_MS,
+      "the provider's maximum is the proxy's own");
+  } finally {
+    await long.close();
   }
 });
 
@@ -685,10 +722,14 @@ function within<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
 interface StartedProxy {
   readonly pid: number;
   readonly port: number;
+  // performance.now() in this process just before it was spawned, and once
+  // it said it was listening.
+  readonly spawnedAt: number;
+  readonly readyAt: number;
   log(): string;
   // Kills it, and resolves once it has exited.
   stop(): Promise<void>;
-  // When this process saw it exit, and how.
+  // When this process saw it exit (performance.now()), and how.
   readonly exited: Promise<{ at: number; code: number | null }>;
 }
 
@@ -696,18 +737,22 @@ interface StartedProxy {
 // then stays open as its link to this process — if this process dies, the
 // proxy exits. It is also recorded in the run's process registry until it is
 // shown gone. One that is not ready within `readyWithinMs` is killed.
-async function startProxy(
-  upstream: string, key: string, expiresAt = Date.now() + 10 * 60_000, readyWithinMs = 30_000,
-): Promise<StartedProxy> {
+// `nodeArgs` go to node ahead of the asset.
+async function startProxy(upstream: string, key: string, o: {
+  lifetimeMs?: number; readyWithinMs?: number; nodeArgs?: readonly string[]; env?: NodeJS.ProcessEnv;
+} = {}): Promise<StartedProxy> {
+  const readyWithinMs = o.readyWithinMs ?? 30_000;
+  const spawnedAt = performance.now();
   const child = spawn(process.execPath, [
-    PROXY_ASSET, '--listen', '127.0.0.1:0', '--upstream', upstream, '--expires-at', String(expiresAt),
-  ], { stdio: ['pipe', 'pipe', 'pipe'] });
+    ...(o.nodeArgs ?? []), PROXY_ASSET, '--listen', '127.0.0.1:0', '--upstream', upstream,
+    '--lifetime-ms', String(o.lifetimeMs ?? 10 * 60_000),
+  ], { stdio: ['pipe', 'pipe', 'pipe'], ...(o.env !== undefined ? { env: o.env } : {}) });
   const pid = child.pid!;
   register(pid, { marker: PROXY_ASSET });
   let log = '';
   child.stderr.on('data', (d: Buffer) => { log += d.toString('utf8'); });
   const exited = new Promise<{ at: number; code: number | null }>((resolve) => {
-    child.on('exit', (code) => resolve({ at: Date.now(), code }));
+    child.on('exit', (code) => resolve({ at: performance.now(), code }));
   });
   const stop = async () => {
     child.kill('SIGKILL');
@@ -726,7 +771,7 @@ async function startProxy(
       });
       child.on('close', (code) => reject(new Error(`proxy (pid ${pid}) exited ${code}: ${log}`)));
     }), readyWithinMs, `the proxy (pid ${pid}) becoming ready`);
-    return { pid, port, log: () => log, stop, exited };
+    return { pid, port, spawnedAt, readyAt: performance.now(), log: () => log, stop, exited };
   } catch (err) {
     await stop();
     throw err;
@@ -760,7 +805,10 @@ function raw(port: number, text: string): Promise<string> {
 test('the egress proxy forwards only the model API, swaps in the key, and refuses everything else', async () => {
   const up = await fakeModelApi();
   const key = `asep-test-model-key-${randomUUID()}`;
-  const proxy = await startProxy(up.url, key);
+  const proxy = await startProxy(up.url, key).catch(async (err: unknown) => {
+    await up.close();
+    throw err;
+  });
   try {
     const call = (method: string, path: string, headers: Record<string, string> = {}) =>
       new Promise<number>((resolve) => {
@@ -807,7 +855,7 @@ test('a test proxy that is not ready in time is killed, and leaves the process r
   process.env[REGISTRY_ENV] = registry;
   try {
     let message = '';
-    await assert.rejects(startProxy(up.url, `asep-test-model-key-${randomUUID()}`, undefined, 1), (err: Error) => {
+    await assert.rejects(startProxy(up.url, `asep-test-model-key-${randomUUID()}`, { readyWithinMs: 1 }), (err: Error) => {
       message = err.message;
       return /becoming ready: not within 1 ms/.test(err.message);
     });
@@ -829,17 +877,40 @@ test('a test proxy that is not ready in time is killed, and leaves the process r
   }
 });
 
-test('the egress proxy refuses to start without a lifetime or a credential, and stops when its stdin ends', () => {
+// The proxy module's own surface: its request handling, without its process.
+interface EgressProxyModule {
+  readonly MAX_LIFETIME_MS: number;
+  egressProxy(o: {
+    upstream: string; apiKey: string; deadline: number; now?: () => number;
+    schedule?: (fn: () => void, ms: number) => () => void;
+    log?: (method: string, path: string, status: number) => void;
+    onExpired?: () => void;
+  }): http.Server;
+}
+
+async function proxyModule(): Promise<EgressProxyModule> {
+  return (await import(pathToFileURL(PROXY_ASSET).href)) as EgressProxyModule;
+}
+
+test('the egress proxy refuses to start without a lifetime within its maximum or without a credential, and stops when its stdin ends', async () => {
+  const { MAX_LIFETIME_MS } = await proxyModule();
   const run = (args: string[], input: string) => spawnSync(process.execPath, [
     PROXY_ASSET, '--listen', '127.0.0.1:0', '--upstream', 'http://127.0.0.1:9', ...args,
   ], { input, encoding: 'utf8', timeout: 10_000 });
-  const later = String(Date.now() + 10 * 60_000);
+  const tenMinutes = String(10 * 60_000);
+  const notWhole = /--lifetime-ms must be a whole number of milliseconds, at least 1/;
+  const beyond = new RegExp(`--lifetime-ms \\d+ is beyond the maximum lifetime of ${MAX_LIFETIME_MS} ms — refusing to start`);
   const refusals: readonly [readonly string[], string, RegExp][] = [
-    [[], 'k\n', /missing --expires-at/],
-    [['--expires-at', 'soon'], 'k\n', /--expires-at must be epoch milliseconds/],
-    [['--expires-at', String(Date.now() - 1)], 'k\n', /its lifetime has already ended — refusing to start/],
-    [['--expires-at', later], '', /stdin closed before a credential arrived — refusing to start/],
-    [['--expires-at', later], '\n', /no credential on stdin — refusing to start/],
+    [[], 'k\n', /missing --lifetime-ms/],
+    [['--lifetime-ms', 'soon'], 'k\n', notWhole],
+    [['--lifetime-ms', '0'], 'k\n', notWhole],
+    [['--lifetime-ms', '1.5'], 'k\n', notWhole],
+    [['--lifetime-ms', String(MAX_LIFETIME_MS + 1)], 'k\n', beyond],
+    [['--lifetime-ms', String(Number.MAX_SAFE_INTEGER)], 'k\n', beyond],
+    // Its lifetime counts from its own start, which was more than 1 ms ago.
+    [['--lifetime-ms', '1'], 'k\n', /its lifetime ended before a credential arrived — refusing to start/],
+    [['--lifetime-ms', tenMinutes], '', /stdin closed before a credential arrived — refusing to start/],
+    [['--lifetime-ms', tenMinutes], '\n', /no credential on stdin — refusing to start/],
   ];
   for (const [args, input, why] of refusals) {
     const r = run([...args], input);
@@ -847,75 +918,396 @@ test('the egress proxy refuses to start without a lifetime or a credential, and 
     assert.match(r.stderr, why);
   }
   // A starter that hands over the credential and then ends stdin has let go.
-  const ended = run(['--expires-at', later], 'k\n');
-  assert.equal(ended.status, 0, ended.stderr);
-  assert.match(ended.stderr, /asep-egress-proxy: stopping: its parent link closed/);
+  // A lifetime of exactly the maximum is accepted.
+  for (const lifetime of [tenMinutes, String(MAX_LIFETIME_MS)]) {
+    const ended = run(['--lifetime-ms', lifetime], 'k\n');
+    assert.equal(ended.status, 0, `${lifetime}: ${ended.stderr}`);
+    assert.match(ended.stderr, /asep-egress-proxy: stopping: its parent link closed/);
+  }
 });
 
-// The proxy module's own surface: its request handling, without its process.
-interface EgressProxyModule {
-  egressProxy(o: {
-    upstream: string; apiKey: string; expiresAt: number; now?: () => number;
-    log?: (method: string, path: string, status: number) => void;
-  }): http.Server;
+// Virtual time for the proxy module: a clock the test moves, and the proxy's
+// timer, which runs only when the test fires it.
+interface VirtualTime {
+  now(): number;
+  set(to: number): void;
+  schedule(fn: () => void, ms: number): () => void;
+  // Runs the timer the proxy set, if one is set.
+  fire(): void;
+  // Every moment the proxy set its timer for, in order.
+  readonly scheduled: number[];
 }
 
-test('the egress proxy refuses every request from its expiry on, by its own clock', async () => {
-  const { egressProxy } = (await import(pathToFileURL(PROXY_ASSET).href)) as EgressProxyModule;
+function virtualTime(): VirtualTime {
+  let t = 0;
+  let pending: { fn: () => void } | undefined;
+  const scheduled: number[] = [];
+  return {
+    now: () => t,
+    set: (to) => { t = to; },
+    schedule: (fn, ms) => {
+      const entry = { fn };
+      pending = entry;
+      scheduled.push(t + ms);
+      return () => {
+        if (pending === entry) pending = undefined;
+      };
+    },
+    fire: () => {
+      const p = pending;
+      pending = undefined;
+      p?.fn();
+    },
+    scheduled,
+  };
+}
+
+interface ModuleProxy {
+  readonly server: http.Server;
+  readonly port: number;
+  // The refusals it logged, as `METHOD path`.
+  readonly refused: string[];
+  // Resolves once it called onExpired; how often it did.
+  readonly expired: Promise<void>;
+  expiredCalls(): number;
+  close(): void;
+}
+
+// The proxy module in this process, on virtual time, ending at `deadline`.
+async function moduleProxy(upstream: string, key: string, time: VirtualTime, deadline: number): Promise<ModuleProxy> {
+  const { egressProxy } = await proxyModule();
+  const refused: string[] = [];
+  let calls = 0;
+  let expiredNow!: () => void;
+  const expired = new Promise<void>((r) => { expiredNow = r; });
+  const server = egressProxy({
+    upstream, apiKey: key, deadline, now: time.now, schedule: time.schedule,
+    log: (method, path, status) => {
+      if (status === 403) refused.push(`${method} ${path}`);
+    },
+    onExpired: () => {
+      calls += 1;
+      expiredNow();
+    },
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+  const port = (server.address() as net.AddressInfo).port;
+  return {
+    server, port, refused, expired, expiredCalls: () => calls,
+    close: () => {
+      server.closeAllConnections();
+      server.close();
+    },
+  };
+}
+
+interface StreamingUpstream {
+  readonly url: string;
+  // The body of every streamed request, chunk by chunk as it arrived.
+  readonly body: string[];
+  // Writes `text` on every response still open; ends every one.
+  push(text: string): void;
+  finish(): void;
+  // With `holdHeaders`: starts every response held so far.
+  release(): void;
+  // Resolves once a streamed request's connection closed.
+  readonly closed: Promise<void>;
+  close(): Promise<void>;
+}
+
+// A model API whose `POST /v1/messages` answers stream and stay open: the
+// headers and `chunk-1;` at once (with `holdHeaders`, once released), then
+// whatever the test pushes. A count_tokens call is answered whole.
+async function streamingModelApi(o: { holdHeaders?: boolean } = {}): Promise<StreamingUpstream> {
+  const body: string[] = [];
+  const open = new Set<http.ServerResponse>();
+  const held: (() => void)[] = [];
+  let closedNow!: () => void;
+  const closed = new Promise<void>((r) => { closedNow = r; });
+  const server = http.createServer((req, res) => {
+    if ((req.url ?? '').startsWith('/v1/messages/count_tokens')) {
+      req.resume();
+      req.on('end', () => {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end('{"input_tokens":1}');
+      });
+      return;
+    }
+    req.on('data', (d: Buffer) => body.push(d.toString('utf8')));
+    const start = () => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write('chunk-1;');
+    };
+    if (o.holdHeaders) held.push(start);
+    else start();
+    open.add(res);
+    res.on('close', () => {
+      open.delete(res);
+      closedNow();
+    });
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+  const port = (server.address() as net.AddressInfo).port;
+  return {
+    url: `http://127.0.0.1:${port}`, body, closed,
+    push: (text) => {
+      for (const res of open) res.write(text);
+    },
+    finish: () => {
+      for (const res of open) res.end();
+    },
+    release: () => {
+      for (const start of held.splice(0)) start();
+    },
+    close: () => {
+      server.closeAllConnections();
+      return new Promise((r) => server.close(() => r()));
+    },
+  };
+}
+
+interface StreamingRequest {
+  // Writes more of the request body; ends it.
+  send(text: string): void;
+  end(): void;
+  // What has arrived of the response.
+  text(): string;
+  // Resolves when its connection closed (performance.now()), with whether the
+  // response had arrived whole.
+  readonly closed: Promise<{ at: number; whole: boolean }>;
+}
+
+// A `POST /v1/messages` to a proxy whose body and response both stream: it
+// sends `part-1;` and keeps the body open.
+function streamingRequest(port: number): StreamingRequest {
+  let text = '';
+  const req = http.request({
+    host: '127.0.0.1', port, method: 'POST', path: '/v1/messages', agent: false,
+    headers: { 'content-type': 'application/json' },
+  });
+  const closed = new Promise<{ at: number; whole: boolean }>((resolve) => {
+    req.on('response', (res) => {
+      res.on('data', (d: Buffer) => { text += d.toString('utf8'); });
+      res.on('close', () => resolve({ at: performance.now(), whole: res.complete }));
+    });
+    req.on('error', () => resolve({ at: performance.now(), whole: false }));
+  });
+  req.write('part-1;');
+  return {
+    send: (t) => {
+      if (!req.destroyed) req.write(t);
+    },
+    end: () => {
+      if (!req.destroyed) req.end();
+    },
+    text: () => text,
+    closed,
+  };
+}
+
+test('the egress proxy serves until its deadline and refuses from it on, on a kept-alive connection too, and then ends', async () => {
   const up = await fakeModelApi();
   const key = `asep-test-model-key-${randomUUID()}`;
-  let now = 1_000_000;
-  const refused: string[] = [];
-  const log = (method: string, path: string, status: number) => {
-    if (status === 403) refused.push(`${method} ${path}`);
-  };
-  const server = egressProxy({ upstream: up.url, apiKey: key, expiresAt: now + 60_000, now: () => now, log });
+  const time = virtualTime();
+  const p = await moduleProxy(up.url, key, time, 60_000);
+  const agent = new http.Agent({ keepAlive: true, maxSockets: 1 });
+  let connections = 0;
+  p.server.on('connection', () => { connections += 1; });
+  // A request on the one kept-alive connection.
+  const post = (path: string) => new Promise<{ status: number; body: string }>((resolve, reject) => {
+    const req = http.request({ host: '127.0.0.1', port: p.port, method: 'POST', path, agent }, (res) => {
+      let body = '';
+      res.on('data', (d: Buffer) => { body += d.toString('utf8'); });
+      res.on('end', () => resolve({ status: res.statusCode ?? 0, body }));
+    });
+    req.on('error', reject);
+    req.end('{}');
+  });
   try {
-    await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
-    const port = (server.address() as net.AddressInfo).port;
-    assert.equal((await proxyRequest(port, 'POST', '/v1/messages')).status, 200);
-    now += 59_999;
-    assert.equal((await proxyRequest(port, 'POST', '/v1/messages')).status, 200, 'it serves until its expiry');
-    now += 1;
-    const late = await proxyRequest(port, 'POST', '/v1/messages');
-    assert.equal(late.status, 403, 'from its expiry on it refuses');
+    assert.deepEqual(time.scheduled, [60_000], 'its timer is set for its deadline');
+    assert.equal((await post('/v1/messages')).status, 200);
+    // A timer that fires early does not end it: it is set again for the deadline.
+    time.set(59_999);
+    time.fire();
+    assert.deepEqual(time.scheduled, [60_000, 60_000]);
+    assert.equal((await post('/v1/messages')).status, 200, 'it serves until its deadline');
+    // At the deadline, its timer not yet fired: the next request on the same
+    // connection is refused, and then the proxy ends.
+    time.set(60_000);
+    const late = await post('/v1/messages/count_tokens');
+    assert.equal(late.status, 403, 'from its deadline on, a request on a kept-alive connection is refused');
     assert.match(late.body, /no longer serving: its lifetime ended/);
-    now -= 30_000;
-    assert.equal((await proxyRequest(port, 'POST', '/v1/messages/count_tokens')).status, 403,
-      'a clock set back does not bring it back');
+    assert.equal(connections, 1, 'the three requests came on one kept-alive connection');
+    await within(p.expired, 5_000, 'the proxy ending once it refused');
+    assert.equal(p.server.listening, false, 'it no longer listens');
+    await assert.rejects(proxyRequest(p.port, 'POST', '/v1/messages'), { code: 'ECONNREFUSED' });
+    // Ended is ended: its timer firing, or its clock going back, changes nothing.
+    time.fire();
+    time.set(30_000);
+    await assert.rejects(proxyRequest(p.port, 'POST', '/v1/messages'), { code: 'ECONNREFUSED' });
+    assert.equal(p.expiredCalls(), 1);
     assert.equal(up.seen.length, 2, 'nothing refused reached the upstream');
     assert.ok(up.seen.every((s) => s.apiKey === key));
-    assert.deepEqual(refused, ['POST /v1/messages', 'POST /v1/messages/count_tokens']);
+    assert.deepEqual(p.refused, ['POST /v1/messages/count_tokens']);
   } finally {
-    server.closeAllConnections();
-    server.close();
+    agent.destroy();
+    p.close();
     await up.close();
   }
 });
 
-// How long the proxy in the expiry test lives: long enough to start and serve
-// one request on a loaded host, short enough to wait out.
-const PROXY_TEST_LIFETIME_MS = 5_000;
+// The ways the proxy can first see its deadline reached while a request and
+// its response are streaming through it.
+const DEADLINE_SEEN_BY: readonly (readonly [string, (o: {
+  time: VirtualTime; stream: StreamingRequest; up: StreamingUpstream; port: number;
+}) => Promise<void>])[] = [
+  ['its timer firing', async ({ time }) => time.fire()],
+  ['more of the response arriving', async ({ up }) => up.push('chunk-2;')],
+  ['the end of the response arriving', async ({ up }) => up.finish()],
+  ['more of the request arriving', async ({ stream }) => stream.send('part-2;')],
+  ['the end of the request arriving', async ({ stream }) => stream.end()],
+  ['a new request arriving', async ({ port }) => {
+    assert.equal((await proxyRequest(port, 'POST', '/v1/messages/count_tokens')).status, 403);
+  }],
+];
 
-test('the egress proxy process refuses every request and exits when its lifetime ends', async () => {
-  const up = await fakeModelApi();
-  const expiresAt = Date.now() + PROXY_TEST_LIFETIME_MS;
-  const proxy = await startProxy(up.url, `asep-test-model-key-${randomUUID()}`, expiresAt, PROXY_TEST_LIFETIME_MS);
+test('a request and its response in flight at the deadline are cut there, whatever sees it first, and nothing more of them is forwarded', async () => {
+  for (const [seenBy, reach] of DEADLINE_SEEN_BY) {
+    const up = await streamingModelApi();
+    const time = virtualTime();
+    const p = await moduleProxy(up.url, `asep-test-model-key-${randomUUID()}`, time, 60_000);
+    try {
+      const stream = streamingRequest(p.port);
+      await until(`${seenBy}: the stream under way`,
+        () => stream.text() === 'chunk-1;' && up.body.join('') === 'part-1;', 5_000);
+      time.set(60_000);
+      await reach({ time, stream, up, port: p.port });
+      await within(p.expired, 5_000, `${seenBy}: the proxy ending`);
+      // Whatever either side sends from now on goes nowhere.
+      up.push('chunk-3;');
+      stream.send('part-3;');
+      const cut = await within(stream.closed, 5_000, `${seenBy}: the response being cut`);
+      await within(up.closed, 5_000, `${seenBy}: the request to the upstream being cut`);
+      assert.equal(cut.whole, false, `${seenBy}: the response was cut, not finished`);
+      assert.equal(stream.text(), 'chunk-1;', `${seenBy}: nothing of the response past the deadline reached the agent`);
+      assert.equal(up.body.join(''), 'part-1;', `${seenBy}: nothing of the request past the deadline reached the upstream`);
+      assert.equal(p.expiredCalls(), 1, seenBy);
+      assert.equal(p.server.listening, false, seenBy);
+    } finally {
+      p.close();
+      await up.close();
+    }
+  }
+});
+
+test('a response that begins only after the deadline reaches the agent not at all', async () => {
+  const up = await streamingModelApi({ holdHeaders: true });
+  const time = virtualTime();
+  const p = await moduleProxy(up.url, `asep-test-model-key-${randomUUID()}`, time, 60_000);
   try {
-    assert.equal((await proxyRequest(proxy.port, 'POST', '/v1/messages')).status, 200, 'it serves before its expiry');
-    const bound = PROXY_EXIT_BOUND_MS + SCHEDULING_ALLOWANCE_MS;
-    const exited = await within(proxy.exited, expiresAt - Date.now() + bound + 5_000, 'the proxy exiting at its expiry');
-    assert.ok(exited.at >= expiresAt, `it exited ${expiresAt - exited.at} ms before its expiry`);
-    assert.ok(exited.at - expiresAt <= bound,
-      `it exited ${exited.at - expiresAt} ms after its expiry; the bound is ${PROXY_EXIT_BOUND_MS} ms + ${SCHEDULING_ALLOWANCE_MS} ms`);
-    assert.equal(exited.code, 0);
-    assert.match(proxy.log(), /asep-egress-proxy: stopping: its lifetime ended/);
-    await assert.rejects(proxyRequest(proxy.port, 'POST', '/v1/messages'), { code: 'ECONNREFUSED' },
-      'nothing answers on its port any more');
-    assert.equal(up.seen.length, 1);
+    const stream = streamingRequest(p.port);
+    stream.end();
+    await until('the request at the upstream', () => up.body.join('') === 'part-1;', 5_000);
+    time.set(60_000);
+    up.release();
+    await within(p.expired, 5_000, 'the proxy ending');
+    const cut = await within(stream.closed, 5_000, 'the request being cut');
+    assert.equal(cut.whole, false);
+    assert.equal(stream.text(), '', 'nothing of the response reached the agent');
+    assert.equal(p.expiredCalls(), 1);
   } finally {
-    await proxy.stop();
+    p.close();
     await up.close();
+  }
+});
+
+// How long the proxies in the process lifetime test live: long enough to start
+// and serve on a loaded host, short enough to wait out.
+const PROXY_TEST_LIFETIME_MS = 8_000;
+// How far the clock double below moves a proxy's wall clock, and how soon
+// after it is loaded.
+const CLOCK_MOVE_MS = 60 * 60_000;
+const CLOCK_MOVES_AFTER_MS = 200;
+
+// Loaded into a proxy process with --import. From ASEP_TEST_CLOCK_MOVES_AFTER_MS
+// after it is loaded, the process's wall clock — Date.now() and new Date() —
+// reads ASEP_TEST_CLOCK_MOVE_MS off, as it would were the system clock set
+// then. The monotonic clock is left alone, as setting the system clock leaves
+// it.
+const CLOCK_MOVE = `
+const RealDate = Date;
+const move = Number(process.env.ASEP_TEST_CLOCK_MOVE_MS);
+const after = Number(process.env.ASEP_TEST_CLOCK_MOVES_AFTER_MS);
+const loaded = RealDate.now();
+const wall = () => {
+  const t = RealDate.now();
+  return t - loaded >= after ? t + move : t;
+};
+globalThis.Date = class extends RealDate {
+  constructor(...a) {
+    if (a.length === 0) super(wall());
+    else super(...a);
+  }
+  static now() {
+    return wall();
+  }
+};
+`;
+
+test('the egress proxy process ends at its lifetime on its own clock, cutting what is open, whichever way the wall clock is set', async () => {
+  const up = await streamingModelApi();
+  const dir = await mkdtemp(join(tmpdir(), 'egress-proxy-clock-'));
+  const clockMove = join(dir, 'clock-move.mjs');
+  await writeFile(clockMove, CLOCK_MOVE);
+  const bound = PROXY_EXIT_BOUND_MS + SCHEDULING_ALLOWANCE_MS;
+  try {
+    await Promise.all([-CLOCK_MOVE_MS, CLOCK_MOVE_MS].map(async (move) => {
+      const way = move < 0 ? 'set back' : 'set forward';
+      const proxy = await startProxy(up.url, `asep-test-model-key-${randomUUID()}`, {
+        lifetimeMs: PROXY_TEST_LIFETIME_MS, readyWithinMs: PROXY_TEST_LIFETIME_MS,
+        nodeArgs: ['--import', pathToFileURL(clockMove).href],
+        env: {
+          ...process.env,
+          ASEP_TEST_CLOCK_MOVE_MS: String(move), ASEP_TEST_CLOCK_MOVES_AFTER_MS: String(CLOCK_MOVES_AFTER_MS),
+        },
+      });
+      try {
+        // Once its wall clock has moved it still serves, and its access log
+        // shows the moved clock.
+        await new Promise((r) => setTimeout(r, Math.max(0, proxy.readyAt + CLOCK_MOVES_AFTER_MS - performance.now())));
+        assert.equal((await proxyRequest(proxy.port, 'POST', '/v1/messages/count_tokens')).status, 200,
+          `clock ${way}: it serves before its lifetime ends`);
+        const served = /(\S+) POST \/v1\/messages\/count_tokens -> 200/;
+        await until(`clock ${way}: the request in its access log`, () => served.test(proxy.log()), 5_000);
+        const logged = served.exec(proxy.log())?.[1];
+        assert.ok(logged !== undefined && Math.abs(Date.parse(logged) - (Date.now() + move)) < 60_000,
+          `clock ${way}: the proxy's wall clock moved (it logged ${logged})`);
+        // A stream under way when its lifetime ends.
+        const stream = streamingRequest(proxy.port);
+        await until(`clock ${way}: the stream under way`, () => stream.text() === 'chunk-1;', 5_000);
+        const exited = await within(proxy.exited,
+          Math.max(1, proxy.readyAt + PROXY_TEST_LIFETIME_MS + bound + 5_000 - performance.now()),
+          `clock ${way}: the proxy exiting at the end of its lifetime`);
+        const cut = await within(stream.closed, bound, `clock ${way}: the stream being cut`);
+        assert.ok(exited.at >= proxy.spawnedAt + PROXY_TEST_LIFETIME_MS,
+          `clock ${way}: it exited ${Math.round(proxy.spawnedAt + PROXY_TEST_LIFETIME_MS - exited.at)} ms before its lifetime ended`);
+        const late = Math.round(exited.at - proxy.readyAt - PROXY_TEST_LIFETIME_MS);
+        assert.ok(late <= bound,
+          `clock ${way}: it exited up to ${late} ms after its lifetime ended; the bound is ${PROXY_EXIT_BOUND_MS} ms + ${SCHEDULING_ALLOWANCE_MS} ms`);
+        assert.equal(exited.code, 0);
+        assert.match(proxy.log(), /asep-egress-proxy: stopping: its lifetime ended/);
+        assert.equal(cut.whole, false, `clock ${way}: the stream was cut, not finished`);
+        assert.ok(cut.at <= proxy.readyAt + PROXY_TEST_LIFETIME_MS + bound, `clock ${way}: the stream was cut late`);
+        assert.equal(stream.text(), 'chunk-1;');
+        await assert.rejects(proxyRequest(proxy.port, 'POST', '/v1/messages'), { code: 'ECONNREFUSED' },
+          `clock ${way}: nothing answers on its port any more`);
+      } finally {
+        await proxy.stop();
+      }
+    }));
+  } finally {
+    await up.close();
+    await rm(dir, { recursive: true, force: true });
   }
 });
 
@@ -926,8 +1318,8 @@ test('the egress proxy process refuses every request and exits when its lifetime
 const PROXY_STARTER = `
 const { spawn } = require('node:child_process');
 const { openSync } = require('node:fs');
-const [asset, upstream, expiresAt, logPath] = process.argv.slice(2);
-const proxy = spawn(process.execPath, [asset, '--listen', '127.0.0.1:0', '--upstream', upstream, '--expires-at', expiresAt], {
+const [asset, upstream, lifetimeMs, logPath] = process.argv.slice(2);
+const proxy = spawn(process.execPath, [asset, '--listen', '127.0.0.1:0', '--upstream', upstream, '--lifetime-ms', lifetimeMs], {
   stdio: ['pipe', 'pipe', openSync(logPath, 'a')], env: { PATH: process.env.PATH },
 });
 proxy.stdin.write(process.env.ASEP_TEST_PROXY_KEY + '\\n');
@@ -964,7 +1356,7 @@ test('the egress proxy stops serving and exits once the process that started it 
   const starterPath = join(dir, 'starter.cjs');
   await writeFile(starterPath, PROXY_STARTER);
   const starter = spawn(process.execPath, [
-    starterPath, PROXY_ASSET, up.url, String(Date.now() + 10 * 60_000), logPath,
+    starterPath, PROXY_ASSET, up.url, String(10 * 60_000), logPath,
   ], {
     stdio: ['pipe', 'pipe', 'pipe'],
     env: { PATH: process.env['PATH'] ?? '', ASEP_TEST_PROXY_KEY: `asep-test-model-key-${randomUUID()}` },

@@ -15,22 +15,26 @@
 //     ever holds a placeholder: whatever x-api-key / Authorization it sends is
 //     discarded and replaced here.
 //   * Logs carry method, path and status only — never headers or bodies.
-//   * Its lifetime is its own, not its starter's. It is given an absolute expiry
-//     (`--expires-at`, epoch milliseconds): from then on it refuses every
-//     request, and it exits. And stdin is its link to whoever started it: the
+//   * Its lifetime is its own, not its starter's. It is given a relative
+//     lifetime (`--lifetime-ms`), at most MAX_LIFETIME_MS, and counts it on its
+//     own monotonic clock from its own start: one deadline, fixed once, that no
+//     change to the wall clock moves. From that deadline on it admits no
+//     request, forwards no further byte of one in flight, destroys every open
+//     connection, and exits. And stdin is its link to whoever started it: the
 //     credential is the first line, and stdin then stays open for as long as
 //     the starter keeps it open. When stdin closes — the starter ended it, or
 //     died and the operating system closed it — the proxy exits at once. So the
-//     credential it holds is not usable past the attempt's deadline (plus a
-//     grace), nor past the link to its starter, whichever ends first, and
-//     nothing has to be alive to take it back.
+//     credential it holds is not usable past its lifetime, nor past the link to
+//     its starter, whichever ends first, and nothing has to be alive to take it
+//     back.
 //
-// Usage: node egress-proxy.mjs --listen <host:port> --upstream <origin> --expires-at <epoch ms>
+// Usage: node egress-proxy.mjs --listen <host:port> --upstream <origin> --lifetime-ms <ms>
 // Prints `asep-egress-proxy listening <port>` on stdout once it accepts traffic.
 
 import { realpathSync } from 'node:fs';
 import http from 'node:http';
 import https from 'node:https';
+import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 
 const ALLOWED = [
@@ -50,46 +54,119 @@ const DROP_RESPONSE = new Set([
   'te', 'trailer', 'transfer-encoding', 'upgrade', 'set-cookie',
 ]);
 
-// The longest single timer Node keeps; a longer lifetime is waited out in steps.
-const MAX_TIMER_MS = 2 ** 31 - 1;
+/**
+ * The longest lifetime the proxy accepts: four hours. A longer one is refused
+ * at start, so no argument keeps a credential usable for longer. (It is also
+ * well under the longest single timer Node keeps, 2 ** 31 - 1 ms.)
+ */
+export const MAX_LIFETIME_MS = 4 * 60 * 60_000;
 
 function accessLog(method, path, status) {
   process.stderr.write(`${new Date().toISOString()} ${method} ${path} -> ${status}\n`);
 }
 
-function refuse(res, method, path, why, log) {
+function refuse(res, method, path, why, log, close = false) {
   const body = JSON.stringify({
     type: 'error',
     error: { type: 'forbidden', message: `asep egress proxy: ${why}` },
   });
-  res.writeHead(403, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) });
+  res.writeHead(403, {
+    'content-type': 'application/json',
+    'content-length': Buffer.byteLength(body),
+    ...(close ? { connection: 'close' } : {}),
+  });
   res.end(body);
   log(method, path, 403);
+}
+
+// The default timer: one that does not by itself keep the process alive.
+function scheduleOnce(fn, ms) {
+  const timer = setTimeout(fn, ms);
+  timer.unref();
+  return () => clearTimeout(timer);
 }
 
 /**
  * The proxy's request handling, without its process: an HTTP server that
  * forwards the allowlisted model API calls to `upstream` with `apiKey`, and
- * refuses everything else — and everything at all once `now()` has reached
- * `expiresAt`, even if the clock is later set back. The clock is a parameter
- * so that a test can run it on virtual time.
+ * refuses everything else, until `deadline` on the clock `now` (by default
+ * the process's monotonic clock). The deadline is one moment for everything:
+ * whichever first sees it reached — its timer, a request arriving, or a chunk
+ * of a request or response in flight — ends the proxy. Ended, it has refused
+ * that request, forwarded nothing more, destroyed every open connection, to
+ * the agent and to the upstream, stopped listening and called `onExpired`.
+ * Once reached, the deadline stays reached, even were the clock to go back.
+ * The clock and the timer are parameters so that a test can run them on
+ * virtual time.
  */
-export function egressProxy({ upstream, apiKey, expiresAt, now = () => Date.now(), log = accessLog }) {
+export function egressProxy({
+  upstream, apiKey, deadline, now = () => performance.now(), schedule = scheduleOnce,
+  log = accessLog, onExpired = () => undefined,
+}) {
   const target = new URL(upstream);
   if (target.protocol !== 'https:' && target.protocol !== 'http:') throw new Error('upstream must be http(s)');
   const basePath = target.pathname.replace(/\/+$/, '');
   const transport = target.protocol === 'https:' ? https : http;
-  let expired = false;
-  const serving = () => {
-    if (!expired && now() >= expiresAt) expired = true;
-    return !expired;
+
+  // Every connection from the agent, and every request to the upstream.
+  const open = new Set();
+  const track = (s) => {
+    open.add(s);
+    s.on('close', () => open.delete(s));
+  };
+  let reached = false;
+  const pastDeadline = () => {
+    if (!reached && now() >= deadline) reached = true;
+    return reached;
+  };
+  let ended = false;
+  let cancelTimer = () => undefined;
+  const end = () => {
+    if (ended) return;
+    ended = true;
+    reached = true;
+    cancelTimer();
+    server.close();
+    for (const s of open) s.destroy();
+    open.clear();
+    onExpired();
+  };
+  const atDeadline = () => {
+    if (pastDeadline()) end();
+    else cancelTimer = schedule(atDeadline, Math.max(0, deadline - now()));
+  };
+
+  // Moves `from` into `to` chunk by chunk, each only while the deadline has
+  // not been reached; at it, ends the proxy instead. `done` when `from` ended.
+  const relay = (from, to, done) => {
+    from.on('data', (chunk) => {
+      if (pastDeadline()) {
+        end();
+        return;
+      }
+      if (!to.write(chunk)) {
+        from.pause();
+        to.once('drain', () => from.resume());
+      }
+    });
+    from.on('end', () => {
+      if (pastDeadline()) end();
+      else done();
+    });
   };
 
   const server = http.createServer((req, res) => {
     const method = req.method ?? 'GET';
     const raw = req.url ?? '';
-    if (!serving()) {
-      refuse(res, method, raw.startsWith('/') ? raw.split('?')[0] : '(absolute-form)', 'no longer serving: its lifetime ended', log);
+    if (ended) {
+      req.socket.destroy();
+      return;
+    }
+    if (pastDeadline()) {
+      // Refused, and once that answer is out the proxy ends.
+      res.once('close', end);
+      refuse(res, method, raw.startsWith('/') ? raw.split('?')[0] : '(absolute-form)',
+        'no longer serving: its lifetime ended', log, true);
       req.resume();
       return;
     }
@@ -123,15 +200,25 @@ export function egressProxy({ upstream, apiKey, expiresAt, now = () => Date.now(
       path: `${basePath}${path}${url.search}`,
       headers,
     }, (up) => {
+      // Nothing of it is sent before its first chunk or its end, each of which
+      // the relay checks against the deadline.
       const back = {};
       for (const [k, v] of Object.entries(up.headers)) {
         if (v !== undefined && !DROP_RESPONSE.has(k.toLowerCase())) back[k] = v;
       }
       res.writeHead(up.statusCode ?? 502, back);
-      up.pipe(res);
-      up.on('end', () => log(method, path, up.statusCode ?? 502));
+      relay(up, res, () => {
+        res.end();
+        log(method, path, up.statusCode ?? 502);
+      });
+      // An upstream that went away mid-response leaves the agent a cut one.
+      up.on('close', () => {
+        if (!up.complete) res.destroy();
+      });
     });
+    track(out);
     out.on('error', () => {
+      if (ended) return;
       if (!res.headersSent) {
         res.writeHead(502, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ type: 'error', error: { type: 'bad_gateway', message: 'asep egress proxy: upstream unreachable' } }));
@@ -140,9 +227,13 @@ export function egressProxy({ upstream, apiKey, expiresAt, now = () => Date.now(
       }
       log(method, path, 502);
     });
-    req.pipe(out);
+    relay(req, out, () => out.end());
   });
 
+  server.on('connection', (socket) => {
+    if (ended) socket.destroy();
+    else track(socket);
+  });
   // A CONNECT tunnel would carry arbitrary TLS to arbitrary hosts.
   server.on('connect', (req, socket) => {
     socket.end('HTTP/1.1 403 Forbidden\r\ncontent-length: 0\r\n\r\n');
@@ -153,6 +244,7 @@ export function egressProxy({ upstream, apiKey, expiresAt, now = () => Date.now(
     log(req.method ?? 'GET', '(upgrade)', 403);
   });
 
+  atDeadline();
   return server;
 }
 
@@ -203,15 +295,19 @@ async function main() {
     process.stderr.write('asep-egress-proxy: upstream must be http(s)\n');
     process.exit(2);
   }
-  const expiresAt = Number(arg('--expires-at'));
-  if (!Number.isSafeInteger(expiresAt)) {
-    process.stderr.write('asep-egress-proxy: --expires-at must be epoch milliseconds\n');
+  const lifetimeMs = Number(arg('--lifetime-ms'));
+  if (!Number.isSafeInteger(lifetimeMs) || lifetimeMs < 1) {
+    process.stderr.write('asep-egress-proxy: --lifetime-ms must be a whole number of milliseconds, at least 1\n');
     process.exit(2);
   }
-  if (expiresAt <= Date.now()) {
-    process.stderr.write('asep-egress-proxy: its lifetime has already ended — refusing to start\n');
+  if (lifetimeMs > MAX_LIFETIME_MS) {
+    process.stderr.write(`asep-egress-proxy: --lifetime-ms ${lifetimeMs} is beyond the maximum lifetime of `
+      + `${MAX_LIFETIME_MS} ms — refusing to start\n`);
     process.exit(2);
   }
+  // The deadline, fixed once: performance.now() is this process's monotonic
+  // clock and counts from its start, so the lifetime runs from the start.
+  const deadline = lifetimeMs;
   const apiKey = await readStdin(() => stop('its parent link closed'));
   if (apiKey === undefined) {
     process.stderr.write('asep-egress-proxy: stdin closed before a credential arrived — refusing to start\n');
@@ -221,16 +317,12 @@ async function main() {
     process.stderr.write('asep-egress-proxy: no credential on stdin — refusing to start\n');
     process.exit(2);
   }
+  if (performance.now() >= deadline) {
+    process.stderr.write('asep-egress-proxy: its lifetime ended before a credential arrived — refusing to start\n');
+    process.exit(2);
+  }
 
-  const server = egressProxy({ upstream, apiKey, expiresAt });
-
-  // The lifetime: checked on every request, and acted on by a timer.
-  const expire = () => {
-    const left = expiresAt - Date.now();
-    if (left <= 0) stop('its lifetime ended');
-    else setTimeout(expire, Math.min(left, MAX_TIMER_MS));
-  };
-  expire();
+  const server = egressProxy({ upstream, apiKey, deadline, onExpired: () => stop('its lifetime ended') });
 
   const sep = listen.lastIndexOf(':');
   const host = listen.slice(0, sep);
