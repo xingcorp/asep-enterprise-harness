@@ -1465,6 +1465,7 @@ as a test condition, not a product SLA.
 | CYCLE10-MED-001 | ACCEPTED — update payload key set asserted; the fake applies `state` and `base`; the human interleavings are tests; residual race stated | `6ad22d3` |
 | CYCLE10-MED-002 | ACCEPTED — the 72 s attribution withdrawn; the split is not recorded | `53f966f` |
 | CYCLE10-MED-003 | ACCEPTED — named and labelled before every create, swept whatever the answer | `4159b19` |
+| Gate failure in this cycle | fixed — bounded moments read from a monotonic clock | `6608d21` |
 | Limitations (2), (3), (4) | accepted as Phase 2 limits (R39) | report |
 | MED-005 | report updated | docs commit + sentinel |
 
@@ -1631,3 +1632,33 @@ create; a missing network reported not removed. Not mutation-checked: the
 runner's removal after a client error (no test seam produces a client
 `error` after a successful spawn), the proxy flag's order (equivalent: it
 was already set synchronously at spawn), and the itest fixtures.
+
+### A gate failure in this cycle — moments read from the wall clock
+
+`pnpm verify:all` at `937d25e` failed one of 847 tests: "a docker kill that
+never answers is cut at its bound" measured the hung kill cut 29 942 ms after
+the stop, 58 ms inside its 30 000 ms timer. That timer runs on the monotonic
+clock and is armed after the stop moment is read, so on one clock the
+interval cannot be shorter than 30 s; the moments were read from
+`Date.now()`, which a wall-clock correction moves (the host's clock measured
+144 ms off `time.apple.com` shortly after). A plain test of the alternative
+(work in the same event-loop iteration making a timer fire early) fired on
+time and is ruled out.
+**Change (`6608d21`):** `monotonicNow()` (`@asep/command-runner`) — the wall
+clock at the process's start plus monotonic time since — is read for every
+bounded moment: the agent's start, deadline, lifecycle moments, removal
+deadline and wall-clock usage (rounded), the runner's lifecycle moments and
+removal deadline, and the removal helpers' real clock. Tests read the moments
+they compare from the same clock; the inspect-before-report test now records
+what the fake docker had been asked at the moment of the report rather than
+comparing timestamps across processes (it had failed once that way after the
+clock change). The cannot-show-removal test bounds only from below; the
+teardown after the removal is not product-bounded and slows with host load
+(one run under load took 79 s), so its upper bound is the test's timeout,
+and the removal deadline itself is pinned by the deadline and virtual-time
+tests.
+**Tests:** `Date.now()` set back a minute mid-attempt and mid-run: the stop
+is still on time and the moments in order (`agent-claude.test.ts`,
+`command-runner.test.ts`).
+**Mutation check:** 2 mutants, both killed: the provider's moments read from
+`Date.now()`; the runner's moments read from `Date.now()`.
