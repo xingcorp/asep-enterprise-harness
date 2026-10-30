@@ -6,15 +6,20 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   endProcess, endRecorded, identityOf, register, registryRoot, registryShimLine, spawnRecorded, stillRunning,
   withProcessRegistry,
   PS_ENV, REGISTRY_ENV, TOKEN_ENV,
   // @ts-expect-error — .mjs helper has no type declarations; we test its runtime contract.
 } from './process-registry.mjs';
+// @ts-expect-error — .mjs helper has no type declarations; we test its runtime contract.
+import { TEST_ROOTS } from './canonical-tests.mjs';
 
 // What identifies a recorded process.
 interface Entry { pid: number; group: boolean; token: string; startedAt?: string }
@@ -334,4 +339,50 @@ test('the shim line hands the run to a shell, quoted, and is empty without a run
   const r = spawnSync('/bin/sh', ['-c', `${registryShimLine(dir)}\nprintf %s "$${REGISTRY_ENV}"`], { encoding: 'utf8' });
   assert.equal(r.stdout, dir);
   assert.equal(registryShimLine(''), '');
+});
+
+// --- what the tests themselves do with processes ---------------------------------
+
+const REPO = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+
+// Every test source — test files of each kind under the canonical roots, and
+// the test tooling — as its repo-relative path and its lines.
+function testSources(): [string, string[]][] {
+  const found: string[] = [];
+  const walk = (dir: string) => {
+    for (const entry of readdirSync(dir).sort()) {
+      if (['node_modules', 'dist', 'build', 'coverage', '.git'].includes(entry)) continue;
+      const full = join(dir, entry);
+      if (statSync(full).isDirectory()) walk(full);
+      else if (/\.(test|itest|live)\.ts$/.test(entry)) found.push(full);
+    }
+  };
+  for (const root of TEST_ROOTS as string[]) if (existsSync(join(REPO, root))) walk(join(REPO, root));
+  const tooling = join(REPO, 'scripts', 'testing');
+  found.push(...readdirSync(tooling).filter((f) => f.endsWith('.mjs')).map((f) => join(tooling, f)));
+  return found.map((f) => [relative(REPO, f), readFileSync(f, 'utf8').split('\n')]);
+}
+
+// A line that is a comment, not code.
+const comment = (line: string) => /^\s*(\/\/|\*|\/\*)/.test(line);
+
+// Where a test may signal a process group by a pid alone, and why that pid is
+// still the process meant.
+const GROUP_SIGNALS_BY_PID: readonly { file: string; match: string; why: string }[] = [
+  {
+    file: 'scripts/testing/fake-docker.mjs', match: 'kill(-child.pid',
+    why: 'a container process just started that could not be recorded: this process has not reaped it, so its pid is not reused',
+  },
+];
+
+test('no test signals a process group by a pid alone, without the identity the registry records', () => {
+  const found = testSources().flatMap(([file, lines]) => lines.flatMap((line, i) => (
+    !comment(line) && /process\.kill\(\s*-/.test(line)
+      && !GROUP_SIGNALS_BY_PID.some((a) => a.file === file && line.includes(a.match))
+      ? [`${file}:${i + 1}: ${line.trim()}`] : [])));
+  assert.deepEqual(found, [], 'end a recorded process with endProcess(entry), by its pid, start time and token');
+  for (const a of GROUP_SIGNALS_BY_PID) {
+    assert.ok(testSources().some(([file, lines]) => file === a.file && lines.some((l) => l.includes(a.match))),
+      `${a.file}: '${a.match}' is no longer there; drop it from the list`);
+  }
 });

@@ -36,6 +36,10 @@ import {
   registryShimLine, removeFakeDockerFixture,
   // @ts-expect-error - .mjs has no type declarations; runtime import is fine under tsx.
 } from '../../../scripts/testing/fake-docker-fixture.mjs';
+import {
+  endProcess,
+  // @ts-expect-error - .mjs has no type declarations; runtime import is fine under tsx.
+} from '../../../scripts/lib/process-registry.mjs';
 
 console.log('SUITE-ID: asep-suite:command-runner');
 
@@ -682,19 +686,20 @@ test('a cancelled command has its container removed', async () => {
 
 test('a container that cannot be removed fails the run closed, and is never reported removed', async () => {
   const { client, store, scope, dir } = await harness();
-  let leftover: number | undefined;
+  let leftover: Record<string, unknown> | undefined;
   try {
     const d = await fakeDaemon(dir, true);
     const seen: CommandLifecycleEvent[] = [];
     const running = new TrustedCommandRunner(scope, store, undefined, (e) => { seen.push(e); })
       .run(spec({ ...LONG, cwd: d.wt, timeoutMs: 1_000 }), await dockerHandle(d));
     await until('the container to start', () => d.containers().length === 1);
-    leftover = d.containers()[0]!['pid'] as number;
+    leftover = d.containers()[0]!;
     await assert.rejects(running, (err: Error) =>
       err instanceof SandboxTeardownError && /could not be removed .*removal refused/.test(err.message));
     assert.deepEqual(seen.filter((e) => e.phase === 'removed'), [], 'not shown gone, not reported removed');
   } finally {
-    if (leftover !== undefined) try { process.kill(-leftover, 'SIGKILL'); } catch { /* gone */ }
+    // By what identifies it, never by its pid alone.
+    if (leftover !== undefined) endProcess(leftover);
     await client.close();
     await removeFakeDockerFixture(dir);
   }
@@ -809,7 +814,7 @@ test('a client that errs after it started has its container removed and shown go
 
 test('stopping a sandbox removes any container still carrying its id, and fails when it cannot', async () => {
   const { client, dir } = await harness();
-  const leftovers: number[] = [];
+  const leftovers: Record<string, unknown>[] = [];
   try {
     for (const refuseRm of [false, true]) {
       const sub = join(dir, refuseRm ? 'refusing' : 'removing');
@@ -823,7 +828,7 @@ test('stopping a sandbox removes any container still carrying its id, and fails 
       const orphan = spawn(d.docker, [...handle.runFlags!, '--name', `${handle.sandboxId}-9`, handle.image!, LONG.executable, ...LONG.args],
         { stdio: 'ignore', detached: true });
       await until('the orphan to start', () => d.containers().length === 1);
-      leftovers.push(d.containers()[0]!['pid'] as number);
+      leftovers.push(d.containers()[0]!);
       orphan.kill('SIGKILL');
       if (refuseRm) {
         await assert.rejects(() => provider.stop(handle), SandboxTeardownError);
@@ -834,7 +839,8 @@ test('stopping a sandbox removes any container still carrying its id, and fails 
       }
     }
   } finally {
-    for (const pid of leftovers) try { process.kill(-pid, 'SIGKILL'); } catch { /* gone */ }
+    // By what identifies each, never by a pid alone.
+    for (const c of leftovers) endProcess(c);
     await client.close();
     await removeFakeDockerFixture(dir);
   }

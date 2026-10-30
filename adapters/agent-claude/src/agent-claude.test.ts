@@ -1636,14 +1636,14 @@ test('G3: killing the agent and proxy docker clients mid-run leaves no container
 
 test('G3: an attempt whose containers cannot be shown removed fails closed', async () => {
   const h = await harness({ refuseRemoval: true });
-  const pids: number[] = [];
+  const records: Record<string, unknown>[] = [];
   // Stopped by a cancellation once it runs, so the test does not depend on how
   // long the setup before the agent takes.
   const ac = new AbortController();
   const running = (await h.provider('hang')).execute(request(h, { signal: ac.signal }));
   try {
     await until('the agent container to start', () => containerRecords(h).some((c) => String(c['name']).startsWith('asep-agent-')));
-    pids.push(...containerRecords(h).map((c) => c['pid'] as number));
+    records.push(...containerRecords(h));
     ac.abort();
     const obs = await running;
     assert.equal(obs.status, 'FAILED', 'not BLOCKED: a container may still be running beside the worktree');
@@ -1658,7 +1658,8 @@ test('G3: an attempt whose containers cannot be shown removed fails closed', asy
     // The attempt's own teardown restores its input directory; let it finish
     // before the harness removes the directory under it.
     await running.catch(() => undefined);
-    for (const p of pids) try { process.kill(-p, 'SIGKILL'); } catch { /* gone */ }
+    // By what identifies each, never by a pid alone.
+    for (const c of records) endProcess(c);
     await h.close();
   }
 });
@@ -1708,12 +1709,12 @@ test('G3: an agent removal that fails yet leaves the container gone is shown gon
 
 test('G3: an agent the daemon keeps while answering its removal with success is never reported removed', async () => {
   const h = await harness({ keepAgent: true });
-  const pids: number[] = [];
+  const records: Record<string, unknown>[] = [];
   const ac = new AbortController();
   const running = (await h.provider('hang')).execute(request(h, { signal: ac.signal }));
   try {
     await until('the agent container to start', () => containerRecords(h).some((c) => String(c['name']).startsWith('asep-agent-')));
-    pids.push(...containerRecords(h).map((c) => c['pid'] as number));
+    records.push(...containerRecords(h));
     ac.abort();
     const obs = await running;
     assert.equal(obs.status, 'FAILED', obs.knownLimitations.join('; '));
@@ -1728,7 +1729,8 @@ test('G3: an agent the daemon keeps while answering its removal with success is 
   } finally {
     ac.abort();
     await running.catch(() => undefined);
-    for (const p of pids) try { process.kill(-p, 'SIGKILL'); } catch { /* gone */ }
+    // By what identifies each, never by a pid alone.
+    for (const c of records) endProcess(c);
     await h.close();
   }
 });
