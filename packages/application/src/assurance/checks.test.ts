@@ -634,6 +634,33 @@ test('the check report is canonical and fails closed when it is read back', () =
   for (const [label, read] of tampered) assert.throws(read, CheckReportError, label);
 });
 
+test('the check report lists SARIF logs in one order whatever order they arrive in', () => {
+  // Two logs of one check and the log of an earlier check whose digest sorts after both, so neither key alone gives
+  // the order. In every arrival order: one report, its logs listed by check id and then digest.
+  const world = fixtureWorld();
+  const packetSha256 = buildReviewPacket(world.sources, world.limits).sha256;
+  const same = [SARIF_MESSAGE_ID_LOG, SARIF_OMITTED_LEVEL_LOG].map((log) => utf8(JSON.stringify(log)));
+  const latest = same.map((c) => sha256Hex(c)).sort()[1]!;
+  const late = Array.from({ length: 256 }, (_, i) => utf8(`{"n":${i}}`)).find((c) => sha256Hex(c) > latest);
+  assert.ok(late !== undefined, 'a log whose digest sorts after both');
+  const logs: readonly SarifInput[] = [
+    { checkId: 'semgrep', content: same[0]! },
+    { checkId: 'semgrep', content: same[1]! },
+    { checkId: 'codeql', content: late },
+  ];
+  const orders = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]];
+  const reports = orders.map((order) => {
+    const sarif = order.map((i) => logs[i]!);
+    return buildCheckReport(checksFor(world, { sarif }), { packetSha256, sarif });
+  });
+  for (const [i, r] of reports.entries()) assert.deepEqual(r.bytes, reports[0]!.bytes, `order ${orders[i]!.join()}`);
+  const [first, second] = [sha256Hex(logs[0]!.content), sha256Hex(logs[1]!.content)].sort();
+  assert.deepEqual(
+    reports[0]!.report.sarifInputs.map((s) => [s.checkId, s.sha256]),
+    [['codeql', sha256Hex(logs[2]!.content)], ['semgrep', first], ['semgrep', second]],
+  );
+});
+
 test('the check summary counts a SARIF finding as blocking whatever the severity policy says', () => {
   const sarif: readonly SarifInput[] = [{ checkId: 'semgrep', content: utf8(JSON.stringify(SARIF_OMITTED_LEVEL_LOG)) }];
   const reportOf = (world: FixtureWorld) =>

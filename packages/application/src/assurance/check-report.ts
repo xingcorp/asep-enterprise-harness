@@ -49,6 +49,8 @@ function reject(message: string): never {
 
 const SHA256 = /^[0-9a-f]{64}$/;
 
+const compareText = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+
 /** Build the canonical check report for one round's deterministic check result. */
 export function buildCheckReport(
   result: DeterministicCheckResult,
@@ -62,9 +64,10 @@ export function buildCheckReport(
     pushGuard: result.pushGuard,
     egress: { decision: result.egress.decision, packetSha256: result.egress.packetSha256, hits: result.egress.hits },
     findings: result.findings,
+    // Ordered by check id, then digest, so every arrival order of the logs gives one report.
     sarifInputs: [...inputs.sarif]
       .map((s) => ({ checkId: s.checkId, sha256: sha256Hex(s.content), bytes: s.content.byteLength }))
-      .sort((a, b) => (a.checkId < b.checkId ? -1 : a.checkId > b.checkId ? 1 : 0)),
+      .sort((a, b) => compareText(a.checkId, b.checkId) || compareText(a.sha256, b.sha256)),
   };
   // Round-trip through the parser so a report that could not be re-read is never written.
   const bytes = canonicalBytes(report);
