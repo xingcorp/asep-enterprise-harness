@@ -9,6 +9,11 @@
 // canonical packet itself, so every content-bearing field is in it, plus each content
 // part the prompt embeds next to the packet.
 //
+// A corpus packet (a historical change replayed for the review benchmark) is built by the
+// same whitelist from a synthetic identity and work order. A historical tree has no
+// recorded execution, so its manifest is `NOT_RECORDED` with no environment and no checks;
+// a runtime packet never carries that shape.
+//
 // Pure: callers resolve artifacts and pass bytes in; the packet is canonical JSON.
 
 import type { ArtifactRef, EvidenceBundle, Requirement, RiskLevel, WorkOrder } from '@asep/contracts';
@@ -18,6 +23,7 @@ import { excerptTail, parseTestSummary } from './execution-manifest.js';
 import type {
   ChangedFile,
   PacketCheck,
+  PacketExecution,
   PacketFile,
   PacketIdentity,
   PacketOmission,
@@ -72,6 +78,20 @@ export interface PacketSources {
   readonly priorFindings: readonly ReviewFindingRecord[];
 }
 
+/**
+ * The sources of a corpus packet: a historical change with its synthetic identity and work
+ * order. There is no execution source and no evidence bundle to agree with.
+ */
+export interface CorpusPacketSources {
+  readonly identity: PacketIdentity;
+  readonly risk: RiskLevel;
+  readonly reviewKind: ReviewKind;
+  /** The synthetic work order, field for field as the packet carries it. */
+  readonly workOrder: ReviewPacket['workOrder'];
+  readonly change: PacketSources['change'];
+  readonly priorFindings: readonly ReviewFindingRecord[];
+}
+
 export interface PacketLimits {
   readonly maxBytes: number;
   readonly excerptBytesPerStream: number;
@@ -110,23 +130,25 @@ function pickRef(ref: ArtifactRef): ArtifactRef {
   return { artifactId: ref.artifactId, sha256: ref.sha256, kind: ref.kind };
 }
 
-function checkConsistency(s: PacketSources): void {
-  const { identity, change, execution } = s;
+function checkLimits(limits: PacketLimits): void {
+  for (const [name, value] of Object.entries(limits)) {
+    if (!Number.isInteger(value) || value < 1) fail(`limit ${name} must be a positive integer`);
+  }
+}
+
+/** The round, the commits and the review kind agree; shared by runtime and corpus packets. */
+function checkChange(s: Pick<PacketSources, 'identity' | 'reviewKind' | 'change' | 'priorFindings'>): void {
+  const { identity, change } = s;
   if (!Number.isInteger(identity.round) || identity.round < 1) fail('round must be an integer >= 1');
   if (identity.roundKey !== `${identity.attemptId}:assurance:${identity.round}`) fail('roundKey does not match the attempt and round');
   const expectedKind: ReviewKind = identity.round === 1 ? 'fresh' : 're-review';
   if (s.reviewKind !== expectedKind) fail(`round ${identity.round} must be a ${expectedKind} review`);
-  if (s.workOrder.id !== identity.taskId) fail('work order belongs to another task');
-  if (execution.evidence.taskId !== identity.taskId || execution.evidence.attemptId !== identity.attemptId) {
-    fail('evidence belongs to another attempt');
-  }
   for (const [name, sha] of [
     ['taskBaseSha', change.taskBaseSha],
     ['resultSha', change.resultSha],
   ] as const) {
     if (!SHA1.test(sha)) fail(`${name} must be 40 lowercase hex`);
   }
-  if (execution.evidence.resultSha !== change.resultSha) fail('evidence resultSha differs from the reviewed commit');
   if (s.reviewKind === 'fresh') {
     if (change.repairBaseSha !== null || change.repairDelta !== null) fail('a fresh review has no repair base or delta');
     if (s.priorFindings.length > 0) fail('a fresh review has no prior findings');
@@ -134,6 +156,16 @@ function checkConsistency(s: PacketSources): void {
     if (change.repairBaseSha === null || !SHA1.test(change.repairBaseSha)) fail('a re-review needs a 40-hex repair base');
     if (change.repairDelta === null) fail('a re-review needs the repair delta');
   }
+}
+
+function checkConsistency(s: PacketSources): void {
+  const { identity, change, execution } = s;
+  checkChange(s);
+  if (s.workOrder.id !== identity.taskId) fail('work order belongs to another task');
+  if (execution.evidence.taskId !== identity.taskId || execution.evidence.attemptId !== identity.attemptId) {
+    fail('evidence belongs to another attempt');
+  }
+  if (execution.evidence.resultSha !== change.resultSha) fail('evidence resultSha differs from the reviewed commit');
 }
 
 function buildFiles(change: PacketSources['change']): PacketFile[] {
@@ -239,16 +271,9 @@ export function pickFindingRecord(f: ReviewFindingRecord): ReviewFindingRecord {
 
 /** Build the canonical review packet. Throws PacketBuildError when the sources disagree. */
 export function buildReviewPacket(sources: PacketSources, limits: PacketLimits): BuiltPacket {
-  for (const [name, value] of Object.entries(limits)) {
-    if (!Number.isInteger(value) || value < 1) fail(`limit ${name} must be a positive integer`);
-  }
+  checkLimits(limits);
   checkConsistency(sources);
-  const { identity, workOrder, change, execution } = sources;
-
-  const files = buildFiles(change);
-  const omissions: PacketOmission[] = files
-    .filter((f) => f.omittedReason !== null)
-    .map((f) => ({ path: f.path, reason: f.omittedReason! }));
+  const { workOrder, execution } = sources;
   const checks = buildChecks(execution, limits);
 
   const statements = new Map(sources.requirements.map((r) => [r.id, r] as const));
@@ -256,6 +281,67 @@ export function buildReviewPacket(sources: PacketSources, limits: PacketLimits):
     const r = statements.get(id);
     return r === undefined ? [] : [{ id: r.id, statement: r.statement, priority: r.priority }];
   });
+
+  return assemble(
+    sources,
+    {
+      objective: workOrder.objective,
+      requirementIds: [...workOrder.requirementIds],
+      requirements,
+      allowedPaths: [...workOrder.allowedPaths],
+      forbiddenChanges: [...workOrder.forbiddenChanges],
+      architectureInvariants: [...workOrder.architectureInvariants],
+      acceptanceCheckIds: [...workOrder.acceptanceCheckIds],
+    },
+    {
+      verdict: execution.verdict,
+      environment: {
+        imageDigest: execution.evidence.environment.imageDigest,
+        lockfileHash: execution.evidence.environment.lockfileHash,
+        nodeVersion: execution.evidence.environment.nodeVersion ?? null,
+      },
+      checks,
+    },
+    limits,
+  );
+}
+
+/**
+ * Build the canonical packet of a corpus change. Its execution manifest is always
+ * `{ verdict: 'NOT_RECORDED', environment: null, checks: [] }`. Throws PacketBuildError when
+ * the sources disagree.
+ */
+export function buildCorpusReviewPacket(sources: CorpusPacketSources, limits: PacketLimits): BuiltPacket {
+  checkLimits(limits);
+  checkChange(sources);
+  const { workOrder } = sources;
+  return assemble(
+    sources,
+    {
+      objective: workOrder.objective,
+      requirementIds: [...workOrder.requirementIds],
+      requirements: workOrder.requirements.map((r) => ({ id: r.id, statement: r.statement, priority: r.priority })),
+      allowedPaths: [...workOrder.allowedPaths],
+      forbiddenChanges: [...workOrder.forbiddenChanges],
+      architectureInvariants: [...workOrder.architectureInvariants],
+      acceptanceCheckIds: [...workOrder.acceptanceCheckIds],
+    },
+    { verdict: 'NOT_RECORDED', environment: null, checks: [] },
+    limits,
+  );
+}
+
+function assemble(
+  sources: Pick<PacketSources, 'identity' | 'risk' | 'reviewKind' | 'change' | 'priorFindings'>,
+  workOrder: ReviewPacket['workOrder'],
+  execution: PacketExecution,
+  limits: PacketLimits,
+): BuiltPacket {
+  const { identity, change } = sources;
+  const files = buildFiles(change);
+  const omissions: PacketOmission[] = files
+    .filter((f) => f.omittedReason !== null)
+    .map((f) => ({ path: f.path, reason: f.omittedReason! }));
 
   const priorFindings = [...sources.priorFindings].map(pickFindingRecord).sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 
@@ -273,15 +359,7 @@ export function buildReviewPacket(sources: PacketSources, limits: PacketLimits):
     },
     risk: sources.risk,
     reviewKind: sources.reviewKind,
-    workOrder: {
-      objective: workOrder.objective,
-      requirementIds: [...workOrder.requirementIds],
-      requirements,
-      allowedPaths: [...workOrder.allowedPaths],
-      forbiddenChanges: [...workOrder.forbiddenChanges],
-      architectureInvariants: [...workOrder.architectureInvariants],
-      acceptanceCheckIds: [...workOrder.acceptanceCheckIds],
-    },
+    workOrder,
     change: {
       taskBaseSha: change.taskBaseSha,
       resultSha: change.resultSha,
@@ -290,15 +368,7 @@ export function buildReviewPacket(sources: PacketSources, limits: PacketLimits):
       repairDelta: change.repairDelta === null ? null : pickRef(change.repairDelta.ref),
       files,
     },
-    execution: {
-      verdict: execution.verdict,
-      environment: {
-        imageDigest: execution.evidence.environment.imageDigest,
-        lockfileHash: execution.evidence.environment.lockfileHash,
-        nodeVersion: execution.evidence.environment.nodeVersion ?? null,
-      },
-      checks,
-    },
+    execution,
     priorFindings,
     budget: { maxBytes: limits.maxBytes, overBudget: false, omissions },
   };
@@ -410,7 +480,7 @@ const PACKET_SHAPE: Shape = {
     execution: {
       fields: {
         verdict: 'string',
-        environment: { fields: { imageDigest: 'string', lockfileHash: 'string', nodeVersion: { nullable: 'string' } } },
+        environment: { nullable: { fields: { imageDigest: 'string', lockfileHash: 'string', nodeVersion: { nullable: 'string' } } } },
         checks: {
           array: {
             fields: {
@@ -477,9 +547,21 @@ function check(value: unknown, shape: Shape, path: string): void {
   }
 }
 
+const VERDICTS: ReadonlySet<unknown> = new Set(['PASS', 'FAIL', 'ERROR', 'NOT_RECORDED']);
+
+/** A recorded verdict has an environment; only NOT_RECORDED has none, and no checks either. */
+function checkExecution(execution: { readonly verdict: unknown; readonly environment: unknown; readonly checks: readonly unknown[] }): void {
+  if (!VERDICTS.has(execution.verdict)) fail('packet.execution.verdict must be PASS, FAIL, ERROR or NOT_RECORDED');
+  const notRecorded = execution.verdict === 'NOT_RECORDED';
+  if ((execution.environment === null) !== notRecorded || (notRecorded && execution.checks.length > 0)) {
+    fail('packet.execution has no environment and no checks exactly when its verdict is NOT_RECORDED');
+  }
+}
+
 /** Throws PacketBuildError unless `value` has exactly the review-packet/v1 shape. */
 export function assertPacketWhitelist(value: unknown): void {
   check(value, PACKET_SHAPE, 'packet');
+  checkExecution((value as ReviewPacket).execution);
 }
 
 /** Every field path a packet may carry, e.g. `change.files[].path`. */

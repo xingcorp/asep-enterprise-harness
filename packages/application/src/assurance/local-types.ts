@@ -167,6 +167,21 @@ export interface PacketOmission {
   readonly reason: PacketOmissionReason;
 }
 
+export interface PacketEnvironment {
+  readonly imageDigest: string;
+  readonly lockfileHash: string;
+  readonly nodeVersion: string | null;
+}
+
+/**
+ * The execution manifest of a packet. A runtime packet always carries the attempt's recorded
+ * execution; `NOT_RECORDED`, with no environment and no checks, is used only by corpus packets,
+ * whose historical trees have no execution evidence.
+ */
+export type PacketExecution =
+  | { readonly verdict: 'PASS' | 'FAIL' | 'ERROR'; readonly environment: PacketEnvironment; readonly checks: readonly PacketCheck[] }
+  | { readonly verdict: 'NOT_RECORDED'; readonly environment: null; readonly checks: readonly [] };
+
 export interface ReviewPacket {
   readonly packetVersion: 'review-packet/v1';
   readonly identity: PacketIdentity;
@@ -190,11 +205,7 @@ export interface ReviewPacket {
     readonly repairDelta: ArtifactRef | null;
     readonly files: readonly PacketFile[];
   };
-  readonly execution: {
-    readonly verdict: 'PASS' | 'FAIL' | 'ERROR';
-    readonly environment: { readonly imageDigest: string; readonly lockfileHash: string; readonly nodeVersion: string | null };
-    readonly checks: readonly PacketCheck[];
-  };
+  readonly execution: PacketExecution;
   /** Re-review only: prior adjudicated findings with ids and lifecycle state. */
   readonly priorFindings: readonly ReviewFindingRecord[];
   readonly budget: {
