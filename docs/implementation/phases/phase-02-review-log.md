@@ -1698,14 +1698,14 @@ its symptom and recovery.
 | ID | Disposition | Commits |
 |---|---|---|
 | CYCLE11-HIGH-001 | ACCEPTED — the repair is one update of the recorded PR by its number; no list, no selection, no create; both probes are tests | `fab5760` |
-| CYCLE11-HIGH-002 | ACCEPTED; cause found on the host, not fixed in the repository — every docker call reports its signal, duration and bound, and every removal failure its calls; the one unbounded docker call is bounded; with that evidence two red runs at `7017cfc` and a probe beside one show a Node launch held up to 40.7 s by the host's launch-policy queue; no bound raised, fault 3 unchanged | `a375f1e`, `bd08654` |
+| CYCLE11-HIGH-002 | ACCEPTED; the stall located in Node launch on the host, not fixed in the repository (its cause a strong hypothesis, not proven; wording corrected in repair cycle 13) — every docker call reports its signal, duration and bound, and every removal failure its calls; the one unbounded docker call is bounded; with that evidence two red runs at `7017cfc` and a probe beside one show a Node launch held up to 40.7 s on the host (by its launch-policy check: a strong hypothesis, not proven); no bound raised, fault 3 unchanged | `a375f1e`, `bd08654` |
 | CYCLE11-MED-001 | ACCEPTED — inspect and ps errors are tests for agent and runner; the `/./` mutant is killed | `056457a` |
 | Concern 2 (runner client error after spawn) | ACCEPTED — a spawn seam; the probe is a test | `056457a` |
 | Concern 3 (head-SHA lag) | accepted as a Phase 2 limit (R43); runbook | `7017cfc` |
 | Test polling bounds | moved to the monotonic clock, with two lease waits of the same kind | `a8f45ca` |
 | The loosened assertion in `6608d21` | named below | `7017cfc` |
 | MED-005 | data model, threat model and runbook in `fab5760`; review log and report | `7017cfc`, `9585d33`, the report commit |
-| Gate failures in this cycle | `c67b25b` failed format-check, fixed; `7017cfc` failed twice by the host's launch-policy queue (CYCLE11-HIGH-002), not changed | `52d4d62` |
+| Gate failures in this cycle | `c67b25b` failed format-check, fixed; `7017cfc` failed twice by the Node-launch stall on the host (CYCLE11-HIGH-002), not changed | `52d4d62` |
 
 Also: `c67b25b` adds the cycle-11 transcript with its provenance note.
 
@@ -1764,7 +1764,7 @@ method and the `UpdatePrContentInput` type; `ForgeOperation` gains
 `'pr-update'`. `upsertPullRequest`, `findPullRequest`, `resolveRef` and
 `pushBranch` are unchanged.
 
-### CYCLE11-HIGH-002 — the gate was red at the reviewed head — ACCEPTED; cause found on the host
+### CYCLE11-HIGH-002 — the gate was red at the reviewed head — ACCEPTED; the stall located in Node launch on the host
 
 **Evidence.** Controller run 2 at `42b6d78`: fault 3 rejected with
 `SandboxTeardownError … could not be shown removed in time: docker ps failed:
@@ -1877,21 +1877,29 @@ step 1's timeline, and a probe beside the second showed:
   ended. A larger one was not made: it would hold every Node launch on this
   shared host for tens of seconds, other sessions' included.
 
-**Cause.** On this host a new Node process does not run until the system's
-launch policy has dealt with it, and that work is served one launch at a time;
-when Node is launched on the host faster than syspolicyd keeps up, a new Node
-process waits in the queue — up to 40.7 s measured. The tests' docker clients
-are Node processes, so a docker call that falls in such a window exceeds its
-30 s bound, whichever test makes it. Controller run 2 at `42b6d78` fits: a
+**Cause.** *Corrected in repair cycle 13 (R47): this paragraph first stated
+the launch-policy queue as the cause found. The evidence supports less, as
+follows.* Measured: on this host a new Node process waited up to 40.7 s before
+it ran, while `/bin/sh` and `/usr/bin/true` launched in at most 173 ms at the
+same moments. The tests' docker clients are Node processes, so a docker call
+that falls in such a window exceeds its 30 s bound, whichever test makes it. A
+strong hypothesis, not proven: that the host's launch-policy check holds the
+launches and serves them one at a time. The kernel log shows a notification
+for each Node launch, and the delayed launches were released together, but
+the log does not record when each policy request began and ended, and no
+control run with the policy exemption was made. Unknown: what makes the
+bursts of Node launches. They may include this repository's own tests — the
+fake docker client is a Node launch per call and starts a Node process per
+container — and concurrent lanes on the host. Controller run 2 at `42b6d78` fits: a
 `docker ps` killed with empty stderr, and the test beside it slowed by about
 65 s while its first docker call — then unbounded — waited the queue out. Its
 window has rolled out of the kernel log (about an hour is kept on this host),
 so that run cannot be checked. The `21aeb0d` failure (the egress proxy, a
 Node process, not ready in time) is the same class by the same reasoning, also
-not checkable now. No bound is shown wrong: the delay is a queue outside the
-process, not load on it, and no bound that keeps its meaning covers it.
+not checkable now. No bound is shown wrong: the delay is outside the process,
+not load on it, and no bound that keeps its meaning covers it.
 
-**What would fix it.** The fix is on the host, outside this lane's reach:
+**What would fix it.** If the hypothesis holds, the fix is on the host, outside this lane's reach:
 launch the gates from a process the launch policy does not assess (macOS lets
 an operator add a terminal or agent host under Privacy & Security ›
 Developer Tools; untested here, as it is a system setting this lane may not
@@ -2016,5 +2024,309 @@ copied verbatim, has no final newline. `52d4d62` adds it and names the edit in
 the provenance note.
 
 `pnpm verify:all` at `7017cfc` failed twice, 867 of 869 each time, by the
-launch-policy queue described under CYCLE11-HIGH-002 (step 3). No change was
-made for them: the cause is on the host.
+Node-launch stall described under CYCLE11-HIGH-002 (step 3). No change was
+made for them: the stall is on the host.
+
+## Final review cycle 12 dispositions
+
+> Reviewer: Codex `gpt-6.1-sol`, re-review cycle 12 at `d9255fb`
+> (`phase-02-final-rereview-codex-v12.md`), verdict **REQUEST_CHANGES** @ 0.99.
+> The controller's decisions on it (reconciliation R47) were applied as
+> stated. Repairs: repair cycle 13, on `phase/02-single-agent-vertical-slice`
+> from `d9255fb`. Every disposition, repair, test, measurement and mutation
+> check below was made and verified by the implementer only; none has been
+> independently reviewed. Mutation checks work as in the cycle-10 section.
+> Every full gate of this cycle ran through the controller's `gate.sh`, which
+> holds the host's gate lock and samples Node launches beside the run (R47).
+
+### What the review accepted, and what it did not
+
+The review marked **RESOLVED**: CYCLE11-HIGH-001, CYCLE11-MED-001, concern 2,
+CYCLE10-HIGH-001, HIGH-006, MED-005, CYCLE7-HIGH-003, CYCLE8-HIGH-003 and the
+monotonic waits. It found **PARTIAL**: CYCLE11-HIGH-002 (the Node stall is
+measured; what makes the bursts, and a fix, are not verified), the timeout
+work, and CYCLE10-HIGH-002 (reopened by its probe `CYCLE12_LATE_ABSENCE`). It
+raised CYCLE12-HIGH-001 (the egress proxy keeps the model credential usable
+for as long as it runs, and nothing bounds that once the worker that started
+it is gone), CYCLE12-MED-001 (fixtures can leave processes behind and delete
+the only record that finds them) and CYCLE12-MED-002 (both removal helpers
+took absence that arrived after their deadline as proof). A mutant of the
+docker caller's cut, `cutMs + 1_000`, survived.
+
+### Summary
+
+| ID | Disposition | Commits |
+|---|---|---|
+| CYCLE12-HIGH-001 | ACCEPTED — the proxy has a lifetime of its own: an absolute expiry (the attempt's deadline plus `PROXY_EXPIRY_GRACE_MS`, 30 s) given at start, and its stdin as its link to its starter; past either it refuses and exits | `0d95b1f` |
+| CYCLE12-MED-001 | ACCEPTED — a fake container's record goes only once its process group is shown gone; fixtures end every recorded container before deleting state; the test proxy helper cleans up on failure; a run-scoped registry outside the test worker lets the canonical runner end leftovers before and after the tests; the controller's 33 listed orphans were killed | `2d974cb`, `e47b2cb` |
+| CYCLE12-MED-002 | ACCEPTED — both removal helpers refuse absence that arrives after the deadline; the probe is a test | `e58c588` |
+| The surviving cut mutant | ACCEPTED — the cut is bounded from above, when it runs and how long the cut call takes | `87c231c` |
+| Instrumentation | ACCEPTED — every docker call record carries the client's pid; the proxy's and the agent's kill results are kept; the status assertions print the observation | `87c231c` |
+| `CYCLE12_REAL_OCTOKIT_PATCH` | the probe is a test, through the real Octokit | `b95cb82` |
+| CYCLE11-HIGH-002 | NOT CLOSED; disposition R47 recorded; the cause stated at the confidence the evidence supports | this commit |
+| Port and schema deltas | none to ports or schema; the egress proxy asset and its argv builder take a required expiry | `0d95b1f` |
+
+Also: `158608f` adds the cycle-12 transcript with its provenance note.
+
+### CYCLE12-HIGH-001 — the proxy's credential had no bound of its own — ACCEPTED
+
+**Invariant:** the model credential is usable through the egress proxy only
+until the attempt's deadline plus a named grace, and only while the process
+that started the proxy holds its link to it — whichever ends first — and
+nothing has to be alive to take it back.
+**Change (`0d95b1f`):**
+- `assets/egress-proxy.mjs` requires `--expires-at` (epoch milliseconds) and
+  refuses to start without one, or with one already past. It refuses every
+  request once its clock has reached the expiry — also if the clock is then
+  set back — and exits at the expiry by its own timer. Stdin carries the
+  credential as its first line and then stays open; when it closes — the
+  starter ended it, or died and the operating system closed it — the proxy
+  exits at once. Its request handling is exported (`egressProxy`, with the
+  clock as a parameter), so the expiry is tested on virtual time.
+- The provider passes `--expires-at` = the wall clock of the attempt's
+  deadline plus `PROXY_EXPIRY_GRACE_MS` (30 s; the grace covers only a proxy
+  container whose clock runs behind the host's) and keeps the proxy's stdin
+  open after the credential. `PROXY_EXIT_BOUND_MS` (2 s) names how soon the
+  proxy exits once its lifetime ends or its link closes.
+- Threat model T2-16 states the capability window after worker death: the
+  agent can use the credential through a leftover proxy until the proxy's
+  expiry at most, then has no route out at all; the runbook keeps the sweep
+  as the operator backstop for the containers.
+**Tests (written first; red against the previous asset and provider, the two
+constants added first so that the suite could load):**
+- Virtual time: the proxy serves at expiry − 1 ms and refuses at the expiry
+  (403, "no longer serving: its lifetime ended") and after the clock is set
+  back 30 s; nothing refused reaches the upstream.
+- A real process whose starter is SIGKILLed after it served one request: the
+  proxy is gone within `PROXY_EXIT_BOUND_MS` plus the 2 s scheduling
+  allowance, its log says "its parent link closed", and its port refuses
+  connections.
+- A real process with a 5 s lifetime: it serves, then exits at its expiry —
+  not before it, and within the same bound — with exit 0 and "its lifetime
+  ended".
+- It refuses to start without `--expires-at`, with one that is not epoch
+  milliseconds or already past, with stdin closed before a credential, or
+  with an empty credential; given a credential and then the end of stdin, it
+  stops.
+- The provider's proxy argv carries the deadline plus the grace; the fake
+  docker records a container's stdin per chunk and whether it ended, and the
+  credential test shows the provider never ends the proxy's.
+**Mutation check:** 11 mutants, all killed: no per-request expiry check; no
+expiry timer; the link closing ignored; no grace; the provider ends the
+proxy's stdin; a past expiry accepted; a missing expiry defaulted; exit 1 s
+before the expiry; no `--expires-at` in the argv; a clock set back serving
+again; the per-request check 1 s late. Two more were run against a first
+draft whose stop kept serving refusals until the process exited: "end() does
+not stop serving" (killed) and "a link that closed during setup is
+forgotten", which survived because its branch cannot be reached (Node
+delivers a pipe's data and its end in separate callbacks and runs the
+credential's continuation between them). The draft was simplified so that
+stopping is exiting; neither branch exists any more.
+**In a container.** The stdin link runs through the docker client and the
+daemon. A manual probe on Docker 29.6.1 (`docker run --rm -i` of the pinned
+node image, its stdin from a FIFO): the container saw its stdin end and was
+gone 0.17 s after the writer to the client's stdin was SIGKILLed, and gone
+0.19 s after the client itself was SIGKILLed. This was observed once by hand,
+is not a gate test, and is not relied on: the bound relied on after worker
+death is the expiry.
+
+### CYCLE12-MED-001 — fixtures could leave processes and delete their records — ACCEPTED
+
+**Invariant:** a process a test starts is ended and shown gone before the
+last record that finds it is deleted, and a record of it is kept outside the
+test process for as long as it runs.
+**Change (`2d974cb`):**
+- The fake docker takes a container's record away only once nothing of its
+  process group runs; `kill` and `rm -f` that cannot show that answer with the
+  daemon's error and keep the record (a `kill-does-not-take` state file stands
+  for such a daemon). When a container's process ends, the rest of its group
+  is killed before its record goes.
+- Every fixture that runs the fake docker — the agent-claude harness, the
+  command-runner fixtures, crash-recovery, pilot-faults, pilot-target,
+  pilot-verifier, vertical-integration and the live proof — is removed through
+  `removeFakeDockerFixture` (`scripts/testing/fake-docker-fixture.mjs`), which
+  ends every container still recorded under it, shows it gone, and only then
+  deletes the fixture; one that cannot be shown gone keeps the fixture and
+  fails the teardown.
+- The test proxy helper records its proxy and kills it when it is not ready
+  in time; the stdin link from HIGH-001 ends it if the test process dies. The
+  starter test's processes are recorded and ended as well.
+- `scripts/lib/process-registry.mjs`: a run-scoped registry under the system
+  temporary directory, one root per checkout. The canonical runner opens a
+  run, hands it to the tests in `ASEP_PROCESS_REGISTRY` (each docker shim
+  exports it, as the provider strips the docker client's environment), ends
+  what earlier runs whose runner is gone left behind before the tests, and
+  ends what this run left after them. It prints both on every run and fails a
+  run that leaves a process it cannot end. A process is ended only while its
+  command line still carries the marker it was recorded with; a group record
+  ends the whole group.
+**Follow-up (`e47b2cb`).** The first gate with the registry listed six
+records of its own run at the end, every process already gone: containers
+that fixture removal had ended through their fixture records kept their
+registry records, and the runner called them "left by this run". Fixture
+removal now takes what it shows gone out of the registry too, and the runner
+reports how many recorded processes it found still running, beside every
+record and what became of it. Tests first (both red before the change);
+mutation check: fixture removal leaving what it ended in the registry, the
+runner counting every record as running — both killed.
+**Tests:** the fake docker's three tests (record kept while the process runs,
+for `kill` and for `rm -f`; containers in the registry while they run;
+fixture removal) were written first and red against the previous fake; the
+registry's tests are new with the module; the runner wiring is a test that
+runs the runner on a test file leaving a process; the harness close, the
+test proxy helper and the exited-container group are tests too (the proxy
+helper's and the harness's were written together with the helpers, in the
+same file).
+**Mutation check (`2d974cb`):** 15 mutants, all killed: the fake's `rm` or `kill` taking a
+record while the process runs; containers not recorded; fixture removal
+ending nothing; the marker ignored; only the leader killed; a live runner's
+run swept; dead runners' runs not swept; a run not ending what it recorded; a
+test proxy not ready in time left running; the harness deleting its state
+without ending containers; the runner not handing over the registry; an
+exited container's group not ended; a record forgotten while its process
+runs; a fixture removed while a container still runs. The first run of "a
+run not ending what it recorded", in a combined run with
+`--test-force-exit`, hung for 16 minutes in the Node test runner's parent
+process (sampled busy in `Buffer.indexOf` while parsing a test file's output,
+the file's process already exited) and was killed; rerun per file and in a
+second combined run without `--test-force-exit`, it was killed both times. The
+gate does not pass `--test-force-exit`. The mutant runs left 8 processes,
+since their mutants disable the cleanup; they were killed by pid, with their
+command lines and start times recorded before and their absence after.
+**The controller's orphans.** `controller-orphans-20261030-1715.txt` listed
+33 processes, all with this worktree's command paths: 31 egress proxies and
+2 fake docker clients. Before: each pid still had the start time and command
+line the list gives, with parent pid 1. All 33 were sent SIGTERM and all
+exited; none needed SIGKILL. After: none of the 33 runs. Two more proxies of
+this worktree, pids 4822 and 89091 (children of the listed fake docker
+clients 4809 and 89078, started 08:50 and 08:34), are not in the list and
+were left running as the instruction limits the kill to the listed pids;
+they run the previous proxy asset, with no lifetime of its own.
+
+### CYCLE12-MED-002 — absence that arrived after the deadline was taken as proof — ACCEPTED
+
+**Invariant:** absence shows a container gone only if the call that showed it
+returned by the deadline, for the agent (`removeContainerShownGone`) and the
+runner (`removeLabelledContainers`).
+**Change (`e58c588`):** each helper checks the time left after its `ps`,
+`rm` and `inspect` return; an answer that came after the deadline is refused
+with how late it was (`docker ps listed none only 4000ms after the deadline`,
+`docker rm returned 4000ms after the deadline, leaving no time to show it
+gone`, `docker inspect showed it gone only 4100ms after the deadline`).
+**Tests (written first, red before the fix):** the reviewer's
+`CYCLE12_LATE_ABSENCE` on virtual time for both helpers: a `ps` that lists
+none late, an `rm` that returns late, and an `inspect` that shows absence late
+after a timely `rm`.
+**Mutation check:** the label helper taking a late listing; the name helper
+taking a late absence; a 5 s tolerance — all killed.
+
+### The surviving cut mutant, and the instrumentation — ACCEPTED
+
+**Cut (`87c231c`):** the docker caller's test bounds the cut from above: the
+kill runs no earlier than the bound and no later than the bound plus a named
+timer lateness (`TIMER_LATENESS_MS`, 500 ms), and the cut call ends within
+that plus a named kill-to-close allowance (`KILL_TO_CLOSE_MS`, 400 ms). The
+reviewer's `cutMs + 1_000` mutant is killed.
+**Instrumentation (`87c231c`):** every `DockerCallRecord` carries the client's
+pid, and its description names it (`(pid 4711, spawn 3ms, bound 30000ms, cut
+at 30001ms)`); a client that never started has none. The runner's teardown
+error names its command client's pid. The result of the egress proxy's kill
+at teardown and of the agent's kill at its stop are kept in the attempt's
+teardown notes when they fail for anything but absence. The tool-budget test
+and twelve other status assertions print the observation — status, summary,
+limitations and, for the budget test, the timeline — when they fail.
+**Mutation check:** the kill 1 s after its bound; no pid in the record; the
+proxy's kill result dropped; the agent's kill result dropped; no client pid
+in the runner's error; the budget stop reporting FAILED (its failure printed
+the observation) — all killed. Tests and code were written together.
+
+### `CYCLE12_REAL_OCTOKIT_PATCH` — the probe is a test
+
+The review confirmed with the real Octokit on a fetch double that
+`updatePullRequestContent` sends exactly one request, `PATCH
+/repos/acme/web/pulls/1` with `{"title":"T","body":"B"}`; the adapter's tests
+drove a fake Octokit only. The probe is now a test through the production
+transport (`b95cb82`): the real `@octokit/rest` client, built as the
+composition root builds it, with only its fetch replaced. It passes on the
+code as reviewed — it confirms a behaviour rather than finds a fault.
+**Mutation check:** the update also sending `state: 'open'`; the update
+listing the head's PRs first — both killed.
+
+### CYCLE11-HIGH-002 — disposition R47; the cause at the confidence the evidence supports
+
+**What the evidence supports.** The stall is in launching Node on this host:
+in the red runs the docker client started at once and was still running at
+its 30 s bound, and the probe beside the second red run measured Node
+launches held 4.6–40.7 s while `/bin/sh` and `/usr/bin/true` launched in at
+most 173 ms. That the host's launch-policy check (AppleSystemPolicy notifying
+syspolicyd for each Node launch) is what holds them, one launch at a time, is
+a strong hypothesis, not proven: the kernel log shows a notification per
+launch and the timing fits a queue released at once, but it does not record
+when each policy request began and ended, and no control run with the policy
+exemption was made. What makes the bursts of Node launches is unknown; they
+may include this repository's own tests — the fake docker client is one Node
+launch per call and starts a Node process per container — and concurrent
+lanes on the host. The cycle-11 entry above stated the cause as found; its
+wording is corrected there.
+
+**The disposition (R47), applied as stated:**
+1. Every gate on this host runs through `gate.sh`.
+2. A gate run is valid acceptance evidence only if its sampler shows no Node
+   launch of 10 s or more. A red run with such a stall is a host stall and
+   counts as neither pass nor fix; a red run without one is a real failure
+   and needs a root cause.
+3. Acceptance needs two consecutive valid green runs of each gate at the
+   final head.
+4. The controller keeps a burst-parent sampler running; a source inside this
+   repository's tooling becomes a fix.
+5. The report and this log state the cause at the confidence the evidence
+   supports. A host-policy exemption is the user's choice and is not assumed.
+
+R47 also corrects the run lengths quoted in R43: the canonical test step at
+`42b6d78` took 351 s in run 1 and 422 s in run 2, not 176 s (the cycle-11
+entry already says so).
+
+**Gate runs of this cycle.** Every one through `gate.sh`; the sampler line is
+its own summary.
+
+| Commit | Gate | Result | Tests | Duration | Sampler: samples, longest Node launch, launches of 10 s or more | Valid under R47 |
+|---|---|---|---|---|---|---|
+| `158608f` | `verify:all` | exit 0 | 869 of 869 | 455 s | 198, 2921 ms, 0 | yes |
+| `e58c588` | `verify:all` | exit 0 | 870 of 870 | 429 s | 185, 3204 ms, 0 | yes |
+| `87c231c` | `verify:all` | exit 0 | 870 of 870 | 496 s | 213, 1425 ms, 0 | yes |
+| `0d95b1f` | `verify:all` | exit 0 | 873 of 873 | 393 s | 172, 2899 ms, 0 | yes |
+| `2d974cb` | `verify:all` | exit 0 | 884 of 884 | 439 s | 195, 2415 ms, 0 | yes |
+| `e47b2cb` | `verify:all` | exit 0 | 884 of 884 | 403 s | 175, 2900 ms, 0 | yes |
+| `b95cb82` | `verify:all` | exit 0 | 885 of 885 | 427 s | 186, 3101 ms, 0 | yes |
+| `b95cb82` | `test:integration` | exit 0 | 34 of 34 | 113 s | 50, 988 ms, 0 | yes |
+
+No gate run of this cycle was red. From `2d974cb` on, the canonical runner
+reports its process registry on every run: it found no recorded process
+still running, before or after the tests, in any of them; the records of
+already-ended processes it listed fell from six (`2d974cb`) to one
+(`e47b2cb`) to none (`b95cb82`). After the integration run no container
+labelled `asep.role` and no network labelled `asep.attempt` remained. The
+final sequence on the report commit — `pnpm install --frozen-lockfile`, two
+`verify:all` and two `test:integration` runs, each through `gate.sh` — is
+bound by the L1 sentinel and reported to the controller with its sampler
+lines.
+
+### Port and schema deltas for Lanes A and B
+
+No port, schema or migration changes in this cycle. Lanes A and B adopt the
+cycle-11 port delta (`ForgeProvider.updatePullRequestContent`) at their
+rebase after G-P2, and no adapter may implement `updatePullRequestContent`
+through a branch-keyed upsert (R47). Other contract changes, all inside
+adapters and test tooling:
+- `@asep/agent-claude`: `buildProxyRunArgs` takes a required `expiresAt`;
+  `assets/egress-proxy.mjs` requires `--expires-at` and keeps reading stdin
+  after the credential, and exports `egressProxy`; new exports
+  `PROXY_EXPIRY_GRACE_MS` and `PROXY_EXIT_BOUND_MS`; teardown notes may name a
+  failed kill of the proxy or of the agent at its stop.
+- `@asep/command-runner`: `DockerCallRecord` gains `pid?`, and
+  `describeDockerCall` names it; the runner's teardown error names its
+  client's pid.
+- Test tooling: `scripts/lib/process-registry.mjs`,
+  `scripts/testing/fake-docker-fixture.mjs`; the canonical runner sets
+  `ASEP_PROCESS_REGISTRY` for its tests and reports what it ended; the fake
+  docker's records carry `group` and `marker`.
