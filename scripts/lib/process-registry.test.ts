@@ -20,6 +20,8 @@ import {
 } from './process-registry.mjs';
 // @ts-expect-error — .mjs helper has no type declarations; we test its runtime contract.
 import { TEST_ROOTS } from './canonical-tests.mjs';
+// @ts-expect-error — .mjs helper has no type declarations; we test its runtime contract.
+import { withUnreadable } from '../testing/unreadable.mjs';
 
 // What identifies a recorded process.
 interface Entry { version: number; pid: number; group: boolean; token: string; startedAt: string }
@@ -549,6 +551,53 @@ test('records are ended and forgotten; a run whose runner is gone is swept at th
   } finally {
     for (const entry of entries) finish(entry);
     outer.restore();
+    rmSync(root, { recursive: true, force: true });
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('a registry, a run or an owner record that cannot be read is not an empty one: it is left as it is, and listed as unknown', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'asep-registry-repo-'));
+  const root = registryRoot(repo);
+  // An earlier run whose runner is gone, holding a process that runs; an entry
+  // of the registry that is no run directory, so that its owner record cannot
+  // be read; and a run whose owner record is torn.
+  const leftover = recorded();
+  const stale = join(root, 'stale');
+  mkdirSync(stale, { recursive: true });
+  const dead = spawnSync(process.execPath, ['-e', '']).pid;
+  writeFileSync(join(stale, 'owner.json'), JSON.stringify({ pid: dead, startedAt: LONG_AGO }));
+  register(leftover, stale);
+  writeFileSync(join(root, 'torn'), '');
+  mkdirSync(join(root, 'garbled'));
+  writeFileSync(join(root, 'garbled', 'owner.json'), '{"pid": ');
+  type Listed = { run?: string; directory?: string; record?: string; outcome: string; why?: string };
+  const listed = (earlier: Listed[]) => earlier.map((e) => [e.run, e.directory ?? e.record, e.outcome, e.why]).sort();
+  try {
+    // The reviewer's unreadable registry root: nothing in it is touched, and
+    // it is listed.
+    const unreadRoot = withUnreadable([root], () => withProcessRegistry(root, () => 'ran')) as { result: string; earlier: Listed[] };
+    assert.equal(unreadRoot.result, 'ran', 'the tests still run');
+    assert.deepEqual(listed(unreadRoot.earlier), [[undefined, root, 'unknown', 'it cannot be read (EACCES)']]);
+    assert.equal(stillRunning(leftover.pid), true, 'the earlier run\'s process was not signalled');
+    assert.ok(existsSync(join(stale, `${leftover.pid}.json`)), 'and its record stays');
+
+    // A run that cannot be read, and an owner record that cannot be.
+    const unreadRun = withUnreadable([stale], () => withProcessRegistry(root, () => 'ran')) as { earlier: Listed[] };
+    assert.deepEqual(listed(unreadRun.earlier), [
+      ['garbled', 'owner.json', 'unknown', 'its owner record cannot be read'],
+      ['stale', stale, 'unknown', 'it cannot be read (EACCES)'],
+      ['torn', 'owner.json', 'unknown', 'its owner record cannot be read'],
+    ]);
+    assert.equal(stillRunning(leftover.pid), true, 'nothing was signalled');
+    assert.ok(existsSync(join(stale, `${leftover.pid}.json`)), 'the run is left as it was');
+
+    // Read directly: a directory that does not exist holds no record; one that
+    // is not a directory cannot be read.
+    assert.deepEqual(endRecorded(join(repo, 'no-such-run')), []);
+    assert.deepEqual(endRecorded(join(root, 'torn')), [{ directory: join(root, 'torn'), outcome: 'unknown', why: 'it cannot be read (ENOTDIR)' }]);
+  } finally {
+    finish(leftover);
     rmSync(root, { recursive: true, force: true });
     rmSync(repo, { recursive: true, force: true });
   }

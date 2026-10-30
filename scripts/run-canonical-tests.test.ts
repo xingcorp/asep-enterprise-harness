@@ -27,6 +27,8 @@ import { delimiter, dirname, join } from 'node:path';
 import { discoverTestFiles, REQUIRED_SUITES, suiteMarker, missingRequiredSuites, TEST_ROOTS } from './lib/canonical-tests.mjs';
 // @ts-expect-error — .mjs helpers have no type declarations; we test their runtime contract.
 import { runCanonicalTests } from './run-canonical-tests.mjs';
+// @ts-expect-error — .mjs helpers have no type declarations; we test their runtime contract.
+import { withUnreadable } from './testing/unreadable.mjs';
 import {
   endProcess, identityOf, nestRegistry, shownGone, spawnRecorded, stillRunning, unregister, PROC_ENV, RECORD_VERSION, REGISTRY_ENV,
   // @ts-expect-error — .mjs helpers have no type declarations; we test their runtime contract.
@@ -255,6 +257,35 @@ test('an earlier run\'s record that does not fully identify its process fails th
       r.stderr);
     assert.equal(stillRunning(live.entry.pid, true), true, 'its process was not signalled');
     assert.deepEqual(readdirSync(run).sort(), [`${live.entry.pid}.json`, 'owner.json', 'torn.json'].sort(), 'and the records stay');
+  } finally {
+    if (shownGone(endProcess(live.entry))) unregister(live.entry.pid);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a registry root that cannot be read fails the run, naming it, and nothing under it is touched', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'asep-runner-registry-'));
+  const root = join(dir, 'registry');
+  const fixture = join(dir, 'starts-nothing.test.mjs');
+  writeFileSync(fixture, STARTS_NOTHING);
+  // An earlier run whose runner died, holding a process that runs.
+  const dead = spawnSync(process.execPath, ['-e', '']).pid;
+  const live = spawnRecorded(process.execPath, ['-e', 'setTimeout(() => {}, 60_000)'], { detached: true, stdio: 'ignore' }) as {
+    child: { unref(): void }; entry: { pid: number };
+  };
+  live.child.unref();
+  const run = join(root, 'stale-run');
+  try {
+    mkdirSync(run, { recursive: true });
+    writeFileSync(join(run, 'owner.json'), JSON.stringify({ pid: dead, startedAt: 'Thu Jan  1 00:00:00 1970' }));
+    writeFileSync(join(run, `${live.entry.pid}.json`), JSON.stringify(live.entry));
+    // The reviewer's CYCLE15_UNREADABLE_REGISTRY_ROOT_GATE: the root's listing
+    // fails with EACCES; making a new run there still works.
+    const r = withUnreadable([root], () => runOn(fixture, root)) as { code: number; stderr: string };
+    assert.equal(r.code, 1, `the run fails: ${r.stderr}`);
+    assert.ok(r.stderr.includes(`  - directory ${root}: unknown — it cannot be read (EACCES), so it was left alone\n`), r.stderr);
+    assert.equal(stillRunning(live.entry.pid, true), true, 'the earlier run\'s process was not signalled');
+    assert.ok(readdirSync(run).includes(`${live.entry.pid}.json`), 'and its record stays');
   } finally {
     if (shownGone(endProcess(live.entry))) unregister(live.entry.pid);
     rmSync(dir, { recursive: true, force: true });

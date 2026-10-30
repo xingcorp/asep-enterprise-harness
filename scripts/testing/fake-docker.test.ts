@@ -20,6 +20,8 @@ import {
   removeFakeDockerFixture,
   // @ts-expect-error — .mjs helper has no type declarations; we test its runtime contract.
 } from './fake-docker-fixture.mjs';
+// @ts-expect-error — .mjs helper has no type declarations; we test its runtime contract.
+import { withUnreadable } from './unreadable.mjs';
 
 const FAKE = join(dirname(fileURLToPath(import.meta.url)), 'fake-docker.mjs');
 const IMAGE = `alpine@sha256:${'a'.repeat(64)}`;
@@ -255,6 +257,12 @@ test('a fixture is removed only after every container recorded under it is ended
     }
     assert.equal(existsSync(join(dir, 'docker-state', 'containers', 'left.json')), true);
     assert.equal(readdirSync(registry).length, 2, 'and in the registry');
+    // A directory under it that cannot be read is not one without containers:
+    // the fixture is kept, and the containers under it run on.
+    await assert.rejects(withUnreadable([join(dir, 'sandbox')], () => removeFakeDockerFixture(dir, undefined, registry)),
+      new RegExp(`${join(dir, 'sandbox')} cannot be read \\(EACCES\\), so the fake containers under it cannot be ended`));
+    for (const c of started) assert.equal(stillRunning(c.pid, true), true, `container process ${c.pid} runs on`);
+    assert.equal(readdirSync(registry).length, 2, 'and stays in the registry');
     await removeFakeDockerFixture(dir, undefined, registryEnv(registry)[REGISTRY_ENV]);
     for (const c of started) assert.equal(stillRunning(c.pid, true), false, `container process ${c.pid} was ended`);
     assert.equal(existsSync(dir), false, 'and then the fixture was removed');

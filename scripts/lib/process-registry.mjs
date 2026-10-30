@@ -37,7 +37,10 @@
 //
 // Unknown is not absence. When the process table cannot be read — `ps` fails,
 // by its status, a spawn error or a signal, or a process's environment cannot
-// be read — nothing is signalled, the record stays, and the cleanup fails. On
+// be read — nothing is signalled, the record stays, and the cleanup fails. So
+// too for the registry itself: only a directory that does not exist reads as
+// empty; one that cannot be read, or a run's owner record that cannot be, is
+// 'unknown', left as it is, and fails the cleanup. On
 // macOS `ps` shows no environment for the system's own binaries (/bin/sleep,
 // /bin/sh), so such a process cannot be recorded: recording it fails.
 
@@ -76,13 +79,25 @@ function writeWhole(path, value) {
   renameSync(partial, path);
 }
 
+// The record at `path`: undefined when there is none, null when it cannot be
+// read or parsed.
 function readEntry(path) {
+  let raw;
   try {
-    return JSON.parse(readFileSync(path, 'utf8'));
+    raw = readFileSync(path, 'utf8');
+  } catch (err) {
+    return err.code === 'ENOENT' ? undefined : null;
+  }
+  try {
+    return JSON.parse(raw);
   } catch {
-    return undefined;
+    return null;
   }
 }
+
+// What becomes of a registry directory `dir` that cannot be read: it stays,
+// as 'unknown'.
+const unreadDirectory = (dir, err) => ({ directory: dir, outcome: 'unknown', why: `it cannot be read (${err.code ?? err.message})` });
 
 // `ps` with `args`: its output, or undefined when it failed — a spawn error, a
 // signal, or a status other than 0.
@@ -319,14 +334,15 @@ export const shownGone = (outcome) => outcome === 'gone' || outcome === 'ended' 
  * removing the record of each one shown gone; returns each record with what
  * became of it. A record that does not fully identify a process (identityGap)
  * is never handed to `end`: it stays, as 'unknown', with its file's name,
- * `record`, and `why`.
+ * `record`, and `why`. A `dir` that does not exist holds no record; one that
+ * cannot be read is returned as 'unknown', with `directory` and `why`.
  */
 export function endRecorded(dir, end = endProcess) {
   let names;
   try {
     names = readdirSync(dir);
-  } catch {
-    return [];
+  } catch (err) {
+    return err.code === 'ENOENT' ? [] : [unreadDirectory(dir, err)];
   }
   const out = [];
   for (const name of names.filter((n) => n.endsWith('.json') && n !== 'owner.json')) {
@@ -430,7 +446,9 @@ function closeRun(dir) {
 
 /**
  * Run `fn` with a run of its own under `root` (registryRoot): first every run
- * there whose runner is gone is ended and removed, then `fn` gets the
+ * there whose runner is gone is ended and removed — a `root`, a run or a run's
+ * owner record that cannot be read is left as it is and listed as 'unknown',
+ * with `directory` or `record` and `why` — then `fn` gets the
  * environment that hands its run to the tests — beside the registries of the
  * run this process is in, if it is in one — and when it is done whatever is
  * still recorded in its run is ended. A run whose runner cannot be read in the
@@ -442,9 +460,17 @@ export function withProcessRegistry(root, fn) {
   let runs = [];
   try {
     runs = readdirSync(root).filter((n) => !n.startsWith('.'));
-  } catch { /* no run yet */ }
+  } catch (err) {
+    // No registry yet is no run; one that cannot be read is not shown empty.
+    if (err.code !== 'ENOENT') earlier.push(unreadDirectory(root, err));
+  }
   for (const run of runs) {
     const owner = readEntry(join(root, run, 'owner.json'));
+    if (owner === null) {
+      // An owner that cannot be read is not a runner shown gone.
+      earlier.push({ run, record: 'owner.json', owner: true, outcome: 'unknown', why: 'its owner record cannot be read' });
+      continue;
+    }
     if (owner !== undefined && Number.isSafeInteger(owner.pid)) {
       const runner = look(owner.pid);
       if (runner.state === 'unknown') {

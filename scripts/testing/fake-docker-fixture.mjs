@@ -15,13 +15,15 @@ export { registryShimLine } from '../lib/process-registry.mjs';
 
 // The fake docker state directories under `dir`, as fixtures lay them out: a
 // `docker-state` directory at most three levels down, outside any git
-// repository.
+// repository. A directory that cannot be read is not one without them: it
+// fails the teardown.
 function dockerStates(dir, depth = 3) {
   let entries;
   try {
     entries = readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return [];
+  } catch (err) {
+    if (err.code === 'ENOENT') return [];
+    throw new Error(`${dir} cannot be read (${err.code ?? err.message}), so the fake containers under it cannot be ended`);
   }
   return entries.filter((e) => e.isDirectory()).flatMap((e) => {
     if (e.name === 'docker-state') return [join(dir, e.name)];
@@ -41,7 +43,8 @@ export async function removeFakeDockerFixture(dir, end = endProcess, registry = 
   const left = ended.filter((e) => !shownGone(e.outcome));
   if (left.length > 0) {
     throw new Error(`fake containers not shown gone, so ${dir} is kept: `
-      + left.map((e) => `pid ${e.pid}${e.name !== undefined ? ` (${e.name})` : ''}: ${e.outcome}`).join(', '));
+      + left.map((e) => `${e.directory !== undefined ? `directory ${e.directory}` : `pid ${e.pid}`}`
+        + `${e.name !== undefined ? ` (${e.name})` : ''}: ${e.outcome}${e.why !== undefined ? ` (${e.why})` : ''}`).join(', '));
   }
   await rm(dir, { recursive: true, force: true });
 }
