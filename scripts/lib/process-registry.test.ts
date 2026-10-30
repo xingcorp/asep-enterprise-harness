@@ -193,6 +193,67 @@ test('a group whose leader has exited is ended only while every member left show
   }
 });
 
+test('a group whose leader still runs is signalled only while every other member shows its token too', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'asep-registry-members-'));
+  const strangerToken = randomUUID();
+  // The reviewer's two probes: a member with another token, and a member
+  // whose environment cannot be read, each beside a leader that runs and shows
+  // the recorded token.
+  const stranger = await group({ memberToken: strangerToken });
+  const hidden = await group();
+  const ours = await group();
+  const proc = join(dir, 'proc');
+  const run = join(dir, 'run');
+  mkdirSync(run);
+  register(hidden.entry, run);
+  const before = process.env[PROC_ENV];
+  try {
+    assert.equal(endProcess(stranger.entry), 'unknown', 'a member that shows another token');
+    assert.equal(stillRunning(stranger.entry.pid), true, 'its leader was not signalled');
+    assert.equal(stillRunning(stranger.member), true, 'nor its member');
+
+    // Through a /proc where the leader shows its token and the member's
+    // environment cannot be read (it is a directory).
+    mkdirSync(join(proc, String(hidden.entry.pid)), { recursive: true });
+    writeFileSync(join(proc, String(hidden.entry.pid), 'environ'), `PATH=/usr/bin\0${TOKEN_ENV}=${hidden.entry.token}\0`);
+    mkdirSync(join(proc, String(hidden.member), 'environ'), { recursive: true });
+    process.env[PROC_ENV] = proc;
+    try {
+      assert.equal(endProcess(hidden.entry), 'unknown', 'a member whose environment cannot be read');
+      assert.deepEqual(endRecorded(run).map((e: Entry & { outcome: string }) => [e.pid, e.outcome]), [[hidden.entry.pid, 'unknown']]);
+      assert.deepEqual(readdirSync(run), [`${hidden.entry.pid}.json`], 'the record stays');
+    } finally {
+      setEnv(PROC_ENV, before);
+    }
+    assert.equal(stillRunning(hidden.entry.pid), true, 'its leader was not signalled');
+    assert.equal(stillRunning(hidden.member), true, 'nor its member');
+
+    // A table whose list of the group's members cannot be read: unknown too.
+    const listing = join(dir, 'ps-no-listing');
+    writeFileSync(listing, '#!/bin/sh\ncase " $* " in *" -A "*) exit 1;; esac\nexec ps "$@"\n');
+    chmodSync(listing, 0o755);
+    const ps = process.env[PS_ENV];
+    process.env[PS_ENV] = listing;
+    try {
+      assert.equal(endProcess(ours.entry), 'unknown', 'members that cannot be listed');
+    } finally {
+      setEnv(PS_ENV, ps);
+    }
+    assert.equal(stillRunning(ours.member), true, 'and nothing was signalled');
+
+    // Every member shows the token: the group is ended whole.
+    assert.equal(endProcess(ours.entry), 'ended');
+    assert.equal(stillRunning(ours.member), false);
+  } finally {
+    setEnv(PROC_ENV, before);
+    // The stranger by its own identity first; then nothing of its group is
+    // left that is not ours.
+    endProcess(identityOf(stranger.member, { token: strangerToken }) ?? { pid: stranger.member, group: false, token: strangerToken });
+    for (const g of [stranger, hidden, ours]) finish(g.entry);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('an unreadable process table is not absence: nothing is signalled, the record stays, and recording fails', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'asep-registry-ps-'));
   const script = (name: string, body: string) => {

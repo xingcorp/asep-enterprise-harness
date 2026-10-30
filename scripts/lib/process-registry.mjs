@@ -23,9 +23,11 @@
 // token and its start time as the process table shows them. It is signalled
 // only while the process at its pid shows both; a pid that another process has
 // now is left alone. A group entry (a detached process that leads its own
-// group) ends the whole group; once its leader has exited, what is left of the
-// group is ended only if every member shows the token (members inherit it) and
-// started no earlier than the leader.
+// group) ends the whole group, and so only while every other member of the
+// group shows the token too (members inherit it) and started no earlier than
+// the leader — whether the leader still runs or has exited; a member that
+// shows another token, or whose environment cannot be read, makes it
+// 'unknown'.
 //
 // A record without full identity is never acted on. One that cannot be read,
 // or lacks this format's version (RECORD_VERSION), a pid, whether it leads a
@@ -222,17 +224,39 @@ function presence({ pid, group = false, startedAt }) {
   return members.length > 0 ? 'present' : 'absent';
 }
 
+// Whether the members of process group `pgid` that have not exited, but
+// `leader`, are ours: 'ours' when each shows `token` and started no earlier
+// than `startedAt`, 'gone' when there is none, 'unknown' when one does not or
+// the table does not tell.
+function membersShown(pgid, { token, startedAt }, leader) {
+  const members = membersOf(pgid);
+  if (members === undefined) return 'unknown';
+  const others = members.filter((m) => m.pid !== leader);
+  if (others.length === 0) return 'gone';
+  const since = Date.parse(startedAt);
+  for (const m of others) {
+    const at = Date.parse(m.startedAt);
+    if (Number.isNaN(since) || Number.isNaN(at) || at < since || !tokenMatches(tokenOf(m.pid), token)) return 'unknown';
+  }
+  return 'ours';
+}
+
 // Whether `entry`, a record with full identity (identityGap), is still the
-// process recorded: 'ours' when its pid shows its start time and its token —
-// or, for a group whose leader has exited, every member left shows the token
-// and started no earlier; 'gone' when nothing of it is left; 'not-ours' when
-// its pid is another process's now; 'unknown' when the table does not tell.
+// process recorded: 'ours' when its pid shows its start time and its token
+// and, for a group, every other member left shows the token and started no
+// earlier — or, for a group whose leader has exited, every member left does;
+// 'gone' when nothing of it is left; 'not-ours' when its pid is another
+// process's now; 'unknown' when the table does not tell.
 function identify({ pid, group, token, startedAt }) {
   let leader = look(pid);
   if (leader.state === 'running') {
     if (leader.startedAt !== startedAt) return 'not-ours';
     const shown = tokenOf(pid);
-    if (tokenMatches(shown, token)) return 'ours';
+    if (tokenMatches(shown, token)) {
+      // A group is signalled whole, so every other member must be shown ours.
+      if (!group) return 'ours';
+      return membersShown(pid, { token, startedAt }, pid) === 'unknown' ? 'unknown' : 'ours';
+    }
     leader = look(pid);
     if (leader.state === 'running' && leader.startedAt === startedAt) return shown === undefined ? 'unknown' : 'not-ours';
     // Otherwise it exited meanwhile, and what is left is judged below.
@@ -241,15 +265,7 @@ function identify({ pid, group, token, startedAt }) {
   if (leader.state === 'foreign') return 'not-ours';
   if (leader.state === 'running') return 'not-ours';
   if (!group || probe(-pid) === 'absent') return 'gone';
-  const members = membersOf(pid);
-  if (members === undefined) return 'unknown';
-  if (members.length === 0) return 'gone';
-  const since = Date.parse(startedAt);
-  for (const m of members) {
-    const at = Date.parse(m.startedAt);
-    if (Number.isNaN(since) || Number.isNaN(at) || at < since || !tokenMatches(tokenOf(m.pid), token)) return 'unknown';
-  }
-  return 'ours';
+  return membersShown(pid, { token, startedAt });
 }
 
 /**
