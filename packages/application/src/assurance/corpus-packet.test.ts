@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import type { AttemptId, OrganizationId, ProjectId, RepositoryBindingId, RunId, TaskId } from '@asep/contracts';
+import { parseUnifiedDiff } from './diff.js';
 import {
   PacketBuildError,
   assertPacketWhitelist,
@@ -10,9 +15,12 @@ import {
   type PacketSources,
 } from './packet.js';
 import { packetNonce, renderReviewPrompt, reviewInstructions } from './prompt.js';
-import { fixtureWorld, utf8 } from './test-support.js';
+import { fixtureWorld, refFor, utf8 } from './test-support.js';
+import type { ReviewPacket } from './local-types.js';
 
 console.log('SUITE-ID: asep-suite:review-packet');
+
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
 
 // The one execution shape of a corpus packet, stated independently of the code under test.
 const NOT_RECORDED = { verdict: 'NOT_RECORDED', environment: null, checks: [] };
@@ -119,4 +127,110 @@ test('the instructions say what a NOT_RECORDED execution manifest means', () => 
     'An execution manifest whose verdict is NOT_RECORDED, with a null environment and no checks, means that no execution evidence exists for the reviewed commit.';
   const nonce = packetNonce(utf8('any packet'));
   assert.ok(reviewInstructions(nonce).includes(sentence));
+});
+
+interface LabelledId {
+  readonly label: string;
+  readonly id: string;
+}
+
+interface GoldenPart {
+  readonly path: string;
+  readonly sha256: string;
+}
+
+/** The parts of the golden historical item this test reads (evals/review-benchmark). */
+interface GoldenItem {
+  readonly synthetic: {
+    readonly identity: Readonly<Record<'organizationId' | 'projectId' | 'repositoryBindingId' | 'runId' | 'taskId', LabelledId>>;
+    readonly risk: ReviewPacket['risk'];
+    readonly round: number;
+    readonly reviewKind: ReviewPacket['reviewKind'];
+    readonly workOrder: ReviewPacket['workOrder'];
+    readonly execution: unknown;
+    readonly priorFindings: readonly [];
+  };
+  readonly roundTrip: {
+    readonly file: string;
+    readonly sides: Readonly<
+      Record<'reviewed' | 'post-fix', { readonly attempt: LabelledId; readonly taskBaseSha: string; readonly resultSha: string; readonly diff: GoldenPart; readonly postImage: GoldenPart }>
+    >;
+  };
+}
+
+test('the golden historical item round-trips through the packet validator and the prompt renderer on both sides', () => {
+  const golden = 'evals/review-benchmark/golden/P2-FINAL-HIGH-003';
+  const item = JSON.parse(readFileSync(join(REPO_ROOT, golden, 'item.json'), 'utf8')) as GoldenItem;
+  const { synthetic, roundTrip } = item;
+  assert.deepEqual(synthetic.execution, NOT_RECORDED);
+  const read = (part: GoldenPart) => {
+    const bytes = new Uint8Array(readFileSync(join(REPO_ROOT, golden, part.path)));
+    assert.equal(createHash('sha256').update(bytes).digest('hex'), part.sha256, part.path);
+    return bytes;
+  };
+
+  for (const side of ['reviewed', 'post-fix'] as const) {
+    const record = roundTrip.sides[side];
+    const diff = read(record.diff);
+    const postImage = read(record.postImage);
+    const diffText = new TextDecoder('utf-8', { fatal: true }).decode(diff);
+    const postImageText = new TextDecoder('utf-8', { fatal: true }).decode(postImage);
+    const changed = parseUnifiedDiff(diffText);
+    assert.deepEqual(
+      changed.map((f) => [f.path, f.status, f.binary]),
+      [[roundTrip.file, 'A', false]],
+      side,
+    );
+    const diffRef = refFor('review-diff', `golden-${side}-diff`, diff);
+    const blobRef = refFor('review-blob', `golden-${side}-file`, postImage);
+    const sources: CorpusPacketSources = {
+      identity: {
+        organizationId: synthetic.identity.organizationId.id as OrganizationId,
+        projectId: synthetic.identity.projectId.id as ProjectId,
+        repositoryBindingId: synthetic.identity.repositoryBindingId.id as RepositoryBindingId,
+        runId: synthetic.identity.runId.id as RunId,
+        taskId: synthetic.identity.taskId.id as TaskId,
+        attemptId: record.attempt.id as AttemptId,
+        round: synthetic.round,
+        roundKey: `${record.attempt.id}:assurance:${synthetic.round}`,
+      },
+      risk: synthetic.risk,
+      reviewKind: synthetic.reviewKind,
+      workOrder: synthetic.workOrder,
+      change: {
+        taskBaseSha: record.taskBaseSha,
+        resultSha: record.resultSha,
+        repairBaseSha: null,
+        cumulativeDiff: { ref: diffRef, bytes: diff.byteLength, overLimit: false, changedFiles: changed.map((f) => ({ path: f.path, status: 'A', binary: f.binary })) },
+        repairDelta: null,
+        postImages: [
+          { path: roundTrip.file, blob: blobRef, bytes: postImage.byteLength, lineCount: postImageText.replace(/\n$/, '').split('\n').length, omittedReason: null },
+        ],
+      },
+      priorFindings: synthetic.priorFindings,
+    };
+
+    // The validator accepts the packet, whose execution is the one corpus shape.
+    const built = buildCorpusReviewPacket(sources, { maxBytes: 200000, excerptBytesPerStream: 4096, excerptBytesTotal: 65536 });
+    assertPacketWhitelist(JSON.parse(new TextDecoder().decode(built.bytes)));
+    assert.deepEqual(built.packet.execution, NOT_RECORDED, side);
+    assert.deepEqual(built.packet.workOrder, synthetic.workOrder, side);
+    assert.equal(built.packet.budget.overBudget, false, side);
+
+    // The renderer embeds the packet, the diff and the post-image, every line datamarked, and the
+    // instructions say what NOT_RECORDED means.
+    const prompt = renderReviewPrompt(built, new Map([
+      [diffRef.artifactId, diff],
+      [blobRef.artifactId, postImage],
+    ]));
+    const block = (part: string, text: string) =>
+      [`<<<UNTRUSTED ${prompt.nonce} ${part}>>>`, ...text.replace(/\n$/, '').split('\n').map((l) => `${prompt.nonce}| ${l}`), `<<<END ${prompt.nonce} ${part}>>>`].join('\n');
+    assert.ok(prompt.input.includes(block('diff', diffText)), `${side}: diff`);
+    assert.ok(prompt.input.includes(block('file-0', postImageText)), `${side}: post-image`);
+    assert.ok(prompt.instructions.includes('NOT_RECORDED'), side);
+
+    // No finding-id token reaches the reviewer: the parts were masked before they were frozen.
+    const promptText = new TextDecoder().decode(prompt.bytes);
+    assert.doesNotMatch(promptText, /\bP[0-9]+-[A-Z0-9]+(?:-[A-Z0-9]+)*-[0-9]{3}\b|\b(?:CRIT|CRITICAL|HIGH|MED|MEDIUM|LOW)-[0-9]{3}\b/, side);
+  }
 });

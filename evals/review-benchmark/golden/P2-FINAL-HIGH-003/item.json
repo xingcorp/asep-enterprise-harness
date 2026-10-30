@@ -54,5 +54,96 @@
     "wrong-category": "the placed location, category MAINTAINABILITY",
     "other-file": "line 1 of packages/application/src/index.ts, a changed file the item does not cite",
     "exact-and-near": "the exact and the near finding in one output"
+  },
+  "synthetic": {
+    "cycle": "p2-final",
+    "identity": {
+      "organizationId": {
+        "label": "corpus:org",
+        "id": "28RYVJXRSBE47VFTM1VZ39R9HY"
+      },
+      "projectId": {
+        "label": "corpus:project",
+        "id": "0W0462GQ0GRREABGMCXRH0C0D2"
+      },
+      "repositoryBindingId": {
+        "label": "corpus:binding",
+        "id": "69CA9EKP8SJZWA8AJB3VBF6QJP"
+      },
+      "runId": {
+        "label": "corpus:run",
+        "id": "7GYQTFNF1WJ8ER0KAQ83XDXRF9"
+      },
+      "taskId": {
+        "label": "corpus:task:p2-final",
+        "id": "0E64H7H23NFT2605AYZM46V86H"
+      }
+    },
+    "risk": "R1",
+    "round": 1,
+    "reviewKind": "fresh",
+    "workOrder": {
+      "objective": "Phase 2 (Single-agent vertical slice) at the reviewed commit. The phase plan, exit criteria and code are part of the change; review the change against them.",
+      "requirementIds": [],
+      "requirements": [],
+      "allowedPaths": [
+        "**"
+      ],
+      "forbiddenChanges": [],
+      "architectureInvariants": [],
+      "acceptanceCheckIds": []
+    },
+    "execution": {
+      "verdict": "NOT_RECORDED",
+      "environment": null,
+      "checks": []
+    },
+    "priorFindings": []
+  },
+  "roundTrip": {
+    "description": "One corpus packet per side for the file the outputs are placed at: the file's section of the cycle's rule-P diff and its post-image, finding-id tokens masked. It proves that the packet validator and the prompt renderer accept the corpus packet shape. It is not a chunk: chunk ids, chunk packets and their digests come with the packet plan.",
+    "file": "packages/application/src/execute-task.ts",
+    "sides": {
+      "reviewed": {
+        "attempt": {
+          "label": "corpus:attempt:p2-final/reviewed/round-trip",
+          "id": "2CEZ1DNGEXPNTQJGCHHFKVMAWT"
+        },
+        "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+        "resultSha": "2e61f2447f6812f9ed795a5195a25861ada1c50b",
+        "diff": {
+          "path": "reviewed/round-trip/execute-task.diff",
+          "sha256": "9d1cc67611901a230005e4ae9483d304cb76ce1084df33ada94b5ff8e3db5772",
+          "bytes": 7701,
+          "masked": 1
+        },
+        "postImage": {
+          "path": "reviewed/round-trip/execute-task.post-image",
+          "sha256": "7c18edf4b02cc9945460e8b52da97d45bfcfae87b39f8d3c98f487c385eed08d",
+          "bytes": 7282,
+          "masked": 1
+        }
+      },
+      "post-fix": {
+        "attempt": {
+          "label": "corpus:attempt:p2-final/post-fix/round-trip",
+          "id": "2NY3HBQPR44KBMW4Z1R04EEZ0P"
+        },
+        "taskBaseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+        "resultSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+        "diff": {
+          "path": "post-fix/round-trip/execute-task.diff",
+          "sha256": "7ae2e045bdc448a9f0f7a327c44395573b01b854f9995c6a8f0dffecbd02e79c",
+          "bytes": 8062,
+          "masked": 2
+        },
+        "postImage": {
+          "path": "post-fix/round-trip/execute-task.post-image",
+          "sha256": "17977ec99e1709bed3d63b619709b3c1cea0a2833921c202e440dee6730afc5a",
+          "bytes": 7638,
+          "masked": 2
+        }
+      }
+    }
   }
 }
