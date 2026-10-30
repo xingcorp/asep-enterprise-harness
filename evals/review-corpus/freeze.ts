@@ -1,7 +1,7 @@
 // Self-history corpus freeze (docs/implementation/phases/phase-04-plan.md §7.5, §7.8; data model §7.1).
 //
-// The freeze reads the collected items, Lane B's gold annotations and git, and writes the
-// manifest with `corpusSha256`. This is a provenance-stage freeze: the final freeze (packet
+// The freeze reads the collected items, Lane B's gold annotations, the review documents and git,
+// and writes the manifest with `corpusSha256`. This is a provenance-stage freeze: the final freeze (packet
 // eligibility, the full packet sources, the packet-dependent synthetic fields and the final
 // `corpusSha256`) needs the runtime packet builder and egress decision, so it comes once the
 // evals package is bound to the runtime packet code, and nothing may bind to the hash written
@@ -33,6 +33,7 @@ import {
   GitReader,
   ITEMS_DIR,
   PROVENANCE_EXCLUSIONS,
+  cycleLabels,
   failingExcerpts,
   runGateProcess,
   sha256Hex,
@@ -40,7 +41,7 @@ import {
   type GateRunner,
   type PublicationGate,
 } from './collect.js';
-import { CORPUS_EXECUTION, labelledId, phaseTitle, syntheticId, syntheticWorkOrder, type LabelledId, type SyntheticRecord } from './synthetic.js';
+import { CORPUS_EXECUTION, labelledId, maskFindingIds, phaseTitle, syntheticId, syntheticWorkOrder, type LabelledId, type SyntheticRecord } from './synthetic.js';
 
 export const MANIFEST_FILE = `${CORPUS_DIR}/manifest.json`;
 export const ANNOTATIONS_FILE = `${CORPUS_DIR}/annotations.json`;
@@ -237,10 +238,40 @@ export const PENDING_PACKET_FIELDS = [
   'identity.attemptId and roundKey: the chunk id of each packet',
   'priorFindings: the chunk filter on the prior candidates (a prior is shown when its file is in the chunk)',
   'priorFindings[].fingerprint: the runtime finding code',
-  'priorFindings[].evidence and requiredFix: the label text, split and masked',
   'the masks applied to each packet part',
   'the packet sources: chunk diffs, repair-delta sections and post-images',
 ] as const;
+
+/** A list label's required-fix line: its marker, then the fix. */
+const FIX_LINE = /^\s*- Sửa: /;
+
+function maskedText(text: string): string {
+  return new TextDecoder('utf-8', { fatal: true }).decode(maskFindingIds(new TextEncoder().encode(text)).bytes);
+}
+
+/**
+ * A prior finding's evidence and required fix, from the text of the label that names it, by one fixed rule: a
+ * re-review table row `| id | status | evidence | note |` gives its evidence cell and its note, which states what is
+ * still missing, as the required fix; a list label gives the text after its one `- Sửa: ` marker as the required fix
+ * and every other line, trailing blank lines dropped, as the evidence. Both are verbatim but for their finding-id
+ * tokens, which are masked. Any other shape is refused.
+ */
+export function priorText(label: string, itemId: string): { readonly evidence: string; readonly requiredFix: string } {
+  if (label.startsWith('| ')) {
+    const cells = label.endsWith(' |') && !label.includes('\n') ? label.slice(2, -2).split(' | ') : [];
+    if (cells.length !== 4) fail(`${itemId}: a table-row label is one row of four cells`);
+    return { evidence: maskedText(cells[2]!), requiredFix: maskedText(cells[3]!) };
+  }
+  const lines = label.split('\n');
+  const fixes = lines.flatMap((line, i) => (FIX_LINE.test(line) ? [i] : []));
+  if (fixes.length !== 1) fail(`${itemId}: a list label has one required-fix line, not ${fixes.length}`);
+  const at = fixes[0]!;
+  if ((lines[at + 1] ?? '').trim() !== '') fail(`${itemId}: a required fix is one line`);
+  return {
+    evidence: maskedText(lines.filter((_, i) => i !== at).join('\n').trimEnd()),
+    requiredFix: maskedText(lines[at]!.replace(FIX_LINE, '')),
+  };
+}
 
 /** A review-finding record rule C shows as a prior finding, before the chunk filter. */
 export interface PriorCandidate {
@@ -255,6 +286,9 @@ export interface PriorCandidate {
   readonly file: string;
   readonly lineStart: number | null;
   readonly lineEnd: number | null;
+  /** The label's text, split and masked by `priorText`. */
+  readonly evidence: string;
+  readonly requiredFix: string;
   readonly grounded: true;
   readonly lifecycleState: 'OPEN';
 }
@@ -273,8 +307,11 @@ export interface ItemSynthetic {
   /** Rule C: the reviewed tree of the cycle the residual re-reviews; null under rule P. */
   readonly repairBaseSha: string | null;
   readonly repairDelta: { readonly from: string; readonly to: string } | null;
-  /** Rule C: every included item labelled at the previous cycle. */
-  readonly priorCandidates: readonly PriorCandidate[];
+  /**
+   * Rule C: the item ids of every included item labelled at the previous cycle; their records are the manifest's
+   * `priorCandidates`, stored once.
+   */
+  readonly priorCandidates: readonly string[];
   /** A post-fix negative's packet: a fresh review of the post-fix tree on the item's base. */
   readonly negative: { readonly taskBaseSha: string; readonly resultSha: string } | null;
 }
@@ -400,6 +437,8 @@ export interface ManifestBody {
   readonly synthetic: CorpusSynthetic;
   readonly cycles: readonly ManifestCycle[];
   readonly items: readonly ManifestItem[];
+  /** The record of every item a rule C packet shows as a prior finding, by item id. */
+  readonly priorCandidates: Readonly<Record<string, PriorCandidate>>;
   readonly counts: ManifestCounts;
   readonly blobs: readonly string[];
   readonly mappingDiffs: readonly string[];
@@ -487,6 +526,8 @@ export interface FreezeInputs {
   readonly blobNames: readonly string[];
   /** docs/implementation/90-day-plan.md, which names each phase. */
   readonly ninetyDayPlan: string;
+  /** Each review cycle's document text, by path: the labels rule C's prior findings are taken from. */
+  readonly reviewDocs: ReadonlyMap<string, string>;
   /** The whole-tree rule-P diff between two commits. */
   readonly diff: (from: string, to: string) => Uint8Array;
   /** The gates each candidate diff section fails, by its sha256. */
@@ -546,29 +587,39 @@ export function freezeCorpus(inputs: FreezeInputs): FrozenCorpus {
   const failing = inputs.gates(candidates);
   const mappingBlobs = new Map([...candidates].filter(([sha]) => (failing.get(sha) ?? []).length === 0));
 
-  // Rule C's prior candidates: the included items labelled at each cycle, with the record a re-review shows.
-  const priorsByCycle = new Map<string, PriorCandidate[]>();
-  for (const { item, excluded } of decided) {
-    if (excluded !== null) continue;
-    const first = item.locations[0]!;
-    const key = `${item.phase}:${item.cycle}`;
-    priorsByCycle.set(key, [
-      ...(priorsByCycle.get(key) ?? []),
-      {
-        itemId: item.id,
-        id: syntheticId(`corpus:finding:${item.findingId}`),
-        source: 'model',
-        raisedBy: `labeller:${labelOrigin(item).labelSource}`,
-        severity: item.severity,
-        category: annotations.findings[item.findingId]!.goldCategory,
-        file: first.file,
-        lineStart: first.lineStart,
-        lineEnd: first.lineEnd,
-        grounded: true,
-        lifecycleState: 'OPEN',
-      },
-    ]);
-  }
+  // Rule C's prior candidates: the included items labelled at a cycle, with the record a re-review shows, built for
+  // each cycle a residual re-reviews. A prior's evidence and required fix come from its label in the review document.
+  const priorsByCycle = new Map<string, readonly PriorCandidate[]>();
+  const priorsOf = (phase: number, cycle: number): readonly PriorCandidate[] => {
+    const key = `${phase}:${cycle}`;
+    const built = priorsByCycle.get(key);
+    if (built !== undefined) return built;
+    const source = CYCLES.find((c) => c.phase === phase && c.cycle === cycle) ?? fail(`no cycle ${phase}:${cycle}`);
+    const labels = cycleLabels(source, inputs.reviewDocs.get(source.doc) ?? fail(`no text for ${source.doc}`));
+    const priors = decided
+      .filter(({ item, excluded }) => excluded === null && item.phase === phase && item.cycle === cycle)
+      .map(({ item }): PriorCandidate => {
+        const label = labels.filter((l) => item.provenance.doc === source.doc && l.line === item.provenance.line && l.findingId === item.findingId);
+        if (label.length !== 1) fail(`${item.id}: no single label at ${item.provenance.doc}:${item.provenance.line}`);
+        const first = item.locations[0]!;
+        return {
+          itemId: item.id,
+          id: syntheticId(`corpus:finding:${item.findingId}`),
+          source: 'model',
+          raisedBy: `labeller:${labelOrigin(item).labelSource}`,
+          severity: item.severity,
+          category: annotations.findings[item.findingId]!.goldCategory,
+          file: first.file,
+          lineStart: first.lineStart,
+          lineEnd: first.lineEnd,
+          ...priorText(label[0]!.text, item.id),
+          grounded: true,
+          lifecycleState: 'OPEN',
+        };
+      });
+    priorsByCycle.set(key, priors);
+    return priors;
+  };
 
   const itemSynthetic = (item: CorpusItem, negative: boolean): ItemSynthetic => {
     const cycle = cycleKey(item.phase, item.cycle);
@@ -592,7 +643,7 @@ export function freezeCorpus(inputs: FreezeInputs): FrozenCorpus {
       reviewKind: 're-review',
       repairBaseSha,
       repairDelta: { from: repairBaseSha, to: item.reviewedSha! },
-      priorCandidates: [...(priorsByCycle.get(`${item.phase}:${base.cycle}`) ?? [])],
+      priorCandidates: priorsOf(item.phase, base.cycle).map((p) => p.itemId),
     };
   };
 
@@ -658,6 +709,12 @@ export function freezeCorpus(inputs: FreezeInputs): FrozenCorpus {
     },
     cycles: [...cycles].sort(([a], [b]) => byText(a, b)).map(([, c]) => c),
     items: manifestItems,
+    priorCandidates: Object.fromEntries(
+      [...priorsByCycle.values()]
+        .flat()
+        .map((p) => [p.itemId, p] as const)
+        .sort(([a], [b]) => byText(a, b)),
+    ),
     counts: {
       items: manifestItems.length,
       included: included.length,
@@ -685,6 +742,7 @@ export function treeInputs(root: string, git = new GitReader(root), runGate: Gat
     annotationsBytes: new Uint8Array(readFileSync(join(root, ANNOTATIONS_FILE))),
     blobNames: readdirSync(join(root, BLOBS_DIR)),
     ninetyDayPlan: readFileSync(join(root, 'docs/implementation/90-day-plan.md'), 'utf8'),
+    reviewDocs: new Map(CYCLES.map((c) => [c.doc, readFileSync(join(root, c.doc), 'utf8')])),
     diff: (from, to) => git.diff(RULE_P_DIFF_FLAGS, from, to),
     gates: (candidates) => failingExcerpts(root, candidates, runGate),
   };

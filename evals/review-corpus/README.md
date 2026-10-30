@@ -23,9 +23,10 @@ bind to the provenance-stage `corpusSha256`, and nothing here is the frozen corp
 
 ## Provenance-stage freeze
 
-- `freeze.ts` reads the items, `self-history/annotations.json` and git, and writes `self-history/manifest.json` and
-  `self-history/mapping/<sha256>`. Regenerate with `pnpm exec tsx evals/review-corpus/freeze.ts --write`. A second
-  run on the same tree writes the same bytes (`freeze.test.ts`).
+- `freeze.ts` reads the items, `self-history/annotations.json`, the review documents and git, and writes
+  `self-history/manifest.json` and `self-history/mapping/<sha256>`. Regenerate with
+  `pnpm exec tsx evals/review-corpus/freeze.ts --write`. A second run on the same tree writes the same bytes
+  (`freeze.test.ts`).
 - Exclusions apply in the protocol's order (plan §7.8), the first that applies wins: collection's provenance rules
   (`plan-defect`, `reviewed-tree-unknown`, `excerpt-unpublishable`), the freeze rule `no-location`, and
   `leakage-filtered` (every cited file is removed by rule P's leakage filter). `reviewed-tree-unknown` also excludes a
@@ -41,7 +42,11 @@ bind to the provenance-stage `corpusSha256`, and nothing here is the frozen corp
 - Each included item carries the `synthetic` fields its provenance determines (plan §7.8): the rule (P for a first
   occurrence, C for a residual), the cycle's task id, round and review kind, the base and reviewed SHAs, rule C's
   repair base and repair-delta range and its prior-finding candidates (every included item labelled at the previous
-  cycle), and the post-fix side of a negative. The fields every packet shares (identity, work orders by phase, the
+  cycle, by item id; the manifest's `priorCandidates` holds each record once), and the post-fix side of a negative.
+  Each prior candidate carries the evidence and required fix its label
+  gives, by one fixed rule (`priorText`): a re-review table row gives its evidence cell and its note; a list label
+  gives its one `- Sửa: ` line as the required fix and its other lines as the evidence; finding-id tokens are masked,
+  and any other shape fails the freeze. The fields every packet shares (identity, work orders by phase, the
   `NOT_RECORDED` execution) are recorded once; `pendingPacketFields` lists the fields only the runtime packet code can
   fill, which the final freeze adds.
 - `annotations.json` holds, per finding id of an included item, Lane B's gold category (category table

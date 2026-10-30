@@ -13,6 +13,7 @@ import {
   freezeCorpus,
   isLeakagePath,
   mappingSection,
+  priorText,
   treeInputs,
   type FreezeInputs,
   type ManifestBody,
@@ -143,7 +144,14 @@ test('every included item carries the synthetic fields its provenance determines
       pendingPacketFields: undefined,
     },
   );
-  assert.ok(body.synthetic.pendingPacketFields.length > 0);
+  // Only the fields that need the runtime packet code; a prior's evidence and required fix come from its label.
+  assert.deepEqual(body.synthetic.pendingPacketFields, [
+    'identity.attemptId and roundKey: the chunk id of each packet',
+    'priorFindings: the chunk filter on the prior candidates (a prior is shown when its file is in the chunk)',
+    'priorFindings[].fingerprint: the runtime finding code',
+    'the masks applied to each packet part',
+    'the packet sources: chunk diffs, repair-delta sections and post-images',
+  ]);
 
   // A first occurrence: rule P, a fresh review of its reviewed tree, and its post-fix negative.
   assert.deepEqual(entry('P2-FINAL-HIGH-003@2e61f24').synthetic, {
@@ -163,7 +171,7 @@ test('every included item carries the synthetic fields its provenance determines
   // A residual: rule C, a re-review of round 2 on the previous cycle's tree, every included item labelled there a
   // prior candidate (the 14 first occurrences of the final review; P2-FINAL-MED-005 there is excluded).
   const residual = entry('P2-FINAL-HIGH-005@061ec23').synthetic!;
-  assert.deepEqual({ ...residual, priorCandidates: residual.priorCandidates.map((p) => p.itemId) }, {
+  assert.deepEqual(residual, {
     rule: 'C',
     cycle: 'p2-rereview-2',
     taskId: { label: 'corpus:task:p2-rereview-2', id: '68CW73FPC9QGCZ2Z12HSPHG18R' },
@@ -179,22 +187,23 @@ test('every included item carries the synthetic fields its provenance determines
     ].map((s) => `P2-FINAL-${s}@2e61f24`),
     negative: null,
   });
-  assert.deepEqual(
-    residual.priorCandidates.find((p) => p.itemId === 'P2-FINAL-HIGH-003@2e61f24'),
-    {
-      itemId: 'P2-FINAL-HIGH-003@2e61f24',
-      id: '32MW0CQNND1C648HZZEEZ4SCXG',
-      source: 'model',
-      raisedBy: 'labeller:codex-gpt-5.6-sol',
-      severity: 'HIGH',
-      category: 'CORRECTNESS',
-      file: 'apps/control-plane-api/src/vertical-integration.test.ts',
-      lineStart: 183,
-      lineEnd: 199,
-      grounded: true,
-      lifecycleState: 'OPEN',
-    },
-  );
+  // The prior's record, stored once for every residual that shows it; its evidence and required fix are pinned in
+  // their own test.
+  const { evidence, requiredFix, ...record } = body.priorCandidates['P2-FINAL-HIGH-003@2e61f24']!;
+  assert.ok(evidence !== '' && requiredFix !== '');
+  assert.deepEqual(record, {
+    itemId: 'P2-FINAL-HIGH-003@2e61f24',
+    id: '32MW0CQNND1C648HZZEEZ4SCXG',
+    source: 'model',
+    raisedBy: 'labeller:codex-gpt-5.6-sol',
+    severity: 'HIGH',
+    category: 'CORRECTNESS',
+    file: 'apps/control-plane-api/src/vertical-integration.test.ts',
+    lineStart: 183,
+    lineEnd: 199,
+    grounded: true,
+    lifecycleState: 'OPEN',
+  });
 
   // Every included item: the rule follows the instance kind; an excluded item has no record.
   const inputs = treeInputs(ROOT);
@@ -217,6 +226,79 @@ test('every included item carries the synthetic fields its provenance determines
     [body.items.filter((i) => i.synthetic?.rule === 'P').length, body.items.filter((i) => i.synthetic?.rule === 'C').length],
     [17, 20],
   );
+});
+
+test("a prior candidate's evidence and required fix come from its label by one fixed rule, masked", () => {
+  const { body } = committedManifest();
+  const textOf = (residualId: string, priorId: string) => {
+    assert.ok(body.items.find((i) => i.id === residualId)!.synthetic!.priorCandidates.includes(priorId), `${residualId} shows ${priorId}`);
+    const prior = body.priorCandidates[priorId]!;
+    return [prior.evidence, prior.requiredFix];
+  };
+
+  // A list label (Phase 2 final review v1, lines 26–35): its `- Sửa: ` line gives the required fix after the marker,
+  // every other line the evidence. Written out by hand from the document, the finding-id token replaced by X.
+  assert.deepEqual(textOf('P2-FINAL-HIGH-005@061ec23', 'P2-FINAL-HIGH-003@2e61f24'), [
+    [
+      `- ID: ${'X'.repeat(17)}`,
+      '  - Severity: HIGH — Risk admission có thể bị gọi sau khi workspace đã được tạo',
+      '  - File:line:',
+      '    - `packages/application/src/execute-task.ts:143-148` nhận sẵn `WorkspaceCapability`; use case không sở hữu bước tạo workspace.',
+      '    - `packages/application/src/execute-task.ts:160-172` admission chỉ đứng trước agent trong use case rút gọn.',
+      '    - `apps/control-plane-api/src/vertical-integration.test.ts:183-199` acquire lease và tạo worktree trước admission.',
+      '    - `apps/control-plane-api/src/vertical-integration.test.ts:211-213` admission chỉ chạy sau các side effect đó.',
+      '    - `packages/application/src/execute-task.test.ts:113-125` chỉ chứng minh agent không được gọi, không chứng minh workspace/push không xảy ra.',
+      '  - Vấn đề: Vi phạm BR1, BR2 và I4: unsupported risk phải dừng trước workspace creation, agent invocation và push.',
+    ].join('\n'),
+    'Top-level execution use case phải nhận task identity, chạy admission trước mọi lease/workspace; test R0–R4 bằng spy trên workspace, agent và forge.',
+  ]);
+
+  // A re-review table row (Phase 2 re-review v2, line 15): the evidence cell, and the note, which says what is still
+  // missing, as the required fix; the short id in the note is masked too.
+  assert.deepEqual(textOf('P2-FINAL-HIGH-002@594b628', 'P2-FINAL-MED-002@061ec23'), [
+    '`adapters/github-app/src/credential-provider.ts:87-93`; `adapters/github-app/src/forge-provider.ts:66-76`; `adapters/github-app/src/forge-provider.ts:191-276`; `adapters/github-app/src/github-app.test.ts:289-370`',
+    `Bounded re-mint cho push/PR đã có. Nhưng \`isExpired()\` không được dùng; token vừa mint nhưng đã hết hạn vẫn được đem dùng. Mọi HTTP 403 bị coi là auth expiry, kể cả rate limit/permission. Recovery “không replay completed side effect” còn phụ thuộc ${'X'.repeat(8)} chưa đóng.`,
+  ]);
+
+  // A new finding's list label (Phase 2 re-review v2, lines 31–35), with its blank line kept and the trailing one dropped.
+  assert.deepEqual(textOf('P2-FINAL-HIGH-002@594b628', 'P2-REREVIEW-MED-NEW-001@061ec23'), [
+    [
+      `- \`${'X'.repeat(23)}\` — MinIO là backend liveness-only, chưa được dùng bởi artifact path.`,
+      '',
+      '  - Bằng chứng: `scripts/integration/run-integration.mjs:158-179` chỉ health-check và truyền `ASEP_S3_*`; không file test/runtime nào đọc các biến này. `adapters/persistence/src/object-store.ts:31-44` chỉ có `ObjectStore` seam và `FilesystemObjectStore`; K1 cũng dùng filesystem tại `vertical-slice.ts:249-253`.',
+      '  - Hệ quả: gate vẫn xanh nếu MinIO health endpoint hoạt động nhưng PUT/GET/create-only/checksum semantics hỏng.',
+    ].join('\n'),
+    'thêm S3-compatible `ObjectStore`, chạy artifact/evidence contract suite trực tiếp trên MinIO và register marker bắt buộc.',
+  ]);
+
+  // The 20 rule C items show 26 distinct priors in 260 references; each record is stored once, has both texts, and no
+  // finding-id token survives in either.
+  const findingId = /\bP[0-9]+-[A-Z0-9]+(?:-[A-Z0-9]+)*-[0-9]{3}\b|\b(?:CRIT|CRITICAL|HIGH|MED|MEDIUM|LOW)-[0-9]{3}\b/;
+  const references = body.items.flatMap((i) => i.synthetic?.priorCandidates ?? []);
+  assert.equal(references.length, 260);
+  assert.deepEqual([...new Set(references)].sort(), Object.keys(body.priorCandidates).sort());
+  assert.equal(Object.keys(body.priorCandidates).length, 26);
+  for (const [id, p] of Object.entries(body.priorCandidates)) {
+    assert.equal(p.itemId, id);
+    for (const text of [p.evidence, p.requiredFix]) {
+      assert.notEqual(text.trim(), '', id);
+      assert.doesNotMatch(text, findingId, id);
+    }
+  }
+
+  // Any other shape is refused: no required-fix line, two of them, a fix that runs on, a row without four cells.
+  for (const [label, text] of [
+    ['no fix', '- ID: A\n  - Vấn đề: x'],
+    ['two fixes', '- ID: A\n  - Sửa: x\n  - Sửa: y'],
+    ['a fix over two lines', '- ID: A\n  - Sửa: x\n    y'],
+    ['three cells', '| A | PARTIAL | e |'],
+    ['five cells', '| A | PARTIAL | e | n | m |'],
+  ] as const) {
+    assert.throws(() => priorText(text, 'A'), /review-corpus freeze/, label);
+  }
+  assert.deepEqual(priorText('- ID: A\n  - Sửa: x', 'A'), { evidence: '- ID: A', requiredFix: 'x' });
+  assert.deepEqual(priorText('| A | PARTIAL | e | n |', 'A'), { evidence: 'e', requiredFix: 'n' });
+  assert.deepEqual(priorText('| A | PARTIAL | see HIGH-001 | fix P2-FINAL-MED-002 |', 'A'), { evidence: `see ${'X'.repeat(8)}`, requiredFix: `fix ${'X'.repeat(16)}` });
 });
 
 test('a residual whose re-reviewed cycle has an unknown tree is excluded, on its own line', () => {
