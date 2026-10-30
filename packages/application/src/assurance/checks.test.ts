@@ -633,3 +633,25 @@ test('the check report is canonical and fails closed when it is read back', () =
   ];
   for (const [label, read] of tampered) assert.throws(read, CheckReportError, label);
 });
+
+test('the check summary counts a SARIF finding as blocking whatever the severity policy says', () => {
+  const sarif: readonly SarifInput[] = [{ checkId: 'semgrep', content: utf8(JSON.stringify(SARIF_OMITTED_LEVEL_LOG)) }];
+  const reportOf = (world: FixtureWorld) =>
+    buildCheckReport(checksFor(world, { sarif }), { packetSha256: buildReviewPacket(world.sources, world.limits).sha256, sarif }).report;
+
+  // A clean round: the log's finding is the only one, and it blocks under every policy, one without HIGH included.
+  const clean = reportOf(fixtureWorld());
+  assert.deepEqual(clean.findings.map((f) => [f.source, f.severity]), [['sarif', 'HIGH']]);
+  for (const policy of [['CRITICAL'], ['CRITICAL', 'HIGH'], ['INFO']] as const) {
+    assert.deepEqual(checkReportSummary(clean, policy), { total: 1, blocking: 1 }, policy.join());
+  }
+
+  // Other findings still count by the policy: the zero-test run's HIGH findings block only under a policy with HIGH,
+  // and the SARIF finding beside them counts once under both.
+  const zero = reportOf(fixtureWorld({ unitStdout: 'ℹ tests 0\nℹ pass 0\nℹ fail 0\n' }));
+  const deterministic = zero.findings.filter((f) => f.source === 'deterministic');
+  assert.ok(deterministic.length > 0 && deterministic.every((f) => f.severity === 'HIGH'), 'the zero-test run raises HIGH findings only');
+  const total = deterministic.length + 1;
+  assert.deepEqual(checkReportSummary(zero, ['CRITICAL']), { total, blocking: 1 });
+  assert.deepEqual(checkReportSummary(zero, ['CRITICAL', 'HIGH']), { total, blocking: total });
+});

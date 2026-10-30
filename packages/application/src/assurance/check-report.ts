@@ -72,13 +72,16 @@ export function buildCheckReport(
   return { report: parseCheckReport(bytes, sha256), bytes, sha256 };
 }
 
-/** The finding counts a check step reports for a plan's blocking severities. */
+/**
+ * The finding counts a check step reports for a plan's blocking severities. A SARIF finding
+ * counts as blocking whatever they say, as adjudication blocks on it.
+ */
 export function checkReportSummary(
   report: CheckReport,
   blockingSeverities: readonly FindingSeverity[],
 ): { readonly total: number; readonly blocking: number } {
   const blocking = new Set(blockingSeverities);
-  return { total: report.findings.length, blocking: report.findings.filter((f) => blocking.has(f.severity)).length };
+  return { total: report.findings.length, blocking: report.findings.filter((f) => f.source === 'sarif' || blocking.has(f.severity)).length };
 }
 
 /** What a reviewer request is cleared against. */
