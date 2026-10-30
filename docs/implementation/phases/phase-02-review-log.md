@@ -1698,14 +1698,14 @@ its symptom and recovery.
 | ID | Disposition | Commits |
 |---|---|---|
 | CYCLE11-HIGH-001 | ACCEPTED — the repair is one update of the recorded PR by its number; no list, no selection, no create; both probes are tests | `fab5760` |
-| CYCLE11-HIGH-002 | ACCEPTED in part — every docker call reports its signal, duration and bound, and every removal failure its calls; the one unbounded docker call is bounded; the stall is not reproduced (0 of 20 runs under four synthetic loads before the changes, 0 of 10 under three after) and its cause is not established; no bound raised, fault 3 unchanged | `a375f1e`, `bd08654` |
+| CYCLE11-HIGH-002 | ACCEPTED; cause found on the host, not fixed in the repository — every docker call reports its signal, duration and bound, and every removal failure its calls; the one unbounded docker call is bounded; with that evidence two red runs at `7017cfc` and a probe beside one show a Node launch held up to 40.7 s by the host's launch-policy queue; no bound raised, fault 3 unchanged | `a375f1e`, `bd08654` |
 | CYCLE11-MED-001 | ACCEPTED — inspect and ps errors are tests for agent and runner; the `/./` mutant is killed | `056457a` |
 | Concern 2 (runner client error after spawn) | ACCEPTED — a spawn seam; the probe is a test | `056457a` |
 | Concern 3 (head-SHA lag) | accepted as a Phase 2 limit (R43); runbook | docs commit |
 | Test polling bounds | moved to the monotonic clock, with two lease waits of the same kind | `a8f45ca` |
 | The loosened assertion in `6608d21` | named below | docs commit |
 | MED-005 | data model, threat model and runbook in `fab5760`; review log and report | docs commits |
-| Gate failure in this cycle | `c67b25b` failed format-check; fixed | `52d4d62` |
+| Gate failures in this cycle | `c67b25b` failed format-check, fixed; `7017cfc` failed twice by the host's launch-policy queue (CYCLE11-HIGH-002), not changed | `52d4d62` |
 
 Also: `c67b25b` adds the cycle-11 transcript with its provenance note.
 
@@ -1764,7 +1764,7 @@ method and the `UpdatePrContentInput` type; `ForgeOperation` gains
 `'pr-update'`. `upsertPullRequest`, `findPullRequest`, `resolveRef` and
 `pushBranch` are unchanged.
 
-### CYCLE11-HIGH-002 — the gate was red at the reviewed head — ACCEPTED in part
+### CYCLE11-HIGH-002 — the gate was red at the reviewed head — ACCEPTED; cause found on the host
 
 **Evidence.** Controller run 2 at `42b6d78`: fault 3 rejected with
 `SandboxTeardownError … could not be shown removed in time: docker ps failed:
@@ -1821,32 +1821,96 @@ host during these runs: 8 CPUs, 16 GB, 6.4–6.5 of 7.2 GB swap in use, about
 pressure was not added: with that little swap and disk left it could have
 starved every other process on the host.
 
-**Step 3 — where the time goes.** Under every load the docker calls stayed
-short: the longest was 6.1 s, almost all of it between the spawn and the
-fake client's Node process starting (`exec → node`: p50 58–93 ms, worst
+**Step 3 — where the time goes.** Under every synthetic load the docker calls
+stayed short: the longest was 6.1 s, almost all of it between the spawn and
+the fake client's Node process starting (`exec → node`: p50 58–93 ms, worst
 5.9 s); Node's own start-up took at most 377 ms, the client's work at most
 253 ms, and the caller saw it close within 338 ms. The slowed tests spent
-their time in their own work: fault 3 ran up to nine times slower with every
-docker call short. The controller's failure needs one call, or the removal
-loop, to run 30 s; no synthetic load came within a fifth of that. Where the
-~60 s went in run 2 cannot be shown from its log, which records no call; the
-evidence available — the two tests running together slowed by the same ~65 s
-while no other test did — points to a stall of the host in that window. Its
-cause is not established. The same holds for `21aeb0d` ("egress proxy did
-not become ready in time"): not shown to be another class; the proxy's error
-now says how long it waited against its bound.
+their time in their own work. Those loads did not reproduce the stall because
+they did not exercise its cause, which two red runs of this cycle, read with
+step 1's timeline, and a probe beside the second showed:
+
+- `pnpm verify:all` at `7017cfc` (documentation only; the code is `a8f45ca`'s)
+  failed twice, 867 of 869 each time. First run (15:38–15:45, 414 s): "a crash
+  between the commit and its evidence" and fault 5 of the rehearsal — the two
+  test files running together — both rejected with
+  `docker sandbox unavailable: docker CLI or daemon not reachable: version --format at +0ms: signal SIGKILL after 30004ms (spawn 0ms, bound 30000ms, cut at 30003ms)`
+  (30002 ms for fault 5). Second run (16:00–16:08, 458 s): "a removal whose
+  docker ps fails with permission denied …" with the same `version` line
+  (30003 ms), and "G3: the tool-call budget is enforced while the agent runs"
+  ended `FAILED` instead of `BUDGET_EXHAUSTED` after 69.9 s (the assertion
+  does not print the attempt's reasons). In each timeline the client started
+  at once (`spawn 0ms`) and was still running when its caller killed it at its
+  bound: the time went into the fake docker client itself, a `/bin/sh` script
+  that execs Node, whose work for `version` is a few file writes.
+- A probe ran beside the second run: once a second it started `node -e 0`,
+  the same through `/bin/sh`, the tests' fake docker `version`, `/bin/sh -c :`
+  and `/usr/bin/true`. From 16:02:04 to 16:03:10 every Node launch, in all
+  three forms, took 4.6–40.7 s, while `/bin/sh` and `/usr/bin/true` launched
+  in at most 173 ms at the same moments. The delayed launches finished in the
+  order they started until about 16:02:51; those started from 16:02:17 on all
+  finished together at about 16:03:07: a queue served one at a time, then
+  released. The same probe saw two more such windows (41.6 s at 16:10, after
+  the run, and 35.1 s at 16:17 during a canonical test run that passed).
+- The kernel log names the queue. Every launch of `/usr/local/bin/node`
+  (signed Developer ID Application: Node.js Foundation) is reported by
+  AppleSystemPolicy — "Validation category (6) does not match top-level policy
+  match (3)", "Notifying syspolicyd about /usr/local/bin/node with PID …",
+  "Security policy would not allow process" — and syspolicyd records a
+  Gatekeeper policy-violation event for each; `/bin/sh` and `/usr/bin/true`
+  are not reported. Each long window came with a burst of Node launches on
+  the host: 17,100 in 15:42:40–15:43:00, just before the first red run's
+  probes were cut; 16,104 in 16:02:00–16:02:30, the probe's 16:02 window;
+  about 17,000 in 16:09:40–16:10:10 and about 18,000 in 16:17:00–16:17:50.
+  Smaller bursts, 1,000–2,400 launches per 10 s, gave the probe waits of
+  0.8–1.7 s. The 16:02 backlog cleared at about 16:03:07, roughly 240 launches
+  a second. syspolicyd ran at 41–78% CPU when sampled. From 15:43:00 to
+  15:43:28, while the first red run's two test files each waited in its
+  probe, only two Node launches every 5 s, at a fixed rhythm, reached the log:
+  whether launches wait in one queue or one per launching process is not
+  established.
+- Who launches Node in those bursts is not established either. The lane's own
+  canonical run starts about 1,350 fake docker clients in five minutes
+  (counted in a traced run); bursts came while it ran and while nothing of
+  the lane's but the probe ran (16:09:40–16:10:10). A burst of 400 or 1,500
+  Node launches made here (at most 118 a second) left no backlog once it
+  ended. A larger one was not made: it would hold every Node launch on this
+  shared host for tens of seconds, other sessions' included.
+
+**Cause.** On this host a new Node process does not run until the system's
+launch policy has dealt with it, and that work is served one launch at a time;
+when Node is launched on the host faster than syspolicyd keeps up, a new Node
+process waits in the queue — up to 40.7 s measured. The tests' docker clients
+are Node processes, so a docker call that falls in such a window exceeds its
+30 s bound, whichever test makes it. Controller run 2 at `42b6d78` fits: a
+`docker ps` killed with empty stderr, and the test beside it slowed by about
+65 s while its first docker call — then unbounded — waited the queue out. Its
+window has rolled out of the kernel log (about an hour is kept on this host),
+so that run cannot be checked. The `21aeb0d` failure (the egress proxy, a
+Node process, not ready in time) is the same class by the same reasoning, also
+not checkable now. No bound is shown wrong: the delay is a queue outside the
+process, not load on it, and no bound that keeps its meaning covers it.
+
+**What would fix it.** The fix is on the host, outside this lane's reach:
+launch the gates from a process the launch policy does not assess (macOS lets
+an operator add a terminal or agent host under Privacy & Security ›
+Developer Tools; untested here, as it is a system setting this lane may not
+change), or keep Node-launch bursts off the host while a gate runs. A
+repository change could remove the dependency only by making the fake docker
+client something other than one Node launch per call — one long-lived fake
+daemon per test and a client in `/bin/sh` — a redesign of the test fixture,
+not made in this cycle and left to the controller.
 
 **What was fixed (`bd08654`).** The one docker call outside `dockerCaller`:
 the `docker version` probe a sandbox makes before it starts ran through
 `execFile` with no timeout and the whole process environment. It is now a
 bounded call with the client environment, and a refusal says how it ended.
-That bounds a hang; it does not explain the red run.
+In production that bounds a CLI that hangs. Under this host's queue it turns
+a slow pass (crash-between took 69.3 s in controller run 2) into a failure at
+the bound, which states what happened: the docker client did not answer in
+time.
 
-**Not changed.** No bound was raised; none is shown wrong by these
-measurements (no traced docker call took more than 6.1 s, against the 30 s
-bound of a removal). Fault 3 keeps its assertion. **Open:** the cause of the red run;
-recorded as a concern for the controller. With step 1 in place, a recurrence
-will name the call, its phase and its bound.
+**Not changed.** No bound was raised. Fault 3 keeps its assertion.
 
 **Step 4 — after.** The same burners and copies, one round each, untraced, at
 `a8f45ca` (every code and test change of this cycle):
@@ -1858,16 +1922,18 @@ will name the call, its phase and its bound.
 | 3 copies, 4 CPU and 4 fsync burners | 3 | 0 | 23.6–24.1 s | 21.2–22.3 s | 37 (28 before) |
 | 3 copies, 8 CPU and 4 fsync burners | — | — | — | — | stopped |
 
-Reproduction rate after: **0 of 10 runs**. The fourth load did not complete:
-the data volume filled while it ran (other work on the host had taken its
-free space from 6.7 GB to about 1 GB, and the fsync burners write 1 GiB),
-three burners and the three test copies failed with `ENOSPC`, and the round
-was stopped and its files removed. Its failures are the disk's, not the
-flake's, and it is not counted. The load average includes other work on the
-host, so equal burners did not give equal load: the first two loads ran
-after at about a third to a half of the load average they ran at before.
-Neither rate says anything about the red run's cause: no run, before or
-after, failed the way it did, and a run without a failure closes nothing.
+Reproduction rate after, under synthetic load: **0 of 10 runs**. The fourth
+load did not complete: the data volume filled while it ran (other work on the
+host had taken its free space from 6.7 GB to about 1 GB, and the fsync burners
+write 1 GiB), three burners and the three test copies failed with `ENOSPC`,
+and the round was stopped and its files removed. Its failures are the disk's,
+and it is not counted. These loads are not the cause, so these rates say
+nothing about it. The rate that does: of the canonical test runs on this host
+in this cycle after the instrumentation landed — `verify:all` at `a375f1e`,
+`bd08654`, `056457a`, `a8f45ca` and twice at `7017cfc`, and two canonical test
+runs at `7017cfc` beside the probe (one with the temporary trace) — **2 of 8
+failed**, both by this queue. The fix above has not been applied, so there is
+no rate after it.
 
 ### CYCLE11-MED-001 — inspect errors were not held apart from absence by any test — ACCEPTED
 
@@ -1939,8 +2005,12 @@ to drop. The cycle-10 entry above ("writes only to the recorded, reviewable
 PR … no longer creates a missing PR") was wrong about the write, which went
 through the branch-keyed upsert; it carries a correction note.
 
-### A gate failure in this cycle — a missing final newline
+### Gate failures in this cycle
 
 `pnpm verify:all` at `c67b25b` failed at format-check: the reviewer's output,
 copied verbatim, has no final newline. `52d4d62` adds it and names the edit in
 the provenance note.
+
+`pnpm verify:all` at `7017cfc` failed twice, 867 of 869 each time, by the
+launch-policy queue described under CYCLE11-HIGH-002 (step 3). No change was
+made for them: the cause is on the host.
