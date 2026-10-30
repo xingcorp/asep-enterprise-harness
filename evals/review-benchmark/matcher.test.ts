@@ -167,3 +167,18 @@ test('lenient matching is nearest first too', () => {
   const far = matchFindings([gold('G', 'CORRECTNESS', ['src/a.ts', 100, 110])], [finding('a', 'MAINTAINABILITY', 'src/a.ts', 400)], 'lenient');
   assert.deepEqual(far.matches, [match('G', 'a', 290)]);
 });
+
+test('a finding without an end line is the line it starts on', () => {
+  // Gold range 100–110; each finding gives a start line and `lineEnd: null`, so it is that one line. Expected by hand
+  // from the protocol's predicate (fs ≤ ge + 10 and fe ≥ gs − 10, with fe = fs) and its distance (the line gap).
+  const g = [gold('G', 'CORRECTNESS', ['src/a.ts', 100, 110])];
+  const run = (lineStart: number, variant: 'strict' | 'lenient') => matchFindings(g, [finding('f', 'CORRECTNESS', 'src/a.ts', lineStart, null)], variant).matches;
+
+  // Line 105 lies inside the range: both variants match at distance 0 (the review's probe).
+  assert.deepEqual([run(105, 'strict'), run(105, 'lenient')], [[match('G', 'f', 0)], [match('G', 'f', 0)]]);
+  // Line 120 is ten lines past the end: still a strict match, at distance 10.
+  assert.deepEqual([run(120, 'strict'), run(120, 'lenient')], [[match('G', 'f', 10)], [match('G', 'f', 10)]]);
+  // Line 121 is eleven past the end and line 89 eleven before the start: strict refuses both; lenient matches at 11.
+  assert.deepEqual([run(121, 'strict'), run(121, 'lenient')], [[], [match('G', 'f', 11)]]);
+  assert.deepEqual([run(89, 'strict'), run(89, 'lenient')], [[], [match('G', 'f', 11)]]);
+});
