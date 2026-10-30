@@ -131,6 +131,15 @@ test('prompt is bound to the packet content it renders', () => {
   assert.equal(repairPrompt.input.includes(`<<<UNTRUSTED ${repairPrompt.nonce} repair-delta>>>`), true);
 });
 
+test('the template digest is the value computed outside this code base', () => {
+  // sha256 of the canonical JSON of the template version, the instruction template and the output schema, computed
+  // independently and recorded in docs/implementation/phases/phase-04-review-log.md. Any template change must change
+  // this value, and the log must record the change.
+  const world = fixtureWorld();
+  const prompt = renderReviewPrompt(buildReviewPacket(world.sources, world.limits), world.contents);
+  assert.equal(prompt.templateSha256, 'a8b62deb4368c4add78519d227d714bd7740950bef39135d9a60e08cb7f2647c');
+});
+
 test('a rendered prompt over the budget is refused', () => {
   // Large enough that the prompt size and a budget just under it have the same number of
   // digits, so the packet bytes, and with them the prompt, keep their length.
