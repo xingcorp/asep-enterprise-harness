@@ -2371,7 +2371,7 @@ in cycle 13 (pids 4822 and 89091).
 | CYCLE13-HIGH-001 (rest of CYCLE12-HIGH-001) | ACCEPTED — the proxy takes a relative lifetime, at most a named maximum, and fixes its deadline once on its own monotonic clock; admission, its timer and every request and stream in flight answer to that deadline; at it the proxy destroys every open connection and exits | `d883e24`, `6f4dc30` |
 | CYCLE13-MED-001 (with CYCLE12-MED-001) | ACCEPTED — a recorded process carries a token of its own in its environment and its start time; it is signalled only while its pid shows both; test cleanups end containers by that identity, never by a pid alone | `607b6dc`, `f02fe83` |
 | CYCLE13-MED-002 | ACCEPTED — a `ps` that fails, or an environment that cannot be read, is "unknown": nothing is signalled, the record stays, the cleanup fails; in the registry and in the fake docker | `607b6dc` |
-| CYCLE13-MED-003 | ACCEPTED — every long-lived process a test starts is in the run's registry, the registry's own tests included, or a fitness test's list says why it need not be | `a94fa3e`, `985ddf3` |
+| CYCLE13-MED-003 | ACCEPTED — every process a test starts is in the run's registry, the registry's own tests included, or a fitness test's list says why it need not be (wording corrected in repair cycle 15) | `a94fa3e`, `985ddf3` |
 | CYCLE13-MED-004 | ACCEPTED — a leftover of an earlier run that cannot be shown gone fails the gate | `6fec876` |
 | CYCLE11-HIGH-002 | NOT CLOSED; disposition R47 unchanged | — |
 | Port and schema deltas | none to ports, schema or migrations; the egress proxy's argv and asset take a relative lifetime | `d883e24` |
@@ -2553,7 +2553,10 @@ including the registry's own tests.
 its container are both recorded; a test that keeps a registry of its own
 keeps it beside the run's (`ASEP_PROCESS_REGISTRY` may list several
 directories, joined by the path delimiter: a process is recorded and
-forgotten in each). The registry's own helpers record what they start and
+forgotten in each). [Corrected in repair cycle 15: at `bfd0e7f` the two tests
+written for this finding put a registry of their own in place of the run's
+(CYCLE14-MED-002); true since `8eb5dd0`.] The registry's own helpers record
+what they start and
 forget it once shown gone; the one helper that by design shows no token of
 ours, and the system binary `ps` shows no environment of, hold a minute at
 most. The runner's wiring fixture records what it starts. A fitness test
@@ -2642,3 +2645,319 @@ inside adapters and test tooling:
   directories. Fake docker containers get `ASEP_PROCESS_TOKEN` in their
   environment, and its records carry the identity. `runCanonicalTests`
   accepts `registryRoot` and fails on leftovers of earlier runs.
+
+## Final review cycle 14 dispositions
+
+> Reviewer: Codex `gpt-6.1-sol`, re-review cycle 14 at `bfd0e7f`
+> (`phase-02-final-rereview-codex-v14.md`), verdict **REQUEST_CHANGES** @ 0.99.
+> The controller's decisions on it (reconciliation R49) were applied as
+> stated. Repairs: repair cycle 15, on `phase/02-single-agent-vertical-slice`
+> from `bfd0e7f`. Every disposition, repair, test, measurement and mutation
+> check below was made and verified by the implementer only; none has been
+> independently reviewed. Mutation checks work as in the cycle-10 section.
+> Every full gate of this cycle ran through the controller's `gate.sh` (R47).
+
+### What the review accepted, and what it did not
+
+The review marked **RESOLVED**: CYCLE13-HIGH-001 (the proxy's lifetime on its
+own monotonic clock), CYCLE13-MED-002 (a failed `ps` is unknown) and
+CYCLE13-MED-004 (an earlier run's leftovers fail the gate), and found the
+controller's four gates at `bfd0e7f` valid under R47. It found **PARTIAL**:
+CYCLE12-HIGH-001 (the window after worker death did not hold for a worker
+that died while its proxy was starting), CYCLE13-MED-001 and CYCLE12-MED-001
+(a record of an earlier format could be forgotten, or acted on, without the
+identity the new format carries) and CYCLE13-MED-003 (two new tests put a
+registry of their own in place of the run's). It raised CYCLE14-HIGH-001 (the
+credential was written to the proxy before it was ready, so a proxy that
+started after its worker died held it past the published window: in its
+model `CYCLE14_LATE_START_MODEL`, a request is forwarded at 190 s against a
+published end of 120 s), CYCLE14-MED-001 (a marker-format record was
+forgotten while its leader ran, `CYCLE14_LEGACY_RECORD_LIVE_LEADER`, and chose
+a leaderless group to signal when its member's environment could not be read,
+`CYCLE14_LEGACY_RECORD_UNKNOWN_ENV`), CYCLE14-MED-002 (the two tests above,
+`CYCLE14_NESTED_PROBE_REGISTRY_GAP`), CYCLE14-LOW-001 (a budget beyond the
+proxy's maximum ran, and its agent would lose the model API part way through)
+and CYCLE14-LOW-002 (no test reads an unreadable `/proc/<pid>/environ`; the
+`undefined → null` mutant of that read survived, `CYCLE14_ENVIRON_MUTANT`,
+`CYCLE14_LINUX_ENVIRON_MUTATION`). It also found two claims of the cycle-14
+review log and report broader than the code (see "Docs" below).
+
+### Summary
+
+| ID | Disposition | Commits |
+|---|---|---|
+| CYCLE14-HIGH-001 (rest of CYCLE12-HIGH-001) | ACCEPTED — the proxy starts without the credential and serves nothing until it holds it; the provider sends it only after the proxy reported ready within its bound; the proxy's own credential window ends it without one | `9b5f65c` |
+| CYCLE14-MED-001 (rest of CYCLE13-MED-001 and CYCLE12-MED-001) | ACCEPTED — records carry a format version; a record without full identity is unknown: kept, never signalled, and the gate fails naming it; a token match needs a non-empty recorded token | `ebf3fa4` |
+| CYCLE14-MED-002 (rest of CYCLE13-MED-003) | ACCEPTED — a test adds a registry of its own beside the run's, never in its place; a runner started inside a run keeps the outer run's registry; a fitness test rejects a test that drops it | `8eb5dd0` |
+| CYCLE14-LOW-001 | ACCEPTED — a budget the proxy cannot outlive is refused before anything is done for it | `07f6701` |
+| CYCLE14-LOW-002 | ACCEPTED — an unreadable `/proc/<pid>/environ` is a test: unknown, record kept, gate red | `5acff7a` |
+| Docs | ACCEPTED — the review log's and the report's claims about nested registries and long-lived test processes now match the code | this section and the report |
+| CYCLE11-HIGH-002 | NOT CLOSED; disposition R47 unchanged | — |
+| Port and schema deltas | none to ports, schema or migrations; the egress proxy's protocol and the test registry's record format changed (below) | — |
+
+Also: `81dd27c` adds the cycle-14 transcript with its provenance note (eight
+absolute paths the publication gate rejects are shortened there, and the
+note says so).
+
+### CYCLE14-HIGH-001 — the credential reached the proxy before it was ready — ACCEPTED
+
+**Invariant (R49):** the credential reaches the proxy only after readiness:
+the proxy starts without it, reports ready, and serves nothing until it
+receives it; the worker sends it on stdin only after it saw readiness within
+its bound. The proxy has a named credential window on its own monotonic clock
+from its start: with no credential by then, it exits. A worker that dies
+before readiness never hands the credential over, and the window after
+worker death stays `min(remaining budget + grace, maximum) + readiness
+bound`, counted from the spawn.
+**Change (`9b5f65c`):**
+- `assets/egress-proxy.mjs`: `egressProxy({ …, credentialBy })` holds no
+  credential at first and refuses every request ("not serving yet: it holds
+  no credential", 403), forwarding nothing. `provideCredential(key)` takes one
+  non-empty key, once, only before the credential window and the deadline; a
+  key that arrives after the window is refused and ends the proxy ("a
+  credential arrived after its credential window"), and so is a request after
+  it. While it holds no key its timer fires at the earlier of the window and
+  the deadline. The process takes `--credential-window-ms` (a whole number of
+  milliseconds from 1 to the exported `CREDENTIAL_WINDOW_MS`, 60 s; otherwise
+  it refuses to start), prints `asep-egress-proxy listening <port>`, reads its
+  first stdin line as the key and then prints `asep-egress-proxy serving`;
+  stdin that closes before a key, or an empty key, makes it refuse to serve
+  and exit 2.
+- The provider: `proxyHandshake(child, { apiKey, bound, startedAt, spawnMs })`
+  writes the key once, only when the proxy reported ready within `bound`
+  (`PROXY_START_TIMEOUT_MS`, 30 s, or what is left of the budget if less,
+  from the spawn), and then waits, within the same bound, for `serving`. Not
+  ready, or not confirmed, in time fails the attempt, whose teardown kills the
+  proxy; the failure says how long it waited and when the key was sent.
+  `buildProxyRunArgs` passes `--credential-window-ms`
+  `PROXY_CREDENTIAL_WINDOW_MS` (60 s, longer than the readiness bound, so
+  that a proxy ready in time always gets its key within its window). New
+  exports: `PROXY_START_TIMEOUT_MS`, `PROXY_CREDENTIAL_WINDOW_MS`,
+  `proxyHandshake`. The fake docker logs when a container reports it listens,
+  beside what reached its stdin.
+- T2-16 and the runbook drop the start-up exception: a worker that died
+  before its proxy reported ready never sent the key, and that proxy forwards
+  nothing and exits at its credential window. Host sleep stays a stated
+  limit.
+**Tests (written first: against the previous asset, and a provider with the
+new exports but the previous handshake, 16 tests failed):**
+- On virtual time: a request before the key is refused and nothing is
+  forwarded; a key within the window is taken once (a second is refused); no
+  key by the window ends the proxy; a key, or a request, after the window is
+  refused and ends it.
+- The reviewer's `CYCLE14_LATE_START_MODEL` as a test, on virtual time: a
+  proxy whose worker died before it was ready, so that no key ever reaches
+  it, starts 180 s after the spawn with the 90 s lifetime it was given; a
+  request 10 s after its start (190 s after the spawn, where the probe saw a
+  forward) is refused, nothing is ever forwarded, and the proxy ends at its
+  credential window.
+- A proxy process given no key reports ready, refuses every request and exits
+  at its window (3 s here); the start refusals cover the window's bounds (a
+  word, 0, 1.5, the maximum plus 1) and the refusals to serve.
+- The provider's handshake on virtual time: nothing is written before
+  readiness; the key once, on the first ready line, and not again; a proxy
+  ready after its bound gets nothing; the attempt waits for `serving`. Through
+  the fake docker, the proxy reported ready before anything reached its stdin,
+  and a proxy that never becomes ready got nothing on its stdin. The contained
+  attempt's argv carries the window, equal to the asset's maximum and longer
+  than the readiness bound.
+**Mutation check:** 11 mutants, all killed: the proxy serving without a key;
+no timer for the window; a key after the window taken; a request after the
+window refused without ending the proxy; the window's maximum not enforced;
+a second key replacing the first; the provider sending the key at the spawn,
+after its bound, on every ready line, or not waiting for the confirmation;
+no window passed.
+**The red run did not exit by itself.** Proxy tests whose proxy failed to
+start against the previous asset left their fake upstreams listening (the
+upstream was created before the `try` that closes it). The test file's
+process (pid 43046, started by the implementer) was killed by pid; every
+such test now closes its upstream when its proxy fails to start.
+
+### CYCLE14-MED-001 — records without full identity were acted on — ACCEPTED
+
+**Invariant (R49):** records carry a format version; on read, a record
+without a valid version, token and start time (and a group record whose
+members' tokens cannot be read) is unknown: kept, never signalled, and the
+gate fails naming it. The token match requires a non-empty recorded token.
+**Change (`ebf3fa4`):**
+- Every record is `{ version, pid, group, token, startedAt }` with
+  `RECORD_VERSION` (1). `identityGap(entry)` says what a record lacks: this
+  version, a pid, whether it leads a group, a non-empty token, a start time —
+  or that it cannot be read. `endRecorded` never hands such a record to its
+  end function: it stays, as 'unknown', with its file's name and why;
+  `endProcess` answers 'unknown' for it before it reads the table. The
+  canonical runner names it: `pid N of run R: unknown — its record is not of
+  format version 1, so it was left alone`; a record without a pid by its
+  file's name.
+- Every token comparison goes through one check that never matches an empty
+  or missing recorded token; the members of a leaderless group are checked
+  with it, so an unreadable environment never matches a missing token. An
+  environment's empty token now reads as empty on macOS too (it read as
+  none). The `-Infinity` start time for a record without one is gone.
+- `identityOf`: a group leader that exited before it was recorded is recorded
+  by the start time it still shows while it waits to be reaped; one already
+  reaped while its group lives cannot be recorded, so every record written
+  has full identity.
+**Tests (written first: against the previous registry, with `RECORD_VERSION`
+exported first so that the suites could load, 5 failed):**
+- The reviewer's two probes: a marker-format record for a leader that runs,
+  and one for a leaderless group whose member's environment cannot be read
+  (here through a `ps` that cannot read environments; since `5acff7a` through a
+  `/proc` that shows none as well). Each is 'unknown', is not handed on, its
+  record stays and nothing is signalled.
+- Records without a version (the cycle-14 format), a token, an empty token, a
+  start time, a start time that is none, the group flag or a pid, and one that
+  cannot be read: each 'unknown', with why, kept.
+- A process whose environment holds an empty token is neither recorded by it
+  nor ended by a record carrying it.
+- A leader recorded after it exited: recorded by the start time the table
+  still shows, and its group ended.
+- The runner, on an earlier run holding a marker-format record of a live
+  process and a torn record: the run fails, names both with why, signals
+  nothing and keeps both.
+**Mutation check:** 12 mutants, all killed: no gap ever found; no version,
+token, start time, group flag or pid required; an empty token matching; an
+exited leader showing no start time; the runner not saying why; a record
+that cannot be read skipped; `endProcess` acting on a record without full
+identity; `endRecorded` handing one to its end function.
+**The red run left two processes.** The record test's cleanup was not
+reached when its first assertion failed, so its two helpers (a recorded
+process and a leaderless group's member) held their minute and then exited by
+themselves; the test's cleanup now covers every failure.
+
+### CYCLE14-MED-002 — two tests dropped the run's registry — ACCEPTED
+
+**Invariant (R49):** nested test registries keep the outer one: the fake
+docker and registry tests add their registry to the existing
+`ASEP_PROCESS_REGISTRY` and assert that the helper appears in the outer
+registry too; the fitness test rejects an assignment that drops the outer
+value.
+**Change (`8eb5dd0`):** `nestRegistry(dir)` adds a test's own registry to the
+run's in the environment, beside it, and returns what restores the
+environment; the two tests, and the agent adapter's test that already kept
+the run's by hand, use it. Every instance of the class: a runner started
+inside a run (`withProcessRegistry`, as the runner's wiring tests do) now
+keeps the outer run's registry beside its own, so what a nested run's tests
+start is in the outermost run's registry too. The fake docker test's
+containers hold a minute at most, as the registry test's processes do.
+**Tests (written first: against the previous registry with a `nestRegistry`
+that put the test's registry in place of the run's, as the tests did before,
+4 failed):** the fake docker, registry and runner tests assert that what
+their helpers start is in the outer registry (a stand-in for one when the
+file is run by hand), and the registry test that the environment lists its
+own registry and then the run's. The fitness test rejects any test source
+that assigns or deletes the registry variable, or hands a child an
+environment with a registry not on its list of ones that keep the run's (one
+entry: the fake docker test's `registryEnv`). It passed against the previous
+registry — it reads the test sources, which by then used `nestRegistry` — so
+the mutation check is what shows it bites.
+**Mutation check:** 5 mutants, all killed: `nestRegistry` putting the registry
+in place of the run's; a nested run dropping the outer registry; a test
+assigning its own registry, handing a child a registry without the run's, or
+deleting the registry variable (each caught by the fitness test).
+**Residual:** a nested run's records stay in the outer run until the outer
+run's close, which finds them gone: the canonical runner at `8eb5dd0` listed
+four such records as `gone`.
+
+### CYCLE14-LOW-001 — a budget beyond the proxy's maximum ran — ACCEPTED
+
+**Invariant (R49):** budgets beyond the proxy maximum are refused before any
+side effect.
+**Change (`07f6701`):** the provider refuses, as BLOCKED, an attempt whose
+wall-clock budget plus `PROXY_EXPIRY_GRACE_MS` exceeds `PROXY_MAX_LIFETIME_MS`
+— a budget of more than 239.5 minutes — or that is not a number, with a named
+reason ("its wall-clock budget of N minute(s) and the egress proxy's 30000 ms
+grace exceed its maximum lifetime of 14400000 ms"), before the credential is
+read or docker is asked for anything. The runbook says so.
+**Tests (written first; red against the previous provider):** a 24-hour
+budget, the longest allowed budget plus one millisecond, and NaN are refused,
+no credential is asked for and no docker call is made; the longest allowed
+budget runs, and its proxy's lifetime is within 10 s of the maximum.
+**Mutation check:** 4 mutants, all killed: no refusal; a budget that is not a
+number passing; the grace not counted; the longest allowed budget refused.
+
+### CYCLE14-LOW-002 — no test of an unreadable /proc environment — ACCEPTED
+
+**Invariant (R49):** a test where reading `/proc/<pid>/environ` fails: outcome
+unknown, record kept, gate red; the `undefined → null` mutant must fail.
+**Change (`5acff7a`):** `ASEP_PROCESS_TABLE_PROC` (exported as `PROC_ENV`) names
+the directory read as `/proc`, for the tests; with it set the registry reads
+environments as it does on Linux, on any host.
+**Tests (written first; against the previous registry, with `PROC_ENV` exported first so that the suites could load, the two new tests failed):** a recorded process whose environment is
+read through such a directory: as a file of NUL-ended entries it shows the
+token and identifies the process; as a directory it cannot be read, and the
+process is unknown — recording fails, nothing is signalled, its record stays.
+The runner, reading through a `/proc` that shows no environment, fails its
+run, names the process as unknown and signals nothing. The record test of
+CYCLE14-MED-001 reads its leaderless group's member through such a `/proc`
+as well.
+**Mutation check:** 3 mutants, all killed: a failed read taken as an environment without
+the token (the reviewer's `undefined → null`); the stand-in ignored; the
+entries split by newline instead of NUL.
+**Not verified:** the real `/proc` of a Linux host. This host is macOS; the
+CI runner (ubuntu-latest) takes that path.
+
+### Docs — claims broader than the code — ACCEPTED
+
+The cycle-14 review found two claims broader than the code, both corrected in
+place with a note:
+- "A test that keeps a registry of its own keeps it beside the run's"
+  (CYCLE13-MED-003 above): at `bfd0e7f` two tests put theirs in place of the
+  run's. True since `8eb5dd0`.
+- "Every long-lived process a test starts is in the run's registry" (the
+  cycle-13 summary and the report): the fitness test allows spawns that are
+  not recorded, each on its list with why — docker clients through a shim,
+  whose containers the fake docker records; processes of the live proof and
+  the integration runner, outside the canonical run; members of recorded
+  groups; and, by design, a process that shows no token of ours, a system
+  binary whose environment `ps` does not show, and (since `ebf3fa4`) a leader
+  the test records itself after it exited. The claim now reads: every process
+  a test starts is recorded in the run's registry, or is on that list with
+  why it need not be.
+
+### CYCLE11-HIGH-002 — disposition R47 unchanged
+
+Nothing in this cycle changes what is known of the Node launch stall. Every
+gate ran through `gate.sh`; none showed a launch of 10 s or more.
+
+**Gate runs of this cycle.** Every one through `gate.sh`; the sampler line is
+its own summary.
+
+| Commit | Gate | Result | Tests | Duration | Sampler: samples, longest Node launch, launches of 10 s or more | Valid under R47 |
+|---|---|---|---|---|---|---|
+| `81dd27c` | `verify:all` | exit 0 | 900 of 900 | 557 s | 233, 4353 ms, 0 | yes |
+| `9b5f65c` | `verify:all` | exit 0 | 904 of 904 | 507 s | 208, 3472 ms, 0 | yes |
+| `ebf3fa4` | `verify:all` | exit 0 | 908 of 908 | 531 s | 222, 4652 ms, 0 | yes |
+| `8eb5dd0` | `verify:all` | exit 0 | 909 of 909 | 531 s | 223, 6362 ms, 0 | yes |
+| `07f6701` | `verify:all` | exit 0 | 910 of 910 | 522 s | 220, 4328 ms, 0 | yes |
+| `5acff7a` | `verify:all` | exit 0 | 912 of 912 | 526 s | 219, 4146 ms, 0 | yes |
+| `5acff7a` | `test:integration` | exit 0 | 34 of 34 | 102 s | 46, 1194 ms, 0 | yes |
+
+No gate run of this cycle was red. The canonical runner listed records of its own run as `gone` from `8eb5dd0` on —
+four at `8eb5dd0` and `07f6701`, six at `5acff7a`: processes the runner's
+wiring tests start in nested runs, recorded in the outer run too since
+`8eb5dd0`, and already ended (see CYCLE14-MED-002). No run found a recorded
+process still running, before or after the tests. After the integration
+run no container labelled `asep.role` and no network labelled `asep.attempt`
+remained. The final sequence on the
+report commit — `pnpm install --frozen-lockfile`, two `verify:all` and two
+`test:integration` runs, each through `gate.sh` — is bound by the L1
+sentinel and reported to the controller with its sampler lines.
+
+### Port and schema deltas for Lanes A and B
+
+No port, schema or migration changes in this cycle. Contract changes, all
+inside adapters and test tooling:
+- `@asep/agent-claude`: the egress proxy starts without the credential:
+  `assets/egress-proxy.mjs` takes `--credential-window-ms` (at most its
+  exported `CREDENTIAL_WINDOW_MS`), prints `asep-egress-proxy serving` once it
+  holds the credential, and its `egressProxy` takes `credentialBy` and returns
+  a server with `provideCredential(key)`; new exports `PROXY_START_TIMEOUT_MS`,
+  `PROXY_CREDENTIAL_WINDOW_MS` and `proxyHandshake`; an attempt whose budget
+  plus the grace exceeds `PROXY_MAX_LIFETIME_MS` is BLOCKED before it starts.
+- Test tooling: `scripts/lib/process-registry.mjs` records
+  `{ version, pid, group, token, startedAt }` and exports `RECORD_VERSION`,
+  `identityGap`, `nestRegistry` and `PROC_ENV`; `endRecorded` returns a record
+  without full identity as 'unknown' with `record` and `why`;
+  `withProcessRegistry` keeps the outer run's registry. Fake docker records
+  carry the version.
