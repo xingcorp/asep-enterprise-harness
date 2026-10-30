@@ -546,14 +546,43 @@ test('the proxy lifetime is what is left of the budget when the proxy is started
   } finally {
     await slow.close();
   }
-  // A budget beyond the maximum gets the maximum, which the proxy accepts.
+  // The longest budget the proxy can outlive gets close to the maximum, which
+  // the proxy accepts.
   const long = await harness();
   try {
-    assert.equal(await proxyLifetimeOf(long, 24 * 60), PROXY_MAX_LIFETIME_MS);
+    const lifetime = await proxyLifetimeOf(long, (PROXY_MAX_LIFETIME_MS - PROXY_EXPIRY_GRACE_MS) / 60_000);
+    assert.ok(lifetime <= PROXY_MAX_LIFETIME_MS && lifetime > PROXY_MAX_LIFETIME_MS - 10_000, `the proxy lives ${lifetime} ms`);
     assert.equal(PROXY_MAX_LIFETIME_MS, (await proxyModule()).MAX_LIFETIME_MS,
       "the provider's maximum is the proxy's own");
   } finally {
     await long.close();
+  }
+});
+
+test('a budget the egress proxy cannot outlive is refused before anything is done for it', async () => {
+  const h = await harness();
+  try {
+    let asked = 0;
+    const credentials: ModelCredentialProvider = {
+      credentialFor: async () => {
+        asked += 1;
+        return { apiKey: `asep-test-model-key-${randomUUID()}`, baseUrl: h.upstream.url };
+      },
+    };
+    const longest = (PROXY_MAX_LIFETIME_MS - PROXY_EXPIRY_GRACE_MS) / 60_000;
+    for (const minutes of [24 * 60, longest + 1 / 60_000, Number.NaN]) {
+      const obs = await (await h.provider('ok', {}, credentials))
+        .execute(request(h, { budget: { ...BUDGET, maxWallClockMinutes: minutes } }));
+      assert.equal(obs.status, 'BLOCKED', `${minutes} minute(s): ${showObservation(obs)}`);
+      assert.match(obs.knownLimitations.join(' '),
+        new RegExp(`budget of ${minutes} minute\\(s\\) and the egress proxy's ${PROXY_EXPIRY_GRACE_MS} ms grace exceed `
+          + `its maximum lifetime of ${PROXY_MAX_LIFETIME_MS} ms`));
+    }
+    assert.equal(asked, 0, 'its credential was never asked for');
+    assert.deepEqual(h.invocations(), [], 'docker was never asked to do anything');
+    assertTornDown(h);
+  } finally {
+    await h.close();
   }
 });
 

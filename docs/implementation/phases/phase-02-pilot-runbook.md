@@ -91,7 +91,11 @@ The Claude provider has no host-execution mode. Every attempt runs like this
    bound` from the proxy's spawn, whatever is done to the wall clock; a harness
    that died before its proxy reported ready never sent the key, and that proxy
    forwards nothing and exits at its credential window. Not covered: time the
-   host spends asleep, which neither clock counts.
+   host spends asleep, which neither clock counts. An attempt whose wall-clock
+   budget plus those 30 s exceeds 4 h — a budget of more than 239.5 minutes —
+   is refused as BLOCKED before anything is done for it ("its wall-clock budget
+   … exceed its maximum lifetime"), so that no agent loses the model API before
+   its budget is over; split such work into shorter attempts.
 3. The agent container runs on the internal network only, as the harness user,
    with a read-only root filesystem, all capabilities dropped,
    `no-new-privileges`, PID/CPU/memory limits and no Docker socket. The leased

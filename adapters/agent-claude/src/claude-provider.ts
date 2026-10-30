@@ -200,8 +200,9 @@ export const PROXY_EXIT_BOUND_MS = 2_000;
 
 /**
  * The longest lifetime an egress proxy is given: four hours, the proxy's own
- * MAX_LIFETIME_MS, beyond which it refuses to start. An attempt with a longer
- * budget gets this, and its agent loses the model API when it is over.
+ * MAX_LIFETIME_MS, beyond which it refuses to start. An attempt whose budget
+ * plus PROXY_EXPIRY_GRACE_MS exceeds it is refused before anything is done for
+ * it, so that no agent loses the model API before its budget is over.
  */
 export const PROXY_MAX_LIFETIME_MS = 4 * 60 * 60_000;
 // What the agent holds instead of the credential. The proxy discards it.
@@ -599,6 +600,14 @@ export class ClaudeCodingProvider implements CodingAgentProvider {
   async execute(req: AgentExecuteRequest): Promise<AgentAttemptObservation> {
     const started = monotonicNow();
     if (req.signal.aborted) return this.observation('BLOCKED', 'cancelled before start', started);
+    // A budget the egress proxy cannot outlive (or one that is not a number)
+    // is refused before anything is done for it: the agent would lose the
+    // model API part way through.
+    if (!(Math.round(req.budget.maxWallClockMinutes * 60_000) + PROXY_EXPIRY_GRACE_MS <= PROXY_MAX_LIFETIME_MS)) {
+      return this.observation('BLOCKED', `refused: its wall-clock budget of ${req.budget.maxWallClockMinutes} minute(s) `
+        + `and the egress proxy's ${PROXY_EXPIRY_GRACE_MS} ms grace exceed its maximum lifetime of ${PROXY_MAX_LIFETIME_MS} ms`,
+      started);
+    }
 
     let grant: ClaudeToolGrant;
     try {
