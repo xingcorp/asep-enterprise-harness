@@ -53,8 +53,8 @@ function deterministicFinding(state: FindingLifecycleState = 'OPEN'): FindingAgg
   };
 }
 
-function sarifFinding(): FindingAggregate {
-  return openFinding({ id: 'f-sarif', source: 'sarif', raisedBy: 'sarif:semgrep', severity: 'MEDIUM', grounded: true });
+function sarifFinding(over: Partial<FindingAggregate> = {}): FindingAggregate {
+  return { ...openFinding({ id: 'f-sarif', source: 'sarif', raisedBy: 'sarif:unparsed', severity: 'HIGH', grounded: true }), ...over };
 }
 
 function input(
@@ -239,7 +239,7 @@ test('only an independent reviewer, a human or a deterministic re-check verifies
   assert.equal(dispositionActorId(recheck), 'harness-rule:deterministic-recheck');
 });
 
-test('only a human verifies a SARIF finding', () => {
+test('only a human disposes of a SARIF finding', () => {
   // Independent statement: the sources each harness rule may verify. None verifies a SARIF
   // finding: what a scanner's own log says never closes what it raised.
   const verifies: Readonly<Record<HarnessRule, readonly FindingAggregate['source'][]>> = {
@@ -267,6 +267,36 @@ test('only a human verifies a SARIF finding', () => {
     'actor-not-permitted',
   );
   assert.equal(applyFindingDisposition(sarifFinding(), input('RESOLUTION_VERIFIED', HUMAN)).state, 'VERIFIED');
+
+  // Independent statement: on a SARIF finding no reviewer and no harness rule verifies, refutes,
+  // waives, accepts or claims, whether or not it is grounded. The harness may only reopen it.
+  const rules: readonly HarnessRule[] = ['citation-unresolvable', 'closure-without-change', 'deterministic-recheck', 'waiver-expired'];
+  const machines: readonly DispositionActor[] = [independentReviewer, raiser, scanner, ...rules.map((rule) => ({ kind: 'harness-rule', rule }) as const)];
+  const closing = ['RESOLUTION_VERIFIED', 'REJECTED_WITH_EVIDENCE', 'WAIVED', 'ACCEPTED', 'RESOLUTION_CLAIMED'] as const;
+  for (const grounded of [true, false]) {
+    for (const actor of machines) {
+      for (const kind of closing) {
+        const resolution = kind === 'RESOLUTION_VERIFIED' && actor.kind === 'reviewer' ? groundedInDelta : null;
+        rejectsWith(
+          () => applyFindingDisposition(sarifFinding({ grounded }), input(kind, actor, { resolution })),
+          'actor-not-permitted',
+        );
+      }
+    }
+  }
+  // The review's probe: an ungrounded SARIF finding is not refuted as an unresolvable citation.
+  rejectsWith(
+    () => applyFindingDisposition(sarifFinding({ grounded: false }), input('REJECTED_WITH_EVIDENCE', { kind: 'harness-rule', rule: 'citation-unresolvable' })),
+    'actor-not-permitted',
+  );
+  // A human records any of them, grounded or not, and a lapsed waiver still reopens it.
+  const humanTo = { RESOLUTION_VERIFIED: 'VERIFIED', REJECTED_WITH_EVIDENCE: 'REFUTED', WAIVED: 'WAIVED', ACCEPTED: 'ACKNOWLEDGED', RESOLUTION_CLAIMED: 'FIXED' } as const;
+  for (const grounded of [true, false]) {
+    for (const kind of closing) assert.equal(applyFindingDisposition(sarifFinding({ grounded }), input(kind, HUMAN)).state, humanTo[kind], kind);
+  }
+  const waived = applyFindingDisposition(sarifFinding(), input('WAIVED', HUMAN));
+  const lapsed = applyFindingDisposition(waived, input('REOPENED', { kind: 'harness-rule', rule: 'waiver-expired' }, { at: '2026-11-06T10:00:00.000Z' }));
+  assert.equal(lapsed.state, 'OPEN');
 });
 
 test('only humans waive, and waivers expire', () => {

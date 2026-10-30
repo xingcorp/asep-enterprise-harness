@@ -4,8 +4,9 @@
 // which state. A reviewer that raised a finding can only claim it fixed (still
 // blocking); a fix is verified only by a different reviewer that is independent of
 // the implementer and cites a grounded resolution inside the repair delta, by a
-// named human, or, for deterministic findings, by the same rule no longer firing. A
-// SARIF finding is verified only by a named human: no scanner output closes it.
+// named human, or, for deterministic findings, by the same rule no longer firing. Only a
+// named human verifies, refutes, waives, accepts or claims a SARIF finding, grounded or not:
+// the harness may only reopen it.
 // Only humans accept, waive (with rationale, expiry and signature) or reject a
 // grounded finding. The rules mirror the database constraints on
 // finding_dispositions, so a write the database would refuse is refused here first.
@@ -206,6 +207,12 @@ function checkAuthority(finding: FindingAggregate, input: FindingDispositionInpu
       }
     }
     return;
+  }
+
+  // A SARIF finding stands for a log nobody has parsed: no machine verifies, refutes, waives,
+  // accepts or claims it, whatever its grounding says. The harness may only reopen it.
+  if (finding.source === 'sarif' && !(actor.kind === 'harness-rule' && disposition === 'REOPENED')) {
+    reject('actor-not-permitted', `only a human disposes of a sarif finding, not ${actorId}`);
   }
 
   if (actor.kind === 'reviewer') {
