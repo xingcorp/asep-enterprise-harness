@@ -6,19 +6,21 @@ gateway, finished 2026-10-30. Reviewed snapshot: `42b6d78` (full SHA
 `42b6d78bbfbc4b1f9f101830624be5d12a2d2ce0`, branch
 `phase/02-single-agent-vertical-slice`), a separate copy of the tree, not the
 implementer's worktree. Single uninterrupted run (exit 0, no resumes); the text
-below is the reviewer's final output, verbatim but for one kind of edit. The
+below is the reviewer's final output, verbatim but for two kinds of edit. The
 controller's own gate runs at `42b6d78`, on a clean detached worktree:
-`pnpm verify:all` twice, run 1 exit 0 (849 pass, 0 fail, 176 s), run 2 exit 1
-(848 pass, 1 fail, 422 s: "fault 3" in `pilot-faults.test.ts` rejected with
+`pnpm verify:all` twice, run 1 exit 0 (849 pass, 0 fail; the canonical test
+step 351 s), run 2 exit 1 (848 pass, 1 fail; the canonical test step 422 s:
+"fault 3" in `pilot-faults.test.ts` rejected with
 `SandboxTeardownError … docker ps failed: exit null` instead of the object-store
 error, at 71.1 s); `pnpm test:integration` twice, exit 0, 34 of 34 each.
 Dispositions for every finding are recorded in `phase-02-review-log.md`
-("Final review cycle 11 dispositions"). The edit: seven absolute paths outside
+("Final review cycle 11 dispositions"). The edits: seven absolute paths outside
 the repository — the controller's gate logs, the directory holding them, the
 controller's reconciliation file, a lane transcript and the implementer's
 sentinel — are shortened to `<controller lane directory>/…`,
 `<controller lanes directory>/…` and `<lane worktree>/…`, as the publication
-gate's path scan requires.
+gate's path scan requires. A final newline, which the reviewer's output lacks,
+is added for the repository's format check.
 -->
 
 VERDICT: REQUEST_CHANGES  confidence 0.99
