@@ -12,7 +12,8 @@ import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  endProcess, endRecorded, identityOf, shownGone, spawnRecorded, stillRunning, unregister, PS_ENV, RECORD_VERSION, REGISTRY_ENV,
+  endProcess, endRecorded, identityOf, nestRegistry, shownGone, spawnRecorded, stillRunning, unregister,
+  PS_ENV, RECORD_VERSION, REGISTRY_ENV,
   // @ts-expect-error — .mjs helper has no type declarations; we test its runtime contract.
 } from '../lib/process-registry.mjs';
 import {
@@ -22,8 +23,9 @@ import {
 
 const FAKE = join(dirname(fileURLToPath(import.meta.url)), 'fake-docker.mjs');
 const IMAGE = `alpine@sha256:${'a'.repeat(64)}`;
-// The container's command.
-const HOLD = ['-e', 'setInterval(() => {}, 1e9)'];
+// The container's command: it holds for a minute at most, so that one a
+// failed test leaves behind does not outlive it by long.
+const HOLD = ['-e', 'setTimeout(() => {}, 60_000)'];
 
 interface Started {
   readonly client: ChildProcess;
@@ -146,23 +148,31 @@ test('every container is in the run\'s process registry while it runs, and leave
 test('a container this file\'s helper starts, and its client, are in the run\'s registry without being handed it', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'asep-fake-docker-'));
   const state = join(dir, 'docker-state');
-  // The run's registry, as the canonical runner hands it to this process.
-  const run = join(dir, 'run');
-  mkdirSync(run);
-  const before = process.env[REGISTRY_ENV];
-  process.env[REGISTRY_ENV] = run;
+  const own = join(dir, 'own');
+  const standIn = join(dir, 'run');
+  mkdirSync(own);
+  mkdirSync(standIn);
+  // The run's registries, as the canonical runner hands them to this process;
+  // run by hand, outside a run, a stand-in for one. A registry of the test's
+  // own is added beside them.
+  const restoreRun = process.env[REGISTRY_ENV] ? () => undefined : nestRegistry(standIn);
+  const runs = process.env[REGISTRY_ENV]!.split(delimiter).filter((d) => d !== '');
+  const restore = nestRegistry(own);
+  const heldIn = (d: string, names: string[]) => names.filter((n) => readdirSync(d).includes(n));
   let c: Started | undefined;
   try {
     c = await startContainer(state, 'helped');
-    assert.deepEqual(readdirSync(run).sort(), [`${c.client.pid}.json`, `${c.pid}.json`].sort(),
-      'the client and its container are both recorded in the run\'s registry');
+    const names = [`${c.client.pid}.json`, `${c.pid}.json`].sort();
+    assert.deepEqual(readdirSync(own).sort(), names, 'the client and its container are both recorded in the test\'s own registry');
+    for (const r of runs) assert.deepEqual(heldIn(r, names), names, `and in the run's, ${r}`);
     await end(c);
     c = undefined;
-    assert.deepEqual(readdirSync(run), [], 'and both leave it once shown gone');
+    assert.deepEqual(readdirSync(own), [], 'and both leave it once shown gone');
+    for (const r of runs) assert.deepEqual(heldIn(r, names), [], `the run's too, ${r}`);
   } finally {
     await end(c);
-    if (before === undefined) delete process.env[REGISTRY_ENV];
-    else process.env[REGISTRY_ENV] = before;
+    restore();
+    restoreRun();
     rmSync(dir, { recursive: true, force: true });
   }
 });

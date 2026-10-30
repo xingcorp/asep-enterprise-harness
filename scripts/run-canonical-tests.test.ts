@@ -22,13 +22,15 @@ import { randomUUID } from 'node:crypto';
 import { readFileSync, readdirSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { dirname, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 // @ts-expect-error — .mjs helpers have no type declarations; we test their runtime contract.
 import { discoverTestFiles, REQUIRED_SUITES, suiteMarker, missingRequiredSuites, TEST_ROOTS } from './lib/canonical-tests.mjs';
 // @ts-expect-error — .mjs helpers have no type declarations; we test their runtime contract.
 import { runCanonicalTests } from './run-canonical-tests.mjs';
-// @ts-expect-error — .mjs helpers have no type declarations; we test their runtime contract.
-import { endProcess, identityOf, shownGone, spawnRecorded, stillRunning, unregister, RECORD_VERSION } from './lib/process-registry.mjs';
+import {
+  endProcess, identityOf, nestRegistry, shownGone, spawnRecorded, stillRunning, unregister, RECORD_VERSION, REGISTRY_ENV,
+  // @ts-expect-error — .mjs helpers have no type declarations; we test their runtime contract.
+} from './lib/process-registry.mjs';
 
 // Machine-readable suite marker (kept consistent with the other suites, though
 // this file is not itself in the required set).
@@ -60,7 +62,7 @@ import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { spawnRecorded, RECORD_VERSION } from ${JSON.stringify(REGISTRY_MODULE)};
+import { register, spawnRecorded, RECORD_VERSION } from ${JSON.stringify(REGISTRY_MODULE)};
 import { REQUIRED_SUITES, suiteMarker } from ${JSON.stringify(SUITES_MODULE)};
 for (const id of Object.keys(REQUIRED_SUITES)) console.log(suiteMarker(id));
 const memberToken = randomUUID();
@@ -76,8 +78,7 @@ if (${unproven}) {
 }
 child.unref();
 const ended = spawnSync(process.execPath, ['-e', '']).pid;
-writeFileSync(join(process.env.ASEP_PROCESS_REGISTRY, ended + '.json'),
-  JSON.stringify({ version: RECORD_VERSION, pid: ended, group: true, token: randomUUID(), startedAt: 'Thu Jan  1 00:00:00 1970' }));
+register({ version: RECORD_VERSION, pid: ended, group: true, token: randomUUID(), startedAt: 'Thu Jan  1 00:00:00 1970' });
 writeFileSync(${JSON.stringify(pidFile)}, JSON.stringify(left));
 `;
 
@@ -105,11 +106,20 @@ function endLeft(pidFile: string): void {
 test('the runner hands its tests a process registry and ends what they leave running', () => {
   const dir = mkdtempSync(join(tmpdir(), 'asep-runner-registry-'));
   const pidFile = join(dir, 'left.json');
+  // The registries of the run this test process is in; run by hand, outside a
+  // run, a stand-in for one. A runner started inside a run keeps them.
+  const standIn = join(dir, 'outer-run');
+  mkdirSync(standIn);
+  const restoreRun = process.env[REGISTRY_ENV] ? () => undefined : nestRegistry(standIn);
+  const runs = process.env[REGISTRY_ENV]!.split(delimiter).filter((d) => d !== '');
   try {
     const fixture = join(dir, 'leaves-a-process.test.mjs');
     writeFileSync(fixture, LEAVES_A_PROCESS(pidFile));
     const r = runOn(fixture, join(dir, 'registry'));
     const { pid } = JSON.parse(readFileSync(pidFile, 'utf8')) as { pid: number };
+    for (const run of runs) {
+      assert.ok(readdirSync(run).includes(`${pid}.json`), `what its tests start is in the outer run's registry too, ${run}`);
+    }
     assert.equal(r.code, 0, r.stderr);
     assert.match(r.stderr, /canonical-tests: process registry: found running 0 process\(es\) of earlier runs and 1 of this run\n/);
     assert.ok(r.stderr.includes(`  - pid ${pid}: ended\n`), r.stderr);
@@ -117,6 +127,7 @@ test('the runner hands its tests a process registry and ends what they leave run
     assert.equal(stillRunning(pid, true), false, 'the leftover was ended');
   } finally {
     endLeft(pidFile);
+    restoreRun();
     rmSync(dir, { recursive: true, force: true });
   }
 });

@@ -13,7 +13,10 @@
 // real path>), so a run never touches another checkout's processes. Without
 // ASEP_PROCESS_REGISTRY (a test run by hand) nothing is recorded. A test that
 // keeps a registry of its own as well names both, joined by the path
-// delimiter: a process is recorded, and forgotten, in each.
+// delimiter: a process is recorded, and forgotten, in each. A registry of a
+// test's own is added with nestRegistry, and a run started inside a run keeps
+// the outer run's registry beside its own, so that what is started inside is
+// in the outermost run's registry too, whatever becomes of what started it.
 //
 // Identity. A recorded process is started with a token of its own in its
 // environment (ASEP_PROCESS_TOKEN, a random UUID), and recorded with that
@@ -331,6 +334,20 @@ export function endRecorded(dir, end = endProcess) {
 // The registry directories `dir` names (see the header).
 const registries = (dir) => (dir ? dir.split(delimiter).filter((d) => d !== '') : []);
 
+/**
+ * Add `dir`, a registry of a test's own, to the registries of the current run
+ * in this process's environment — beside them, never in their place. Returns
+ * what restores the environment as it was.
+ */
+export function nestRegistry(dir) {
+  const before = process.env[REGISTRY_ENV];
+  process.env[REGISTRY_ENV] = [dir, ...registries(before)].join(delimiter);
+  return () => {
+    if (before === undefined) delete process.env[REGISTRY_ENV];
+    else process.env[REGISTRY_ENV] = before;
+  };
+}
+
 /** Record `entry` (identityOf) in the current run, if there is one. */
 export function register(entry, dir = process.env[REGISTRY_ENV]) {
   if (entry === undefined) return;
@@ -395,7 +412,8 @@ function closeRun(dir) {
 /**
  * Run `fn` with a run of its own under `root` (registryRoot): first every run
  * there whose runner is gone is ended and removed, then `fn` gets the
- * environment that hands its run to the tests, and when it is done whatever is
+ * environment that hands its run to the tests — beside the registries of the
+ * run this process is in, if it is in one — and when it is done whatever is
  * still recorded in its run is ended. A run whose runner cannot be read in the
  * process table is left as it is, and listed with its runner's pid, `owner`,
  * and the outcome 'unknown'.
@@ -421,7 +439,7 @@ export function withProcessRegistry(root, fn) {
   const dir = openRun(root);
   let result;
   try {
-    result = fn({ ...process.env, [REGISTRY_ENV]: dir });
+    result = fn({ ...process.env, [REGISTRY_ENV]: [dir, ...registries(process.env[REGISTRY_ENV])].join(delimiter) });
   } catch (err) {
     closeRun(dir);
     throw err;

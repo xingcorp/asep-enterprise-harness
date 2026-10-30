@@ -48,7 +48,7 @@ import {
 } from '@asep/command-runner';
 import type { ArtifactStore, AgentAttemptObservation, AgentExecuteRequest, ToolPolicyProfile } from '@asep/ports';
 import {
-  REGISTRY_ENV, TOKEN_ENV, endProcess, identityOf, register, shownGone, spawnRecorded, stillRunning, unregister,
+  REGISTRY_ENV, TOKEN_ENV, endProcess, identityOf, nestRegistry, register, shownGone, spawnRecorded, stillRunning, unregister,
   // @ts-expect-error - .mjs has no type declarations; runtime import is fine under tsx.
 } from '../../../scripts/lib/process-registry.mjs';
 import {
@@ -879,8 +879,7 @@ test('a test proxy that is not ready in time is killed, and leaves the process r
   const up = await fakeModelApi();
   const registry = await mkdtemp(join(tmpdir(), 'asep-registry-'));
   // A registry of its own, beside the run's.
-  const before = process.env[REGISTRY_ENV];
-  process.env[REGISTRY_ENV] = [registry, before].filter((d) => d !== undefined && d !== '').join(delimiter);
+  const restore = nestRegistry(registry) as () => void;
   try {
     let message = '';
     await assert.rejects(startProxy(up.url, `asep-test-model-key-${randomUUID()}`, { readyWithinMs: 1 }), (err: Error) => {
@@ -898,8 +897,7 @@ test('a test proxy that is not ready in time is killed, and leaves the process r
     assert.equal(stillRunning(proxy.pid), false);
     assert.deepEqual(readdirSync(registry), []);
   } finally {
-    if (before === undefined) delete process.env[REGISTRY_ENV];
-    else process.env[REGISTRY_ENV] = before;
+    restore();
     await up.close();
     await rm(registry, { recursive: true, force: true });
   }

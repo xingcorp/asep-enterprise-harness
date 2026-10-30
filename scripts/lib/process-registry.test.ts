@@ -13,8 +13,8 @@ import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  endProcess, endRecorded, identityOf, register, registryRoot, registryShimLine, shownGone, spawnRecorded, stillRunning,
-  unregister, withProcessRegistry,
+  endProcess, endRecorded, identityOf, nestRegistry, register, registryRoot, registryShimLine, shownGone, spawnRecorded,
+  stillRunning, unregister, withProcessRegistry,
   PS_ENV, RECORD_VERSION, REGISTRY_ENV, TOKEN_ENV,
   // @ts-expect-error — .mjs helper has no type declarations; we test its runtime contract.
 } from './process-registry.mjs';
@@ -82,35 +82,40 @@ async function group(o: { leaderExits?: boolean; memberToken?: string } = {}): P
   return { entry, member };
 }
 
-test('what this file\'s helpers start is in the run\'s registry, and a registry of a test\'s own is kept beside it', async () => {
+// The registries of the run this test process is in, as the canonical runner
+// hands them to it; run by hand, outside a run, `standIn` stands in for one.
+// With what restores the environment.
+function runRegistries(standIn: string): { runs: string[]; restore: () => void } {
+  mkdirSync(standIn, { recursive: true });
+  const restore = process.env[REGISTRY_ENV] ? () => undefined : nestRegistry(standIn);
+  return { runs: process.env[REGISTRY_ENV]!.split(delimiter).filter((d) => d !== ''), restore };
+}
+
+// Which of the record files `names` `dir` holds.
+const heldIn = (dir: string, names: string[]) => names.filter((n) => readdirSync(dir).includes(n));
+
+test('what this file\'s helpers start is in the run\'s registry, and in a registry of a test\'s own added beside it', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'asep-registry-helpers-'));
-  const run = join(dir, 'run');
   const own = join(dir, 'own');
-  mkdirSync(run);
   mkdirSync(own);
-  const before = process.env[REGISTRY_ENV];
-  process.env[REGISTRY_ENV] = run;
+  const run = runRegistries(join(dir, 'run'));
+  const restore = nestRegistry(own);
   const started: Entry[] = [];
   try {
+    assert.deepEqual(process.env[REGISTRY_ENV]!.split(delimiter), [own, ...run.runs],
+      'a registry of a test\'s own is added to the run\'s, never put in its place');
     started.push(recorded());
-    const g = await group();
-    started.push(g.entry);
-    assert.deepEqual(readdirSync(run).sort(), started.map((e) => `${e.pid}.json`).sort(),
-      'both helpers record what they start in the run\'s registry');
-    // Both registries, joined by the path delimiter: recorded and forgotten in each.
-    process.env[REGISTRY_ENV] = [own, run].join(delimiter);
-    const both = recorded();
-    started.push(both);
-    assert.ok(readdirSync(own).includes(`${both.pid}.json`) && readdirSync(run).includes(`${both.pid}.json`));
-    finish(both);
-    assert.ok(!readdirSync(own).includes(`${both.pid}.json`) && !readdirSync(run).includes(`${both.pid}.json`));
-    process.env[REGISTRY_ENV] = run;
+    started.push((await group()).entry);
+    const names = started.map((e) => `${e.pid}.json`).sort();
+    assert.deepEqual(readdirSync(own).sort(), names, 'both helpers record what they start in the test\'s own registry');
+    for (const r of run.runs) assert.deepEqual(heldIn(r, names), names, `and in the run's, ${r}`);
     for (const e of started) finish(e);
-    assert.deepEqual(readdirSync(run), [], 'and forget it once it is shown gone');
+    assert.deepEqual(readdirSync(own), [], 'and forget it in each once it is shown gone');
+    for (const r of run.runs) assert.deepEqual(heldIn(r, names), [], `the run's too, ${r}`);
   } finally {
     for (const e of started) finish(e);
-    if (before === undefined) delete process.env[REGISTRY_ENV];
-    else process.env[REGISTRY_ENV] = before;
+    restore();
+    run.restore();
     rmSync(dir, { recursive: true, force: true });
   }
 });
@@ -375,6 +380,7 @@ test('records are ended and forgotten; a run whose runner is gone is swept at th
   // A registry root of its own, so that only this test's runs are under it.
   const repo = mkdtempSync(join(tmpdir(), 'asep-registry-repo-'));
   const root = registryRoot(repo);
+  const outer = runRegistries(join(repo, 'outer-run'));
   const entries: Entry[] = [];
   const start = () => {
     const entry = recorded();
@@ -405,7 +411,9 @@ test('records are ended and forgotten; a run whose runner is gone is swept at th
     let own: Entry | undefined;
     let ownRun = '';
     const { result, earlier, left } = withProcessRegistry(root, (env: NodeJS.ProcessEnv) => {
-      ownRun = env[REGISTRY_ENV]!;
+      const [first, ...rest] = env[REGISTRY_ENV]!.split(delimiter);
+      ownRun = first!;
+      assert.deepEqual(rest, outer.runs, 'a run started inside a run keeps the outer run\'s registry');
       own = start();
       register(own, ownRun);
       assert.deepEqual(readdirSync(ownRun).sort(), [`${own.pid}.json`, 'owner.json']);
@@ -438,6 +446,7 @@ test('records are ended and forgotten; a run whose runner is gone is swept at th
     assert.deepEqual(readdirSync(live), ['owner.json']);
   } finally {
     for (const entry of entries) finish(entry);
+    outer.restore();
     rmSync(root, { recursive: true, force: true });
     rmSync(repo, { recursive: true, force: true });
   }
@@ -597,6 +606,30 @@ const SPAWNS_NOT_RECORDED: readonly { file: string; match: string; why: string }
     why: "a member of a recorded container's group",
   },
 ];
+
+// Where a test hands a registry to a process it starts, in an environment it
+// makes, and why the run's registry is kept in it.
+const REGISTRIES_IN_ENVIRONMENTS: readonly { file: string; match: string; why: string }[] = [
+  {
+    file: 'scripts/testing/fake-docker.test.ts', match: 'dirs.join(delimiter) }',
+    why: 'registryEnv(): a registry of the test\'s own joined with the run\'s, read from this process\'s environment',
+  },
+];
+
+test('no test drops the run\'s registry: one of its own is added with nestRegistry, never put in its place', () => {
+  const env = String.raw`process\.env(?:\[\s*REGISTRY_ENV\s*\]|\.ASEP_PROCESS_REGISTRY|\[\s*['"]ASEP_PROCESS_REGISTRY['"]\s*\])`;
+  const changed = new RegExp(`${env}\\s*=(?!=)|delete\\s+${env}`);
+  const handed = /\[\s*REGISTRY_ENV\s*\]\s*:|\bASEP_PROCESS_REGISTRY['"]?\s*:/;
+  const found = testSources().flatMap(([file, lines]) => lines.flatMap((line, i) => (
+    !comment(line) && (changed.test(line)
+      || (handed.test(line) && !REGISTRIES_IN_ENVIRONMENTS.some((a) => a.file === file && line.includes(a.match))))
+      ? [`${file}:${i + 1}: ${line.trim()}`] : [])));
+  assert.deepEqual(found, [], 'add a registry of a test\'s own with nestRegistry, which keeps the run\'s');
+  for (const a of REGISTRIES_IN_ENVIRONMENTS) {
+    assert.ok(testSources().some(([file, lines]) => file === a.file && lines.some((l) => l.includes(a.match))),
+      `${a.file}: '${a.match}' is no longer there; drop it from the list`);
+  }
+});
 
 test('every process a test starts is recorded in the run\'s registry, or the list here says why it need not be', () => {
   const calls = testSources().flatMap(([file, lines]) => lines.flatMap((line, i) => (
