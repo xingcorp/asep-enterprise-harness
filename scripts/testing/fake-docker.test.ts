@@ -142,25 +142,30 @@ test('when a container\'s process ends, the rest of its group is ended before it
 
 test('a fixture is removed only after every container recorded under it is ended', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'asep-fake-docker-'));
+  const registry = mkdtempSync(join(tmpdir(), 'asep-registry-'));
   const started: Started[] = [];
   try {
     // Fixtures keep their docker state at the top or one level down.
     for (const state of [join(dir, 'docker-state'), join(dir, 'sandbox', 'docker-state')]) {
-      const c = await startContainer(state, 'left');
+      const c = await startContainer(state, 'left', { [REGISTRY_ENV]: registry });
       started.push(c);
       c.client.kill('SIGKILL');
       await new Promise((r) => c.client.once('exit', r));
       assert.equal(stillRunning(c.pid, true), true, 'its client is gone, the container is not');
     }
+    assert.equal(readdirSync(registry).length, 2, 'both are in the run\'s registry');
     // One that cannot be shown gone keeps the fixture, records and all.
-    await assert.rejects(removeFakeDockerFixture(dir, () => 'still-running'),
+    await assert.rejects(removeFakeDockerFixture(dir, () => 'still-running', registry),
       new RegExp(`fake containers still running after SIGKILL, so ${dir} is kept: pid ${started[0]!.pid} \\(left\\)`));
     assert.equal(existsSync(join(dir, 'docker-state', 'containers', 'left.json')), true);
-    await removeFakeDockerFixture(dir);
+    assert.equal(readdirSync(registry).length, 2, 'and in the registry');
+    await removeFakeDockerFixture(dir, undefined, registry);
     for (const c of started) assert.equal(stillRunning(c.pid, true), false, `container process ${c.pid} was ended`);
     assert.equal(existsSync(dir), false, 'and then the fixture was removed');
+    assert.deepEqual(readdirSync(registry), [], 'and what it ended left the registry');
   } finally {
     for (const c of started) end(c);
     rmSync(dir, { recursive: true, force: true });
+    rmSync(registry, { recursive: true, force: true });
   }
 });

@@ -136,12 +136,15 @@ export function runCanonicalTests(opts = {}) {
   return { code, stdout, stderr, files };
 }
 
-// What the process registry ended before and after the tests, one line each,
-// and whether a process of this run is still running.
+// What the process registry found before and after the tests: how many
+// recorded processes were still running, and every record with what became of
+// it ('gone': its process had already ended); and whether a process of this
+// run is still running.
 function describeLeftovers(earlier, left) {
+  const running = (records) => records.filter((e) => e.outcome === 'ended' || e.outcome === 'still-running').length;
   const line = (e) => `  - pid ${e.pid} (${e.marker})${e.run !== undefined ? ` of run ${e.run}` : ''}: ${e.outcome}\n`;
-  const text = `canonical-tests: process registry: ${earlier.length} process(es) left by earlier runs, `
-    + `${left.length} left by this run\n${[...earlier, ...left].map(line).join('')}`;
+  const text = `canonical-tests: process registry: found running ${running(earlier)} process(es) of earlier runs `
+    + `and ${running(left)} of this run\n${[...earlier, ...left].map(line).join('')}`;
   return { text, stuck: left.some((e) => e.outcome === 'still-running') };
 }
 
