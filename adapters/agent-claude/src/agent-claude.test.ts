@@ -21,7 +21,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
@@ -45,7 +45,7 @@ import {
 } from '@asep/command-runner';
 import type { ArtifactStore, AgentAttemptObservation, AgentExecuteRequest, ToolPolicyProfile } from '@asep/ports';
 import {
-  REGISTRY_ENV, register, unregister, endProcess, stillRunning,
+  REGISTRY_ENV, TOKEN_ENV, endProcess, identityOf, register, shownGone, spawnRecorded, stillRunning, unregister,
   // @ts-expect-error - .mjs has no type declarations; runtime import is fine under tsx.
 } from '../../../scripts/lib/process-registry.mjs';
 import {
@@ -567,8 +567,10 @@ test('the CLI receives the real flags, the instruction on stdin, and only the al
     assert.match(seen.prompt, new RegExp(`context pack is ${inputDir}/context-pack\\.json \\(sha256 ${h.ctxRef.sha256}\\)`));
     // The container environment is exactly the allowlist. PATH is the image's;
     // FAKE_CLAUDE_SCENARIO is set by the test's CLI shim inside the container,
-    // and macOS adds __CF_USER_TEXT_ENCODING to every process it launches.
-    const hostArtifacts = new Set(['FAKE_CLAUDE_SCENARIO', '__CF_USER_TEXT_ENCODING']);
+    // the fake docker gives every container the token that identifies its
+    // process in the test registry, and macOS adds __CF_USER_TEXT_ENCODING to
+    // every process it launches.
+    const hostArtifacts = new Set(['FAKE_CLAUDE_SCENARIO', TOKEN_ENV, '__CF_USER_TEXT_ENCODING']);
     assert.deepEqual(seen.envKeys.filter((k) => !hostArtifacts.has(k)), [
       'ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL', 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC',
       'DISABLE_ERROR_REPORTING', 'DISABLE_TELEMETRY', 'HOME', 'LANG', 'PATH',
@@ -743,12 +745,13 @@ async function startProxy(upstream: string, key: string, o: {
 } = {}): Promise<StartedProxy> {
   const readyWithinMs = o.readyWithinMs ?? 30_000;
   const spawnedAt = performance.now();
-  const child = spawn(process.execPath, [
+  const { child } = spawnRecorded(process.execPath, [
     ...(o.nodeArgs ?? []), PROXY_ASSET, '--listen', '127.0.0.1:0', '--upstream', upstream,
     '--lifetime-ms', String(o.lifetimeMs ?? 10 * 60_000),
-  ], { stdio: ['pipe', 'pipe', 'pipe'], ...(o.env !== undefined ? { env: o.env } : {}) });
+  ], { stdio: ['pipe', 'pipe', 'pipe'], ...(o.env !== undefined ? { env: o.env } : {}) }) as {
+    child: ChildProcessWithoutNullStreams;
+  };
   const pid = child.pid!;
-  register(pid, { marker: PROXY_ASSET });
   let log = '';
   child.stderr.on('data', (d: Buffer) => { log += d.toString('utf8'); });
   const exited = new Promise<{ at: number; code: number | null }>((resolve) => {
@@ -1320,7 +1323,8 @@ const { spawn } = require('node:child_process');
 const { openSync } = require('node:fs');
 const [asset, upstream, lifetimeMs, logPath] = process.argv.slice(2);
 const proxy = spawn(process.execPath, [asset, '--listen', '127.0.0.1:0', '--upstream', upstream, '--lifetime-ms', lifetimeMs], {
-  stdio: ['pipe', 'pipe', openSync(logPath, 'a')], env: { PATH: process.env.PATH },
+  stdio: ['pipe', 'pipe', openSync(logPath, 'a')],
+  env: { PATH: process.env.PATH, ASEP_PROCESS_TOKEN: process.env.ASEP_TEST_PROXY_TOKEN },
 });
 proxy.stdin.write(process.env.ASEP_TEST_PROXY_KEY + '\\n');
 let out = '';
@@ -1355,14 +1359,19 @@ test('the egress proxy stops serving and exits once the process that started it 
   const logPath = join(dir, 'proxy.log');
   const starterPath = join(dir, 'starter.cjs');
   await writeFile(starterPath, PROXY_STARTER);
-  const starter = spawn(process.execPath, [
+  // The proxy's own token, which its starter hands it, so that it can be
+  // recorded too.
+  const proxyToken = randomUUID();
+  const { child: starter, entry: starterEntry } = spawnRecorded(process.execPath, [
     starterPath, PROXY_ASSET, up.url, String(10 * 60_000), logPath,
   ], {
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: { PATH: process.env['PATH'] ?? '', ASEP_TEST_PROXY_KEY: `asep-test-model-key-${randomUUID()}` },
-  });
-  register(starter.pid, { marker: starterPath });
-  let proxyPid: number | undefined;
+    env: {
+      PATH: process.env['PATH'] ?? '', ASEP_TEST_PROXY_KEY: `asep-test-model-key-${randomUUID()}`,
+      ASEP_TEST_PROXY_TOKEN: proxyToken,
+    },
+  }) as { child: ChildProcessWithoutNullStreams; entry: { pid: number } | undefined };
+  let proxyEntry: { pid: number } | undefined;
   try {
     const started = await within(new Promise<{ pid: number; port: number }>((resolve, reject) => {
       let out = '';
@@ -1375,8 +1384,8 @@ test('the egress proxy stops serving and exits once the process that started it 
       });
       starter.on('close', (code) => reject(new Error(`the starter exited ${code}: ${err}`)));
     }), 30_000, 'the proxy becoming ready under its starter');
-    proxyPid = started.pid;
-    register(proxyPid, { marker: PROXY_ASSET });
+    proxyEntry = identityOf(started.pid, { token: proxyToken });
+    register(proxyEntry);
     assert.equal((await proxyRequest(started.port, 'POST', '/v1/messages')).status, 200, 'it serves while its starter lives');
 
     const killedAt = Date.now();
@@ -1391,8 +1400,8 @@ test('the egress proxy stops serving and exits once the process that started it 
       'nothing answers on its port any more');
     assert.equal(up.seen.length, 1);
   } finally {
-    for (const [pid, marker] of [[starter.pid!, starterPath], [proxyPid, PROXY_ASSET]] as const) {
-      if (pid !== undefined && endProcess({ pid, marker }) !== 'still-running') unregister(pid);
+    for (const entry of [starterEntry, proxyEntry]) {
+      if (entry !== undefined && shownGone(endProcess(entry))) unregister(entry.pid);
     }
     await up.close();
     await rm(dir, { recursive: true, force: true });

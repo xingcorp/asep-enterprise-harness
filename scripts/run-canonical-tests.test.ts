@@ -19,14 +19,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
 // @ts-expect-error — .mjs helpers have no type declarations; we test their runtime contract.
 import { discoverTestFiles, REQUIRED_SUITES, suiteMarker, missingRequiredSuites, TEST_ROOTS } from './lib/canonical-tests.mjs';
 // @ts-expect-error — .mjs helpers have no type declarations; we test their runtime contract.
 import { runCanonicalTests } from './run-canonical-tests.mjs';
 // @ts-expect-error — .mjs helpers have no type declarations; we test their runtime contract.
-import { endProcess, stillRunning } from './lib/process-registry.mjs';
+import { endProcess, identityOf, stillRunning } from './lib/process-registry.mjs';
 
 // Machine-readable suite marker (kept consistent with the other suites, though
 // this file is not itself in the required set).
@@ -34,48 +34,98 @@ console.log('SUITE-ID: asep-suite:canonical-runner');
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(HERE, '..');
+const REGISTRY_MODULE = pathToFileURL(join(HERE, 'lib', 'process-registry.mjs')).href;
+const SUITES_MODULE = pathToFileURL(join(HERE, 'lib', 'canonical-tests.mjs')).href;
 
-// A test file that leaves a process of its own group running and records it in
-// the registry its runner handed it, as a fake container whose test died would,
-// and leaves the record of one that has already ended.
-const LEAVES_A_PROCESS = (pidFile: string) => `
-import { spawn, spawnSync } from 'node:child_process';
+// A test file that leaves a process of its own group running, recorded in the
+// registry its runner handed it, as a fake container whose test died would,
+// and leaves the record of one that has already ended. With `unproven`, the
+// process it leaves is a group whose leader has exited, with a member that
+// shows another token: it cannot be shown to be the one recorded. It stands in
+// for every required suite, so that what its runner answers is the registry's
+// doing alone.
+const LEAVES_A_PROCESS = (pidFile: string, unproven = false) => `
+import { spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1e9)', 'asep-runner-leftover'], { detached: true, stdio: 'ignore' });
+import { spawnRecorded } from ${JSON.stringify(REGISTRY_MODULE)};
+import { REQUIRED_SUITES, suiteMarker } from ${JSON.stringify(SUITES_MODULE)};
+for (const id of Object.keys(REQUIRED_SUITES)) console.log(suiteMarker(id));
+const memberToken = randomUUID();
+const script = ${JSON.stringify(
+    "const c = require('node:child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1e9)'], "
+    + "{ stdio: 'ignore', env: { PATH: process.env.PATH, ASEP_PROCESS_TOKEN: process.argv[1] } }); "
+    + "process.stdout.write(c.pid + '\\n'); setTimeout(() => process.exit(0), 100);")};
+const { child, entry } = ${unproven}
+  ? spawnRecorded(process.execPath, ['-e', script, memberToken], { detached: true, stdio: ['ignore', 'pipe', 'ignore'] })
+  : spawnRecorded(process.execPath, ['-e', 'setInterval(() => {}, 1e9)'], { detached: true, stdio: 'ignore' });
+let left = { pid: child.pid, token: entry.token };
+if (${unproven}) {
+  const member = await new Promise((resolve) => child.stdout.once('data', (d) => resolve(Number(String(d).trim()))));
+  await new Promise((resolve) => child.once('exit', resolve));
+  left = { pid: member, token: memberToken };
+}
 child.unref();
-writeFileSync(join(process.env.ASEP_PROCESS_REGISTRY, child.pid + '.json'),
-  JSON.stringify({ pid: child.pid, group: true, marker: 'asep-runner-leftover' }));
 const ended = spawnSync(process.execPath, ['-e', '']).pid;
 writeFileSync(join(process.env.ASEP_PROCESS_REGISTRY, ended + '.json'),
-  JSON.stringify({ pid: ended, group: true, marker: 'asep-runner-ended' }));
-writeFileSync(${JSON.stringify(pidFile)}, String(child.pid));
+  JSON.stringify({ pid: ended, group: true, token: randomUUID(), startedAt: 'Thu Jan  1 00:00:00 1970' }));
+writeFileSync(${JSON.stringify(pidFile)}, JSON.stringify(left));
 `;
+
+// The runner, run here from inside a test process on `fixture` alone, with a
+// registry root of its own. Its own test child must not take itself for one of
+// this runner's.
+function runOn(fixture: string, registryRoot: string): { code: number; stderr: string } {
+  const context = process.env['NODE_TEST_CONTEXT'];
+  delete process.env['NODE_TEST_CONTEXT'];
+  try {
+    return runCanonicalTests({ stream: false, files: [fixture], registryRoot });
+  } finally {
+    if (context !== undefined) process.env['NODE_TEST_CONTEXT'] = context;
+  }
+}
+
+// What a fixture left running, ended by its own identity if it still runs.
+function endLeft(pidFile: string): void {
+  if (!existsSync(pidFile)) return;
+  const left = JSON.parse(readFileSync(pidFile, 'utf8')) as { pid: number; token: string };
+  const entry = identityOf(left.pid, { token: left.token, group: true });
+  if (entry !== undefined) endProcess(entry);
+}
 
 test('the runner hands its tests a process registry and ends what they leave running', () => {
   const dir = mkdtempSync(join(tmpdir(), 'asep-runner-registry-'));
-  const pidFile = join(dir, 'pid');
-  let pid: number | undefined;
+  const pidFile = join(dir, 'left.json');
   try {
     const fixture = join(dir, 'leaves-a-process.test.mjs');
     writeFileSync(fixture, LEAVES_A_PROCESS(pidFile));
-    // The runner is run here from inside a test process; its own test child
-    // must not take itself for one of this runner's.
-    const context = process.env['NODE_TEST_CONTEXT'];
-    delete process.env['NODE_TEST_CONTEXT'];
-    let r: { stderr: string };
-    try {
-      r = runCanonicalTests({ stream: false, files: [fixture] });
-    } finally {
-      if (context !== undefined) process.env['NODE_TEST_CONTEXT'] = context;
-    }
-    pid = Number(readFileSync(pidFile, 'utf8'));
-    assert.match(r.stderr, /canonical-tests: process registry: found running \d+ process\(es\) of earlier runs and 1 of this run\n/);
-    assert.ok(r.stderr.includes(`  - pid ${pid} (asep-runner-leftover): ended\n`), r.stderr);
-    assert.match(r.stderr, /  - pid \d+ \(asep-runner-ended\): gone\n/, 'a record whose process had ended is listed, not counted');
+    const r = runOn(fixture, join(dir, 'registry'));
+    const { pid } = JSON.parse(readFileSync(pidFile, 'utf8')) as { pid: number };
+    assert.equal(r.code, 0, r.stderr);
+    assert.match(r.stderr, /canonical-tests: process registry: found running 0 process\(es\) of earlier runs and 1 of this run\n/);
+    assert.ok(r.stderr.includes(`  - pid ${pid}: ended\n`), r.stderr);
+    assert.match(r.stderr, /  - pid \d+: gone\n/, 'a record whose process had ended is listed, not counted');
     assert.equal(stillRunning(pid, true), false, 'the leftover was ended');
   } finally {
-    if (pid !== undefined) endProcess({ pid, group: true, marker: 'asep-runner-leftover' });
+    endLeft(pidFile);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a process of the run that cannot be shown to be the one recorded fails the run, and is left alone', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'asep-runner-registry-'));
+  const pidFile = join(dir, 'left.json');
+  try {
+    const fixture = join(dir, 'leaves-a-process.test.mjs');
+    writeFileSync(fixture, LEAVES_A_PROCESS(pidFile, true));
+    const r = runOn(fixture, join(dir, 'registry'));
+    const { pid } = JSON.parse(readFileSync(pidFile, 'utf8')) as { pid: number };
+    assert.equal(r.code, 1, `the run fails: ${r.stderr}`);
+    assert.match(r.stderr, /  - pid \d+: unknown\n/, r.stderr);
+    assert.equal(stillRunning(pid), true, 'and what could not be shown ours was not signalled');
+  } finally {
+    endLeft(pidFile);
     rmSync(dir, { recursive: true, force: true });
   }
 });

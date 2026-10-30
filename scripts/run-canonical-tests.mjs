@@ -22,7 +22,9 @@
 //   7. keep the processes the tests start in a run-scoped registry outside the
 //      test processes (lib/process-registry.mjs): before the tests, end what
 //      earlier runs whose runner is gone left behind; after them, end what this
-//      run left. Both are reported; one that cannot be ended fails the run.
+//      run left. Both are reported; one of this run that cannot be shown gone
+//      — it runs on, or cannot be shown to be the process recorded — fails the
+//      run.
 //
 // Usage:
 //   node scripts/run-canonical-tests.mjs      # the canonical test command
@@ -37,7 +39,7 @@ import {
   missingRequiredSuites,
 } from './lib/canonical-tests.mjs';
 import { nodeTestArgs } from './lib/node-test-flags.mjs';
-import { withProcessRegistry } from './lib/process-registry.mjs';
+import { registryRoot, shownGone, withProcessRegistry } from './lib/process-registry.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(HERE, '..');
@@ -75,8 +77,10 @@ export function runCanonicalTests(opts = {}) {
   // The V8 flags every test process needs come first (lib/node-test-flags.mjs).
   const concurrency = process.env['ASEP_TEST_CONCURRENCY'] ?? '2';
   const args = nodeTestArgs(files, { concurrency });
-  // (7) The child gets the run's registry in its environment.
-  const { result: child, earlier, left } = withProcessRegistry(REPO_ROOT, 'run-canonical-tests', (env) =>
+  // (7) The child gets the run's registry in its environment. `opts.registryRoot`
+  // stands in for this checkout's when the runner's own wiring is tested.
+  const root = opts.registryRoot ?? registryRoot(REPO_ROOT);
+  const { result: child, earlier, left } = withProcessRegistry(root, (env) =>
     spawnSync(process.execPath, args, {
       cwd: REPO_ROOT,
       shell: false,
@@ -138,14 +142,16 @@ export function runCanonicalTests(opts = {}) {
 
 // What the process registry found before and after the tests: how many
 // recorded processes were still running, and every record with what became of
-// it ('gone': its process had already ended); and whether a process of this
-// run is still running.
+// it ('gone': its process had already ended; 'not-ours': its pid is another
+// process's now; 'unknown': it could not be shown to be the process recorded,
+// or gone); and whether a process of this run was not shown gone.
 function describeLeftovers(earlier, left) {
   const running = (records) => records.filter((e) => e.outcome === 'ended' || e.outcome === 'still-running').length;
-  const line = (e) => `  - pid ${e.pid} (${e.marker})${e.run !== undefined ? ` of run ${e.run}` : ''}: ${e.outcome}\n`;
+  const line = (e) => `  - pid ${e.pid}${e.owner ? ', the runner' : ''}${e.run !== undefined ? ` of run ${e.run}` : ''}`
+    + `: ${e.outcome}\n`;
   const text = `canonical-tests: process registry: found running ${running(earlier)} process(es) of earlier runs `
     + `and ${running(left)} of this run\n${[...earlier, ...left].map(line).join('')}`;
-  return { text, stuck: left.some((e) => e.outcome === 'still-running') };
+  return { text, stuck: left.some((e) => !shownGone(e.outcome)) };
 }
 
 const invokedDirectly =

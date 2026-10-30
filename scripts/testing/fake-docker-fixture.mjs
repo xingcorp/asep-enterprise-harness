@@ -2,14 +2,14 @@
 // A container's record in the fixture's docker state is what finds its
 // process, so every container still recorded under the fixture is ended — its
 // whole process group — and shown gone before the fixture's files are deleted.
-// One that cannot be shown gone fails the teardown and leaves the fixture,
-// records and all, in place. What it ends leaves the run's process registry
-// too.
+// One that cannot be shown gone — it runs on, or the process table cannot tell
+// — fails the teardown and leaves the fixture, records and all, in place. What
+// it ends leaves the run's process registry too.
 
 import { readdirSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import { endProcess, endRecorded, REGISTRY_ENV, unregister } from '../lib/process-registry.mjs';
+import { endProcess, endRecorded, REGISTRY_ENV, shownGone, unregister } from '../lib/process-registry.mjs';
 
 export { registryShimLine } from '../lib/process-registry.mjs';
 
@@ -37,11 +37,11 @@ function dockerStates(dir, depth = 3) {
  */
 export async function removeFakeDockerFixture(dir, end = endProcess, registry = process.env[REGISTRY_ENV]) {
   const ended = dockerStates(dir).flatMap((state) => endRecorded(join(state, 'containers'), end));
-  for (const e of ended) if (e.outcome !== 'still-running') unregister(e.pid, registry);
-  const left = ended.filter((e) => e.outcome === 'still-running');
+  for (const e of ended) if (shownGone(e.outcome)) unregister(e.pid, registry);
+  const left = ended.filter((e) => !shownGone(e.outcome));
   if (left.length > 0) {
-    throw new Error(`fake containers still running after SIGKILL, so ${dir} is kept: `
-      + left.map((e) => `pid ${e.pid}${e.name !== undefined ? ` (${e.name})` : ''}`).join(', '));
+    throw new Error(`fake containers not shown gone, so ${dir} is kept: `
+      + left.map((e) => `pid ${e.pid}${e.name !== undefined ? ` (${e.name})` : ''}: ${e.outcome}`).join(', '));
   }
   await rm(dir, { recursive: true, force: true });
 }

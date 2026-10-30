@@ -1,17 +1,18 @@
 // The fake docker client (fake-docker.mjs) where tests rely on it to clean up:
-// a container's record goes only once its process is shown gone, every
-// container is in the run's process registry while it runs, and a fixture is
+// a container's record goes only once its process is shown gone — never on a
+// process table that cannot be read — every container is in the run's process
+// registry while it runs, by its pid, start time and token, and a fixture is
 // removed only after every container recorded under it has been ended.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  endProcess, endRecorded, stillRunning, REGISTRY_ENV,
+  endProcess, endRecorded, identityOf, stillRunning, PS_ENV, REGISTRY_ENV,
   // @ts-expect-error — .mjs helper has no type declarations; we test its runtime contract.
 } from '../lib/process-registry.mjs';
 import {
@@ -21,7 +22,7 @@ import {
 
 const FAKE = join(dirname(fileURLToPath(import.meta.url)), 'fake-docker.mjs');
 const IMAGE = `alpine@sha256:${'a'.repeat(64)}`;
-// The container's command; its second word marks it.
+// The container's command.
 const HOLD = ['-e', 'setInterval(() => {}, 1e9)'];
 
 interface Started {
@@ -45,13 +46,16 @@ async function startContainer(state: string, name: string, env: Record<string, s
   return { client, pid: record['pid'] as number, record };
 }
 
-const docker = (state: string, ...args: string[]) =>
-  spawnSync(process.execPath, [FAKE, '--state', state, ...args], { encoding: 'utf8', timeout: 30_000 });
+const docker = (state: string, ...args: string[]) => dockerWith({}, state, ...args);
+const dockerWith = (env: Record<string, string>, state: string, ...args: string[]) =>
+  spawnSync(process.execPath, [FAKE, '--state', state, ...args], {
+    encoding: 'utf8', timeout: 30_000, env: { ...process.env, ...env },
+  });
 
 const end = (c: Started | undefined) => {
   if (c === undefined) return;
   c.client.kill('SIGKILL');
-  endProcess({ pid: c.pid, group: true, marker: c.record['marker'] });
+  endProcess(c.record);
 };
 
 test('docker kill and rm take a container\'s record away only once its process is shown gone', async () => {
@@ -92,9 +96,12 @@ test('every container is in the run\'s process registry while it runs, and leave
     const removed = await startContainer(state, 'removed', { [REGISTRY_ENV]: registry });
     started.push(removed);
     const entry = JSON.parse(readFileSync(join(registry, `${removed.pid}.json`), 'utf8')) as Record<string, unknown>;
-    assert.deepEqual(entry, { pid: removed.pid, group: true, marker: `${process.execPath} ${HOLD[0]}` });
-    const shown = spawnSync('ps', ['-ww', '-o', 'args=', '-p', String(removed.pid)], { encoding: 'utf8' }).stdout;
-    assert.ok(shown.includes(entry['marker'] as string), `its marker is in its command line: ${shown}`);
+    const { pid, group, token, startedAt } = removed.record;
+    assert.deepEqual(entry, { pid, group, token, startedAt }, 'the registry has what identifies the container');
+    assert.equal(group, true);
+    assert.match(String(token), /^[0-9a-f-]{36}$/);
+    assert.deepEqual(identityOf(removed.pid, { token, group: true }), entry,
+      'the process table shows the container\'s process with that start time and token');
     assert.equal(docker(state, 'rm', '-f', 'removed').status, 0);
     assert.deepEqual(readdirSync(registry), [], 'a removed container leaves the registry');
 
@@ -115,27 +122,61 @@ test('every container is in the run\'s process registry while it runs, and leave
   }
 });
 
+test('docker kill and rm keep a container whose process table cannot be read, and say so', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'asep-fake-docker-'));
+  const state = join(dir, 'docker-state');
+  const failing = join(dir, 'ps-fails');
+  writeFileSync(failing, '#!/bin/sh\nexit 1\n');
+  chmodSync(failing, 0o755);
+  let c: Started | undefined;
+  try {
+    c = await startContainer(state, 'unread');
+    const unread = { [PS_ENV]: failing };
+    const killed = dockerWith(unread, state, 'kill', 'unread');
+    assert.equal(killed.status, 1, killed.stderr);
+    assert.match(killed.stderr, new RegExp(`cannot kill container: unread: could not tell whether process ${c.pid} is still running`));
+    const refused = dockerWith(unread, state, 'rm', '-f', 'unread');
+    assert.equal(refused.status, 1, refused.stderr);
+    assert.match(refused.stderr,
+      new RegExp(`cannot remove container "/unread": could not tell whether process ${c.pid} is still running`));
+    assert.equal(existsSync(join(state, 'containers', 'unread.json')), true, 'the record stays');
+    assert.equal(stillRunning(c.pid, true), true, 'and nothing was signalled');
+
+    const removed = docker(state, 'rm', '-f', 'unread');
+    assert.equal(removed.status, 0, removed.stderr);
+    assert.equal(stillRunning(c.pid, true), false);
+    assert.deepEqual(readdirSync(join(state, 'containers')), []);
+  } finally {
+    end(c);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('when a container\'s process ends, the rest of its group is ended before its record goes', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'asep-fake-docker-'));
   const state = join(dir, 'docker-state');
-  let member: number | undefined;
+  let member: { pid: number; token: string } | undefined;
   try {
-    // Its process starts a member of its group, prints the member's pid, and exits.
-    const script = "const m = require('node:child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1e9)', "
-      + "'asep-fake-member'], { stdio: 'ignore' }); process.stdout.write(m.pid + '\\n'); setTimeout(() => process.exit(0), 200);";
+    // Its process starts a member of its group, which inherits its token,
+    // prints the member's pid and the token, and exits.
+    const script = "const m = require('node:child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1e9)'], "
+      + "{ stdio: 'ignore' }); process.stdout.write(m.pid + ' ' + process.env.ASEP_PROCESS_TOKEN + '\\n'); "
+      + 'setTimeout(() => process.exit(0), 200);';
     const client = spawn(process.execPath, [FAKE, '--state', state, 'run', '--name', 'brief', IMAGE, process.execPath, '-e', script], {
       stdio: ['ignore', 'pipe', 'ignore'], env: { PATH: process.env['PATH'] ?? '' },
     });
     let out = '';
     client.stdout.on('data', (d: Buffer) => { out += d.toString('utf8'); });
     const code = await new Promise<number | null>((r) => client.once('exit', r));
-    member = Number(out.trim());
+    const [pid, token] = out.trim().split(' ');
+    member = { pid: Number(pid), token: token! };
     assert.equal(code, 0);
-    assert.ok(Number.isSafeInteger(member) && member > 0, `the member's pid: ${out}`);
-    assert.equal(stillRunning(member), false, 'the member went with its container');
+    assert.ok(Number.isSafeInteger(member.pid) && member.pid > 0, `the member's pid: ${out}`);
+    assert.equal(stillRunning(member.pid), false, 'the member went with its container');
     assert.deepEqual(readdirSync(join(state, 'containers')), [], 'and then the record');
   } finally {
-    if (member !== undefined) endProcess({ pid: member, marker: 'asep-fake-member' });
+    const left = member !== undefined ? identityOf(member.pid, member) : undefined;
+    if (left !== undefined) endProcess(left);
     rmSync(dir, { recursive: true, force: true });
   }
 });
@@ -155,8 +196,10 @@ test('a fixture is removed only after every container recorded under it is ended
     }
     assert.equal(readdirSync(registry).length, 2, 'both are in the run\'s registry');
     // One that cannot be shown gone keeps the fixture, records and all.
-    await assert.rejects(removeFakeDockerFixture(dir, () => 'still-running', registry),
-      new RegExp(`fake containers still running after SIGKILL, so ${dir} is kept: pid ${started[0]!.pid} \\(left\\)`));
+    for (const outcome of ['still-running', 'unknown']) {
+      await assert.rejects(removeFakeDockerFixture(dir, () => outcome, registry),
+        new RegExp(`fake containers not shown gone, so ${dir} is kept: pid ${started[0]!.pid} \\(left\\): ${outcome}`));
+    }
     assert.equal(existsSync(join(dir, 'docker-state', 'containers', 'left.json')), true);
     assert.equal(readdirSync(registry).length, 2, 'and in the registry');
     await removeFakeDockerFixture(dir, undefined, registry);
