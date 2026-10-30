@@ -1,0 +1,208 @@
+{
+  "goldItem": "P2-FINAL-HIGH-003@2e61f24",
+  "note": "Per side and output, the finding keys each variant matches, finds duplicate or leaves unlabelled. On the post-fix side the gold item is the mapped location, and a match is a stale flag.",
+  "reviewed": {
+    "exact": {
+      "strict": {
+        "matched": [
+          "exact"
+        ],
+        "duplicate": [],
+        "unlabelled": []
+      },
+      "lenient": {
+        "matched": [
+          "exact"
+        ],
+        "duplicate": [],
+        "unlabelled": []
+      }
+    },
+    "near": {
+      "strict": {
+        "matched": [
+          "near"
+        ],
+        "duplicate": [],
+        "unlabelled": []
+      },
+      "lenient": {
+        "matched": [
+          "near"
+        ],
+        "duplicate": [],
+        "unlabelled": []
+      }
+    },
+    "far": {
+      "strict": {
+        "matched": [],
+        "duplicate": [],
+        "unlabelled": [
+          "far"
+        ]
+      },
+      "lenient": {
+        "matched": [
+          "far"
+        ],
+        "duplicate": [],
+        "unlabelled": []
+      }
+    },
+    "wrong-category": {
+      "strict": {
+        "matched": [],
+        "duplicate": [],
+        "unlabelled": [
+          "wrong-category"
+        ]
+      },
+      "lenient": {
+        "matched": [
+          "wrong-category"
+        ],
+        "duplicate": [],
+        "unlabelled": []
+      }
+    },
+    "other-file": {
+      "strict": {
+        "matched": [],
+        "duplicate": [],
+        "unlabelled": [
+          "other-file"
+        ]
+      },
+      "lenient": {
+        "matched": [],
+        "duplicate": [],
+        "unlabelled": [
+          "other-file"
+        ]
+      }
+    },
+    "exact-and-near": {
+      "strict": {
+        "matched": [
+          "exact"
+        ],
+        "duplicate": [
+          "near"
+        ],
+        "unlabelled": []
+      },
+      "lenient": {
+        "matched": [
+          "exact"
+        ],
+        "duplicate": [
+          "near"
+        ],
+        "unlabelled": []
+      }
+    }
+  },
+  "post-fix": {
+    "exact": {
+      "strict": {
+        "matched": [
+          "exact"
+        ],
+        "duplicate": [],
+        "unlabelled": []
+      },
+      "lenient": {
+        "matched": [
+          "exact"
+        ],
+        "duplicate": [],
+        "unlabelled": []
+      }
+    },
+    "near": {
+      "strict": {
+        "matched": [
+          "near"
+        ],
+        "duplicate": [],
+        "unlabelled": []
+      },
+      "lenient": {
+        "matched": [
+          "near"
+        ],
+        "duplicate": [],
+        "unlabelled": []
+      }
+    },
+    "far": {
+      "strict": {
+        "matched": [],
+        "duplicate": [],
+        "unlabelled": [
+          "far"
+        ]
+      },
+      "lenient": {
+        "matched": [
+          "far"
+        ],
+        "duplicate": [],
+        "unlabelled": []
+      }
+    },
+    "wrong-category": {
+      "strict": {
+        "matched": [],
+        "duplicate": [],
+        "unlabelled": [
+          "wrong-category"
+        ]
+      },
+      "lenient": {
+        "matched": [
+          "wrong-category"
+        ],
+        "duplicate": [],
+        "unlabelled": []
+      }
+    },
+    "other-file": {
+      "strict": {
+        "matched": [],
+        "duplicate": [],
+        "unlabelled": [
+          "other-file"
+        ]
+      },
+      "lenient": {
+        "matched": [],
+        "duplicate": [],
+        "unlabelled": [
+          "other-file"
+        ]
+      }
+    },
+    "exact-and-near": {
+      "strict": {
+        "matched": [
+          "exact"
+        ],
+        "duplicate": [
+          "near"
+        ],
+        "unlabelled": []
+      },
+      "lenient": {
+        "matched": [
+          "exact"
+        ],
+        "duplicate": [
+          "near"
+        ],
+        "unlabelled": []
+      }
+    }
+  }
+}

@@ -5,10 +5,11 @@
 // packet-level rule that needs no packet, `leakage-filtered`, after collection's provenance
 // rules, in the protocol's order, and counts every reason. The two packet-level rules that
 // need the runtime packet builder and egress decision, `not-in-packet` and `egress-stopped`,
-// are applied to the frozen corpus by the packet plan after S0 (SR-X8); the manifest names
-// them as pending and never counts them. The freeze also stores, content-addressed, the
-// rule-P diff section of every cited file of a negative candidate (an item resolved at the
-// next re-review), from which the post-fix location mapping is computed.
+// are applied to the frozen corpus by the packet plan once the evals package is bound to the
+// runtime packet code; the manifest names them as pending and never counts them. The freeze
+// also stores, content-addressed, the rule-P diff section of every cited file of a negative
+// candidate (an item resolved at the next re-review), from which the post-fix location
+// mapping is computed.
 //
 // Regenerate the committed manifest from the repository root:
 //

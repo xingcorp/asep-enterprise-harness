@@ -1,0 +1,22 @@
+{
+  "verdict": "REQUEST_CHANGES",
+  "findings": [
+    {
+      "key": "near",
+      "severity": "HIGH",
+      "category": "CORRECTNESS",
+      "file": "packages/application/src/execute-task.ts",
+      "lineStart": 138,
+      "lineEnd": 138,
+      "requirementId": null,
+      "evidence": "Risk admission is decided only after the lease is held and the workspace exists.",
+      "requiredFix": "Decide risk admission before any lease or workspace side effect.",
+      "confidence": 0.8
+    }
+  ],
+  "priorFindingClaims": [],
+  "packetAssessment": {
+    "coverage": "complete",
+    "notes": "scripted golden output"
+  }
+}

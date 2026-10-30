@@ -1,0 +1,58 @@
+{
+  "id": "P2-FINAL-HIGH-003@2e61f24",
+  "findingId": "P2-FINAL-HIGH-003",
+  "corpusItemSha256": "34ce9e7ab504520aac8de060c8076976d8eb3a26979c453e22272d239a1afd6b",
+  "reviewedSha": "2e61f2447f6812f9ed795a5195a25861ada1c50b",
+  "baseSha": "e046885ad9f800f8d0c7a1fee965f9e670baee96",
+  "postFixSha": "061ec236dacb985c77afa29205bf8bc0a185a49e",
+  "confirmation": "RESOLVED",
+  "goldCategory": "CORRECTNESS",
+  "goldCategoryRationale": "Risk admission runs after the lease and the workspace exist, so a refused task has already caused side effects.",
+  "locations": [
+    {
+      "file": "apps/control-plane-api/src/vertical-integration.test.ts",
+      "lineStart": 183,
+      "lineEnd": 199
+    },
+    {
+      "file": "apps/control-plane-api/src/vertical-integration.test.ts",
+      "lineStart": 211,
+      "lineEnd": 213
+    },
+    {
+      "file": "packages/application/src/execute-task.test.ts",
+      "lineStart": 113,
+      "lineEnd": 125
+    },
+    {
+      "file": "packages/application/src/execute-task.ts",
+      "lineStart": 143,
+      "lineEnd": 148
+    },
+    {
+      "file": "packages/application/src/execute-task.ts",
+      "lineStart": 160,
+      "lineEnd": 172
+    }
+  ],
+  "outputsPlacedAt": {
+    "reviewed": {
+      "file": "packages/application/src/execute-task.ts",
+      "lineStart": 143,
+      "lineEnd": 148
+    },
+    "post-fix": {
+      "file": "packages/application/src/execute-task.ts",
+      "lineStart": 148,
+      "lineEnd": 153
+    }
+  },
+  "outputs": {
+    "exact": "the placed location, category CORRECTNESS",
+    "near": "one line ten lines before the placed location, category CORRECTNESS",
+    "far": "one line eleven lines before the placed location, category CORRECTNESS",
+    "wrong-category": "the placed location, category MAINTAINABILITY",
+    "other-file": "line 1 of packages/application/src/index.ts, a changed file the item does not cite",
+    "exact-and-near": "the exact and the near finding in one output"
+  }
+}
