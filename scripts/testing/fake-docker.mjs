@@ -435,11 +435,20 @@ async function run(rest) {
     });
     child.stdin.on('error', () => undefined);
   }
-  let out = '';
+  // Until a container given `--listen` says it listens, its stdout is passed
+  // on line by line, and that line as a process in a container would say it:
+  // with the port it was given, not the host port it got.
+  let pending = '';
   child.stdout.on('data', (d) => {
-    if (listenPort !== undefined && !record.ports[listenPort]) {
-      out += d.toString('utf8');
-      const m = /listening (\d+)/.exec(out);
+    if (listenPort === undefined || record.ports[listenPort]) {
+      process.stdout.write(d);
+      return;
+    }
+    pending += d.toString('utf8');
+    for (let nl = pending.indexOf('\n'); nl >= 0; nl = pending.indexOf('\n')) {
+      let line = pending.slice(0, nl + 1);
+      pending = pending.slice(nl + 1);
+      const m = record.ports[listenPort] ? null : /listening (\d+)\n$/.exec(line);
       if (m) {
         record.ports[listenPort] = m[1];
         const current = existsSync(containerFile(name)) ? readJson(containerFile(name)) : record;
@@ -447,9 +456,14 @@ async function run(rest) {
         writeRecord(containerFile(name), current);
         // When the container said it listens, beside what reached its stdin.
         log({ container: name, listening: m[1] });
+        line = `${line.slice(0, m.index)}listening ${listenPort}\n`;
       }
+      process.stdout.write(line);
     }
-    process.stdout.write(d);
+    if (record.ports[listenPort] && pending !== '') {
+      process.stdout.write(pending);
+      pending = '';
+    }
   });
   child.stderr.on('data', (d) => process.stderr.write(d));
   child.on('error', (e) => {

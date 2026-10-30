@@ -94,6 +94,8 @@ const SHORT_WALL_CLOCK_MINUTES = 0.2;
 // daemon at load average 37–106 (CPU burners and docker churn) the stop came
 // at most 4 ms after its deadline.
 const SCHEDULING_ALLOWANCE_MS = 2_000;
+// How late a timer of this process may fire under load.
+const TIMER_LATENESS_MS = 500;
 const ATTEMPT = 'D'.repeat(26) as AttemptId;
 const BINDING = 'E'.repeat(26);
 
@@ -1416,64 +1418,144 @@ function proxyClient(): { child: ChildProcess; say(text: string): void; written(
 // Lets the streams deliver what was written to them.
 const settle = () => new Promise((r) => setImmediate(r));
 
-test('the provider sends the credential only after the proxy reported ready within its bound, and waits for it to confirm', async () => {
-  const run = (client: ReturnType<typeof proxyClient>, time: VirtualTime) => {
+// The proxy's ready line as its docker client passes it on.
+const READY = 'asep-egress-proxy listening 8080\n';
+
+test('the provider sends the credential only on a ready line within its bound, checked when it arrives, and takes the start only on a serving line within it', async () => {
+  // Its bound ends 3 s after the moment just before the spawn, on virtual time.
+  const run = (client: ReturnType<typeof proxyClient>, time: VirtualTime, o: { readyBy?: number; spawnMs?: number } = {}) => {
     let result: string | undefined | null = null;
-    const done = proxyHandshake(client.child, {
-      apiKey: 'the-key', bound: 3_000, startedAt: 0, spawnMs: 2, now: time.now, schedule: time.schedule,
-    }).then((r) => { result = r; });
+    // Settled within 5 s of real time, or the test fails rather than hangs.
+    const done = within(proxyHandshake(client.child, {
+      apiKey: 'the-key', readyBy: o.readyBy ?? 3_000, startedAt: 0, spawnMs: o.spawnMs ?? 2,
+      now: time.now, schedule: time.schedule,
+    }), 5_000, 'the handshake settling').then((r) => { result = r; });
     return { done, result: () => result };
   };
-  // Never ready: at its bound it fails, and nothing was written.
+  // Never ready: its timer is set for its bound; at it, it fails, and nothing
+  // was written.
   {
     const c = proxyClient();
     const t = virtualTime();
     const h = run(c, t);
+    assert.deepEqual(t.scheduled, [3_000], 'its timer is set for its bound');
     t.set(3_000);
     t.fire();
     await h.done;
     assert.equal(h.result(), 'egress proxy did not become ready in time: waited 3000ms of its 3000ms bound '
       + '(pid 4711, spawn 2ms), with nothing on its stdout');
-    // Ready only after its bound: still nothing written.
-    c.say('asep-egress-proxy listening 8080\n');
+    c.say(READY);
     await settle();
     assert.equal(c.written(), '', 'no credential to a proxy that was not ready within its bound');
   }
-  // Ready within its bound: the credential, once, and only then; done once it
-  // confirms.
+  // Ready within its bound: the credential, once, and only on the whole line;
+  // done once it confirms.
   {
     const c = proxyClient();
     const t = virtualTime();
     const h = run(c, t);
-    c.say('starting\n');
-    await settle();
-    assert.equal(c.written(), '', 'nothing before it is ready');
     t.set(1_200);
-    c.say('asep-egress-proxy listening 8080\n');
+    c.say('asep-egress-proxy listening 80');
+    await settle();
+    assert.equal(c.written(), '', 'nothing on a partial line');
+    c.say('80\n');
     await settle();
     assert.equal(c.written(), 'the-key\n');
-    c.say('asep-egress-proxy listening 8080\n');
-    await settle();
-    assert.equal(c.written(), 'the-key\n', 'sent once');
     assert.equal(h.result(), null, 'not done before it confirms');
     c.say('asep-egress-proxy serving\n');
     await h.done;
     assert.equal(h.result(), undefined);
+    assert.equal(c.written(), 'the-key\n', 'sent once');
   }
-  // Ready, but no confirmation within its bound: it fails, saying when the
-  // credential was sent.
+  // Ready 1 ms past its bound, and the reviewer's ready at 180 s, its timer
+  // not yet fired either time: no credential, and the start fails.
+  for (const at of [3_001, 180_000]) {
+    const c = proxyClient();
+    const t = virtualTime();
+    const h = run(c, t);
+    t.set(at);
+    c.say(READY);
+    await h.done;
+    assert.equal(c.written(), '', `ready at ${at} ms: no credential`);
+    assert.equal(h.result(), `egress proxy did not become ready in time: waited ${at}ms of its 3000ms bound `
+      + '(pid 4711, spawn 2ms), with 33 bytes on its stdout');
+  }
+  // A spawn that took part of the bound leaves the timer what is left of it.
+  {
+    const c = proxyClient();
+    const t = virtualTime();
+    t.set(2_000);
+    const h = run(c, t, { spawnMs: 2_000 });
+    assert.deepEqual(t.scheduled, [3_000], 'its timer is set for what is left of its bound');
+    t.set(3_000);
+    t.fire();
+    await h.done;
+    assert.match(String(h.result()), /^egress proxy did not become ready in time: waited 3000ms of its 3000ms bound/);
+  }
+  // The reviewer's spawn of 45 s against a 30 s bound: the handshake starts
+  // past its bound, its timer set for no time left, and a ready line then gets
+  // nothing.
+  {
+    const c = proxyClient();
+    const t = virtualTime();
+    t.set(45_000);
+    const h = run(c, t, { readyBy: 30_000, spawnMs: 45_000 });
+    assert.deepEqual(t.scheduled, [45_000], 'no time left');
+    c.say(READY);
+    await h.done;
+    assert.equal(c.written(), '', 'no credential after a spawn longer than the bound');
+    assert.equal(h.result(), 'egress proxy did not become ready in time: waited 45000ms of its 30000ms bound '
+      + '(pid 4711, spawn 45000ms), with 33 bytes on its stdout');
+  }
+  // Ready in time, but its confirmation 1 ms past its bound, the timer not yet
+  // fired: the start fails, saying when the credential was sent.
+  {
+    const c = proxyClient();
+    const t = virtualTime();
+    const h = run(c, t);
+    t.set(2_900);
+    c.say(READY);
+    await settle();
+    assert.equal(c.written(), 'the-key\n');
+    t.set(3_001);
+    c.say('asep-egress-proxy serving\n');
+    await h.done;
+    assert.equal(h.result(), 'egress proxy did not confirm its credential in time: waited 3001ms of its 3000ms bound '
+      + '(pid 4711, spawn 2ms), its credential sent at +2900ms');
+  }
+  // Ready, but no confirmation by its bound: its timer fails it.
   {
     const c = proxyClient();
     const t = virtualTime();
     const h = run(c, t);
     t.set(500);
-    c.say('asep-egress-proxy listening 8080\n');
+    c.say(READY);
     await settle();
     t.set(3_000);
     t.fire();
     await h.done;
     assert.equal(h.result(), 'egress proxy did not confirm its credential in time: waited 3000ms of its 3000ms bound '
       + '(pid 4711, spawn 2ms), its credential sent at +500ms');
+  }
+  // Anything but its two lines, whole and in their order, fails the start: a
+  // line that only holds the ready line, another port, serving before ready,
+  // ready again, a line that only begins with serving.
+  const ready = JSON.stringify(READY.trim());
+  const serving = '"asep-egress-proxy serving"';
+  for (const [said, written, why] of [
+    ['note: asep-egress-proxy listening 8080\n', '', `"note: asep-egress-proxy listening 8080" before it was ready, not ${ready}`],
+    ['asep-egress-proxy listening 9999\n', '', `"asep-egress-proxy listening 9999" before it was ready, not ${ready}`],
+    ['asep-egress-proxy serving\n', '', `${serving} before it was ready, not ${ready}`],
+    [`${READY}${READY}`, 'the-key\n', `${ready} before it confirmed its credential, not ${serving}`],
+    [`${READY}asep-egress-proxy serving soon\n`, 'the-key\n',
+      `"asep-egress-proxy serving soon" before it confirmed its credential, not ${serving}`],
+  ] as const) {
+    const c = proxyClient();
+    const h = run(c, virtualTime());
+    c.say(said);
+    await h.done;
+    assert.equal(h.result(), `egress proxy said ${why}`, JSON.stringify(said));
+    assert.equal(c.written(), written, JSON.stringify(said));
   }
   // Its client gone before it is ready, or before it confirms.
   {
@@ -1485,7 +1567,7 @@ test('the provider sends the credential only after the proxy reported ready with
     assert.equal(c.written(), '');
     const d = proxyClient();
     const g = run(d, virtualTime());
-    d.say('asep-egress-proxy listening 8080\n');
+    d.say(READY);
     await settle();
     d.child.emit('close', 0);
     await g.done;
@@ -1495,6 +1577,73 @@ test('the provider sends the credential only after the proxy reported ready with
     e.child.emit('error', new Error('spawn docker ENOENT'));
     await f.done;
     assert.equal(f.result(), 'egress proxy could not start: spawn docker ENOENT');
+  }
+});
+
+test('a proxy that reports ready past its bound never holds the credential, so the window after worker death holds from the spawn', async () => {
+  // The reviewer's model: 600 s of budget left at the spawn, so a 630 s
+  // lifetime; a 30 s bound. Two clocks: the provider's, from just before the
+  // spawn, and the proxy's own, from its start. What the provider writes on the
+  // client's stdin reaches the proxy as its credential.
+  const { CREDENTIAL_WINDOW_MS } = await proxyModule();
+  const up = await fakeModelApi();
+  const key = `asep-test-model-key-${randomUUID()}`;
+  const opened: ModuleProxy[] = [];
+  const attempt = async (startsAt: number) => {
+    const provider = virtualTime();
+    const proxy = virtualTime();
+    const p = await moduleProxy(up.url, key, proxy, 630_000, { credentialBy: CREDENTIAL_WINDOW_MS, withholdKey: true });
+    opened.push(p);
+    const c = proxyClient();
+    const taken: boolean[] = [];
+    c.child.stdin!.on('data', (d: Buffer) => {
+      for (const line of d.toString('utf8').split('\n')) if (line !== '') taken.push(p.server.provideCredential(line));
+    });
+    const started = proxyHandshake(c.child, {
+      apiKey: key, readyBy: 30_000, startedAt: 0, spawnMs: 2, now: provider.now, schedule: provider.schedule,
+    });
+    // The proxy starts, and says it is ready, at `startsAt`, the provider's
+    // timer not yet fired.
+    provider.set(startsAt);
+    c.say(READY);
+    await settle();
+    return { p, c, proxy, taken, started, say: (text: string) => c.say(text) };
+  };
+  try {
+    // Ready at 180 s: no credential is written, the start fails; the worker
+    // dies at 200 s. At 190 s and at 700 s from the spawn the agent asks: the
+    // proxy holds nothing, forwards nothing, and ends at its credential window.
+    const late = await attempt(180_000);
+    assert.match(String(await within(late.started, 5_000, 'the start failing')),
+      /^egress proxy did not become ready in time: waited 180000ms of its 30000ms bound/);
+    assert.deepEqual(late.taken, [], 'no credential reached the proxy');
+    late.proxy.set(10_000);
+    const at190 = await proxyRequest(late.p.port, 'POST', '/v1/messages');
+    assert.equal(at190.status, 403);
+    assert.match(at190.body, /it holds no credential/);
+    late.proxy.set(CREDENTIAL_WINDOW_MS);
+    late.proxy.fire();
+    await within(late.p.expired, 5_000, 'the proxy ending at its credential window');
+    assert.deepEqual(late.p.reasons, ['no credential arrived within its credential window']);
+    late.proxy.set(520_000);
+    await assert.rejects(proxyRequest(late.p.port, 'POST', '/v1/messages'), { code: 'ECONNREFUSED' }, 'nothing answers at 700 s');
+
+    // Ready at 29 s, within its bound: the credential, and the proxy serves
+    // until its own lifetime ends at 29 s + 630 s = 659 s from the spawn, within
+    // the published min(remaining budget + grace, maximum) + bound = 660 s.
+    const inTime = await attempt(29_000);
+    assert.deepEqual(inTime.taken, [true], 'the credential reached the proxy');
+    inTime.say('asep-egress-proxy serving\n');
+    assert.equal(await within(inTime.started, 5_000, 'the start completing'), undefined);
+    inTime.proxy.set(630_000 - 1);
+    assert.equal((await proxyRequest(inTime.p.port, 'POST', '/v1/messages')).status, 200, 'served at 659 s less 1 ms');
+    inTime.proxy.set(630_000);
+    assert.equal((await proxyRequest(inTime.p.port, 'POST', '/v1/messages')).status, 403, 'refused at 659 s');
+    await within(inTime.p.expired, 5_000, 'the proxy ending at its lifetime');
+    assert.equal(up.seen.length, 1, 'only the request within its lifetime was forwarded');
+  } finally {
+    for (const p of opened) p.close();
+    await up.close();
   }
 });
 
@@ -2175,8 +2324,10 @@ test('an egress proxy that never becomes ready fails the attempt, with how long 
     const m = /egress proxy did not become ready in time: waited (\d+)ms of its (\d+)ms bound \(pid \d+, spawn \d+ms\), with nothing on its stdout/
       .exec(obs.summary);
     assert.ok(m, obs.summary);
-    // Its bound is what was left of the 3 s budget, and it was waited out.
-    assert.ok(Number(m[2]) >= 1 && Number(m[2]) <= 3_000 && Number(m[1]) >= Number(m[2]) - 1, obs.summary);
+    // Its bound is what was left of the 3 s budget, and it was waited out —
+    // and no longer than a timer's lateness past it.
+    assert.ok(Number(m[2]) >= 1 && Number(m[2]) <= 3_000, obs.summary);
+    assert.ok(Number(m[1]) >= Number(m[2]) - 1 && Number(m[1]) <= Number(m[2]) + TIMER_LATENESS_MS, obs.summary);
     // A proxy that was never ready was never sent the credential.
     assert.equal(readFileSync(join(h.dir, 'proxy-stdin'), 'utf8'), '', 'nothing reached its stdin');
     assertTornDown(h);

@@ -73,10 +73,12 @@ The Claude provider has no host-execution mode. Every attempt runs like this
    upgrades and every other path get 403. The model key reaches it on **stdin**,
    and only after it reported ready: it starts without the key, refuses every
    request until the key arrives, and waits for it for at most 60 s from its
-   own start (its credential window), then exits. The harness sends the key
-   only once the proxy reported ready within its readiness bound (30 s, or what
-   is left of the budget if less, from the spawn); a proxy not ready by then is
-   killed and never gets it. The proxy substitutes the key into each forwarded
+   own start (its credential window), then exits. Just before the spawn the
+   harness fixes a readiness deadline (30 s, or what is left of the budget if
+   less) and sends the key only on the proxy's exact ready line arriving by it
+   — checked as the line arrives, not only by a timer — and takes the start
+   only on its serving line by the same deadline; any other line fails the
+   start. A proxy not ready by then is killed and never gets the key. The proxy substitutes the key into each forwarded
    request. Its access log
    (method, path, status — never headers or bodies) is stored as the
    `claude-egress-log` artifact. It has a lifetime of its own: it is started
