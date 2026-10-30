@@ -1118,6 +1118,45 @@ function virtualDaemon(goneAt: number, costMs: number) {
   return { clock, docker, calls, at: (t: number) => { now = t; }, now: () => now };
 }
 
+// An answer is evidence only for the moment it arrives. A docker client that
+// overruns the cut it was given — a stalled caller, a timer that fired late —
+// may still answer that the container is gone, but if that answer arrives after
+// the deadline it shows nothing about the deadline: neither helper takes it.
+test('absence that arrives after the deadline is refused by both removal helpers', async () => {
+  // The deadline is at 1 s; the daemon's answer, that nothing is there, arrives at 5 s.
+  const lateAbsence = () => {
+    let now = 0;
+    const clock: TeardownClock = { now: () => now, sleep: async (ms) => { now += ms; } };
+    const docker: DockerCall = async (argv) => {
+      now += 5_000;
+      if (argv[0] === 'ps') return { code: 0, stdout: '', stderr: '' };
+      if (argv[0] === 'inspect') return { code: 1, stdout: '', stderr: 'Error response from daemon: No such container: c-1' };
+      return { code: 0, stdout: 'c-1\n', stderr: '' };
+    };
+    return { clock, docker };
+  };
+  const byLabel = lateAbsence();
+  const runner = await removeLabelledContainers(byLabel.docker, 'asep.container=c-1', { until: 1_000, clock: byLabel.clock });
+  assert.equal(runner?.split('; calls: ')[0], 'container(s) labelled asep.container=c-1 could not be shown removed in time: '
+    + 'docker ps listed none only 4000ms after the deadline');
+  const byName = lateAbsence();
+  const agent = await removeContainerShownGone(byName.docker, 'c-1', 1_000, { clock: byName.clock });
+  assert.equal(agent?.split('; calls: ')[0], 'container c-1 could not be shown removed in time: '
+    + 'docker rm returned 4000ms after the deadline, leaving no time to show it gone');
+
+  // The rm answers in time, the inspect's answer of absence comes late.
+  let now = 0;
+  const clock: TeardownClock = { now: () => now, sleep: async (ms) => { now += ms; } };
+  const lateInspect: DockerCall = async (argv) => {
+    if (argv[0] === 'rm') { now += 100; return { code: 0, stdout: 'c-1\n', stderr: '' }; }
+    now += 5_000;
+    return { code: 1, stdout: '', stderr: 'Error response from daemon: No such container: c-1' };
+  };
+  const late = await removeContainerShownGone(lateInspect, 'c-1', 1_000, { clock });
+  assert.equal(late?.split('; calls: ')[0], 'container c-1 could not be shown removed in time: '
+    + 'docker inspect showed it gone only 4100ms after the deadline');
+});
+
 test('a removal is shown gone only by the daemon, and never past its deadline', async () => {
   for (const [name, remove] of [
     ['by label', (v: ReturnType<typeof virtualDaemon>, until: number) =>

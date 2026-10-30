@@ -193,8 +193,9 @@ const REAL_CLOCK: TeardownClock = {
  * Remove every container carrying `label` (`key=value`) and confirm that none
  * is left. Returns undefined once `docker ps -a` lists none, or the reason it
  * could not be shown gone after `attempts` tries — or by `until` (a clock
- * instant), when given: no try starts after it, and every call is cut at what
- * is left of it.
+ * instant), when given: no try starts after it, every call is cut at what is
+ * left of it, and a listing of none that arrives after it shows nothing about
+ * it, so it is refused.
  */
 export async function removeLabelledContainers(
   docker: DockerCall,
@@ -224,7 +225,13 @@ export async function removeLabelledContainers(
       continue;
     }
     const ids = ps.stdout.split(/\s+/).filter((x) => x !== '');
-    if (ids.length === 0) return undefined;
+    if (ids.length === 0) {
+      // A call can overrun its cut (a caller held, a timer late): its answer
+      // counts only if it arrived by the deadline.
+      if (left() >= 0) return undefined;
+      last = `docker ps listed none only ${ms(-left())} after the deadline`;
+      break;
+    }
     if (left() <= 0) {
       last = `${ids.join(', ')} still listed`;
       break;
@@ -243,8 +250,9 @@ export async function removeLabelledContainers(
  * `docker rm -f`, then `docker inspect`, which must answer that no such
  * container exists — after an rm that succeeded or one that failed alike. While
  * the container is still shown, or a call failed, both are tried again, up to
- * `attempts` times; no try starts after `until`, and every call is cut at what
- * is left of it. Returns undefined once the container is shown gone, else why
+ * `attempts` times; no try starts after `until`, every call is cut at what is
+ * left of it, and an answer of absence that arrives after `until` is refused.
+ * Returns undefined once the container is shown gone by the deadline, else why
  * it could not be.
  */
 export async function removeContainerShownGone(
@@ -269,12 +277,18 @@ export async function removeContainerShownGone(
     if (left() <= 0) break;
     const rm = await call(['rm', '-f', name]);
     if (left() <= 0) {
-      last = rm.code === 0 ? 'docker rm returned at the bound, leaving no time to show it gone'
+      const when = left() < 0 ? `${ms(-left())} after the deadline` : 'at the bound';
+      last = rm.code === 0 ? `docker rm returned ${when}, leaving no time to show it gone`
         : `docker rm did not finish within the bound: ${brief(rm)}`;
       break;
     }
     const shown = await call(['inspect', '--type', 'container', '--format', '{{.Id}}', name]);
-    if (shown.code !== 0 && NO_SUCH_CONTAINER.test(shown.stderr)) return undefined;
+    if (shown.code !== 0 && NO_SUCH_CONTAINER.test(shown.stderr)) {
+      // Absence is evidence only if it arrived by the deadline.
+      if (left() >= 0) return undefined;
+      last = `docker inspect showed it gone only ${ms(-left())} after the deadline`;
+      break;
+    }
     last = shown.code === 0
       ? `docker inspect still shows it${rm.code === 0 ? '' : ` after docker rm failed: ${brief(rm)}`}`
       : `docker inspect failed: ${brief(shown)}`;
