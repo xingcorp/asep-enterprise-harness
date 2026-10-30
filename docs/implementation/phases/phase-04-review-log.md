@@ -28,6 +28,8 @@
 > v8: the review of the S19 freeze and the S20 pure core (`phase-04-review-codex-v8.md`, Codex `gpt-6.1-sol`,
 > snapshot `676fefc`, REQUEST_CHANGES 0.98) and controller decision R44, which corrects R41, are dispositioned in
 > "Review v8" below; the plan stays v7.
+> v9: the re-check of the v8 fixes (`phase-04-review-codex-v9.md`, Codex `gpt-6.1-sol`, snapshot `fbaf6ac`,
+> REQUEST_CHANGES 0.97) and controller decision R45 are dispositioned in "Review v9" below; the plan stays v7.
 >
 > Each finding is dispositioned `ACCEPTED` / `PARTIALLY_ACCEPTED` / `REJECTED_WITH_EVIDENCE`. Nothing was
 > auto-accepted: each finding's cited code was re-read before deciding. An accepted finding names its design
@@ -1755,6 +1757,121 @@ The lane contract now forbids ad-hoc downloads and requires each commit to pass 
 | Surviving mutations | lenient nearest-first test; golden prompt digest | code commits |
 | I3, I5, I6, I11 | open until the S20 scorer integration | not claimed |
 
+## Review v9 (Codex `gpt-6.1-sol`, snapshot `fbaf6ac`)
+
+> Raw review: `phase-04-review-codex-v9.md` (verbatim copy with provenance). Verdict: REQUEST_CHANGES, confidence
+> 0.97. Controller decision applied alongside: `reconciliation-v1.md` R45 (final decisions for this re-check, including
+> the answer to the question on the nine residuals without a rule C repair base). Each finding's cited code was re-read
+> at `fbaf6ac` before deciding; line numbers below refer to `fbaf6ac`. The controller's checks at that snapshot, on a
+> clean detached worktree: `pnpm verify:all` twice, exit 0, 659 pass, 0 fail, 0 skipped each; the slot block
+> byte-identical (sha256 `9cc21c98…`); `collect.ts --write` and `freeze.ts --write` change no file (corpusSha256
+> `6314c046…`).
+
+### Summary
+
+| Severity | Count | ACCEPTED | PARTIAL | REJECTED |
+|---|---|---|---|---|
+| MEDIUM (P4-V9) | 1 | 1 | 0 | 0 |
+| LOW (P4-V9) | 2 | 2 | 0 | 0 |
+| **Total numbered** | **3** | **3** | **0** | **0** |
+| Unnumbered: the residuals without a rule C repair base; the stage as a label; the runtime-builder parity test | 3 | 3 | 0 | 0 |
+
+The re-check marks RESOLVED the now-parts of P4-S19-HIGH-001 and P4-S20-HIGH-001, P4-S20-MED-001, P4-S20-MED-002,
+P4-S20-LOW-001, P4-S20-LOW-002 and both v8 mutations; P4-S20-MED-003 stays PARTIAL through P4-V9-MED-001. It replays
+the provenance-stage freeze read-only (153 items, 46 included, 122 blobs, 19 mapping diffs) and the golden oracle in
+Python byte for byte (18 outputs, the packet and prompt digests of both sides). R45: the S20 pure core is accepted on
+behaviour once the two LOW findings land, and the S19 provenance-stage freeze once P4-V9-MED-001 and the residual rule
+land; no further Codex round follows if the fixes stay within this. Each fix lands in its own commit with a
+failing-first test on hand-written expectations and a mutation check, reported in the lane report.
+
+### P4-V9-MED-001 — Prior text was listed as needing packet code — ACCEPTED
+**Concern:** `evidence` and `requiredFix` of rule C's prior candidates are deferred to the packet code, yet the plan
+takes them from the label alone; the collector already yields the label text and the masker is in the corpus core
+(`freeze.ts:239`, `:522`; `collect.ts:368`; `synthetic.ts:57`; probe `PENDING_TEXT_PROVENANCE`: text found for all 26
+distinct prior items in 260 references, none stored).
+**Disposition:** Correct: `freeze.ts:239` lists the two fields in `PENDING_PACKET_FIELDS`, while plan §7.8 rule C takes
+them "verbatim from the label (ID tokens masked)", which needs no packet. R45: each prior candidate carries `evidence`
+and `requiredFix` from its label text, split by one fixed rule and masked with the existing masker, before the stage
+freeze; `pendingPacketFields` lists only the fields that need packet code. The fixed rule, for the two label shapes the
+prior candidates have (the Phase 2 final review's list and re-review v2's table): a table row
+`| id | status | evidence | note |` gives its evidence cell as the evidence and its note cell, which states what is
+still missing, as the required fix; a list label gives the text after its one `- Sửa: ` marker as the required fix and
+every other line of the label as the evidence. Any other shape fails the freeze. The freeze reads the label from the
+review document at the item's provenance line.
+**Locked change:** none to the plan (§7.8 rule C already says so); the rest of P4-S20-MED-003 closes with it.
+**Validation:** `freeze.test.ts` › "a prior candidate's evidence and required fix come from its label by one fixed
+rule, masked" (hand-written expectations for a list label, a table row and a new finding's label; the refused shapes;
+the exact `pendingPacketFields` list).
+
+### P4-V9-LOW-001 — No matcher case for a finding without an end line — ACCEPTED
+**Concern:** the test helper defaults `lineEnd` to `lineStart`, so a finding with `lineEnd: null` is never matched in a
+test; the mutant `if (f.lineEnd === null) return null;` before the range fallback keeps 73/73 tests green, while the
+probe `NULL_LINE_END_PROBE` (gold 100–110, finding `lineStart: 105`, `lineEnd: null`) gives one match at `fbaf6ac` and
+none under the mutant (`matcher.test.ts:18`; `matcher.ts:88`).
+**Disposition:** Correct: `matcher.test.ts:18` is `lineEnd = lineStart`, and `matcher.ts:88` falls back to the start
+line. R45: a matcher case with `lineStart` set and `lineEnd: null`, strict and lenient, with hand-written expectations;
+the reviewer's mutant must fail.
+**Locked change:** none.
+**Validation:** `matcher.test.ts` › "a finding without an end line is the line it starts on"; the reviewer's mutant
+fails (lane report).
+
+### P4-V9-LOW-002 — The template digest was checked for stability only — ACCEPTED
+**Concern:** the returned `templateSha256` is only compared between two renders, and the golden prompt digest does not
+cover it; the metadata mutant `templateSha256: '0'.repeat(64)` keeps 73/73 tests green (`prompt.test.ts:96`;
+`prompt.ts:266`, `:257`).
+**Disposition:** Correct: `prompt.test.ts:96` compares two renders, and `prompt.ts:257` builds the prompt bytes without
+the metadata. R45: pin `templateSha256` to the independently computed value this log records ("Review v8",
+P4-S20-LOW-002): `a8b62deb4368c4add78519d227d714bd7740950bef39135d9a60e08cb7f2647c`; the all-zeros mutant must fail.
+**Locked change:** none.
+**Validation:** `prompt.test.ts` › "the template digest is the value computed outside this code base"; the all-zeros
+mutant fails (lane report).
+
+### Residuals without a rule C repair base — excluded `reviewed-tree-unknown` (R45)
+**Question (raised with "Review v8", P4-S20-MED-003):** nine included residuals follow a cycle whose reviewed tree is
+unknown, so rule C's repair base `R_c` is unknown and their re-review packet cannot be built; the manifest kept them
+included with `blockedBy: "previous-cycle-tree-unknown"`.
+**Decision (R45):** they are excluded `reviewed-tree-unknown` (R22: a tree is never guessed; rule C needs `R_c`),
+counted on their own line in the manifest summary and the report, and never scored as fresh. Applied in the
+provenance-stage freeze now; a test pins it.
+**As applied:** `reviewed-tree-unknown` is rule 2 of the exclusion order, and the first rule that applies wins (plan
+§7.8). Re-checked at `fbaf6ac`: sixteen collected residuals follow a cycle with an unknown tree — Phase 1 cycle 2
+(seven `P1-FINAL-*@7dea09c` items, after the unrecorded first final review) and Phase 2 cycle 5 (nine
+`P2-FINAL-*@bb11d00` items, after re-review v4). Nine were included: the nine of the question. The other seven were
+excluded by later rules — six `no-location`, one `leakage-filtered` — which rule 2 precedes. All sixteen are excluded
+`reviewed-tree-unknown`; the own line counts sixteen; the included count falls by exactly the nine. One of the nine,
+`P1-FINAL-HIGH-003@7dea09c`, was also a post-fix negative candidate (resolved at Phase 1 cycle 3); excluded, it has no
+use, so the negative candidates fall by one. `blockedBy` is gone: no included item lacks a repair base.
+**Locked change:** none to the plan; the manifest's counts gain the own line.
+**Validation:** `freeze.test.ts` › "a residual whose re-reviewed cycle has an unknown tree is excluded, on its own
+line" (the sixteen items listed by hand), and the hand-tallied counts in "the freeze rules apply in order and every
+exclusion is counted".
+
+### The stage is a label today — integration acceptance condition (R45)
+The review finds no consumer of the manifest's `corpusSha256`, so `stage: "provenance"` guards nothing yet; its probe
+`STAGE_DYNAMIC_BINDING` reads the hash from the manifest into an in-memory descriptor and passes the literal-grep test
+at `freeze.test.ts:73`. Correct: that test proves only that no tracked file names the hash. R45 adds an acceptance
+condition for S19/S20 integration: preregistration capture and the scorer refuse a manifest whose stage is not final,
+with a test that reads the hash dynamically from the manifest. Nothing in this release binds to the hash.
+
+### The runtime-builder parity test (R45)
+The review notes that `corpus-packet.test.ts` › "a corpus packet records that no execution evidence exists" takes its
+work order from the runtime builder (`corpus-packet.test.ts:33`) and compares the corpus packet with the runtime packet
+(`:58`). Correct: that test is parity evidence between two build paths, not a recipe oracle. The recipe oracle is the
+golden item, whose packet and prompt digests come from `golden-oracle.py`, an implementation of the recipe that runs no
+repository TypeScript. As the review says, that oracle reads the instruction text from `prompt.ts` and states the
+output schema a second time; the template pin of P4-V9-LOW-002 covers the template's digest.
+
+### R45 applied
+
+| Item | Applied as | Where |
+|---|---|---|
+| Residuals without a repair base | excluded `reviewed-tree-unknown` by rule 2 in order; own count line | manifest `counts`; README; code commit |
+| P4-V9-MED-001 | prior `evidence` and `requiredFix` from the label, one fixed rule, masked; pending list trimmed | code commit |
+| P4-V9-LOW-001 | matcher case with `lineEnd: null`, strict and lenient | code commit |
+| P4-V9-LOW-002 | `templateSha256` pinned to `a8b62deb…` | code commit |
+| Stage as a label | integration acceptance condition recorded | this log |
+| Parity test | recorded as parity evidence, not a recipe oracle | this log |
+
 ---
 
 ## Disposition template
@@ -1789,5 +1906,9 @@ R40 applied ("Review v7"); the controller checked the R40 fixes at `27927d9` and
 
 v8 review record: REQUEST_CHANGES 0.98 at `676fefc`; R44 corrects R41 (the final corpus freeze is S19 integration;
 the committed manifest is a provenance-stage freeze) and is applied ("Review v8").
+
+v9 re-check record: REQUEST_CHANGES 0.97 at `fbaf6ac`; R45 accepts the S20 pure core once its two LOW findings land and
+the S19 provenance-stage freeze once P4-V9-MED-001 and the residual rule land, with no further Codex round if the fixes
+stay within it, and is applied ("Review v9").
 
 **PLAN_STATUS: LOCKED v7 (controller-confirmed, R41)**
