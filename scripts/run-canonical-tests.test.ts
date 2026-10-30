@@ -28,7 +28,7 @@ import { discoverTestFiles, REQUIRED_SUITES, suiteMarker, missingRequiredSuites,
 // @ts-expect-error — .mjs helpers have no type declarations; we test their runtime contract.
 import { runCanonicalTests } from './run-canonical-tests.mjs';
 import {
-  endProcess, identityOf, nestRegistry, shownGone, spawnRecorded, stillRunning, unregister, RECORD_VERSION, REGISTRY_ENV,
+  endProcess, identityOf, nestRegistry, shownGone, spawnRecorded, stillRunning, unregister, PROC_ENV, RECORD_VERSION, REGISTRY_ENV,
   // @ts-expect-error — .mjs helpers have no type declarations; we test their runtime contract.
 } from './lib/process-registry.mjs';
 
@@ -58,6 +58,8 @@ const LEADER_WITH_A_STRANGER = "const c = require('node:child_process').spawn(pr
 // and holds a minute at most, so that what a failed test leaves does not
 // outlive it by long.
 const LEAVES_A_PROCESS = (pidFile: string, unproven = false) => `
+// It reads the process table as it is, whatever its runner reads it with.
+delete process.env.${PROC_ENV};
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
@@ -144,6 +146,32 @@ test('a process of the run that cannot be shown to be the one recorded fails the
     assert.match(r.stderr, /  - pid \d+: unknown\n/, r.stderr);
     assert.equal(stillRunning(pid), true, 'and what could not be shown ours was not signalled');
   } finally {
+    endLeft(pidFile);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a process of the run whose environment cannot be read, where /proc shows environments, fails the run and is left alone', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'asep-runner-registry-'));
+  const pidFile = join(dir, 'left.json');
+  // A /proc that shows no process's environment, for the runner alone.
+  const proc = join(dir, 'proc');
+  mkdirSync(proc);
+  const before = process.env[PROC_ENV];
+  try {
+    const fixture = join(dir, 'leaves-a-process.test.mjs');
+    writeFileSync(fixture, LEAVES_A_PROCESS(pidFile));
+    process.env[PROC_ENV] = proc;
+    const r = runOn(fixture, join(dir, 'registry'));
+    if (before === undefined) delete process.env[PROC_ENV];
+    else process.env[PROC_ENV] = before;
+    const { pid } = JSON.parse(readFileSync(pidFile, 'utf8')) as { pid: number };
+    assert.equal(r.code, 1, `the run fails: ${r.stderr}`);
+    assert.ok(r.stderr.includes(`  - pid ${pid}: unknown\n`), r.stderr);
+    assert.equal(stillRunning(pid, true), true, 'and what could not be shown ours was not signalled');
+  } finally {
+    if (before === undefined) delete process.env[PROC_ENV];
+    else process.env[PROC_ENV] = before;
     endLeft(pidFile);
     rmSync(dir, { recursive: true, force: true });
   }

@@ -15,7 +15,7 @@ import { fileURLToPath } from 'node:url';
 import {
   endProcess, endRecorded, identityOf, nestRegistry, register, registryRoot, registryShimLine, shownGone, spawnRecorded,
   stillRunning, unregister, withProcessRegistry,
-  PS_ENV, RECORD_VERSION, REGISTRY_ENV, TOKEN_ENV,
+  PROC_ENV, PS_ENV, RECORD_VERSION, REGISTRY_ENV, TOKEN_ENV,
   // @ts-expect-error — .mjs helper has no type declarations; we test its runtime contract.
 } from './process-registry.mjs';
 // @ts-expect-error — .mjs helper has no type declarations; we test its runtime contract.
@@ -33,6 +33,12 @@ const LONG_AGO = 'Thu Jan  1 00:00:00 1970';
 // When `pid` started, as the process table shows it.
 const startOf = (pid: number) =>
   spawnSync('ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C' } }).stdout.trim();
+
+// Sets `name` in this process's environment to `value`, or removes it.
+function setEnv(name: string, value: string | undefined): void {
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
+}
 
 // A process of its own group that runs until it is killed, started with `env`
 // (and PATH) as its whole environment: one that shows no token of ours, or
@@ -260,10 +266,13 @@ test('a record that does not fully identify its process — one of an earlier fo
   const dir = mkdtempSync(join(tmpdir(), 'asep-registry-records-'));
   const live = recorded();
   const leaderless = await group({ leaderExits: true });
-  // A `ps` that cannot read any process's environment.
+  // A `ps` that cannot read any process's environment, and a /proc that shows
+  // none.
   const ps = join(dir, 'ps-no-environment');
   writeFileSync(ps, '#!/bin/sh\ncase " $* " in *" -E "*) exit 1;; esac\nexec ps "$@"\n');
   chmodSync(ps, 0o755);
+  const proc = join(dir, 'proc');
+  mkdirSync(proc);
   // As the format before the token wrote a record: a marker, no token, no
   // start time.
   const marked = (pid: number) => JSON.stringify({ pid, group: true, marker: `asep-fake-container-${randomUUID()}` });
@@ -285,9 +294,10 @@ test('a record that does not fully identify its process — one of an earlier fo
     { what: 'no pid', pid: live.pid, text: JSON.stringify({ ...live, pid: undefined }), why: 'its record has no pid' },
     { what: 'a record that cannot be read', pid: live.pid, text: '{"pid": ', why: 'its record cannot be read' },
   ];
-  const before = process.env[PS_ENV];
+  const before = { ps: process.env[PS_ENV], proc: process.env[PROC_ENV] };
   try {
     process.env[PS_ENV] = ps;
+    process.env[PROC_ENV] = proc;
     try {
       for (const [i, r] of records.entries()) {
         const run = join(dir, `run-${i}`);
@@ -299,8 +309,8 @@ test('a record that does not fully identify its process — one of an earlier fo
         assert.deepEqual(readdirSync(run), [`${r.pid}.json`], `${r.what}: the record stays`);
       }
     } finally {
-      if (before === undefined) delete process.env[PS_ENV];
-      else process.env[PS_ENV] = before;
+      setEnv(PS_ENV, before.ps);
+      setEnv(PROC_ENV, before.proc);
     }
     assert.equal(stillRunning(live.pid, true), true, 'nothing was signalled');
     assert.equal(stillRunning(leaderless.member), true, 'nothing of the group was signalled');
@@ -347,6 +357,37 @@ test('a group whose leader exited before it was recorded is recorded by the star
     assert.equal(stillRunning(leader.pid!, true), false, 'nothing of its group runs');
   } finally {
     finish(entry);
+  }
+});
+
+test('where /proc shows environments, one that cannot be read is not absence: nothing is signalled, and the record stays', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'asep-registry-proc-'));
+  const proc = join(dir, 'proc');
+  const ours = recorded();
+  const run = join(dir, 'run');
+  mkdirSync(run);
+  register(ours, run);
+  const before = process.env[PROC_ENV];
+  try {
+    process.env[PROC_ENV] = proc;
+    // Its environment as /proc shows it: entries ended by NUL.
+    mkdirSync(join(proc, String(ours.pid)), { recursive: true });
+    writeFileSync(join(proc, String(ours.pid), 'environ'), `PATH=/usr/bin\0${TOKEN_ENV}=${ours.token}\0HOME=/nowhere\0`);
+    assert.deepEqual(identityOf(ours.pid, { token: ours.token, group: true }), ours, 'read there, it shows its token');
+    // Now it cannot be read: its environ is a directory.
+    rmSync(join(proc, String(ours.pid), 'environ'));
+    mkdirSync(join(proc, String(ours.pid), 'environ'));
+    assert.throws(() => identityOf(ours.pid, { token: ours.token, group: true }),
+      /does not show its token in the process table \(its environment cannot be read\), so it cannot be recorded/);
+    assert.equal(endProcess(ours), 'unknown');
+    assert.deepEqual(endRecorded(run).map((e: Entry & { outcome: string }) => [e.pid, e.outcome]), [[ours.pid, 'unknown']]);
+    assert.deepEqual(readdirSync(run), [`${ours.pid}.json`], 'the record stays');
+    setEnv(PROC_ENV, before);
+    assert.equal(stillRunning(ours.pid, true), true, 'and nothing was signalled');
+  } finally {
+    setEnv(PROC_ENV, before);
+    finish(ours);
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 

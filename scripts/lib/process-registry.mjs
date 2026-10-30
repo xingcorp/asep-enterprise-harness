@@ -49,8 +49,10 @@ import { delimiter, join } from 'node:path';
 
 export const REGISTRY_ENV = 'ASEP_PROCESS_REGISTRY';
 export const TOKEN_ENV = 'ASEP_PROCESS_TOKEN';
-// For this module's own tests: the `ps` the process table is read with.
+// For this module's own tests: the `ps` the process table is read with, and
+// the directory read as /proc, where the table shows environments there.
 export const PS_ENV = 'ASEP_PROCESS_TABLE_PS';
+export const PROC_ENV = 'ASEP_PROCESS_TABLE_PROC';
 
 // How long a killed process may take to be shown gone.
 export const END_WAIT_MS = 2_000;
@@ -123,10 +125,11 @@ const PROC_ENVIRON = existsSync('/proc/self/environ');
 // when the environment the table shows has none, undefined when its
 // environment cannot be read.
 function tokenOf(pid) {
-  if (PROC_ENVIRON) {
+  const proc = process.env[PROC_ENV] || (PROC_ENVIRON ? '/proc' : undefined);
+  if (proc !== undefined) {
     let raw;
     try {
-      raw = readFileSync(`/proc/${pid}/environ`, 'utf8');
+      raw = readFileSync(`${proc}/${pid}/environ`, 'utf8');
     } catch {
       return undefined;
     }
