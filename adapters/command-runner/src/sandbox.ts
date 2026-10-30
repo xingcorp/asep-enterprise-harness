@@ -32,13 +32,12 @@
 // its client ends; stop() then removes anything still carrying the sandbox id
 // and fails if it cannot show none is left.
 
-import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import type {
   SandboxProvider, SandboxHandle, WorkspaceMount,
 } from '@asep/ports';
 import {
-  dockerCaller, dockerClientEnv, removeLabelledContainers, SandboxTeardownError,
+  dockerCaller, dockerClientEnv, removeLabelledContainers, SandboxTeardownError, describeDockerCall,
 } from './container-teardown.js';
 
 export interface SandboxHandleEx extends SandboxHandle {
@@ -113,12 +112,16 @@ export function sandboxLabels(
   ];
 }
 
-function dockerAvailable(binary: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    execFile(binary, ['version', '--format', '{{.Server.Version}}'], (err) => {
-      resolve(!err);
-    });
-  });
+// Why the docker client and its daemon do not answer, or undefined when they
+// do. The probe is a docker call like every other of a sandbox: bounded, with
+// only the client environment, and reported with how it ended.
+async function dockerUnavailable(binary: string): Promise<string | undefined> {
+  const args = ['version', '--format', '{{.Server.Version}}'];
+  const r = await dockerCaller(binary, dockerClientEnv())(args);
+  if (r.code === 0) return undefined;
+  const said = r.stderr.trim().slice(0, 200);
+  const how = describeDockerCall(args, r, r.call?.startedAt ?? 0);
+  return said === '' ? how : `${said} (${how})`;
 }
 
 export interface DockerSandboxConfig {
@@ -211,9 +214,10 @@ export class DockerSandboxProvider implements SandboxProvider {
     mount: WorkspaceMount,
   ): Promise<SandboxHandleEx> {
     const dockerBinary = this.cfg.dockerBinary ?? 'docker';
-    if (!(await dockerAvailable(dockerBinary))) {
+    const unavailable = await dockerUnavailable(dockerBinary);
+    if (unavailable !== undefined) {
       // FAIL rather than skip / degrade (F5, disp. P2-PLAN-HIGH-009).
-      throw new SandboxUnavailableError('docker CLI or daemon not reachable');
+      throw new SandboxUnavailableError(`docker CLI or daemon not reachable: ${unavailable}`);
     }
     // Build the hardened run flags via the PURE builder above, so the unit suite
     // asserts the exact same flag set this code path uses (one authority, no

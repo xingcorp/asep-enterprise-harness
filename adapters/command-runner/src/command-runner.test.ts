@@ -357,6 +357,36 @@ test('F5: a digest-pinned image is accepted and a mutable tag is rejected (pure)
   );
 });
 
+// The probe a sandbox makes before it starts is a docker call like the others:
+// it gets only the client environment, and a daemon that does not answer is
+// refused with how the call ended.
+test('F5: the docker probe gets only the client environment, and an unreachable daemon is refused with how it ended', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'asep-docker-probe-'));
+  const before = process.env['ASEP_PROBE_CANARY'];
+  process.env['ASEP_PROBE_CANARY'] = 'must-not-reach-docker';
+  try {
+    const seen = join(dir, 'env');
+    const docker = join(dir, 'docker');
+    await writeFile(docker, `#!/bin/sh\nenv > "${seen}"\necho "Cannot connect to the Docker daemon" >&2\nexit 1\n`, { mode: 0o755 });
+    const provider = new DockerSandboxProvider({ imageDigest: `alpine@sha256:${'a'.repeat(64)}`, dockerBinary: docker });
+    await assert.rejects(
+      provider.start('verification-no-network', {
+        workspaceId: 'W'.repeat(26) as never, readOnlyPaths: [], writablePaths: [dir], attemptId: ATTEMPT as never,
+      }),
+      (err: Error) => err instanceof SandboxUnavailableError
+        && /docker CLI or daemon not reachable: Cannot connect to the Docker daemon \(version --format at \+0ms: exit 1 after \d+ms \(spawn \d+ms, bound 30000ms\)\)$/
+          .test(err.message),
+    );
+    const env = readFileSync(seen, 'utf8');
+    assert.doesNotMatch(env, /ASEP_PROBE_CANARY/, 'the probe got the client environment only');
+    assert.match(env, /^PATH=/m);
+  } finally {
+    if (before === undefined) delete process.env['ASEP_PROBE_CANARY'];
+    else process.env['ASEP_PROBE_CANARY'] = before;
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('F6: the local fallback is honestly labelled pilot-only, no isolation', async () => {
   const provider = new LocalUnsandboxedProvider();
   const handle = await provider.start('verification-no-network', {
