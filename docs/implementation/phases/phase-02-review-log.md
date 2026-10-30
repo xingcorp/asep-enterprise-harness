@@ -2726,7 +2726,11 @@ bound`, counted from the spawn.
 - The provider: `proxyHandshake(child, { apiKey, bound, startedAt, spawnMs })`
   writes the key once, only when the proxy reported ready within `bound`
   (`PROXY_START_TIMEOUT_MS`, 30 s, or what is left of the budget if less,
-  from the spawn), and then waits, within the same bound, for `serving`. Not
+  from the spawn), and then waits, within the same bound, for `serving`.
+  [Corrected in repair cycle 16: at `6cf731b` the bound was held only by a
+  timer set after the spawn, so a ready line that came after it while the
+  timer had not yet run still got the key (CYCLE15-HIGH-001); true since
+  `c27166b`.] Not
   ready, or not confirmed, in time fails the attempt, whose teardown kills the
   proxy; the failure says how long it waited and when the key was sent.
   `buildProxyRunArgs` passes `--credential-window-ms`
@@ -2961,3 +2965,242 @@ inside adapters and test tooling:
   without full identity as 'unknown' with `record` and `why`;
   `withProcessRegistry` keeps the outer run's registry. Fake docker records
   carry the version.
+
+## Final review cycle 15 dispositions
+
+> Reviewer: Codex `gpt-6.1-sol`, re-review cycle 15 at `6cf731b`
+> (`phase-02-final-rereview-codex-v15.md`), verdict **REQUEST_CHANGES** @ 0.99.
+> The controller's decisions on it (reconciliation R50) were applied as
+> stated. Repairs: repair cycle 16, on `phase/02-single-agent-vertical-slice`
+> from `6cf731b`. Every disposition, repair, test, measurement and mutation
+> check below was made and verified by the implementer only; none has been
+> independently reviewed. Mutation checks work as in the cycle-10 section.
+> Every full gate of this cycle ran through the controller's `gate.sh` (R47).
+
+### What the review accepted, and what it did not
+
+The review marked **RESOLVED**: CYCLE14-MED-002 (a nested test registry keeps
+the run's), CYCLE14-LOW-001 (the budget refusal), CYCLE14-LOW-002 (the
+`/proc` environment read) and CYCLE13-MED-003. It found the controller's four
+gates at `6cf731b` valid under R47, and the controller's Linux check ran the
+registry (17 of 17) and fake docker (6 of 6) suites on a real `/proc`. It
+found the six records the runner lists as `gone` and the empty token on
+macOS harmless. It found **PARTIAL**: CYCLE14-HIGH-001 and CYCLE12-HIGH-001
+(the credential still went to a proxy whose ready line came after its bound
+while the timer had not yet run), CYCLE14-MED-001, CYCLE13-MED-001 and
+CYCLE12-MED-001 (a group whose leader ran and showed its token was signalled
+whole, its other members unchecked). It raised CYCLE15-HIGH-001 (the probes
+`CYCLE15_READY_AFTER_BOUND_TIMER_PENDING` — ready at 180 s against a 30 s
+bound, the key written; `CYCLE15_SPAWN_TIME_NOT_SUBTRACTED` — a 45 s spawn
+not counted; `CYCLE15_LATE_READY_END_TO_END_SOURCE_MODEL` — a request
+forwarded at 700 s against a published end of 660 s; and the mutants
+`CYCLE15_MUTANT_HANDSHAKE_TIMER_PLUS_1000` and
+`CYCLE15_MUTANT_TIMER_REAL_TEST_ASSERTIONS`, which the tests let pass),
+CYCLE15-MED-001 (`CYCLE15_LIVE_LEADER_MEMBER_unreadable` and
+`_wrong-token`), CYCLE15-MED-002 (`CYCLE15_UNREADABLE_REGISTRY_ROOT_GATE`: a
+registry root that could not be read was taken as empty and the run passed),
+CYCLE15-LOW-001 (the handshake took substrings, partial lines and a `serving`
+out of order) and CYCLE15-LOW-002 (a new test poll on the wall clock). It
+noted that MED-001 and MED-002 predate cycle 15.
+
+### Summary
+
+| ID | Disposition | Commits |
+|---|---|---|
+| CYCLE15-HIGH-001 and CYCLE15-LOW-001 (rest of CYCLE14-HIGH-001, CYCLE12-HIGH-001) | ACCEPTED — the readiness deadline is fixed before the spawn and checked as each line of the proxy arrives, whatever the timer did; the timer is set for the time left; whole lines, exact, in order | `c27166b` |
+| CYCLE15-MED-001 (rest of CYCLE14-MED-001, CYCLE13-MED-001, CYCLE12-MED-001) | ACCEPTED — a group is signalled only while every other member shows the recorded token, whether the leader runs or has exited | `48e8119` |
+| CYCLE15-MED-002 | ACCEPTED — only a directory that does not exist reads as empty; a registry root, a run or an owner record that cannot be read is unknown and fails the gate | `411d28e` |
+| CYCLE15-LOW-002 | ACCEPTED — the tests' waits run on the monotonic clock, and a fitness test keeps them there | `6f825cc` |
+| Docs | ACCEPTED — T2-16, the runbook, this log and the report match the fixed behaviour | `c27166b`, this section and the report |
+| CYCLE11-HIGH-002 | NOT CLOSED; disposition R47 unchanged | — |
+| Port and schema deltas | none to ports, schema or migrations (below) | — |
+
+Also: `18756f5` adds the cycle-15 transcript with its provenance note (four
+absolute paths the publication gate rejects are shortened there, and the note
+says so).
+
+### CYCLE15-HIGH-001 and -LOW-001 — the bound was held only by a timer — ACCEPTED
+
+**Invariant (R50):** the readiness bound is checked when readiness arrives,
+not only by a timer. A deadline is fixed on the monotonic clock before the
+spawn, so the spawn's time counts against it. Before writing the key and
+before accepting `serving` the handshake compares the monotonic now with that
+deadline; past it, no key is written and the start fails, whether or not the
+timer has fired. The timer is set for the time left. Ready and serving are
+parsed as whole lines, in order, in their exact form; substrings, partial
+lines and lines out of order are refused.
+**Change (`c27166b`):**
+- The provider fixes `readyBy` = the moment just before the spawn plus
+  `PROXY_START_TIMEOUT_MS` (or what is left of the budget, if less) and hands
+  it to `proxyHandshake(child, { apiKey, readyBy, startedAt, spawnMs })`,
+  which replaces its `bound` parameter. The timer is set for
+  `max(0, readyBy − now)`.
+- The handshake reads the proxy's stdout as whole lines. Each line is first
+  checked against `readyBy`: past it, the start fails ("did not become ready
+  in time", or "did not confirm its credential in time"). Then the line must
+  be exactly `asep-egress-proxy listening 8080` (the port the proxy is given)
+  before the key, and exactly `asep-egress-proxy serving` after it; anything
+  else fails the start, naming the line (at most 80 characters, and redacted
+  with the attempt's secrets in the observation).
+- The fake docker passes a container's ready line on with the port it was
+  given (`--listen`) rather than the host port it got, as a process in a
+  container says it; it logs the host port as before.
+- So `P − S ≤ bound` holds for every proxy that receives the key (P: the
+  proxy's start, before its ready line; S: the moment before the spawn), and
+  T2-16, the runbook and the report hold as written: after worker death the
+  key is usable through a leftover proxy for at most `min(remaining budget +
+  grace, maximum) + readiness bound` from the spawn.
+**Tests (written first: against the previous handshake with the new
+`readyBy` parameter, 2 failed):**
+- On virtual time: the timer is set for the bound, and after a spawn that
+  took 2 s for what is left; a ready line 1 ms past the bound, and the
+  reviewer's ready line at 180 s (`CYCLE15_READY_AFTER_BOUND_TIMER_PENDING`),
+  the timer not yet fired, gets no credential and fails the start; the
+  reviewer's 45 s spawn against a 30 s bound
+  (`CYCLE15_SPAWN_TIME_NOT_SUBTRACTED`) sets the timer for no time left and a
+  ready line then gets nothing; a serving line 1 ms past the bound fails the
+  start; a partial ready line gets nothing until it is whole; a line that only
+  holds the ready line, another port, serving before ready, ready twice and a
+  line that only begins with serving each fail the start.
+- `CYCLE15_LATE_READY_END_TO_END_SOURCE_MODEL` as a test on the provider's
+  handshake and the proxy module together, two virtual clocks: ready at 180 s
+  — no credential reaches the proxy, the request at 190 s is refused, the
+  proxy ends at its credential window and nothing answers at 700 s; ready at
+  29 s — the proxy serves until 659 s from the spawn and refuses from then on,
+  within the published 660 s.
+- The real-timeout test bounds the wait from above too: no more than a
+  timer's lateness (500 ms) past the bound.
+- The real-daemon sandbox suite (5 of 5) passed against the change: the real
+  proxy's ready line is exactly the expected one.
+**Mutation check:** 10 mutants, all killed: the timer 1 s late
+(`CYCLE15_MUTANT_HANDSHAKE_TIMER_PLUS_1000`, killed by the virtual-time
+schedule and by the real-timeout test's upper bound); no deadline check when a
+line arrives; the timer for the whole bound from the handshake's start; the
+deadline checked before the key only; a line holding the ready line taken;
+any port taken; serving taken before ready; a partial chunk taken as a line;
+other lines ignored; the fake docker passing the host port on. Four of them
+(no deadline check, a line holding the ready line, any port, other lines
+ignored) first left the handshake test waiting for a settlement that never
+came, and the mutation runner ended the run at its bound; the test now bounds
+each handshake to 5 s of real time, and rerun, all four failed it.
+**Not distinguished by a test:** fixing `readyBy` before rather than after
+the spawn — the spawn returns within milliseconds here, so no test tells the
+two apart; the code fixes it before.
+**The red run did not exit by itself.** Against the previous handshake, the
+end-to-end test waited for a start that never settled. The test file's
+process (pids 36402 and 36403, started by the implementer) was ended by pid;
+the test now bounds those waits.
+
+### CYCLE15-MED-001 — a live leader's group was signalled with its members unchecked — ACCEPTED
+
+**Invariant (R50):** whether or not the leader lives, a group signal requires
+every current member of the group to show the recorded token; a member that
+cannot be read or shows another token makes the outcome unknown (kept, not
+signalled, gate red).
+**Change (`48e8119`):** one check, for a leader that runs and for one that has
+exited: every member of the group that has not exited, but the leader, must
+show the recorded token and have started no earlier than the leader;
+otherwise — or when the members cannot be listed — 'unknown'. With a leader
+that runs, a group with no other member is the leader's alone.
+**Tests (written first; red against the previous registry: the stranger's
+group was ended):** the reviewer's `_wrong-token` (a member started with
+another token) and `_unreadable` (a member whose environment cannot be read,
+through a `/proc` stand-in where the leader shows its token), each with a
+leader that runs: 'unknown', the record kept, neither signalled; a group
+whose members cannot be listed (a `ps` that fails for the listing only):
+'unknown' (this case was added after the code); a group whose members all
+show the token is ended whole.
+**Mutation check:** 4 mutants, all killed: a live leader's members not
+checked; a member's token not checked; a member whose environment cannot be
+read taken as ours; members that cannot be listed taken as none.
+
+### CYCLE15-MED-002 — an unreadable registry was taken as an empty one — ACCEPTED
+
+**Invariant (R50):** only a missing directory (ENOENT) reads as empty; any
+other error reading the registry root or a run directory is unknown and fails
+the gate.
+**Change (`411d28e`):** every instance of the class in the registry and its
+callers:
+- `withProcessRegistry`: a root that cannot be read is listed as 'unknown'
+  with its directory and why; the tests still run, in a new run, and the gate
+  fails. A run's owner record that cannot be read or parsed is 'unknown' and
+  the run is left as it is (it used to be swept as if its runner were gone).
+- `endRecorded`: a directory that does not exist holds no record; one that
+  cannot be read is returned as 'unknown', with `directory` and `why`, so its
+  run is kept.
+- The fake docker fixture teardown: a directory under the fixture that cannot
+  be read fails the teardown and keeps the fixture (it used to be taken as one
+  holding no containers, and the fixture removed).
+- The canonical runner names such a directory: `directory <path>: unknown — it
+  cannot be read (EACCES), so it was left alone`.
+**Tests (written first; red against the previous registry):** directories
+are made unreadable to the test process through a test helper
+(`scripts/testing/unreadable.mjs`) that makes `readdirSync` of the given paths
+fail with EACCES — whatever user the tests run as, since root reads every
+directory. The reviewer's `CYCLE15_UNREADABLE_REGISTRY_ROOT_GATE` through the
+runner: an unreadable root fails the run naming it, and an earlier run's
+process under it runs on with its record kept. In the registry: an unreadable
+root, an unreadable run and an owner record that cannot be read are each
+listed as unknown and left as they are; a missing directory holds no record,
+and one that is a file cannot be read (ENOTDIR, a real error). In the
+fixture: an unreadable directory under it fails the teardown, the containers
+run on and stay in the registry.
+**Mutation check:** 6 mutants, all killed: an unreadable registry root taken as no run (killed by the runner's test and the registry's); an unreadable run taken as one without records; an owner record that cannot be read, and one that is torn, taken as no owner; an unreadable fixture directory taken as one without containers; the runner not naming the directory.
+
+### CYCLE15-LOW-002 — a test poll on the wall clock — ACCEPTED
+
+**Invariant (R50):** the new test poll moves to the monotonic clock; as the
+class, every wait, moment or span a test or a test tool keeps.
+**Change (`6f825cc`):** every instance of the class: the registry tests' two
+polls, the fake docker test's start poll, the agent adapter's poll for a
+proxy's exit and its kill moment, the persistence suite's two moments it
+compares, and the fake Claude CLI's start moment for the duration it reports
+now read `performance.now()`. A fitness test fails on any test source or test
+tool that keeps, returns or compares with a moment of `Date.now()`; the wall
+clock may still date a record (a token's expiry), stamp a log line (the fake
+docker's and the fake model API's, compared across processes) or name a
+resource.
+**Tests:** the fitness test was written first in a narrower form (a deadline
+made from `Date.now()` or a comparison with it); run against the previous
+sources, it failed listing the eight lines of the three polls. A mutant of the
+persistence suite's moment survived it, so it was widened to moments kept or
+returned, after the other fixes and before the fake CLI's: it then failed on
+the fake CLI's start moment alone. Against `411d28e` its pattern matches
+thirteen lines (checked with `git grep -P`).
+**Mutation check:** 9 mutants, all killed by the fitness test: each of the three polls back on the wall clock (the registry test's deadline, its environment poll's comparison, the fake docker start poll compared with the deadline on the left), the proxy exit poll's comparison and the moment it returns, the kill moment, the persistence suite's two moments, and the fake CLI's start moment. The persistence suite's commit moment first survived the test's narrower form; widened, the test killed it and the rest.
+
+### CYCLE11-HIGH-002 — disposition R47 unchanged
+
+Nothing in this cycle changes what is known of the Node launch stall. Every
+gate ran through `gate.sh`; none showed a launch of 10 s or more.
+
+**Gate runs of this cycle.** Every one through `gate.sh`; the sampler line is
+its own summary.
+
+| Commit | Gate | Result | Tests | Duration | Sampler: samples, longest Node launch, launches of 10 s or more | Valid under R47 |
+|---|---|---|---|---|---|---|
+| `18756f5` | `verify:all` | exit 0 | 912 of 912 | 549 s | 229, 5343 ms, 0 | yes |
+| `c27166b` | `verify:all` | exit 0 | 913 of 913 | 521 s | 219, 5680 ms, 0 | yes |
+| `48e8119` | `verify:all` | exit 0 | 914 of 914 | 537 s | 223, 5945 ms, 0 | yes |
+| `411d28e` | `verify:all` | exit 0 | 916 of 916 | 542 s | 225, 5246 ms, 0 | yes |
+| `6f825cc` | `verify:all` | exit 0 | 917 of 917 | 540 s | 222, 5875 ms, 0 | yes |
+| `6f825cc` | `test:integration` | exit 0 | 34 of 34 | 102 s | 47, 1081 ms, 0 | yes |
+
+No gate run of this cycle was red. Every canonical run listed six records of its own run as `gone` — processes the runner's wiring tests start in nested runs, recorded in the outer run too, already ended — and found no recorded process still running, before or after the tests. After the integration run no container labelled `asep.role` and no network labelled `asep.attempt` remained. The final sequence on the
+report commit — `pnpm install --frozen-lockfile`, two `verify:all` and two
+`test:integration` runs, each through `gate.sh` — is bound by the L1
+sentinel and reported to the controller with its sampler lines.
+
+### Port and schema deltas for Lanes A and B
+
+No port, schema or migration changes in this cycle. Contract changes, all
+inside adapters and test tooling:
+- `@asep/agent-claude`: `proxyHandshake` takes `readyBy` (a moment fixed
+  before the spawn) in place of `bound`, and fails the start on any stdout
+  line other than the exact ready line and then the exact serving line.
+- Test tooling: `scripts/lib/process-registry.mjs` reports an unreadable
+  directory as `{ directory, outcome: 'unknown', why }` and an unreadable
+  owner record as `{ run, record: 'owner.json', owner: true, outcome:
+  'unknown', why }`; a group is signalled only while every member shows its
+  token. The fake docker passes a listening container's ready line on with
+  the port it was given. New helper `scripts/testing/unreadable.mjs`.
