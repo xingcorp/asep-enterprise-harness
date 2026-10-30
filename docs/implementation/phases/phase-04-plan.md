@@ -29,6 +29,11 @@
 > G-P2 stays blocked, SR-X8 and the preregistration capture included, and bundle mode stays off until the controller
 > supplies the bundle path.
 >
+> R44 (2026-10-30) corrects R41: as §22's S19 row stages it, the final corpus freeze (packet-dependent eligibility,
+> full packet sources, synthetic records, the final `corpusSha256`) is S19 integration after S0 and SR-X8; the manifest
+> committed before it is a provenance-stage freeze that nothing may bind to. Review v8 is dispositioned in
+> `phase-04-review-log.md` ("Review v8").
+>
 > v6 status, kept for the record: **LOCKED v6 (pending controller confirmation)**, superseded by v7 before it was
 > confirmed. v5, its slot block and the code fixes at `fb2e432` received
 > an independent re-check (`phase-04-review-codex-v5.md`, Codex `gpt-6.1-sol`, REQUEST_CHANGES 0.99, `HAND-OFF:
@@ -2593,7 +2598,7 @@ migration (data model §3.6).
    `…MEASUREMENT_PENDING…`. Neither `gpt-6.1-sol` nor the comparator has been probed by the lane (not verified); the gateway's request alteration is verified by the controller (U-3).
 4. **Phase 2 agent-runtime repair**: S22. Without it the verdict carries `ASSURANCE_ONLY_LOOP`.
 5. **Pilot repository**: DF-6 only.
-6. **Controller confirmation of v7**: given by R41 (2026-10-30), which releases the S19 freeze and the S20 pure core; G-LB was released by R39 with the slot block at sha256 `9cc21c98…` (§7.8, R18, R23, R28, R32, R37, R39, R41).
+6. **Controller confirmation of v7**: given by R41 (2026-10-30), which releases the S19 freeze and the S20 pure core; G-LB was released by R39 with the slot block at sha256 `9cc21c98…` (§7.8, R18, R23, R28, R32, R37, R39, R41). R44 corrects R41: the final S19 freeze is integration (§22); before it, the corpus manifest is a provenance-stage freeze.
 
 None blocks plan lock.
 

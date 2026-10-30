@@ -25,6 +25,9 @@
 > the plan stays v7.
 > v7 confirmed: the controller accepted the pre-S0 pure core at `27927d9` and confirmed the v7 lock (R41); see
 > "Controller confirmation of v7" below.
+> v8: the review of the S19 freeze and the S20 pure core (`phase-04-review-codex-v8.md`, Codex `gpt-6.1-sol`,
+> snapshot `676fefc`, REQUEST_CHANGES 0.98) and controller decision R44, which corrects R41, are dispositioned in
+> "Review v8" below; the plan stays v7.
 >
 > Each finding is dispositioned `ACCEPTED` / `PARTIALLY_ACCEPTED` / `REJECTED_WITH_EVIDENCE`. Nothing was
 > auto-accepted: each finding's cited code was re-read before deciding. An accepted finding names its design
@@ -1573,6 +1576,185 @@ Wilson intervals, floors, the corpus builder variant with `{ verdict: 'NOT_RECOR
 the golden historical item). Everything staged after S0/S1 or G-P2 stays blocked, SR-X8 (evals project references)
 and the preregistration capture included. Bundle mode stays off: the controller has not supplied the bundle path.
 
+R44 corrects this release; see "Review v8" below.
+
+---
+
+## Review v8 (Codex `gpt-6.1-sol`, snapshot `676fefc`)
+
+> Raw review: `phase-04-review-codex-v8.md` (verbatim copy with provenance). Verdict: REQUEST_CHANGES, confidence
+> 0.98. Controller decision applied alongside: `reconciliation-v1.md` R44 (final decisions for this review; it corrects
+> R41). Each finding's cited code was re-read at `676fefc` before deciding; line numbers below refer to `676fefc`. The
+> controller's checks at that snapshot, on a clean detached worktree: `pnpm verify:all` twice, exit 0, 654 pass, 0 fail,
+> 0 skipped each, 68 files, 37 required suites; the slot block byte-identical (sha256 `9cc21c98…`); `collect.ts --write`
+> then `freeze.ts --write` regenerate the committed corpus byte for byte (corpusSha256 `b140616b…`).
+
+### Summary
+
+| Severity | Count | ACCEPTED | PARTIAL | REJECTED |
+|---|---|---|---|---|
+| HIGH (P4-S19, P4-S20) | 2 | 2 | 0 | 0 |
+| MEDIUM (P4-S20) | 3 | 3 | 0 | 0 |
+| LOW (P4-S20) | 2 | 2 | 0 | 0 |
+| **Total numbered** | **7** | **7** | **0** | **0** |
+| Unnumbered: the 15 included items with `fixCommits: []`; two surviving mutations (lenient distance; a rubric sentence); the scorer-dependent exit criteria I3, I5, I6, I11 | 4 | 4 | 0 | 0 |
+
+The review confirmed provenance against git (153 document lines, 46 reviewed trees, 216 excerpts, 43 fix commits), the
+exclusion order, the leakage globs, the publication wrapper, the Wilson intervals, the `NOT_RECORDED` validator and no
+boundary breach. Both HIGH findings are split by R44: the part the locked plan stages after S0 and SR-X8 moves to the
+integration column of §22; the part that needs no runtime code lands now. Each now-part lands in its own commit with a
+failing-first test and a mutation check, reported in the lane report. Nothing here changes the plan's protocol or the
+slot block.
+
+### Correction of R41 (R44)
+
+R41 released "the S19 freeze (packet-dependent eligibility, the `no-location` rule, `corpusSha256`, manifest)" before
+S0. The locked plan's §22 row for S19 puts packet-dependent eligibility, the final `corpusSha256` and the manifest in
+the integration column, and packet eligibility needs the application packet builder, which `evals` may not import
+before SR-X8. R44 corrects R41: the final freeze (per-cycle packets with chunking and egress on both sides,
+`not-in-packet` and `egress-stopped` applied, full packet sources stored, synthetic records, then the final hash) is S19
+integration after S0 and SR-X8. The manifest committed at `c48befb` (corpusSha256 `b140616b…`) is a
+**provenance-stage freeze**: it carries a stage field saying so, nothing may bind to its hash, and no document calls it
+the frozen corpus.
+
+### P4-S19-HIGH-001 — The freeze hashed the corpus before packet eligibility — ACCEPTED (moved to S19 integration)
+**Concern:** the manifest fixes `corpusSha256` while `not-in-packet` and `egress-stopped` are pending, and the excerpts
+cover only the cited files, so the packet sources are incomplete; for the private-history cycle `bb11d00` the
+reviewer counts 148 changed paths after the leakage filter, and post-images such as `.gitignore`,
+`adapters/agent-claude/package.json` and `adapters/agent-claude/src/event-parser.ts` are in no corpus blob
+(`freeze.ts:7`, `:460`; `collect.ts:782`; probes `PRIVATE_BUNDLE_PACKET_SOURCES`, `BUNDLE_SOURCE`).
+**Disposition:** Correct on substance: `freeze.ts:460` names the two packet reasons as pending, and `collect.ts:782`
+takes excerpts of the cited files only. Re-checked: `git diff --name-only` with the rule-P flags from `e046885` to
+`bb11d00`, minus the leakage globs, lists 148 paths, and none of the three named post-images hashes to a blob. R44:
+the final freeze is S19 integration (see the correction above). Now: the manifest carries `stage: "provenance"` and a
+note that the final freeze, its packet sources and its hash come with S19 integration; README, report and this log call
+it a provenance-stage freeze.
+**Locked change:** none to the plan (§22 already stages it so); R41 corrected by R44.
+**Validation:** `freeze.test.ts` › "the committed manifest is a provenance-stage freeze that nothing binds to".
+
+### P4-S20-HIGH-001 — The golden item did not prove the recipe — ACCEPTED (split per R44)
+**Concern:** the round-trip packet holds one file the label chose, the matcher sets `grounded: true` itself, and no
+independent digest pins the packet source, the packet or the prompt; a rubric sentence `Do not report SECURITY
+findings.` added to the template keeps every packet and prompt test green (`item.json:104`; `golden.test.ts:41`;
+`corpus-packet.test.ts:214`).
+**Disposition:** Correct: `golden.test.ts:42` maps every scripted finding with `grounded: true`, and no golden file
+records a packet or prompt digest, so the rubric mutant changes nothing a test reads. R44 splits the finding. Now: the
+golden item carries digests of its packet source, packet and prompt, each side, computed by an independent
+implementation of the recipe (not by the code under test), plus its chunk list; the application golden test runs the
+packet validator and the grounding and asserts the grounding outcome the golden files record; the evals golden test
+takes `grounded` from that recorded outcome; the rubric mutant must fail. S20 integration: per-cycle chunking over the
+full cycle source, and validation → grounding → matcher in one run.
+**Locked change:** none to the plan; the golden fixture layout follows §7.8 ("Golden fixtures").
+**Validation:** `corpus-packet.test.ts` › "the golden historical item reproduces its recorded packet, prompt and
+grounding on both sides"; `golden.test.ts` › "golden historical item maps its locations and matches as specified on both
+sides"; the rubric mutant fails (lane report).
+
+### P4-S20-MED-001 — Ties broke on the pooled id, not the fingerprint — ACCEPTED
+**Concern:** candidates are ordered by distance, gold id, then the pooled id `<chunk>#<fingerprint>`; the protocol
+orders by fingerprint, and the review's probe gets recall 1/2 where the protocol gives 2/2 (`matcher.ts:117`; probe
+`FINGERPRINT_TIE_RECALL`).
+**Disposition:** Correct: `matcher.ts:117` compares `findingId`, which starts with the chunk id, so a finding in an
+earlier chunk wins a tie its fingerprint would lose. R44: order by distance, then gold id, then fingerprint, with the
+chunk identity as the last key only; the fingerprint is a field apart from the chunk.
+**Locked change:** none (plan §7.8 "Cardinality" already says so).
+**Validation:** `matcher.test.ts` › "ties break on the gold item id, then the fingerprint, and the chunk last" (the
+probe's shape: 2/2).
+
+### P4-S20-MED-002 — A negative degradation was reported as 0 — ACCEPTED
+**Concern:** recall that rises from 10/20 to 15/20 under injection is reported as degradation 0; the locked formula
+gives −0.25 (`floors.ts:63`; `statistics.test.ts:79`).
+**Disposition:** Correct: `floors.ts:63` clamps a negative difference to 0, and the test at `statistics.test.ts:79`
+asserted the clamped value. That oracle was derived from the code, not from the formula. R44: keep the sign; replace the
+oracle with a hand-computed value (10/20 − 15/20 = −5/20 = −0.25, which meets the floor).
+**Locked change:** none (plan §7.4 defines degradation as a difference of recalls).
+**Validation:** `statistics.test.ts` › "every pre-registered floor is evaluated at its exact boundary".
+
+### P4-S20-MED-003 — No corpus item carried its synthetic fields — ACCEPTED
+**Concern:** none of the 153 items has a synthetic record, and the helper builds only the fresh-review record
+(`collect.ts:859`; `synthetic.ts:109`).
+**Disposition:** Correct. R44: add the fields the recipe derives from provenance before the stage freeze; list every
+field that needs packet code. Now, per included item in the manifest: the rule (P for a first occurrence, C for a
+residual), the cycle and task identity, round and review kind, the base and reviewed SHAs, Rule C's repair base and
+repair-delta range, Rule C's prior-finding candidates (every included item labelled at the previous cycle, with its
+synthetic id, raiser, gold severity and category and first location), and the post-fix side of a negative candidate;
+the common identity, work orders and the `NOT_RECORDED` execution once. Moved to S19 integration, since each needs the
+packet code: the attempt ids (chunk ids), the chunk filter on prior candidates, each prior's fingerprint, its evidence
+and required fix (the label text, split and masked), the masks applied per packet part, and the packet sources
+themselves.
+One gap surfaced while deriving them: nine included residuals follow a cycle whose reviewed tree is unknown (Phase 1
+cycle 2 after the unrecorded first final review: one item; Phase 2 cycle 5 after re-review v4: eight items), so Rule
+C's repair base `R_c` is unknown and their re-review packet cannot be built. The manifest records their repair base as
+null with `blockedBy: "previous-cycle-tree-unknown"` and keeps them included at this stage; whether the final freeze
+excludes them (`reviewed-tree-unknown`) or scores them otherwise is a controller decision, raised in the lane report.
+**Locked change:** none to the plan; data model §7.1 `synthetic` is filled for its provenance fields.
+**Validation:** `freeze.test.ts` › "every included item carries the synthetic fields its provenance determines".
+
+### P4-S20-LOW-001 — The build include came before its stage — ACCEPTED (recorded amendment)
+**Concern:** `review-benchmark/**/*.ts` is in `evals/tsconfig.json`'s include, which the plan stages with SR-X8
+(`evals/tsconfig.json:11`; plan §22 S20 row).
+**Disposition:** Correct. R44 accepts it as a recorded amendment: the include only, with no project reference and no
+new dependency; the references to the application packages and the `evals/package.json` dependencies stay SR-X8
+integration. Re-checked at `676fefc`: `evals/tsconfig.json` references only `packages/contracts` and
+`packages/policy`, as before.
+**Locked change:** this amendment.
+**Validation:** `scripts/project-references.test.ts` (no new import edge) and `evals/tsconfig.json` as committed.
+
+### P4-S20-LOW-002 — The template digest change was not logged — ACCEPTED
+**Concern:** the review instructions changed without a log entry (`prompt.ts:61`).
+**Disposition:** Correct. The sentence on `NOT_RECORDED` (commit `c974676`) changes `templateSha256` from
+`c0cf6360f26b384db71320390c76901d737a8eb108515c6daaef88a06bf55178` to
+`a8b62deb4368c4add78519d227d714bd7740950bef39135d9a60e08cb7f2647c` (re-computed by the lane at `caaabfd` and at
+`676fefc` over the template, the version and the unchanged output schema; the review's `TEMPLATE_DIGEST` gives the
+same pair and finds neither persisted). `review-prompt/v1` keeps its version under R42, because no recording exists;
+from the first recording or S1 on, any template change bumps the version.
+**Locked change:** this record.
+**Validation:** the golden prompt digest pins the template from now on (P4-S20-HIGH-001).
+
+### Included items without a fix commit — rule stated (R44)
+The review counts 15 included items with `fixCommits: []` and says none can be called fixed (`GIT_PROVENANCE`).
+Re-checked: all 15 are residual instances labelled `PARTIAL` (Phase 2 cycles 2, 3 and 5), none resolved at the next
+re-review. Plan §7.8 never reads fix commits to score: rule P scores a first occurrence at its reviewed tree, rule C
+scores a residual's status at its own cycle, and a negative needs a `RESOLVED` confirmation at the next re-review with a
+known post-fix tree. Rule, now stated in the manifest: each included item lists its uses, derived from its instance
+kind and confirmation alone (`rediscovery`, `residual-status`, `post-fix-negative`); fix commits are provenance only,
+and no document calls an item fixed because of them. The 15 items are included for `residual-status` only.
+**Validation:** `freeze.test.ts` › "an item without a fix commit is used for its residual status only".
+
+### Surviving mutations — ACCEPTED
+- `return variant === 'lenient' ? 0 : gap;` (`matcher.ts:84`) kept 11/11 benchmark tests green: the cardinality test
+  checked nearest-first under strict only. Closed by `matcher.test.ts` › "lenient matching is nearest first too".
+- `Do not report SECURITY findings.` added to the rubric (`prompt.ts:51`) kept 20/20 packet and prompt tests green.
+  Closed by the golden prompt digest (P4-S20-HIGH-001).
+
+### Exit criteria I3, I5, I6, I11 — stay open (R44)
+No scorer exists yet, so the refusal of `eligibleForPromotion` other than false (I3) and the scorecard criteria (I5,
+I6, I11) are not met and are not claimed; the matcher, statistics and floors are their pure parts. They close with the
+S20 scorer integration. I12 is not claimed either until the integration golden test runs the full chain.
+
+### Process slips (R42)
+- `caaabfd` was committed with `verify:all` red: the gate-cleanup check in `collect.test.ts` raced the freeze and
+  verifier tests, which create the same temporary repositories; `0e79a45` fixed the test.
+- For the S19 freeze and the matcher, code was written before the tests; failing-first was shown afterwards by running
+  the tests without the artifacts or the module, and by mutation.
+- An `npx prettier` run downloaded a package from the network during a local format check.
+The lane contract now forbids ad-hoc downloads and requires each commit to pass the gate before the next.
+
+### R44 applied
+
+| Item | Applied as | Where |
+|---|---|---|
+| R41 correction | the committed manifest is a provenance-stage freeze; the final freeze is S19 integration | manifest `stage`; README; this log; code commit |
+| P4-S19-HIGH-001 | moved to S19 integration; stage field now | as above |
+| `fixCommits: []` | uses derived from instance kind and confirmation; fix commits never decide a use | manifest `uses`; code commit |
+| P4-S20-HIGH-001 | independent golden digests and chunk list; validator and grounding in the application golden test; `grounded` from the recorded outcome | golden fixtures; code commit |
+| P4-S20-MED-001 | ties: distance, gold id, fingerprint, then chunk | code commit |
+| P4-S20-MED-002 | signed degradation; hand-computed oracle | code commit |
+| P4-S20-MED-003 | provenance-derived synthetic fields in the manifest; packet-dependent fields listed for S19 integration | code commit |
+| P4-S20-LOW-001 | include only, no reference, no dependency | this amendment |
+| P4-S20-LOW-002 | template digest change recorded | this log |
+| Surviving mutations | lenient nearest-first test; golden prompt digest | code commits |
+| I3, I5, I6, I11 | open until the S20 scorer integration | not claimed |
+
 ---
 
 ## Disposition template
@@ -1604,5 +1786,8 @@ found `HAND-OFF: READY`.
 
 v7 re-check record: ACCEPT_WITH_CHANGES 0.96 at `287ed0f`; R39 released G-LB with the block at sha256 `9cc21c98…`;
 R40 applied ("Review v7"); the controller checked the R40 fixes at `27927d9` and confirmed the lock (R41).
+
+v8 review record: REQUEST_CHANGES 0.98 at `676fefc`; R44 corrects R41 (the final corpus freeze is S19 integration;
+the committed manifest is a provenance-stage freeze) and is applied ("Review v8").
 
 **PLAN_STATUS: LOCKED v7 (controller-confirmed, R41)**
