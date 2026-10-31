@@ -13,9 +13,10 @@
 //      [start, end), so a disposition counts in the cohort of the round it
 //      disposes;
 //   4. apply the filter conditions (all must hold);
-//   5. aggregate: count the events, sum the listed fields, or average them.
-//      A sum or mean skips an event that does not carry the field: an unpriced
-//      review has no reviewCostUsd and is not averaged in as zero.
+//   5. aggregate, in event-id order: count the events, sum the listed fields,
+//      or average them. A sum or mean skips an event that does not carry the
+//      field: an unpriced review has no reviewCostUsd and is not averaged in as
+//      zero.
 //
 // A value is a number or null with a reason, never both:
 //   - a ratio whose denominator is 0 reports the metric's zeroDenominatorPolicy;
@@ -110,9 +111,15 @@ function holds(event: RunEvent, c: FilterCondition): boolean {
   return c.notEquals !== undefined ? v !== c.notEquals : v === c.equals;
 }
 
+function byEventId(a: RunEvent, b: RunEvent): number {
+  return a.eventId < b.eventId ? -1 : a.eventId > b.eventId ? 1 : 0;
+}
+
 function evaluateOperand(op: MetricOperand, events: readonly RunEvent[], start: number, end: number): OperandResult {
   const types = new Set(op.events);
-  let selected = events.filter((e) => types.has(e.eventType));
+  // Aggregate in event-id order: a floating-point sum depends on its order, and
+  // the same events read back in another order must give the same value.
+  let selected = events.filter((e) => types.has(e.eventType)).sort(byEventId);
   if (op.dedupeLatestBy !== undefined) {
     const latest = new Map<unknown, RunEvent>();
     for (const e of selected) {
@@ -121,7 +128,7 @@ function evaluateOperand(op: MetricOperand, events: readonly RunEvent[], start: 
       const prev = latest.get(k);
       if (!prev || laterThan(e, prev)) latest.set(k, e);
     }
-    selected = [...latest.values()];
+    selected = [...latest.values()].sort(byEventId);
   }
   const windowField = op.cohortBy ?? 'occurredAt';
   const considered = selected.filter((e) => {

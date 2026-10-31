@@ -320,6 +320,18 @@ test('windows are half-open: an event at the end instant belongs to the next win
   assert.throws(() => evaluateMetric(DICT, 'no_such_metric', [], DAY_1), /unknown metric/);
 });
 
+test('a value does not depend on the order the events are read in', () => {
+  // 0.1 + 0.2 + 0.3 is 0.6000000000000001 in one order and 0.6 in another; a store
+  // that read its events back in another order must not see a changed value.
+  const at = '2026-10-01T09:00:00.000Z';
+  const attempts = [0.1, 0.2, 0.3].map((modelCostUsd, i) =>
+    ev({ eventId: `a${i}`, eventType: 'attempt.completed', occurredAt: at, modelCostUsd, computeCostUsd: 0 }));
+  const task = ev({ eventId: 't', eventType: 'task.completed', occurredAt: at, outcome: 'accepted' });
+  const orders = [[...attempts, task], [task, ...attempts].reverse(), [attempts[2]!, task, attempts[0]!, attempts[1]!]];
+  const values = orders.map((events) => shape(evaluateMetric(DICT, 'cost_per_accepted_task', events, DAY_1, { captureOptIn: ['restricted'] })));
+  assert.equal(new Set(values.map((v) => JSON.stringify(v))).size, 1, JSON.stringify(values));
+});
+
 test('the source event count is the events the window considered', () => {
   const got = evaluateMetric(DICT, 'review_finding_yield', GOLDEN_EVENTS, DAY_1);
   // day-1 cohort: the latest dispositions of three findings (g04, g18, g19) and five review.completed
