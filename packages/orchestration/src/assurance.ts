@@ -101,6 +101,8 @@ export function parseAssuranceOutcome(raw: unknown, context: AssuranceContext): 
   if (roundUsage === null) return fail(`${kind}: usage is not counts and integer micro-USD`);
   const base = { slotVersion: SLOT_VERSION, roundKey: context.roundKey, adjudicationId, usage: roundUsage } as const;
   const mode = v['mode'];
+  // Only PROCEED has a shadow field. Any other outcome that carries the key, even as null, is outside the contract.
+  if (kind !== 'PROCEED' && Object.keys(v).includes('shadow')) return fail(`${kind}: carries a shadow key`);
 
   switch (kind) {
     case 'PROCEED': {

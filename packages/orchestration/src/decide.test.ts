@@ -654,8 +654,15 @@ test('assurance: anything outside the contract is a violation', () => {
     ['BLOCK with an escalation reason', { ...b, reason: 'reviewer-unavailable' }],
     ['BLOCK in an unknown mode', { ...b, mode: 'auto' }],
     ['BLOCK with a malformed section', { ...b, prBodySectionRef: { artifactId: '', sha256: 'f'.repeat(64), kind: 'k' } }],
+    // Only PROCEED carries a shadow key; the others carry none at all, not even a null one.
+    ['ESCALATE with a null shadow', { ...e, shadow: null }],
+    ['ESCALATE with a shadow verdict', { ...e, shadow: SHADOW_PROCEED.shadow }],
+    ['REPAIR with a null shadow', { ...r, shadow: null }],
+    ['REPAIR with a shadow verdict', { ...r, shadow: SHADOW_PROCEED.shadow }],
+    ['BLOCK with a null shadow', { ...b, shadow: null }],
+    ['BLOCK with a shadow verdict', { ...b, mode: 'shadow', shadow: SHADOW_PROCEED.shadow }],
   ];
-  for (const [label, raw] of bad) assert.equal(parseAssuranceOutcome(raw, CTX).ok, false, label);
+  assert.deepEqual(bad.filter(([, raw]) => parseAssuranceOutcome(raw, CTX).ok).map(([label]) => label), [], 'accepted outside the contract');
 });
 
 // ---------------------------------------------------------------------------
@@ -968,6 +975,7 @@ for (const [name, outcome] of [
   ['REPAIR with a skipped round', (r: TaskRequest) => ({ ...(repair(r) as object), nextRound: 4 })],
   ["an outcome for another round's key", (r: TaskRequest) => ({ ...(proceed(r) as object), roundKey: 'att-1:assurance:2' })],
   ['a review cost in USD', (r: TaskRequest) => ({ ...(proceed(r) as object), usage: { ...NO_USAGE, reviewCostMicroUsd: 0.5 } })],
+  ['a BLOCK with a shadow key', (r: TaskRequest) => ({ ...(block(r) as object), shadow: null })],
 ] as const) {
   test(`assurance routing: ${name} is a contract violation: audited, task FAILED, nothing published`, () => {
     const trace = runTaskSequentially(baseInput(), scripted({ assuranceRound: (r) => ({ kind: 'assuranceRound', outcome: outcome(r) }) }));
