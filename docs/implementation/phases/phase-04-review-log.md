@@ -2083,3 +2083,125 @@ Branch `lane/assurance-observability`, from Lane B's `979f755`. Commits:
 - Seeded mutations, each applied to `metric-eval.ts` and reverted (for S23 to transcribe): no dedupe (6 tests fail),
   cohort ignored (7), a missing field averaged as zero (4), the event-id tie reversed (1), an inclusive window end
   (1), the change rule ignoring the numerator (1), no `version-taken` (2), capture opt-in ignored (1).
+
+## S18 — Grafana provisioning and the dashboards in the integration gate (lane `phase-04-b2`, 2026-10-31)
+
+| Commit | Subject |
+|---|---|
+| `18a5aa5` | feat(observability): provision the assurance dashboards and their data source |
+| `a9185e7` | feat(observability): load the assurance dashboards in the integration gate |
+| `631fc08` | fix(observability): aggregate metric events in event-id order |
+| `82b4164` | fix(observability): let the dashboard variables take only values their queries return |
+
+### What landed, against the S18 row
+
+- **Provisioning** (`deploy/grafana/provisioning/**`): the PostgreSQL data source `asep-metrics`
+  (`grafana-postgresql-datasource`, read-only, connection from `ASEP_METRICS_PG_*` in the container environment, no
+  credential in the file), one file provider, and four dashboards — `asep-false-completion`, `asep-review-yield`,
+  `asep-cost`, `asep-recovery` — with fifteen panels, one per required metric of plan §15. Every panel runs one query
+  shape: the latest version from `metric_snapshots_latest` for its metric, dictionary 1.1.0, `dimensions = '{}'`, the
+  dashboard's `organization_id` and `project_id` variables and `$__timeFilter(window_end)`; it returns `time`, `value`,
+  `null_reason`, `snapshot_version`.
+- **J3** (`packages/observability/src/dashboards.test.ts`, suite `asep-suite:assurance-dashboards`, registered):
+  "panels and dictionary metrics correspond one to one", plus the variables and the provider path.
+- **SR-T4**: `scripts/integration/images.mjs` pins `grafana`; `lib.mjs` adds read-only `--mount` arguments to
+  `containerRunArgv`/`runContainer`, `containerAddress` and the `asep-suite:assurance-dashboards-real` registration;
+  `run-integration.mjs` starts Grafana after PostgreSQL and MinIO are healthy, health-gates it on `GET /api/health`
+  (`database: ok`), exports `ASEP_GRAFANA_URL`, `_USER`, `_PASSWORD`, `_PG_DATABASE` to the itests and removes it in
+  `finally`; `ASEP_ITEST_OMIT_BACKEND=grafana` is a new negative hook.
+- **SR-X5**: `compose.yaml`'s grafana service runs the same digest, mounts the provisioning read-only and points the
+  data source at its `postgres` service.
+- **J4** (`apps/control-plane-api/src/assurance/assurance-dashboards.itest.ts`, suite
+  `asep-suite:assurance-dashboards-real`, registered): "grafana loads the provisioned dashboards and panels return
+  snapshot values" — health (version 12.0.2), the data source by uid, every dashboard by uid (`meta.provisioned`,
+  folder, the committed panels), each dashboard variable, and every panel query through `POST /api/ds/query`.
+
+### The expected values are S17's golden, not S16's run (named substitution)
+
+The row's last check compares the panels with "the snapshot values the S16 run produced" (exit J4: "written for the
+E10 run"). S16 is Lane B's and has not landed. The itest instead writes the snapshots of S17's golden run (the
+evaluator recomputing `GOLDEN_EVENTS_BY_DAY` day by day: 66 rows over 45 series, 17 of them with two or three versions)
+and compares each panel with the golden's hand-derived values and the latest version number. The comparison with
+S16's snapshots, and J5 and J6, are added when S16 merges.
+
+### Grafana image and API evidence
+
+- Docker Hub's tag record for `grafana/grafana:12.0.2` (`hub.docker.com/v2/repositories/grafana/grafana/tags/12.0.2`):
+  index digest `sha256:b5b59bfc7561634c2d7b136c4543d702ebcc94a3da477f21ff26f89ffd4214fa`, last updated
+  2025-06-17T19:12:27Z; platform manifests linux/amd64 `sha256:fe89b739…`, linux/arm64 `sha256:df406be5…`, linux/arm
+  `sha256:0f4eae09…`.
+- `docker pull grafana/grafana@sha256:b5b59bfc…` (the only download, authorized): `Digest: sha256:b5b59bfc…`, `Status:
+  Downloaded newer image`; local image `sha256:8c161ed7e7d0…`, arm64.
+- Live on that image: `GET /api/health` → `{"database":"ok","version":"12.0.2","commit":"5bda17e7c1cb313eb96266f2fdda73a6b35c3977"}`.
+- Research register §8 question 6 (the dashboard-by-uid path on 12.x): `GET /api/dashboards/uid/:uid` answers 200 on
+  12.0.2 with `meta.provisioned: true`, `meta.provisionedExternalId` (the file name) and `meta.folderUid`;
+  `GET /api/datasources/uid/:uid` returns `readOnly: true` for a provisioned source; `POST /api/ds/query` returns
+  `numeric` as nullable float64, `integer` as int32, `timestamptz` as time in epoch milliseconds.
+- Documentation read: Grafana provisioning (environment expansion `${VAR}`, provider and data source files), the
+  PostgreSQL data source configuration, the data source and dashboard HTTP APIs (v12.0 archive), and
+  `conf/defaults.ini` at `v12.0.2`, whose `[plugins] preinstall = "grafana-lokiexplore-app"` would download a plugin
+  at start. The gate and compose set `GF_PLUGINS_PREINSTALL_DISABLED`, and turn off usage reports, update checks and
+  the news feed. The container log on this host shows the override and no download.
+
+### Decisions and deviations
+
+1. **The itest creates `metric_snapshots` until S8's migration does.** S8 owns `0201_metric_snapshots`; it has not
+   landed. After `migrate()`, the itest creates the table, its triggers and the latest-version view from data model
+   §3.2 verbatim only when `to_regclass('public.metric_snapshots')` is null. Once S8 lands, the migration's table is
+   used and the stand-in is dead code for S8 to delete; if S8's columns differ, the itest's insert fails loudly.
+2. **The data source reads its own database**, `asep_dashboards`, which the itest creates on the gate's PostgreSQL, so
+   no other suite's migrations or rows meet the snapshots.
+3. **Grafana reaches PostgreSQL by the container's address** on the Docker network (`docker inspect`): the gate
+   publishes ports on the host's loopback only, which another container cannot reach.
+4. **Table panels.** A time-series panel would split its series on the text column; a table shows each window's
+   value or its null reason and the version.
+5. **Dashboard variables.** `POST /api/ds/query` expands only the `$__` macros; Grafana's dashboard page replaces a
+   single-value variable with its raw value before it sends the query. The itest does that replacement for the
+   dashboard's own two variables and refuses any other variable name.
+6. **Panels name the dictionary version.** A dictionary bump makes J3 fail until the panels move to the new version,
+   so a semantic change of a metric cannot reach a panel unreviewed.
+7. **Shared surfaces touched by assignment.** SR-T4 edits `scripts/integration/{images.mjs, lib.mjs,
+   run-integration.mjs}`; their tests are in `run-integration.test.ts` and `gate-fail-closed.itest.ts` (one nested
+   case: a run without Grafana exits non-zero at the Grafana health check, on its own port 53001 so it can never find
+   the outer gate's Grafana). These files are Lane R's and `phase-02-ci`'s otherwise, and `lane/linux-ci` is replacing
+   the MinIO image in the same two gate files; every edit here is additive and apart from the MinIO lines except the
+   imports and the shared `finally`, for the controller's union at merge. `compose.yaml` is SR-X5 (R9).
+8. **Not verified:** the amd64 pull on the Linux runner (the index digest resolves to `fe89b739…` there); a CI run of
+   this branch.
+9. **Variables take only listed values** (`82b4164`): panels interpolate the variables into SQL raw, and a Grafana
+   query variable accepts a typed value unless `allowCustomValue` is false (the property is on the v12.0.2
+   `VariableWithMultiSupport` model). Both variables set it false, single-valued, no "All". The data source still runs
+   as the database owner in compose and the gate; any shared deployment needs a read-only role on the snapshot view,
+   and Grafana does not apply ASEP's tenant authorization (production Grafana is out of scope, plan §5.2).
+10. Grafana logs one error-level line at start, `Failed to read plugin provisioning files from directory
+   /etc/grafana/provisioning/plugins`, because no `plugins/` directory is provisioned; it is harmless and nothing is
+   added for it.
+
+### Test-first record
+
+- `18a5aa5`: `dashboards.test.ts` was written first and failed 3 of 3 (no provisioning) before the files; 3/3 after.
+  Seeded mutations of the committed dashboards, each reverted: a panel dropped, a panel reading every version, a panel
+  on another data source, two panels on one metric — each fails one test.
+- `a9185e7`: the four new `run-integration.test.ts` cases were written first; the file failed to load (no
+  `containerAddress` export) before `lib.mjs` changed; 31/31 after. The itest was written before the gate wiring. Its
+  first run was a focused single-file run against throwaway PostgreSQL and Grafana containers (1/1); a committed panel
+  changed to read every version makes it fail at that panel (`asep-review-yield` panel 3,
+  `review_adjudication_coverage`, whose day-1 series has three versions). The nested Grafana-missing case first ran in
+  the slice-end integration gate.
+
+### Follow-up to S17 found in self-review (`631fc08`)
+
+The evaluator summed in the order the caller passed the events. A floating-point sum depends on that order
+(0.1 + 0.2 + 0.3 is 0.6000000000000001 or 0.6), so the same events read back from a store in another order could
+append a snapshot version whose value did not change. Each operand now aggregates in event-id order. Test first:
+"a value does not depend on the order the events are read in" failed (1 of 18) before the change, 18/18 after. The
+golden values are binary fractions and do not move.
+
+### Slice-end gates
+
+- S17 at `12096a9`, `gate.sh phase-04-b2 pnpm verify:all`: exit 1, tests 1609, pass 1607, fail 2,
+  `samples=246 max_node_launch_ms=53446 stalls_ge_10s=2`. A host-stall run, not evidence either way. Both failures
+  are `apps/control-plane-api/src/crash-recovery.test.ts` cases whose sandbox start died at its 30 s bound
+  (`docker sandbox unavailable: docker CLI or daemon not reachable: version --format … signal SIGKILL after 30005ms`);
+  neither touches code this lane changed.
+- S18: `pnpm test:integration` and `pnpm verify:all` at the head after this section; results are in the lane report.
