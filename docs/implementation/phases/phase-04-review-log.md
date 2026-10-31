@@ -2006,3 +2006,58 @@ Since `f1a9926` (rebased `6d13e60`), rule C's prior candidates are stored once, 
 `priorCandidates` (by item id), and each rule C item's `synthetic.priorCandidates` lists the ids it shows.
 Written inline on all 260 references, the manifest was 514,500 bytes, over the large-file gate's 512,000; the gate was
 not loosened.
+
+## After the rebase: corpus sources, scanner boundary and the gate (2026-10-31, R59)
+
+### Corpus source documents are read at the collection commit — `cc185af`
+
+The collector read the review documents and the phase report from the working tree. `863fed0` rewrote
+`phase-02-report.md` after the corpus was collected (a paragraph removed, `implementation_head_sha` changed), so the
+collector test failed after the merge of the vertical slice. The collector and the freeze now read every corpus source
+document at one fixed commit, `CORPUS_SOURCE_COMMIT` = `00a6889` (`evals/review-corpus/collect.ts`, `sourceDocument`),
+through `git cat-file blob`, never the working tree; `freeze.ts` takes the 90-day plan and the review documents the
+same way. No re-freeze: `collect.ts --write` (153 items: 69 plan-defect, 65 included, 19 reviewed-tree-unknown; 122
+excerpts) and `freeze.ts --write` reproduce the committed bytes; the manifest sha256
+`5a407d6ca0fc40689f9603e6e62a8d31eaa70579dd3a33399cc6e2f390404987` and the hash over every self-history file
+`fb5fdd9dfc1d4c4af2d4c40938f194b01f7145a91057ef0b53bbe66b92854f05` are the same before and after, and git shows no
+corpus file changed.
+
+Failing first: the existing collect test was red at the merged head; the two new tests ("corpus source documents are
+read at one fixed commit, never from the working tree" and "the freeze reads its source documents at the corpus
+source commit, not from the working tree") failed before the change. The freeze test freezes a copy of the corpus
+directory alone, so any working-tree read fails. Seeded mutations (collector reads the working tree; freeze reads the
+working tree; plan read from the working tree) each fail a test.
+
+### Secret patterns keep the shared word boundary — `979f755`
+
+Lane R's `9fbde9d` gave the two `sk-` patterns a leading boundary in `scripts/lib/secret-patterns.sh`
+(`(^|[^A-Za-z0-9_])`, and `sk-ant-` also accepts `_`), so the `sk-` at the end of every `asep-task-<ULID>` workflow
+id is no key. The parity test (`checks.test.ts`) failed after the merge. The TypeScript copies
+(`packages/application/src/assurance/secret-patterns.ts`) now carry the same patterns; `javascriptPattern` reads the
+boundary as a lookbehind, so a hit's offset is the key's own start. The lookbehind also holds after an escaped line
+break or tab and after a `\uXXXX` escape, once or twice escaped: the packet and the reviewer request carry text as JSON
+strings, where a key at the start of a line follows `\n`, never a line start. A literal translation of the boundary
+would let such a key through the egress decision and the request re-scan; this is an addition beyond the shell
+pattern, stated here.
+
+Negative controls: workflow ids bare, quoted, after `=`, and after an escaped line break in JSON; `whisk-ant-…`
+inside a word. Positive cases: line start, a later line, after `=`, after either quote, a space or a tab, after an
+escaped line break, tab, control escape `\u0001` and a twice-escaped break; offsets start at `sk-`; an unsupported
+boundary throws. `egress.test.ts`: a key at the start of a line inside JSON text stops egress in the packet and in the
+request re-scan at one and two levels of escaping; a workflow id in the same places is `CLEAR`. Failing first: the
+parity test, the new controls test and the egress test failed before the change. Seeded mutations (no JSON escapes, no
+`\u` escape, boundary dropped, boundary consumed, the old patterns) each fail a test.
+
+### The gate at `979f755`
+
+`~/.openclaw/lanes/gate.sh phase-04 pnpm verify:all`, three runs:
+
+1. Stopped by this session's own background time limit (10 minutes) during the test step; no result. The sampler log
+   reads `samples=221 max_node_launch_ms=31519 stalls_ge_10s=2`.
+2. Red: 1 of 1585 tests failed, `apps/control-plane-api/src/crash-recovery.test.ts` › "through the GitHub adapter and
+   port, a successor over a PR a human closed fails the task and writes nothing", with `SandboxTeardownError`: the
+   fake `docker ps` was killed at its 30 s bound. The host's load average was 39 and the gate recorded
+   `samples=387 max_node_launch_ms=42207 stalls_ge_10s=2`. The test passed alone at the same head (55 s). The
+   branch's two commits touch neither the test nor the code under it.
+3. Green: `verify:all: PASS (all gates green)`, 1585 tests, 1585 pass, `canonical-tests: PASS (85 test file(s), 50
+   required suite(s) verified)`, `samples=588 max_node_launch_ms=44229 stalls_ge_10s=4`.
