@@ -93,8 +93,10 @@ jobs:
           docker run --rm --network none alpine@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b true
           echo "docker OK: sandbox can run with --network none"
 
-      # Provisions digest-pinned PostgreSQL + MinIO, health-checks both, then
-      # runs every *.itest.ts suite against the REAL backends and verifies each
-      # required suite actually reported its marker.
+      # Builds the workspace the suites import (tsc -b; a failed build fails the
+      # job), refuses a Docker Engine older than 28.0.0, provisions
+      # digest-pinned PostgreSQL + MinIO, health-checks both, then runs every
+      # *.itest.ts suite against the REAL backends and verifies each required
+      # suite actually reported its marker.
       - name: Integration gate (real PostgreSQL + MinIO + Docker sandbox)
         run: pnpm test:integration

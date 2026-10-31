@@ -15,9 +15,12 @@ import { assertDigestPinned, DIGEST_PINNED, IMAGES } from './images.mjs';
 import { discoverItestFiles, missingRequiredItestSuites, REQUIRED_ITEST_SUITES, suiteMarker, resolveDocker, waitReady } from './lib.mjs';
 // @ts-expect-error — .mjs helpers have no type declarations; we test their runtime contract.
 import { assertLoopbackPublish, containerRunArgv, loopbackPublish, runContainer } from './lib.mjs';
+// @ts-expect-error — .mjs helpers have no type declarations; we test their runtime contract.
+import { buildWorkspace, engineVersionGap, MIN_DOCKER_ENGINE } from './lib.mjs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 
 console.log('SUITE-ID: asep-suite:integration-gate');
 
@@ -379,4 +382,78 @@ test('the CI integration job asserts a real Docker daemon before running suites'
     /--network none/,
     'the job proves the sandbox can run network-isolated before trusting F4',
   );
+});
+
+// ---------------------------------------------------------------------------
+// The gate builds what the itests import. Each workspace package's `main` is
+// its dist/, so a checkout that was never built has nothing to import, and one
+// built before its last change would be tested as it was. The gate runs
+// `tsc -b` first; these tests hold it to that on a project of their own.
+// ---------------------------------------------------------------------------
+
+const TSC = join(REPO_ROOT, 'node_modules', 'typescript', 'bin', 'tsc');
+
+function tinyProject(source: string): string {
+  const dir = mkdtempSync(join(tmpdir(), 'asep-itest-build-'));
+  mkdirSync(join(dir, 'src'));
+  writeFileSync(join(dir, 'tsconfig.json'), JSON.stringify({
+    compilerOptions: {
+      composite: true, rootDir: 'src', outDir: 'dist', module: 'nodenext', target: 'es2022', strict: true, types: [],
+    },
+    include: ['src'],
+  }));
+  writeFileSync(join(dir, 'src', 'index.ts'), source);
+  return dir;
+}
+
+test('the gate build brings out-of-date output up to date, so no suite runs against older output', () => {
+  const dir = tinyProject('export const answer: number = 1;\n');
+  try {
+    assert.equal(buildWorkspace(dir, TSC), undefined);
+    assert.match(readFileSync(join(dir, 'dist', 'index.js'), 'utf8'), /answer = 1/, 'a checkout never built is built');
+    writeFileSync(join(dir, 'src', 'index.ts'), 'export const answer: number = 2;\n');
+    assert.equal(buildWorkspace(dir, TSC), undefined);
+    assert.match(readFileSync(join(dir, 'dist', 'index.js'), 'utf8'), /answer = 2/, 'a stale build is rebuilt');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a build that fails, or a compiler that cannot run, fails the gate by name', () => {
+  const dir = tinyProject('export const answer: number = "no";\n');
+  try {
+    // tsc still emits on a type error; the exit status is what fails the gate.
+    const failed = buildWorkspace(dir, TSC) ?? '';
+    assert.match(failed, /^the workspace build failed \(tsc -b, exit 2\)/);
+    assert.match(failed, /TS2322/, 'the compiler output is in the reason');
+    assert.match(buildWorkspace(dir, join(dir, 'no-such-tsc')) ?? '', /^the workspace build failed/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('the gate builds before it starts a backend or runs a suite, and stops on a failed build', () => {
+  const src = readFileSync(join(HERE, 'run-integration.mjs'), 'utf8');
+  const build = src.indexOf('const buildFailure = buildWorkspace(REPO_ROOT);');
+  assert.notEqual(build, -1, 'the gate builds the workspace');
+  assert.ok(build < src.indexOf('runContainer(docker.bin'), 'it builds before any backend starts');
+  assert.ok(build < src.indexOf('nodeTestArgs(files)'), 'it builds before any suite runs');
+  assert.match(src.slice(build), /^const buildFailure = buildWorkspace\(REPO_ROOT\);\n\s*if \(buildFailure\) return fail\(buildFailure\);/,
+    'a failed build fails the gate');
+});
+
+// The agent network's isolated gateway mode needs Docker Engine 28.0.0 or
+// later. An older engine fails the gate by name, not a suite part way through.
+test('the gate refuses a Docker Engine older than the isolated gateway mode needs, or one it cannot read', () => {
+  assert.equal(MIN_DOCKER_ENGINE, '28.0.0');
+  for (const v of ['28.0.0', '28.0.4', '28.0.4+dfsg1', '29.6.1', '100.0.0']) assert.equal(engineVersionGap(v), undefined, v);
+  for (const v of ['27.5.1', '27.99.99', '20.10.24']) {
+    assert.match(engineVersionGap(v) ?? '', /^Docker Engine .* is older than 28\.0\.0/, v);
+  }
+  for (const v of ['', 'garbage', '28']) assert.match(engineVersionGap(v) ?? '', /^cannot read the Docker Engine version/, v);
+  const src = readFileSync(join(HERE, 'run-integration.mjs'), 'utf8');
+  const check = src.indexOf('const engineGap = engineVersionGap(docker.serverVersion);');
+  assert.notEqual(check, -1, 'the gate checks the engine it found');
+  assert.ok(check < src.indexOf('runContainer(docker.bin'), 'before any backend starts');
+  assert.match(src.slice(check), /^const engineGap = engineVersionGap\(docker\.serverVersion\);\n\s*if \(engineGap\) return fail\(engineGap\);/);
 });
