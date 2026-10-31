@@ -219,12 +219,15 @@ test('upgrade path: a database at the migration set before 0107 takes 0107 alone
       const phase2 = MIGRATIONS.filter((m) => m.id < '0100');
       assert.equal(phase2[phase2.length - 1]?.id, '0019_command_output_references');
       await migrate(client, phase2);
-      const upgrade = await migrate(client);
+      // The run-events set: Phase 2 and 0107, without the orchestration state
+      // migrations between them (their upgrade path is orchestration.itest.ts).
+      const withRunEvents = MIGRATIONS.filter((m) => m.id < '0100' || m.id === '0107_run_events');
+      const upgrade = await migrate(client, withRunEvents);
       assert.deepEqual(upgrade.applied, ['0107_run_events']);
-      const again = await migrate(client);
+      const again = await migrate(client, withRunEvents);
       assert.deepEqual(again.applied, []);
       const registry = await client.query('select id from schema_migrations order by applied_at, id');
-      assert.deepEqual(registry.rows.map((r) => r['id']), MIGRATIONS.map((m) => m.id));
+      assert.deepEqual(registry.rows.map((r) => r['id']), withRunEvents.map((m) => m.id));
     } finally {
       await pool.end();
     }

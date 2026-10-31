@@ -227,6 +227,10 @@ export const REQUIRED_SUITES = Object.freeze({
   // writes on it.
   'asep-suite:assurance-slot-contract': 'packages/application/src/orchestration-activities/assurance-slot.test.ts',
   'asep-suite:run-event-sink': 'adapters/persistence/src/run-events/run-event-sink.test.ts',
+  // The orchestration state stores: the attempt ordinal, the projection writer,
+  // the workspace registry and its resolver over the lease table, the approval
+  // requests with their decision outbox, the budget ledger and a run's governance.
+  'asep-suite:orchestration-persistence': 'adapters/persistence/src/orchestration/orchestration-persistence.test.ts',
 });
 
 /** The machine-readable marker a suite prints at module load: `SUITE-ID: <id>`. */

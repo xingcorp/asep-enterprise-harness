@@ -1147,6 +1147,434 @@ create trigger run_events_append_only
   for each row execute function run_events_reject_mutation();
 `;
 
+// ---------------------------------------------------------------------------
+// 0100 — the task statuses of durable orchestration.
+//
+// A task can now be paused, wait for a human approval, or end because its
+// budget is spent. The constraint is the inline check of 0002, which
+// PostgreSQL names tasks_status_check; it is replaced by name, with no
+// IF EXISTS, so a database where the name differs fails here instead of
+// keeping two checks. attempts.status is not touched here.
+// ---------------------------------------------------------------------------
+const M0100 = `
+alter table tasks
+  drop constraint tasks_status_check,
+  add constraint tasks_status_check check (status in
+    ('PENDING','READY','EXECUTING','VERIFYING','WAITING_FOR_HUMAN_REVIEW','FAILED','BLOCKED','CANCELLED',
+     'PAUSED','WAITING_FOR_APPROVAL','BUDGET_EXHAUSTED'));
+`;
+
+// ---------------------------------------------------------------------------
+// 0101 — tasks, runs and attempts are projections of their workflow.
+//
+// The workflow decides; these columns only show what it decided. Each row
+// carries the sequence number of the last projection written to it, so a
+// projection is applied only when its number is higher (an engine retry of an
+// older write changes nothing), and a task or run is bound once to the one
+// workflow that projects it (workflow_id, unique), so a second orchestrator's
+// write is refused instead of interleaved.
+// ---------------------------------------------------------------------------
+const M0101 = `
+alter table tasks
+  add column workflow_id text,
+  add column projection_seq bigint not null default 0,
+  add column projection_updated_at timestamptz;
+alter table tasks
+  add constraint tasks_workflow_id_uq unique (workflow_id),
+  add constraint tasks_workflow_id_shape check (workflow_id is null or length(workflow_id) between 1 and 255),
+  add constraint tasks_projection_seq_nonnegative check (projection_seq >= 0);
+
+alter table runs
+  add column workflow_id text,
+  add column projection_seq bigint not null default 0,
+  add column projection_updated_at timestamptz;
+alter table runs
+  add constraint runs_workflow_id_uq unique (workflow_id),
+  add constraint runs_workflow_id_shape check (workflow_id is null or length(workflow_id) between 1 and 255),
+  add constraint runs_projection_seq_nonnegative check (projection_seq >= 0);
+
+alter table attempts
+  add column projection_seq bigint not null default 0,
+  add column projection_updated_at timestamptz;
+alter table attempts
+  add constraint attempts_projection_seq_nonnegative check (projection_seq >= 0);
+`;
+
+// ---------------------------------------------------------------------------
+// 0102 — an attempt is identified by its task and its ordinal.
+//
+// An attempt row got a fresh id on every insert, so an engine retry of "create
+// attempt" after a lost response inserted a second attempt. Now every attempt
+// has an attempt_number, unique per task: the orchestrator registers attempt n
+// of a task by that natural key, and a retry finds the row it already wrote.
+//
+// Each attempt also records its kind and its repair lineage, which are separate
+// facts: a repair attempt names the attempt whose assurance round asked for the
+// repair (parent_attempt_id, an earlier attempt of the same task) and the
+// repair order that round produced; a retry carries the lineage of the attempt
+// it replaces, if that one had any; an initial attempt has none. The repair
+// order is a scoped artifact reference with checksum and kind, like every other
+// reference (0017, 0019), and is registered.
+//
+// Existing attempts are numbered in the order they started (ties by id) and
+// are initial attempts. A writer that names no ordinal (the Phase 2 attempt
+// repository) gets the next one of its task, under a lock on the task row, so
+// Phase 2 call sites keep working unchanged. Append-only: earlier migrations
+// are untouched.
+// ---------------------------------------------------------------------------
+const M0102 = `
+alter table attempts
+  add constraint attempts_id_scope_task_uq unique (id, organization_id, project_id, task_id);
+
+alter table attempts
+  add column attempt_number integer,
+  add column attempt_kind text not null default 'initial',
+  add column parent_attempt_id char(26),
+  add column repair_order_artifact_id char(26),
+  add column repair_order_sha256 text;
+
+update attempts a
+  set attempt_number = n.ordinal
+  from (
+    select id, row_number() over (partition by task_id order by started_at, id) as ordinal
+    from attempts) n
+  where n.id = a.id;
+
+alter table attempts alter column attempt_number set not null;
+
+alter table attempts
+  add constraint attempts_attempt_number_positive check (attempt_number > 0),
+  add constraint attempts_attempt_kind_known check (attempt_kind in ('initial','retry','repair')),
+  add constraint attempts_parent_not_self check (parent_attempt_id <> id),
+  add constraint attempts_parent_same_task_fk
+    foreign key (parent_attempt_id, organization_id, project_id, task_id)
+    references attempts (id, organization_id, project_id, task_id);
+
+alter table attempts add column repair_order_kind text
+  generated always as (case when repair_order_artifact_id is null then null else 'repair-order' end) stored;
+alter table attempts add constraint attempts_repair_order_ref_paired
+  check ((repair_order_artifact_id is null) = (repair_order_sha256 is null));
+alter table attempts add constraint attempts_repair_order_ref_fk
+  foreign key (repair_order_artifact_id, organization_id, project_id, repair_order_sha256, repair_order_kind)
+  references artifacts (id, organization_id, project_id, sha256, kind);
+
+alter table attempts add constraint attempts_lineage_shape check (
+  (repair_order_artifact_id is null) = (parent_attempt_id is null)
+  and (attempt_kind <> 'repair' or repair_order_artifact_id is not null)
+  and (attempt_kind <> 'initial' or repair_order_artifact_id is null));
+
+create unique index attempts_task_ordinal on attempts (task_id, attempt_number);
+
+insert into artifact_reference_columns (table_name, reference_name, kind) values
+  ('attempts', 'repair_order', 'repair-order');
+
+create function asep_attempt_ordinal() returns trigger
+language plpgsql
+as $fn$
+declare
+  parent_number integer;
+begin
+  if new.attempt_number is null then
+    perform 1 from tasks where id = new.task_id for no key update;
+    select coalesce(max(attempt_number), 0) + 1 into new.attempt_number
+      from attempts where task_id = new.task_id;
+  end if;
+  if new.parent_attempt_id is not null then
+    select attempt_number into parent_number from attempts where id = new.parent_attempt_id;
+    if parent_number is null or parent_number >= new.attempt_number then
+      raise exception 'attempt %: the parent of its repair lineage must be an earlier attempt of its task', new.id
+        using errcode = '23514';
+    end if;
+  end if;
+  return new;
+end
+$fn$;
+
+create trigger attempt_ordinal
+  before insert or update of attempt_number, parent_attempt_id on attempts
+  for each row execute function asep_attempt_ordinal();
+`;
+
+// ---------------------------------------------------------------------------
+// 0104 — the durable workspace registry.
+//
+// The worktree manager kept a workspace's path, base and baseline refs in
+// process memory, so after a worker restart nobody could inspect, commit,
+// reconcile or clean that workspace up. One row per attempt now records which
+// worktree serves it, on which host, at which base, created under which lease
+// (bound by a composite key to that very lease of the same tenant, binding and
+// attempt, with its epoch), and in which state.
+//
+// A trigger keeps what identifies a workspace immutable and lets its state only
+// move forward: CREATING → ACTIVE, CREATING or ACTIVE → CLEANED or QUARANTINED,
+// QUARANTINED → CLEANED. Baseline refs are fixed once the workspace is active,
+// and a reason is recorded exactly when it is cleaned or quarantined. Paths are
+// relative, made of plain segments, never absolute and never '.' or '..'.
+// workspace_leases is not touched.
+// ---------------------------------------------------------------------------
+const M0104 = `
+create table workspaces (
+  id                    char(26) primary key,
+  organization_id       char(26) not null,
+  project_id            char(26) not null,
+  repository_binding_id char(26) not null,
+  attempt_id            char(26) not null,
+  lease_id              char(26) not null,
+  lease_epoch           bigint not null,
+  host_id               text not null check (host_id ~ '^[A-Za-z0-9._-]{1,255}$'),
+  path_rel              text not null check (
+    length(path_rel) <= 1024
+    and path_rel ~ '^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$'
+    and path_rel !~ '(^|/)[.]{1,2}(/|$)'),
+  base_sha              text not null check (base_sha ~ '^[0-9a-f]{40}$'),
+  baseline_refs         jsonb not null default '[]'::jsonb check (jsonb_typeof(baseline_refs) = 'array'),
+  state                 text not null check (state in ('CREATING','ACTIVE','CLEANED','QUARANTINED')),
+  state_reason          text check (state_reason is null or length(state_reason) between 1 and 1000),
+  created_at            timestamptz not null default now(),
+  updated_at            timestamptz not null default now(),
+  version               integer not null default 0,
+  constraint workspaces_attempt_uq unique (attempt_id),
+  constraint workspaces_scoped_uq unique (id, organization_id, project_id),
+  constraint workspaces_attempt_fk foreign key (attempt_id, organization_id, project_id, repository_binding_id)
+    references attempts (id, organization_id, project_id, repository_binding_id),
+  constraint workspaces_lease_fk
+    foreign key (lease_id, organization_id, project_id, repository_binding_id, attempt_id, lease_epoch)
+    references workspace_leases (id, organization_id, project_id, repository_binding_id, attempt_id, fencing_epoch),
+  constraint workspaces_reason_when_ended check ((state in ('CLEANED','QUARANTINED')) = (state_reason is not null))
+);
+
+create function asep_workspace_guard() returns trigger
+language plpgsql
+as $fn$
+begin
+  if (new.id, new.organization_id, new.project_id, new.repository_binding_id, new.attempt_id,
+      new.lease_id, new.lease_epoch, new.host_id, new.path_rel, new.base_sha)
+     is distinct from
+     (old.id, old.organization_id, old.project_id, old.repository_binding_id, old.attempt_id,
+      old.lease_id, old.lease_epoch, old.host_id, old.path_rel, old.base_sha) then
+    raise exception 'workspace % identity is immutable', old.id
+      using errcode = '23514';
+  end if;
+  if new.state <> old.state and not (
+       (old.state = 'CREATING' and new.state in ('ACTIVE', 'CLEANED', 'QUARANTINED'))
+    or (old.state = 'ACTIVE' and new.state in ('CLEANED', 'QUARANTINED'))
+    or (old.state = 'QUARANTINED' and new.state = 'CLEANED')) then
+    raise exception 'workspace % cannot move from % to %', old.id, old.state, new.state
+      using errcode = '23514';
+  end if;
+  if new.state = old.state and new.state_reason is distinct from old.state_reason then
+    raise exception 'workspace % keeps the reason it was % for', old.id, lower(old.state)
+      using errcode = '23514';
+  end if;
+  if new.baseline_refs is distinct from old.baseline_refs and old.state <> 'CREATING' then
+    raise exception 'workspace % baseline refs are fixed once it is %', old.id, lower(old.state)
+      using errcode = '23514';
+  end if;
+  return new;
+end
+$fn$;
+
+create trigger workspace_guard
+  before update on workspaces
+  for each row execute function asep_workspace_guard();
+`;
+
+// ---------------------------------------------------------------------------
+// 0105 — approval requests, human decisions and the decision outbox.
+//
+// A workflow that needs a human's yes opens a request whose id it derives
+// itself (<workflow id>:<gate number>), so a retried open finds its row. The
+// request's payload is a closed shape per kind: a budget extension states the
+// shortfall in integer micro-USD and nothing else, a publication approval
+// carries nothing (its attempt is the subject). A request belongs to its run,
+// its task to that run and its attempt to that task, by composite keys.
+//
+// A human decision is the evidence of who decided what: at most one per
+// request, with the deciding principal, the rationale (which stays here and
+// never enters workflow history), and an extension amount in exact micro-USD
+// only on an approve. Its delivery row is written in the same transaction, so a
+// crash between the decision and its delivery to the workflow leaves a row the
+// relay finds, never a decided gate the workflow does not hear about.
+// Append-only: earlier migrations are untouched.
+// ---------------------------------------------------------------------------
+const M0105 = `
+alter table tasks
+  add constraint tasks_id_scope_run_uq unique (id, organization_id, project_id, run_id);
+
+create function asep_approval_payload_valid(kind text, payload jsonb)
+returns boolean
+language sql
+immutable
+as $fn$
+  select coalesce(
+    case
+      when payload is null or jsonb_typeof(payload) <> 'object' then false
+      when kind = 'budget-extension' then
+        payload - 'shortfallMicroUsd' = '{}'::jsonb
+        and jsonb_typeof(payload->'shortfallMicroUsd') = 'number'
+        and payload->>'shortfallMicroUsd' ~ '^[1-9][0-9]{0,15}$'
+      when kind = 'publish-change' then payload = '{}'::jsonb
+      else false
+    end,
+    false)
+$fn$;
+
+create table approval_requests (
+  id              text primary key,
+  organization_id char(26) not null,
+  project_id      char(26) not null,
+  run_id          char(26) not null,
+  task_id         char(26),
+  attempt_id      char(26),
+  workflow_id     text not null check (length(workflow_id) between 1 and 255),
+  kind            text not null check (kind in ('budget-extension','publish-change')),
+  requested_by    text not null check (requested_by = 'harness' or requested_by ~ '^[0-9A-HJKMNP-TV-Z]{26}$'),
+  payload         jsonb not null,
+  status          text not null default 'PENDING'
+                  check (status in ('PENDING','APPROVED','REJECTED','EXPIRED','CANCELLED')),
+  expires_at      timestamptz not null,
+  created_at      timestamptz not null default now(),
+  updated_at      timestamptz not null default now(),
+  version         integer not null default 0,
+  constraint approval_requests_id_from_workflow check (
+    left(id, length(workflow_id) + 1) = workflow_id || ':'
+    and substr(id, length(workflow_id) + 2) ~ '^[0-9]{1,18}$'),
+  constraint approval_requests_payload_closed check (asep_approval_payload_valid(kind, payload)),
+  constraint approval_requests_attempt_needs_task check (attempt_id is null or task_id is not null),
+  constraint approval_requests_kind_subject check (
+    (kind <> 'budget-extension' or task_id is not null)
+    and (kind <> 'publish-change' or attempt_id is not null)),
+  constraint approval_requests_run_fk foreign key (run_id, organization_id, project_id)
+    references runs (id, organization_id, project_id),
+  constraint approval_requests_task_fk foreign key (task_id, organization_id, project_id, run_id)
+    references tasks (id, organization_id, project_id, run_id),
+  constraint approval_requests_attempt_fk foreign key (attempt_id, organization_id, project_id, task_id)
+    references attempts (id, organization_id, project_id, task_id),
+  constraint approval_requests_scoped_uq unique (id, organization_id, project_id)
+);
+
+create table approval_decisions (
+  id              char(26) primary key check (id ~ '^[0-9A-HJKMNP-TV-Z]{26}$'),
+  organization_id char(26) not null,
+  project_id      char(26) not null,
+  request_id      text not null,
+  decision        text not null check (decision in ('approve','reject')),
+  decided_by      char(26) not null check (decided_by ~ '^[0-9A-HJKMNP-TV-Z]{26}$'),
+  rationale       text not null check (length(rationale) between 1 and 4000),
+  extension_usd   numeric check (extension_usd is null or (extension_usd > 0 and extension_usd = round(extension_usd, 6))),
+  decided_at      timestamptz not null default now(),
+  constraint approval_decisions_one_per_request unique (request_id),
+  constraint approval_decisions_extension_on_approve check (extension_usd is null or decision = 'approve'),
+  constraint approval_decisions_request_fk foreign key (request_id, organization_id, project_id)
+    references approval_requests (id, organization_id, project_id),
+  constraint approval_decisions_scoped_uq unique (id, organization_id, project_id)
+);
+
+create table approval_decision_deliveries (
+  decision_id     char(26) primary key,
+  organization_id char(26) not null,
+  project_id      char(26) not null,
+  workflow_id     text not null check (length(workflow_id) between 1 and 255),
+  update_id       char(26) not null,
+  status          text not null default 'PENDING' check (status in ('PENDING','DELIVERED','TARGET_CLOSED')),
+  attempts        integer not null default 0 check (attempts >= 0),
+  next_attempt_at timestamptz not null default now(),
+  last_error_code text check (last_error_code is null or last_error_code ~ '^[a-z0-9][a-z0-9-]{0,63}$'),
+  delivered_at    timestamptz,
+  version         integer not null default 0,
+  constraint approval_deliveries_update_is_decision check (update_id = decision_id),
+  constraint approval_deliveries_decision_fk foreign key (decision_id, organization_id, project_id)
+    references approval_decisions (id, organization_id, project_id)
+);
+create index approval_deliveries_due on approval_decision_deliveries (status, next_attempt_at);
+`;
+
+// ---------------------------------------------------------------------------
+// 0106 — the budget ledger and the run's governance.
+//
+// What a run spends is appended to a ledger, one row per fact: an attempt's
+// usage, a recorded overrun, an extension a human granted. Each row carries an
+// idempotency key unique in its tenant, so a retried write finds its row. Money
+// is exact to the micro-USD, the source says who measured it (a human only
+// grants), usage and overruns belong to an attempt, and an extension to a task;
+// the attempt belongs to the task and the task to the run, by composite keys.
+//
+// A run gains its budget and its governance: the caps, whether a publication
+// needs a human approval, and the principal who set them. They are set once,
+// when created_by is first written; a trigger refuses any later change, so
+// publicationApprovalRequired cannot change after the run starts. Phase 2 runs
+// keep them unset. Append-only: earlier migrations are untouched.
+// ---------------------------------------------------------------------------
+const M0106 = `
+create table budget_ledger (
+  id                 char(26) primary key,
+  organization_id    char(26) not null,
+  project_id         char(26) not null,
+  run_id             char(26) not null,
+  task_id            char(26),
+  attempt_id         char(26),
+  entry_kind         text not null check (entry_kind in ('attempt-usage','extension-granted','overrun')),
+  cost_usd           numeric not null check (cost_usd >= 0 and cost_usd = round(cost_usd, 6)),
+  usage_out_of_bound boolean not null default false check (entry_kind = 'overrun' or not usage_out_of_bound),
+  input_tokens       bigint check (input_tokens is null or input_tokens >= 0),
+  output_tokens      bigint check (output_tokens is null or output_tokens >= 0),
+  tool_calls         integer check (tool_calls is null or tool_calls >= 0),
+  wall_clock_ms      bigint check (wall_clock_ms is null or wall_clock_ms >= 0),
+  source             text not null check (source in ('provider-reported','harness-measured','human-granted')),
+  idempotency_key    text not null check (idempotency_key ~ '^[A-Za-z0-9._:-]{1,255}$'),
+  created_at         timestamptz not null default now(),
+  constraint budget_ledger_key_uq unique (organization_id, project_id, idempotency_key),
+  constraint budget_ledger_granted_by_human check ((entry_kind = 'extension-granted') = (source = 'human-granted')),
+  constraint budget_ledger_usage_of_attempt check (entry_kind = 'extension-granted' or attempt_id is not null),
+  constraint budget_ledger_extension_of_task check (entry_kind <> 'extension-granted' or task_id is not null),
+  constraint budget_ledger_attempt_needs_task check (attempt_id is null or task_id is not null),
+  constraint budget_ledger_run_fk foreign key (run_id, organization_id, project_id)
+    references runs (id, organization_id, project_id),
+  constraint budget_ledger_task_fk foreign key (task_id, organization_id, project_id, run_id)
+    references tasks (id, organization_id, project_id, run_id),
+  constraint budget_ledger_attempt_fk foreign key (attempt_id, organization_id, project_id, task_id)
+    references attempts (id, organization_id, project_id, task_id)
+);
+create index budget_ledger_run on budget_ledger (organization_id, project_id, run_id, task_id);
+
+alter table runs
+  add column budget_max_cost_usd numeric,
+  add column budget_soft_cost_usd numeric,
+  add column budget_max_tasks integer,
+  add column publication_approval_required boolean not null default false,
+  add column created_by char(26);
+alter table runs
+  add constraint runs_budget_max_cost check (
+    budget_max_cost_usd is null or (budget_max_cost_usd > 0 and budget_max_cost_usd = round(budget_max_cost_usd, 6))),
+  add constraint runs_budget_soft_cost check (
+    budget_soft_cost_usd is null
+    or (budget_max_cost_usd is not null and budget_soft_cost_usd >= 0
+        and budget_soft_cost_usd <= budget_max_cost_usd and budget_soft_cost_usd = round(budget_soft_cost_usd, 6))),
+  add constraint runs_budget_max_tasks check (budget_max_tasks is null or budget_max_tasks > 0),
+  add constraint runs_created_by_shape check (created_by is null or created_by ~ '^[0-9A-HJKMNP-TV-Z]{26}$');
+
+create function asep_run_governance_guard() returns trigger
+language plpgsql
+as $fn$
+begin
+  if old.created_by is not null
+     and (new.budget_max_cost_usd, new.budget_soft_cost_usd, new.budget_max_tasks,
+          new.publication_approval_required, new.created_by)
+         is distinct from
+         (old.budget_max_cost_usd, old.budget_soft_cost_usd, old.budget_max_tasks,
+          old.publication_approval_required, old.created_by) then
+    raise exception 'run % governance is fixed once it is set', old.id
+      using errcode = '23514';
+  end if;
+  return new;
+end
+$fn$;
+
+create trigger run_governance_guard
+  before update on runs
+  for each row execute function asep_run_governance_guard();
+`;
+
 // Ordered, immutable migration set. Order is by id; the runner asserts it.
 export const MIGRATIONS: readonly Migration[] = Object.freeze([
   { id: '0001_init_tenancy', sql: M0001 },
@@ -1168,5 +1596,11 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   { id: '0017_scoped_artifact_references', sql: M0017 },
   { id: '0018_evidence_reservations', sql: M0018 },
   { id: '0019_command_output_references', sql: M0019 },
+  { id: '0100_orchestration_task_status', sql: M0100 },
+  { id: '0101_workflow_bindings_projection', sql: M0101 },
+  { id: '0102_attempt_ordinal', sql: M0102 },
+  { id: '0104_workspaces', sql: M0104 },
+  { id: '0105_approvals', sql: M0105 },
+  { id: '0106_budget_ledger', sql: M0106 },
   { id: '0107_run_events', sql: M0107 },
 ]);

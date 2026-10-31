@@ -22,7 +22,7 @@ import { SqlWorkspaceLeaseRepository } from './lease-repository.js';
 import { LeaseLostError } from '@asep/ports';
 import { OptimisticConcurrencyError, ScopeViolationError, type SqlClient } from './sql.js';
 import type {
-  OrganizationId, ProjectId, RepositoryBindingId, TenantScope, AttemptId,
+  OrganizationId, ProjectId, RepositoryBindingId, TenantScope, AttemptId, TaskId,
 } from '@asep/contracts';
 
 console.log('SUITE-ID: asep-suite:persistence-tenancy');
@@ -1010,7 +1010,21 @@ async function seedReferencingRows(
      values ($1, $2, $3, $4, 'L1-static', 'node', '[]', 'verification-no-network')`,
     [execution, scope.organizationId, scope.projectId, chain.attempts],
   );
-  return { rows: { ...chain, evidence_reservations: reservation, command_executions: execution }, attemptId: chain.attempts };
+  // A repair order belongs only to a repair attempt, which names its parent and
+  // carries one from the start, so that reference is tried on a repair of the
+  // chain's attempt, keyed by the reference rather than the table.
+  const repair = await new AttemptRepository(client).create(scope, { taskId: chain.tasks as TaskId, repositoryBindingId: bindingId });
+  const repairOrderSha = createHash('sha256').update('seeded repair order').digest('hex');
+  const repairOrder = await seedTyped(client, scope, 'repair-order', repairOrderSha, chain.attempts);
+  await client.query(
+    `update attempts set attempt_kind = 'repair', parent_attempt_id = $1, repair_order_artifact_id = $2, repair_order_sha256 = $3
+      where id = $4`,
+    [chain.attempts, repairOrder, repairOrderSha, repair.id],
+  );
+  return {
+    rows: { ...chain, evidence_reservations: reservation, command_executions: execution, 'attempts.repair_order': repair.id },
+    attemptId: chain.attempts,
+  };
 }
 
 const refused = (err: unknown): boolean => /violates/i.test((err as Error).message);
@@ -1023,7 +1037,7 @@ test('every registered artifact reference refuses a missing, foreign, mis-hashed
     const { rows, attemptId } = await seedReferencingRows(client, scope, binding.id);
     for (const ref of await registeredReferences(client)) {
       await t.test(`${ref.table}.${ref.name} (${ref.kind})`, async () => {
-        const rowId = rows[ref.table];
+        const rowId = rows[`${ref.table}.${ref.name}`] ?? rows[ref.table];
         assert.ok(rowId, `no ${ref.table} row to try ${ref.name} on: seed one in seedReferencingRows`);
         const set = (artifactId: string | null, sha: string | null) => client.query(
           `update ${ref.table} set ${ref.name}_artifact_id = $1, ${ref.name}_sha256 = $2 where id = $3`,

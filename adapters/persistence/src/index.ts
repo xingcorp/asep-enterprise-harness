@@ -57,3 +57,9 @@ export { SqlAuditSink } from './audit-sink.js';
 // acquisition that refuses an attempt once its terminal is recorded.
 export { SqlRunEventSink, RunEventValidationError } from './run-events/run-event-sink.js';
 export { SqlAttemptTerminalStore } from './run-events/attempt-terminal-store.js';
+
+// The orchestration state stores (data model §3): the attempt ordinal, the
+// projection writer, the workspace registry and its resolver over the lease
+// table, the approval requests with their decision outbox, and the budget
+// ledger with a run's governance.
+export * from './orchestration/index.js';
