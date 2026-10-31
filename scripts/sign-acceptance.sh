@@ -10,7 +10,7 @@
 # What it does:
 #   1. Recomputes the binding triple from the CURRENT working tree:
 #        reviewed_head = git rev-parse HEAD
-#        base          = git merge-base main HEAD
+#        base          = the merge base of HEAD with main (scripts/lib/main-base.sh)
 #        ev_sha        = sha256(artifacts/phase-01/index.tsv)
 #   2. Refuses to sign unless the evidence bundle was captured at THIS HEAD
 #      (env-digest.head_sha == reviewed_head) — you cannot sign over stale
@@ -30,6 +30,8 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
+# shellcheck source=scripts/lib/main-base.sh
+source "$REPO_ROOT/scripts/lib/main-base.sh"
 
 CRYPTO="$REPO_ROOT/scripts/lib/acceptance-crypto.mjs"
 OUT_DIR="artifacts/phase-01"
@@ -60,7 +62,7 @@ sha256_of() {
 }
 
 HEAD_SHA="$(git rev-parse HEAD)"
-BASE_SHA="$(git merge-base main HEAD 2>/dev/null || echo NO_MERGE_BASE)"
+BASE_SHA="$(main_merge_base || echo NO_MERGE_BASE)"
 EV_SHA="$(sha256_of "$EVIDENCE_INDEX")"
 ENV_SHA="$(sha256_of "$ENV_DIGEST")"
 
