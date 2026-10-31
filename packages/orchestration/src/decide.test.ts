@@ -1816,6 +1816,21 @@ test('repair lineage: REPAIR, then the repair agent dies, then the replacement k
   assertLegalProjections(trace);
 });
 
+test('repair events: the workflow never emits repair.started, the assurance slot is its only producer', () => {
+  // A REPAIR, the repair agent's death and its replacement: two attempts carry the repair lineage, and the slot,
+  // not the workflow, reports the repair. Its task.completed carries the repair cycles for the metrics.
+  const trace = runTaskSequentially(baseInput(), repairFirst({
+    runAgent: (_r, n) => (n === 2 ? { kind: 'activityFailed', failureClass: 'workflow-recovery-failure', timedOut: true } : undefined),
+  }));
+  const types = effectsOf(trace.commands, 'emitRunEvent').map((e) => e.eventType);
+  assert.equal(types.filter((t) => t === 'attempt.started').length, 3);
+  assert.equal(types.filter((t) => (t as string) === 'repair.started').length, 0);
+  const completed = effectsOf(trace.commands, 'emitRunEvent').filter((e) => e.eventType === 'task.completed');
+  assert.deepEqual(completed.map((e) => e.detail), [{ workflowId: 'asep-task-task-1', outcome: 'WAITING_FOR_HUMAN_REVIEW', repairCycles: 1 }]);
+  const plain = runTaskSequentially(baseInput(), scripted());
+  assert.deepEqual(effectsOf(plain.commands, 'emitRunEvent').filter((e) => e.eventType === 'task.completed').map((e) => e.detail['repairCycles']), [0]);
+});
+
 // ---------------------------------------------------------------------------
 // Assurance-activity failure
 // ---------------------------------------------------------------------------

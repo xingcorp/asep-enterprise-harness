@@ -373,6 +373,7 @@ export type RunEventDetail = Readonly<Record<string, string | number | boolean>>
 /**
  * Run event types the workflows emit themselves. `attempt.declared_complete` and
  * `attempt.completed` are absent on purpose: recordAttemptOutcome is their only emitter.
+ * So is `repair.started`: the assurance slot that decided the repair reports it.
  */
 export type RunEventType =
   | 'run.started'
@@ -380,7 +381,6 @@ export type RunEventType =
   | 'task.started'
   | 'task.completed'
   | 'attempt.started'
-  | 'repair.started'
   | 'workflow.recovered'
   | 'approval.requested'
   | 'approval.expired'

@@ -492,7 +492,7 @@ function recordUsage(step: Step, a: MutableAttempt): void {
   if (!s.softThresholdCrossed && crossesSoftThreshold(before, s.spentMicroUsd, s.input.taskBudget.softCostUsd)) {
     s.softThresholdCrossed = true;
     emit(step, 'budget.threshold_crossed', a.attemptNumber, { thresholdKind: 'soft', budgetScope: 'task' });
-    audit(step, 'budget.threshold_crossed', { thresholdKind: 'soft', budgetScope: 'task', spentUsd: fromMicroUsd(s.spentMicroUsd) });
+    audit(step, 'budget.threshold', { thresholdKind: 'soft', budgetScope: 'task', spentUsd: fromMicroUsd(s.spentMicroUsd) });
   }
 }
 
@@ -599,8 +599,8 @@ function onResult(step: Step, result: TaskResult): void {
       a.attemptId = result.attemptId;
       a.branch = result.branch;
       a.registered = true;
+      // A repair attempt's start is reported by the assurance slot (repair.started), its only producer.
       emit(step, 'attempt.started', a.attemptNumber);
-      if (a.kind === 'repair' && a.lineage !== null) emit(step, 'repair.started', a.attemptNumber, { repairRound: a.lineage.round });
       issue(step, { kind: 'acquireLease', attemptNumber: a.attemptNumber });
       return;
     }
@@ -1516,7 +1516,7 @@ function close(
   s.currentAttempt = null;
   if (!isLegalProjection(s.projected, outcome) && isLegalProjection(s.projected, s.workStatus)) project(step, s.workStatus);
   project(step, outcome);
-  emit(step, 'task.completed', null, { outcome });
+  emit(step, 'task.completed', null, { outcome, repairCycles: s.attempts.filter((x) => x.registered && x.kind === 'repair').length });
   s.outcome = outcome;
   s.reason = reason;
   s.phase = 'CLOSED';
