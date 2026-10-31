@@ -21,13 +21,14 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn, spawnSync, type ChildProcess, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import childProcess, { spawn, spawnSync, type ChildProcess, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import http from 'node:http';
+import { syncBuiltinESMExports } from 'node:module';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
@@ -2332,6 +2333,54 @@ test('an egress proxy that never becomes ready fails the attempt, with how long 
     assert.equal(readFileSync(join(h.dir, 'proxy-stdin'), 'utf8'), '', 'nothing reached its stdin');
     assertTornDown(h);
   } finally {
+    await h.close();
+  }
+});
+
+// As if spawning the egress proxy's docker client took `ms`: the provider's
+// monotonic clock (performance.timeOrigin + performance.now()) moves on by `ms`
+// inside that one spawn, and every other spawn, and the clock before it, are
+// left alone. Through syncBuiltinESMExports() the provider's own named import of
+// spawn sees the stand-in. Returns the restore.
+function slowProxySpawn(ms: number): () => void {
+  const cp = childProcess as { spawn: typeof childProcess.spawn };
+  const realSpawn = cp.spawn;
+  const realNow = performance.now;
+  let offset = 0;
+  performance.now = () => realNow.call(performance) + offset;
+  cp.spawn = ((...args: Parameters<typeof realSpawn>) => {
+    if (Array.isArray(args[1]) && args[1].includes('asep.role=egress-proxy')) offset += ms;
+    return (realSpawn as (...a: unknown[]) => ChildProcess)(...args);
+  }) as typeof realSpawn;
+  syncBuiltinESMExports();
+  return () => {
+    cp.spawn = realSpawn;
+    syncBuiltinESMExports();
+    performance.now = realNow;
+  };
+}
+
+test('the readiness deadline is fixed before the proxy is spawned: a spawn slower than the bound leaves no time, and the proxy never gets the credential', { timeout: 120_000 }, async () => {
+  const h = await harness();
+  const restore = slowProxySpawn(45_000);
+  try {
+    const obs = await within((await h.provider('ok')).execute(request(h)), 60_000, 'the attempt settling');
+    restore();
+    assert.equal(obs.status, 'FAILED', showObservation(obs, h.lifecycle));
+    const m = /egress proxy did not become ready in time: waited (\d+)ms of its (\d+)ms bound \(pid \d+, spawn (\d+)ms\)/
+      .exec(obs.summary);
+    assert.ok(m, obs.summary);
+    // The bound was the whole readiness bound, counted from before the spawn,
+    // and the spawn alone took longer.
+    assert.equal(Number(m[2]), PROXY_START_TIMEOUT_MS, obs.summary);
+    assert.ok(Number(m[3]) >= 45_000, `the spawn took 45 s on the provider's clock: ${obs.summary}`);
+    assert.ok(!h.lifecycle.some((e) => e.phase === 'proxy-ready'), 'the proxy was never taken as started');
+    assert.deepEqual(h.invocations().filter((i) => String(i['container'] ?? '').startsWith('asep-egress-') && 'stdinSha256' in i), [],
+      'nothing reached the proxy on its stdin');
+    assert.equal(h.upstream.seen.length, 0, 'nothing reached the model API');
+    assertTornDown(h);
+  } finally {
+    restore();
     await h.close();
   }
 });

@@ -7,6 +7,9 @@
 #   3. Secret scan (delegates to secret-scan.sh, which self-tests).
 #   4. Large-file scan (delegates to large-file-scan.sh, which self-tests).
 #   5. Dependency-license presence note.
+#   6. Commit messages (delegates to commit-message-scan.sh, which self-tests):
+#      no AI attribution and no finding code in a commit newer than the pinned
+#      history.
 #
 # All scanners self-test on a seeded canary so a broken scanner fails loudly
 # rather than passing silently (P1-CHANGE-006).
@@ -358,6 +361,15 @@ main() {
     fail=1
   fi
   rm -f /tmp/asep-pii-deleg.$$
+
+  echo "check-publication: commit messages (delegated)"
+  if bash scripts/commit-message-scan.sh > /tmp/asep-msg-deleg.$$ 2>&1; then
+    sed 's/^/  /' /tmp/asep-msg-deleg.$$
+  else
+    sed 's/^/  /' /tmp/asep-msg-deleg.$$ >&2
+    fail=1
+  fi
+  rm -f /tmp/asep-msg-deleg.$$
 
   echo "check-publication: abs-path scanner self-test"
   self_test >/dev/null || fail=1

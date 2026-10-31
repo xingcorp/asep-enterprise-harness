@@ -4,14 +4,18 @@
 //
 //   * `pnpm test` runs the fast *.test.ts unit/PGlite suites and NEVER touches a
 //     container — it must stay green on any dev laptop.
-//   * `pnpm test:integration` (this script) provisions digest-pinned PostgreSQL
-//     and MinIO, HEALTH-CHECKS them, then runs the *.itest.ts suites against the
+//   * `pnpm test:integration` (this script) builds the workspace the suites
+//     import (`tsc -b`, so a fresh checkout runs and no suite runs against
+//     output older than its source), provisions digest-pinned PostgreSQL and
+//     MinIO, HEALTH-CHECKS them, then runs the *.itest.ts suites against the
 //     live backends with ASEP_PG_URL / S3 env pointing at them.
 //
 // The gate FAILS CLOSED (exit non-zero, loud message) — never a silent skip —
-// when: docker is unavailable, an image is not digest-pinned, a backend never
-// becomes healthy, zero itest files are discovered, a required SUITE-ID marker
-// is missing, or any suite fails. Containers are always torn down in `finally`.
+// when: docker is unavailable or its engine older than the agent network's
+// isolated gateway mode needs, the build fails, an image is not digest-pinned,
+// a backend never becomes healthy, zero itest files are discovered, a required
+// SUITE-ID marker is missing, or any suite fails. Containers are always torn
+// down in `finally`.
 //
 // Usage:
 //   node scripts/integration/run-integration.mjs
@@ -24,7 +28,7 @@ import { Client } from 'pg';
 import { IMAGES } from './images.mjs';
 import {
   resolveDocker, runContainer, removeContainer, waitReady, loopbackPublish, LOOPBACK_HOST,
-  discoverItestFiles, missingRequiredItestSuites, REQUIRED_ITEST_SUITES,
+  discoverItestFiles, missingRequiredItestSuites, REQUIRED_ITEST_SUITES, buildWorkspace, engineVersionGap,
 } from './lib.mjs';
 import { nodeTestArgs } from '../lib/node-test-flags.mjs';
 
@@ -106,6 +110,8 @@ async function main() {
     );
   }
   process.stdout.write(`integration-gate: docker ${docker.serverVersion} at ${docker.bin}\n`);
+  const engineGap = engineVersionGap(docker.serverVersion);
+  if (engineGap) return fail(engineGap);
 
   // Discover itest suites BEFORE paying for containers; zero is a fail-closed bug.
   const files = discoverItestFiles(REPO_ROOT);
@@ -116,6 +122,13 @@ async function main() {
     );
   }
   process.stdout.write(`integration-gate: ${files.length} itest suite(s) discovered\n`);
+
+  // The suites import the workspace packages as built; build them first, so a
+  // fresh checkout runs and no suite runs against output older than its source.
+  process.stdout.write('integration-gate: building the workspace (tsc -b)\n');
+  const buildFailure = buildWorkspace(REPO_ROOT);
+  if (buildFailure) return fail(buildFailure);
+  process.stdout.write('integration-gate: workspace built\n');
 
   // Clean any stale containers from a previous crashed run.
   removeContainer(docker.bin, PG_NAME);

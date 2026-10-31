@@ -35,7 +35,9 @@
 #   - the marker file is absent (review has not accepted this state yet)
 #   - marker.reviewed_head          != `git rev-parse HEAD`   (HEAD moved => stale)
 #   - env-digest head_sha           != marker.reviewed_head    (stale evidence)
-#   - marker.base                   != `git merge-base main HEAD`
+#   - marker.base                   != the merge base of HEAD with main
+#                                      (scripts/lib/main-base.sh: the local
+#                                      main, else origin/main)
 #   - marker.evidence_index_sha256  != sha256(artifacts/phase-01/index.tsv)
 #   - marker.verdict                != ACCEPT
 #   - marker.signature does not verify against the reviewer public key
@@ -48,10 +50,13 @@
 #   scripts/check-acceptance.sh                  # verify the committed marker binds HEAD
 #   scripts/check-acceptance.sh <marker.json>    # verify a specific marker file
 #   scripts/check-acceptance.sh --self-test      # prove the binding+signature logic
+#   scripts/check-acceptance.sh --base           # print the base a marker must bind
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
+# shellcheck source=scripts/lib/main-base.sh
+source "$REPO_ROOT/scripts/lib/main-base.sh"
 
 MARKER_DEFAULT="artifacts/phase-01/acceptance.json"
 EVIDENCE_INDEX="artifacts/phase-01/index.tsv"
@@ -146,7 +151,7 @@ self_test() {
   local tmp head base ev_sha env_sha rc=0
   tmp="$(mktemp -d)"
   head="$(git rev-parse HEAD)"
-  base="$(git merge-base main HEAD 2>/dev/null || git rev-parse HEAD)"
+  base="$(main_merge_base || git rev-parse HEAD)"
   # Synthetic evidence-index digest for the self-test.
   ev_sha="deadbeefcafe0000deadbeefcafe0000deadbeefcafe0000deadbeefcafe0000"
 
@@ -287,11 +292,18 @@ main() {
     self_test
     return
   fi
+  if [ "${1:-}" = "--base" ]; then
+    if ! main_merge_base; then
+      echo "check-acceptance: no base — this checkout has neither a local main nor origin/main" >&2
+      return 1
+    fi
+    return
+  fi
 
   local marker="${1:-$MARKER_DEFAULT}"
   local head base evidence_sha ev_head
   head="$(git rev-parse HEAD)"
-  base="$(git merge-base main HEAD 2>/dev/null || echo NO_MERGE_BASE)"
+  base="$(main_merge_base || echo NO_MERGE_BASE)"
 
   if [ ! -f "$EVIDENCE_INDEX" ]; then
     echo "check-acceptance: FAIL — evidence index $EVIDENCE_INDEX missing (run scripts/capture-evidence.sh at the reviewed HEAD)" >&2

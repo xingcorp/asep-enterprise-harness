@@ -3321,3 +3321,99 @@ It did not re-run the implementer's 29 mutants of repair cycle 16, and it
 could not verify which tests were written before their code. It ran neither
 the gates nor a real `/proc` itself, and did not check cleanup against the
 Docker daemon: for those it read the controller's logs.
+
+## Before the merge to `main`: GitHub CI defects and the publication gate
+
+> Controller findings while preparing the merge to `main` (reconciliation R53),
+> the user's decisions on history and merge (R54) and the follow-up owners of
+> the Phase 3 S0 review (R55). Phase 2 stays accepted (R51); this work makes
+> the branch mergeable. Every change, test, measurement and mutation check
+> below was made by the implementer; none has been independently reviewed.
+
+GitHub CI had never been green for Phase 2: run 31482790926 at `00a6889`
+failed both jobs, and neither cause had changed by `d6ee686`. The acceptance
+rested on local gates only.
+
+| Item | Defect | Fix | Commit |
+|---|---|---|---|
+| CI `verify` job (R53) | `scripts/check-acceptance.test.ts` took the base from `git merge-base main HEAD`; a CI checkout of a branch push or of a pull request's merge ref has `origin/main` but no local `main`, so 3 of its tests failed with `fatal: Not a valid object name main`. `check-acceptance.sh`, `sign-acceptance.sh` and `capture-evidence.sh` read the base the same way. | `scripts/lib/main-base.sh` resolves the base once: the merge base of HEAD with the local `main` where it exists (a fetch never moves a developer's base), else with `origin/main`; with neither it returns nothing and each caller decides. `check-acceptance.sh --base` prints the base a marker must bind, and the tests take their markers' base from it. A fitness test keeps every script on the resolver. | `6dfc9b3` |
+| CI `integration` job (R53) | The job ran `pnpm test:integration` straight after the install; the itests import the workspace packages as built (`main` is `dist/`), so a cold checkout failed with `Cannot find package …/@asep/persistence/dist/index.js`. A local run after a source change, without a build, would have tested the old output. | The integration gate runs `tsc -b` over the root's project references before it starts any backend: a never-built checkout is built, an out-of-date project rebuilt, and a build that fails or a compiler that cannot run fails the gate with the compiler's output. It refuses a Docker Engine older than 28.0.0 (the agent network's isolated gateway mode) by name. The workflow needs no extra step. The containment suite also probes the test host's own IPv4 addresses. | `608be12` |
+| P3-S0-MED-002 (R55) | `sk-[A-Za-z0-9]{20,}` in `scripts/lib/secret-patterns.sh` matched the `sk-` at the tail of "task-" in every `asep-task-<ULID>`, in both the tracked-file and the history scan. | Both `sk-` patterns require the start of a line or a non-word character before the key; the Anthropic-style body takes `_` (base64url), which a real key with an early underscore needed. The history scan over this repository's 486 commits finds byte-identical hits before and after (367, all in the scanner's own canary, none after its exempt filter). | `9fbde9d` |
+| Commit messages (R54) | Nothing checked that new commits carry no AI attribution and no finding code. | `scripts/commit-message-scan.sh`, run by `check-publication.sh`: a commit of HEAD's history not reachable from the pinned heads `fc0df57`, `e046885`, `00a6889` and `d6ee686` fails on a co-author trailer naming an AI or its vendor, the vendor's noreply address, a generated-with line naming the assistant, or a severity code (`CRIT`, `HIGH`, `MED` or `LOW` and three digits). Scope: HEAD's history, what this branch publishes; the other lanes' branches are among the published refs and are theirs to rework, and they adopt the check when they rebase onto it. A history the scanner cannot read, or a matcher that cannot run, fails the gate. | `0209202` |
+| CYCLE16-LOW-001 (R51) | No test guarded the readiness deadline's place before the real proxy spawn. | A caller-level test runs the provider with a proxy-client spawn that takes 45 s on the provider's monotonic clock against the 30 s bound: the start fails, not ready in time; nothing reaches the proxy's stdin or the model API. | `c70453d` |
+
+**Failing first.**
+- `verify` job: at `d6ee686`, in a `--single-branch` clone, with and without
+  `origin/main` and without a local `main`, `check-acceptance.test.ts` failed
+  3 of 5 with `Not a valid object name main`. The new tests of the resolver
+  were written first and failed against the old scripts.
+- `integration` job: at `6dfc9b3`, from a cold clone (`pnpm install
+  --frozen-lockfile`, the workflow's Docker checks, then `pnpm
+  test:integration` through `gate.sh`): exit 1, 5 suites failed with
+  `Cannot find package …/dist/index.js`. The build tests were written first
+  and failed on the missing helpers.
+- Secret patterns: with the patterns of `608be12` the workflow-id control
+  failed both scans and the Anthropic-style control with an early underscore
+  was missed.
+- Commit messages: the tests were written first and failed with no scanner;
+  the unreadable-history test was added after the first version of the
+  scanner and failed against it (a failed `git log` piped into the matcher
+  read as clean), then the scanner was changed. The missing-matcher test was
+  written after that change; only its mutant shows it red.
+- The deadline guard is a test of code that was already right; its red is the
+  mutation below.
+
+**Proof in other checkouts.**
+- `check-acceptance.test.ts` at `6dfc9b3`, in a `--single-branch` clone: 8 of 8
+  with only `origin/main` (a CI branch push), 8 of 8 on a detached merge commit
+  of `origin/main` and the branch with no local branch (a CI merge ref), 8 of 8
+  with `main` checked out (a push to `main`); in the worktree, 8 of 8. With no
+  main line at all the three marker tests fail, naming it: `this checkout has
+  neither a local main nor origin/main`.
+- The integration gate at `608be12` from a cold clone (`pnpm install
+  --frozen-lockfile`, `docker version`, the workflow's `--network none` run,
+  `pnpm test:integration` through `gate.sh`): exit 0, 34 of 34, 7 required
+  suites; the build ran before any backend.
+
+**Mutation checks**, each against the test file of its item: base resolution
+7 of 7 killed; integration build and engine check 7 of 7 killed (a first
+"moved build" mutant that added a second build was equivalent and was
+replaced by one that moves it); secret patterns 6 of 6 killed (one, the
+boundary removed before `sk-ant-` only, first survived and a negative control
+for it was added); commit messages 11 of 11 killed, among them each rule
+removed (a red case turns green), the publication gate not failing or not
+running the scan, and both scanner faults read as clean; the deadline placed
+after the spawn, from a moment after it, killed (the attempt completes with
+the credential), and the clock read moved after the spawn killed; moving only
+the declaration, its base still before the spawn, is equivalent and survives.
+
+**Gates**, each through `gate.sh`, none with a Node launch of 10 s or more:
+
+| Commit | Where | Gate | Result | Tests | Run time | Sampler: samples, longest Node launch, launches of 10 s or more |
+|---|---|---|---|---|---|---|
+| `6dfc9b3` | worktree | `verify:all` | exit 0 | 920 of 920 | 607 s | 256, 5008 ms, 0 |
+| `6dfc9b3` | cold clone (red at the parent of the build fix) | `test:integration` | exit 1 | 5 suite files could not load `…/dist/index.js` | 58 s | 7, 159 ms, 0 |
+| `608be12` | cold clone, after the workflow's steps | `test:integration` | exit 0 | 34 of 34 | 104 s | 47, 1494 ms, 0 |
+| `608be12` | worktree | `verify:all` | exit 0 | 924 of 924 | 486 s | 206, 4686 ms, 0 |
+| `9fbde9d` | worktree | `verify:all` | exit 0 | 926 of 926 | 549 s | 236, 6126 ms, 0 |
+| `0209202` | worktree | `verify:all` | exit 0 | 936 of 936 | 521 s | 222, 4719 ms, 0 |
+| `c70453d` | worktree | `verify:all` | exit 0 | 937 of 937 | 517 s | 222, 4204 ms, 0 |
+| `c70453d` | `--single-branch` clone with only `origin/main`, as a CI branch push | `verify:all` | exit 0 | 937 of 937 | 470 s | 201, 4321 ms, 0 |
+
+Run times leave out the time a run waited for the host's gate lock. This
+section's own commit re-runs `verify:all` and `test:integration` through
+`gate.sh`; a commit cannot carry its own results, so those are reported to the
+controller.
+
+**What only GitHub's Linux run can prove.** Not run here: the `verify` and
+`integration` jobs on `ubuntu-latest`. Not known here: the runner's Docker
+Engine version (the gate now refuses one older than 28.0.0 by name); whether
+a plain `--internal` network there reaches a host service through its gateway,
+which the containment suite's control asserts and which held on Docker Desktop;
+the isolated gateway mode on a native daemon; the containment probes against
+the runner's own addresses, where 192.168.65.254 and `host.docker.internal`
+are only Docker Desktop's; the canonical runner's tests on a real `/proc`.
+
+**Observed, not changed.** `scripts/pii-scan.sh` pipes `git log` into its
+matcher the way the first commit-message scanner did, so a failed `git log`
+there would read as clean; it is outside this step.

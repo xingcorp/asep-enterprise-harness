@@ -123,6 +123,47 @@ export function resolveDocker(candidates = [
   return null;
 }
 
+// The agent network's isolated gateway mode (claude-provider's agent network),
+// which the containment suite relies on, needs Docker Engine 28.0.0 or later.
+export const MIN_DOCKER_ENGINE = '28.0.0';
+
+// Why the engine `version` cannot run the suites, or undefined when it can. An
+// older engine, or a version that cannot be read, fails the gate by name rather
+// than a suite part way through.
+export function engineVersionGap(version, min = MIN_DOCKER_ENGINE) {
+  const parse = (v) => /^(\d+)\.(\d+)\.(\d+)/.exec(String(v).trim())?.slice(1).map(Number);
+  const have = parse(version);
+  const want = parse(min);
+  if (!have) return `cannot read the Docker Engine version ${JSON.stringify(version)}`;
+  for (let i = 0; i < 3; i += 1) {
+    if (have[i] > want[i]) return undefined;
+    if (have[i] < want[i]) {
+      return `Docker Engine ${version} is older than ${min}, which the agent network's isolated gateway mode needs`;
+    }
+  }
+  return undefined;
+}
+
+// Builds the workspace the itests import: `tsc -b` over the root's project
+// references. Each workspace package's `main` is its dist/, so a checkout never
+// built has nothing to import, and one built before its last change would be
+// tested as it was; `tsc -b` brings every out-of-date project up to date and
+// leaves an up-to-date one alone. Returns why the build failed, or undefined.
+// A compiler that cannot run, or a build that exits non-zero (tsc still emits
+// on a type error), is a failure: no suite runs against output the source does
+// not match.
+export function buildWorkspace(repoRoot, tsc = join(repoRoot, 'node_modules', 'typescript', 'bin', 'tsc')) {
+  const r = spawnSync(process.execPath, [tsc, '-b', repoRoot], {
+    cwd: repoRoot, shell: false, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024,
+  });
+  if (r.error) return `the workspace build failed (could not run ${tsc}: ${r.error.message})`;
+  if (r.status !== 0) {
+    const out = `${r.stdout ?? ''}${r.stderr ?? ''}`.trim();
+    return `the workspace build failed (tsc -b, exit ${r.status ?? r.signal}):\n${out.slice(-4000)}`;
+  }
+  return undefined;
+}
+
 // Bounded readiness poll. Runs `probe()` (returns true when ready) up to
 // `attempts` times with `intervalMs` between tries. Returns true if it ever
 // succeeds, false if it exhausts the budget — the caller turns a false RED.

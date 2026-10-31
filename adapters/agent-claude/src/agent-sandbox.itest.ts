@@ -16,8 +16,8 @@
 //   * no way to the host: a service listening on the wildcard address of the
 //     daemon's host network namespace, and the gate's PostgreSQL and MinIO
 //     ports, are unreachable at the would-be bridge gateway, the default
-//     bridge's gateway, Docker Desktop's host address and host.docker.internal
-//     — while a container on a plain `--internal` network DOES reach that
+//     bridge's gateway, Docker Desktop's host address and host.docker.internal,
+//     and the test host's own addresses — while a container on a plain `--internal` network DOES reach that
 //     service through its gateway, so the refusal is the isolation, not a
 //     probe that cannot connect;
 //   * no IPv6: the container holds no IPv6 address but loopback, and a public
@@ -40,7 +40,7 @@ import { execFile, execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { networkInterfaces, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
@@ -378,6 +378,14 @@ async function reachesHostThroughGateway(flags: readonly string[], port: number)
   }
 }
 
+// The test host's own IPv4 addresses. On a native daemon (Linux CI) the host is
+// this machine, so these are where a route from a container to the host would
+// land; on Docker Desktop they are the Mac's, past the VM.
+function hostInterfaceAddresses(): string[] {
+  return [...new Set(Object.values(networkInterfaces()).flat()
+    .filter((a) => a !== undefined && a.family === 'IPv4' && !a.internal).map((a) => a!.address))];
+}
+
 function portOf(url: string | undefined): number[] {
   if (!url) return [];
   const p = Number(new URL(url).port);
@@ -413,7 +421,9 @@ test('the agent container has no route out, reaches the model only through the p
       objective: 'canary',
       canary: {
         upstreamIp: w.modelIp, upstreamPort: 8080,
-        hostAddresses: ['172.17.0.1', '192.168.65.254', 'host.docker.internal'],
+        // The default bridge's gateway, Docker Desktop's host address and name,
+        // and the test host's own addresses.
+        hostAddresses: [...new Set(['172.17.0.1', '192.168.65.254', 'host.docker.internal', ...hostInterfaceAddresses()])],
         hostPorts,
       },
     });
