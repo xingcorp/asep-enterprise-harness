@@ -1,0 +1,18 @@
+# The four assurance dashboards (false completion, review yield, cost,
+# recovery), loaded from the JSON files next to this provider. Each dashboard's
+# uid is in its file; packages/observability/src/dashboards.test.ts checks that
+# every panel reads one dictionary metric and every required metric has a panel.
+apiVersion: 1
+
+providers:
+  - name: asep-assurance
+    orgId: 1
+    folder: ASEP assurance
+    folderUid: asep-assurance
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    updateIntervalSeconds: 3600
+    options:
+      path: /etc/grafana/provisioning/dashboards/assurance
+      foldersFromFilesStructure: false

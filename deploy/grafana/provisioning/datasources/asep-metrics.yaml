@@ -1,0 +1,28 @@
+# ASEP metrics data source: the PostgreSQL that holds metric_snapshots. Every
+# assurance panel reads the latest snapshot version through the
+# metric_snapshots_latest view (packages/observability/src/metric-eval.ts writes
+# the versions).
+#
+# Local stack and integration gate only; a production Grafana is out of scope.
+# Connection values come from the container's environment (Grafana expands
+# ${VAR} in provisioning files): compose.yaml points them at its postgres
+# service, scripts/integration/run-integration.mjs at the gate's PostgreSQL. The
+# password is never written here.
+apiVersion: 1
+
+datasources:
+  - name: ASEP metrics
+    uid: asep-metrics
+    type: grafana-postgresql-datasource
+    access: proxy
+    url: ${ASEP_METRICS_PG_HOST}
+    user: ${ASEP_METRICS_PG_USER}
+    secureJsonData:
+      password: ${ASEP_METRICS_PG_PASSWORD}
+    jsonData:
+      database: ${ASEP_METRICS_PG_DATABASE}
+      sslmode: disable
+      postgresVersion: 1500
+      timescaledb: false
+    isDefault: true
+    editable: false

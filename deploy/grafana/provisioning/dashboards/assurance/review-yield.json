@@ -1,0 +1,432 @@
+{
+  "uid": "asep-review-yield",
+  "title": "ASEP assurance: review yield",
+  "description": "What the independent reviewers found, what humans confirmed, and how often a review failed, was stopped or would have blocked.",
+  "tags": [
+    "asep",
+    "assurance"
+  ],
+  "editable": false,
+  "schemaVersion": 41,
+  "version": 1,
+  "timezone": "utc",
+  "time": {
+    "from": "now-30d",
+    "to": "now"
+  },
+  "annotations": {
+    "list": []
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "organization_id",
+        "label": "Organization",
+        "type": "query",
+        "datasource": {
+          "type": "grafana-postgresql-datasource",
+          "uid": "asep-metrics"
+        },
+        "query": "SELECT DISTINCT organization_id FROM metric_snapshots_latest ORDER BY 1",
+        "definition": "SELECT DISTINCT organization_id FROM metric_snapshots_latest ORDER BY 1",
+        "refresh": 1,
+        "includeAll": false,
+        "multi": false,
+        "sort": 1,
+        "hide": 0,
+        "current": {},
+        "options": []
+      },
+      {
+        "name": "project_id",
+        "label": "Project",
+        "type": "query",
+        "datasource": {
+          "type": "grafana-postgresql-datasource",
+          "uid": "asep-metrics"
+        },
+        "query": "SELECT DISTINCT project_id FROM metric_snapshots_latest WHERE organization_id = '$organization_id' ORDER BY 1",
+        "definition": "SELECT DISTINCT project_id FROM metric_snapshots_latest WHERE organization_id = '$organization_id' ORDER BY 1",
+        "refresh": 1,
+        "includeAll": false,
+        "multi": false,
+        "sort": 1,
+        "hide": 0,
+        "current": {},
+        "options": []
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "table",
+      "title": "Review finding yield",
+      "description": "Metric review_finding_yield from the measurement dictionary: the latest snapshot version per window. A null value carries its reason.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "asep-metrics"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "asep-metrics"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT window_end AS \"time\", value, null_reason, snapshot_version\nFROM metric_snapshots_latest\nWHERE organization_id = '$organization_id'\n  AND project_id = '$project_id'\n  AND metric_name = 'review_finding_yield'\n  AND dictionary_version = '1.1.0'\n  AND dimensions = '{}'::jsonb\n  AND $__timeFilter(window_end)\nORDER BY window_end"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 2,
+      "type": "table",
+      "title": "Review false-positive rate",
+      "description": "Metric review_false_positive_rate from the measurement dictionary: the latest snapshot version per window. A null value carries its reason.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "asep-metrics"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "asep-metrics"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT window_end AS \"time\", value, null_reason, snapshot_version\nFROM metric_snapshots_latest\nWHERE organization_id = '$organization_id'\n  AND project_id = '$project_id'\n  AND metric_name = 'review_false_positive_rate'\n  AND dictionary_version = '1.1.0'\n  AND dimensions = '{}'::jsonb\n  AND $__timeFilter(window_end)\nORDER BY window_end"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 3,
+      "type": "table",
+      "title": "Human adjudication coverage",
+      "description": "Metric review_adjudication_coverage from the measurement dictionary: the latest snapshot version per window. A null value carries its reason.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "asep-metrics"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "asep-metrics"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT window_end AS \"time\", value, null_reason, snapshot_version\nFROM metric_snapshots_latest\nWHERE organization_id = '$organization_id'\n  AND project_id = '$project_id'\n  AND metric_name = 'review_adjudication_coverage'\n  AND dictionary_version = '1.1.0'\n  AND dimensions = '{}'::jsonb\n  AND $__timeFilter(window_end)\nORDER BY window_end"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 4,
+      "type": "table",
+      "title": "Ungrounded finding rate",
+      "description": "Metric review_ungrounded_rate from the measurement dictionary: the latest snapshot version per window. A null value carries its reason.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "asep-metrics"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "asep-metrics"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT window_end AS \"time\", value, null_reason, snapshot_version\nFROM metric_snapshots_latest\nWHERE organization_id = '$organization_id'\n  AND project_id = '$project_id'\n  AND metric_name = 'review_ungrounded_rate'\n  AND dictionary_version = '1.1.0'\n  AND dimensions = '{}'::jsonb\n  AND $__timeFilter(window_end)\nORDER BY window_end"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 5,
+      "type": "table",
+      "title": "Reviewer failure rate",
+      "description": "Metric reviewer_failure_rate from the measurement dictionary: the latest snapshot version per window. A null value carries its reason.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "asep-metrics"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "asep-metrics"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT window_end AS \"time\", value, null_reason, snapshot_version\nFROM metric_snapshots_latest\nWHERE organization_id = '$organization_id'\n  AND project_id = '$project_id'\n  AND metric_name = 'reviewer_failure_rate'\n  AND dictionary_version = '1.1.0'\n  AND dimensions = '{}'::jsonb\n  AND $__timeFilter(window_end)\nORDER BY window_end"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 6,
+      "type": "table",
+      "title": "Egress stop rate",
+      "description": "Metric review_egress_stop_rate from the measurement dictionary: the latest snapshot version per window. A null value carries its reason.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "asep-metrics"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 16
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "asep-metrics"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT window_end AS \"time\", value, null_reason, snapshot_version\nFROM metric_snapshots_latest\nWHERE organization_id = '$organization_id'\n  AND project_id = '$project_id'\n  AND metric_name = 'review_egress_stop_rate'\n  AND dictionary_version = '1.1.0'\n  AND dimensions = '{}'::jsonb\n  AND $__timeFilter(window_end)\nORDER BY window_end"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 7,
+      "type": "table",
+      "title": "Shadow would-block rate",
+      "description": "Metric shadow_would_block_rate from the measurement dictionary: the latest snapshot version per window. A null value carries its reason.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "asep-metrics"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 24
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "asep-metrics"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT window_end AS \"time\", value, null_reason, snapshot_version\nFROM metric_snapshots_latest\nWHERE organization_id = '$organization_id'\n  AND project_id = '$project_id'\n  AND metric_name = 'shadow_would_block_rate'\n  AND dictionary_version = '1.1.0'\n  AND dimensions = '{}'::jsonb\n  AND $__timeFilter(window_end)\nORDER BY window_end"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 8,
+      "type": "table",
+      "title": "Disposition latency (ms)",
+      "description": "Metric review_disposition_latency_ms from the measurement dictionary: the latest snapshot version per window. A null value carries its reason.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "asep-metrics"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 24
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "asep-metrics"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT window_end AS \"time\", value, null_reason, snapshot_version\nFROM metric_snapshots_latest\nWHERE organization_id = '$organization_id'\n  AND project_id = '$project_id'\n  AND metric_name = 'review_disposition_latency_ms'\n  AND dictionary_version = '1.1.0'\n  AND dimensions = '{}'::jsonb\n  AND $__timeFilter(window_end)\nORDER BY window_end"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 9,
+      "type": "table",
+      "title": "Repair success rate (gating rounds only)",
+      "description": "Metric repair_success_rate from the measurement dictionary: the latest snapshot version per window. A null value carries its reason.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "asep-metrics"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 32
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "asep-metrics"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT window_end AS \"time\", value, null_reason, snapshot_version\nFROM metric_snapshots_latest\nWHERE organization_id = '$organization_id'\n  AND project_id = '$project_id'\n  AND metric_name = 'repair_success_rate'\n  AND dictionary_version = '1.1.0'\n  AND dimensions = '{}'::jsonb\n  AND $__timeFilter(window_end)\nORDER BY window_end"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 10,
+      "type": "table",
+      "title": "Escalation rate (gating rounds only)",
+      "description": "Metric review_escalation_rate from the measurement dictionary: the latest snapshot version per window. A null value carries its reason.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "asep-metrics"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 32
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "asep-metrics"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT window_end AS \"time\", value, null_reason, snapshot_version\nFROM metric_snapshots_latest\nWHERE organization_id = '$organization_id'\n  AND project_id = '$project_id'\n  AND metric_name = 'review_escalation_rate'\n  AND dictionary_version = '1.1.0'\n  AND dimensions = '{}'::jsonb\n  AND $__timeFilter(window_end)\nORDER BY window_end"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    }
+  ]
+}

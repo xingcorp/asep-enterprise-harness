@@ -254,6 +254,10 @@ export const REQUIRED_SUITES = Object.freeze({
   // dispositions: golden values, cohort versions for late dispositions, nulls
   // with reasons, and append-only snapshot versions.
   'asep-suite:metric-eval': 'packages/observability/src/metric-eval.test.ts',
+  // The four assurance dashboards: every panel reads the latest snapshot version
+  // of one dictionary metric through the provisioned data source, and every
+  // required metric has a panel.
+  'asep-suite:assurance-dashboards': 'packages/observability/src/dashboards.test.ts',
 });
 
 /** The machine-readable marker a suite prints at module load: `SUITE-ID: <id>`. */

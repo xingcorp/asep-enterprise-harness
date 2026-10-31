@@ -1,0 +1,99 @@
+{
+  "uid": "asep-recovery",
+  "title": "ASEP assurance: recovery",
+  "description": "Workflow recoveries that did not end in a recovery failure. Null with its reason until the orchestration emits workflow.recovered.",
+  "tags": [
+    "asep",
+    "assurance"
+  ],
+  "editable": false,
+  "schemaVersion": 41,
+  "version": 1,
+  "timezone": "utc",
+  "time": {
+    "from": "now-30d",
+    "to": "now"
+  },
+  "annotations": {
+    "list": []
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "organization_id",
+        "label": "Organization",
+        "type": "query",
+        "datasource": {
+          "type": "grafana-postgresql-datasource",
+          "uid": "asep-metrics"
+        },
+        "query": "SELECT DISTINCT organization_id FROM metric_snapshots_latest ORDER BY 1",
+        "definition": "SELECT DISTINCT organization_id FROM metric_snapshots_latest ORDER BY 1",
+        "refresh": 1,
+        "includeAll": false,
+        "multi": false,
+        "sort": 1,
+        "hide": 0,
+        "current": {},
+        "options": []
+      },
+      {
+        "name": "project_id",
+        "label": "Project",
+        "type": "query",
+        "datasource": {
+          "type": "grafana-postgresql-datasource",
+          "uid": "asep-metrics"
+        },
+        "query": "SELECT DISTINCT project_id FROM metric_snapshots_latest WHERE organization_id = '$organization_id' ORDER BY 1",
+        "definition": "SELECT DISTINCT project_id FROM metric_snapshots_latest WHERE organization_id = '$organization_id' ORDER BY 1",
+        "refresh": 1,
+        "includeAll": false,
+        "multi": false,
+        "sort": 1,
+        "hide": 0,
+        "current": {},
+        "options": []
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "table",
+      "title": "Workflow recovery rate",
+      "description": "Metric workflow_recovery_rate from the measurement dictionary: the latest snapshot version per window. A null value carries its reason.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "asep-metrics"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "asep-metrics"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT window_end AS \"time\", value, null_reason, snapshot_version\nFROM metric_snapshots_latest\nWHERE organization_id = '$organization_id'\n  AND project_id = '$project_id'\n  AND metric_name = 'workflow_recovery_rate'\n  AND dictionary_version = '1.1.0'\n  AND dimensions = '{}'::jsonb\n  AND $__timeFilter(window_end)\nORDER BY window_end"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    }
+  ]
+}
