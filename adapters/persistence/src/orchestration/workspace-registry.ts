@@ -103,12 +103,14 @@ export class SqlWorkspaceRegistry implements WorkspaceRegistry {
       );
       if (lease.rowCount === 0) throw new ScopeViolationError('workspace lease', rec.leaseId);
       if (lease.rows[0]!['live'] !== true) throw new LeaseLostError(rec.leaseId);
+      // Every unique key arbitrates, so the same registration racing on another connection waits and then does
+      // nothing. A workspace id already taken by another attempt registers nothing either, and fails below.
       await tx.query(
         `insert into workspaces
            (id, organization_id, project_id, repository_binding_id, attempt_id, lease_id, lease_epoch,
             host_id, path_rel, base_sha, baseline_refs, state)
          values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, '[]'::jsonb, 'CREATING')
-         on conflict (attempt_id) do nothing`,
+         on conflict do nothing`,
         [
           rec.workspaceId, scope.organizationId, scope.projectId, rec.repositoryBindingId, rec.attemptId, rec.leaseId,
           Number(lease.rows[0]!['fencing_epoch']), rec.hostId, rec.pathRel, rec.baseSha,

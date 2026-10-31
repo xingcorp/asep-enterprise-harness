@@ -1218,9 +1218,11 @@ alter table attempts
 //
 // Existing attempts are numbered in the order they started (ties by id) and
 // are initial attempts. A writer that names no ordinal (the Phase 2 attempt
-// repository) gets the next one of its task, under a lock on the task row, so
-// Phase 2 call sites keep working unchanged. Append-only: earlier migrations
-// are untouched.
+// repository) gets the next one of its task, so Phase 2 call sites keep working
+// unchanged. Every insert takes a lock on the task row first, so that writer
+// also sees an ordinal another writer is inserting at that moment, and waits
+// for it instead of colliding with it. Append-only: earlier migrations are
+// untouched.
 // ---------------------------------------------------------------------------
 const M0102 = `
 alter table attempts
@@ -1274,8 +1276,13 @@ as $fn$
 declare
   parent_number integer;
 begin
-  if new.attempt_number is null then
+  -- Every insert of a task's attempt, and every ordinal the trigger assigns,
+  -- is serialised on the task row, so a writer that names no ordinal sees each
+  -- ordinal committed before it and waits for one in flight.
+  if tg_op = 'INSERT' or new.attempt_number is null then
     perform 1 from tasks where id = new.task_id for no key update;
+  end if;
+  if new.attempt_number is null then
     select coalesce(max(attempt_number), 0) + 1 into new.attempt_number
       from attempts where task_id = new.task_id;
   end if;

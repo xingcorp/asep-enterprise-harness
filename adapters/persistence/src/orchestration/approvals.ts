@@ -198,11 +198,13 @@ export class SqlApprovalStore {
     const reason = malformedRequest(input);
     if (reason !== null) throw new RangeError(`approval request refused: ${reason}`);
     const payload = input.kind === 'budget-extension' ? { shortfallMicroUsd: input.shortfallMicroUsd } : {};
+    // Every unique key arbitrates (the id and its scoped key), so the same open racing on another connection waits
+    // and then does nothing.
     const inserted = await this.client.query(
       `insert into approval_requests
          (id, organization_id, project_id, run_id, task_id, attempt_id, workflow_id, kind, requested_by, payload, expires_at)
        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::timestamptz)
-       on conflict (id) do nothing
+       on conflict do nothing
        returning id`,
       [
         input.approvalRequestId, scope.organizationId, scope.projectId, input.runId, input.taskId, input.attemptId,

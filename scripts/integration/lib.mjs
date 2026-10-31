@@ -57,6 +57,11 @@ export const REQUIRED_ITEST_SUITES = Object.freeze({
   // scoped run FK, the race of a pre-lease terminal with the attempt's lease
   // acquisition, and the upgrade path that adds 0107 to a database without it.
   'asep-suite:pg-run-events': 'adapters/persistence/src/run-events/run-event-sink.itest.ts',
+  // The orchestration state on real PostgreSQL: the full migration set and its
+  // upgrade path, and the two-connection races of the attempt ordinal, the lease
+  // grant and claim, the takeover of a side effect, the workspace registry, the
+  // projection, the approval decision and the ledger.
+  'asep-suite:pg-orchestration': 'adapters/persistence/src/orchestration/orchestration.itest.ts',
 });
 
 export const SUITE_ID_PREFIX = 'SUITE-ID:';
