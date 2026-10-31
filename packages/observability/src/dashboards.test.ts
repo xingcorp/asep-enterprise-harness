@@ -30,7 +30,10 @@ const REQUIRED: Record<string, readonly string[]> = {
 
 interface Target { refId: string; datasource: { type: string; uid: string }; format: string; rawQuery: boolean; rawSql: string }
 interface Panel { id: number; type: string; title: string; datasource: { type: string; uid: string }; targets: Target[] }
-interface Variable { name: string; type: string; datasource: { type: string; uid: string }; query: string; definition: string }
+interface Variable {
+  name: string; type: string; datasource: { type: string; uid: string }; query: string; definition: string;
+  allowCustomValue: boolean; multi: boolean; includeAll: boolean;
+}
 interface Dashboard { uid: string; title: string; editable: boolean; panels: Panel[]; templating: { list: Variable[] } }
 
 function dashboards(): Dashboard[] {
@@ -107,6 +110,11 @@ test('panels select their project through the organization and project variables
       assert.deepEqual(v.datasource, { type: ds.type, uid: ds.uid }, `${d.uid} ${v.name}`);
       assert.equal(v.definition, v.query, `${d.uid} ${v.name}`);
       assert.match(v.query, /FROM metric_snapshots_latest/, `${d.uid} ${v.name}`);
+      // Panels put the value into their SQL as it is: only a value the variable's
+      // own query returned may be chosen, never one typed into the picker or URL.
+      assert.equal(v.allowCustomValue, false, `${d.uid} ${v.name} takes no typed value`);
+      assert.equal(v.multi, false, `${d.uid} ${v.name}`);
+      assert.equal(v.includeAll, false, `${d.uid} ${v.name}`);
     }
     // a panel names no variable the dashboard does not define
     const names = new Set(d.templating.list.map((v) => v.name));
