@@ -84,3 +84,34 @@ export {
   type AuditEvent,
   type AuditSink,
 } from './audit.js';
+
+// Metric evaluator over RunEvents and the dictionary, with append-only snapshot
+// versions, plus the golden fixture its unit test and the dashboard itest share.
+export {
+  METRIC_EVALUATOR_VERSION,
+  NO_VALUES_TO_AVERAGE,
+  NO_SOURCE_EVENTS,
+  CAPTURE_NOT_ENABLED,
+  evaluateMetric,
+  recomputeMetricSnapshots,
+  MemoryMetricSnapshotStore,
+  MetricSnapshotRejectedError,
+  type MetricWindow,
+  type MetricValue,
+  type EvaluateOptions,
+  type MetricSnapshotScope,
+  type MetricSnapshotKey,
+  type MetricSnapshot,
+  type MetricSnapshotAppendResult,
+  type MetricSnapshotStore,
+  type RecomputeInput,
+  type RecomputeResult,
+} from './metric-eval.js';
+export {
+  GOLDEN_WINDOWS,
+  GOLDEN_CAPTURE_OPT_IN,
+  GOLDEN_EVENTS,
+  GOLDEN_EVENTS_BY_DAY,
+  GOLDEN_VALUES,
+  type GoldenValue,
+} from './metric-eval-golden.js';

@@ -250,6 +250,10 @@ export const REQUIRED_SUITES = Object.freeze({
   'asep-suite:review-grounding': 'packages/application/src/assurance/grounding.test.ts',
   'asep-suite:adjudication': 'packages/application/src/assurance/adjudication.test.ts',
   'asep-suite:repair-order': 'packages/application/src/assurance/repair.test.ts',
+  // Dictionary metrics are computed in one place, from RunEvents and human
+  // dispositions: golden values, cohort versions for late dispositions, nulls
+  // with reasons, and append-only snapshot versions.
+  'asep-suite:metric-eval': 'packages/observability/src/metric-eval.test.ts',
 });
 
 /** The machine-readable marker a suite prints at module load: `SUITE-ID: <id>`. */
