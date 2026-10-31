@@ -7,6 +7,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   BLOBS_DIR,
+  CORPUS_SOURCE_COMMIT,
   CYCLES,
   GATE_SCRIPTS,
   GitReader,
@@ -22,9 +23,11 @@ import {
   longFindingId,
   leakPatterns,
   namesFinding,
+  resolveCycle,
   runGateProcess,
   severityFromId,
   sha256Hex,
+  sourceDocument,
   type CorpusItem,
   type GateRun,
   type GateRunner,
@@ -35,6 +38,15 @@ import {
 console.log('SUITE-ID: asep-suite:review-corpus-collect');
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+
+// The commit the corpus reads its source documents at, stated here independently of the collector: the tree the
+// corpus was collected from. A living document (the phase report) was rewritten after it.
+const SOURCE_COMMIT = '00a68895d205122767167942326e2e0466571059';
+const sourceText = (doc: string): string => {
+  const shown = spawnSync('git', ['show', `${SOURCE_COMMIT}:${doc}`], { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  assert.equal(shown.status, 0, `${doc} at ${SOURCE_COMMIT}`);
+  return shown.stdout;
+};
 
 function readItems(): CorpusItem[] {
   return readdirSync(join(ROOT, ITEMS_DIR))
@@ -51,14 +63,14 @@ test('collected provenance and excerpts verify against the repository', () => {
   const items = readItems();
   const docLines = new Map<string, string[]>();
   const lineOf = (doc: string, line: number) => {
-    if (!docLines.has(doc)) docLines.set(doc, readFileSync(join(ROOT, doc), 'utf8').split('\n'));
+    if (!docLines.has(doc)) docLines.set(doc, sourceText(doc).split('\n'));
     return docLines.get(doc)![line - 1] ?? '';
   };
 
   // Every label the documents carry is collected once: each finding, and each status row that
   // does not resolve its finding (a residual instance). Nothing else is collected.
   const expected = new Set<string>();
-  const byCycle = new Map(CYCLES.map((c) => [c.key, cycleLabels(c, readFileSync(join(ROOT, c.doc), 'utf8'))]));
+  const byCycle = new Map(CYCLES.map((c) => [c.key, cycleLabels(c, sourceText(c.doc))]));
   for (const cycle of CYCLES) {
     for (const label of byCycle.get(cycle.key)!) {
       if (label.kind === 'status' && label.status === 'RESOLVED') continue;
@@ -187,6 +199,30 @@ test('collected provenance and excerpts verify against the repository', () => {
 
   // No blob is committed that no excerpt uses.
   assert.deepEqual(new Set(readdirSync(join(ROOT, BLOBS_DIR))), referenced);
+});
+
+test('corpus source documents are read at one fixed commit, never from the working tree', () => {
+  const git = new GitReader(ROOT);
+  assert.equal(CORPUS_SOURCE_COMMIT, SOURCE_COMMIT);
+  assert.ok(git.isAncestor(SOURCE_COMMIT, 'HEAD'), 'the source commit is on this history');
+  for (const doc of new Set(CYCLES.map((c) => c.doc))) assert.equal(sourceDocument(git, doc), sourceText(doc), doc);
+
+  // The phase report is a living document: the working tree no longer carries the self-found label, and the head it
+  // names is another one. At the source commit it names 5cdd03a, whose parent is the item's reviewed tree.
+  const report = 'docs/implementation/phases/phase-02-report.md';
+  assert.notEqual(readFileSync(join(ROOT, report), 'utf8'), sourceText(report), 'the working-tree report has changed');
+  const self = CYCLES.find((c) => c.key === 'p2-self-6')!;
+  const resolved = resolveCycle(git, self);
+  assert.deepEqual([resolved.reviewedSha, resolved.reviewedShaSource, resolved.shaEvidence], [
+    'ebaf51986ef961059714348cb841d8a3a88b9986',
+    'inferred-parent-of-fix',
+    { doc: report, line: 58 },
+  ]);
+  assert.deepEqual(
+    cycleLabels(self, sourceDocument(git, report)).map((l) => [l.findingId, l.line]),
+    [['P2-CYCLE6-HIGH-001', 359]],
+  );
+  assert.throws(() => sourceDocument(git, 'docs/no-such-document.md'), /review-corpus collect/);
 });
 
 test('labels, locations and finding ids follow the written rules', () => {

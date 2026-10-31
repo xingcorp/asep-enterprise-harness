@@ -20,8 +20,9 @@
 //   pnpm exec tsx evals/review-corpus/freeze.ts --write
 //
 // The freeze is deterministic: a second run on the same tree writes the same bytes. It reads
-// the working tree, git and the local object store only, never creates a ref and never reads
-// the controller's bundle. Every stored diff passes the publication gates first.
+// the committed corpus files, git and the local object store, and its source documents (the
+// review documents and the 90-day plan) at the corpus source commit; it never creates a ref and
+// never reads the controller's bundle. Every stored diff passes the publication gates first.
 
 import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -37,6 +38,7 @@ import {
   failingExcerpts,
   runGateProcess,
   sha256Hex,
+  sourceDocument,
   type CorpusItem,
   type GateRunner,
   type PublicationGate,
@@ -741,8 +743,8 @@ export function treeInputs(root: string, git = new GitReader(root), runGate: Gat
     itemFiles: new Map(readdirSync(join(root, ITEMS_DIR)).map((name) => [name, new Uint8Array(readFileSync(join(root, ITEMS_DIR, name)))])),
     annotationsBytes: new Uint8Array(readFileSync(join(root, ANNOTATIONS_FILE))),
     blobNames: readdirSync(join(root, BLOBS_DIR)),
-    ninetyDayPlan: readFileSync(join(root, 'docs/implementation/90-day-plan.md'), 'utf8'),
-    reviewDocs: new Map(CYCLES.map((c) => [c.doc, readFileSync(join(root, c.doc), 'utf8')])),
+    ninetyDayPlan: sourceDocument(git, 'docs/implementation/90-day-plan.md'),
+    reviewDocs: new Map(CYCLES.map((c) => [c.doc, sourceDocument(git, c.doc)])),
     diff: (from, to) => git.diff(RULE_P_DIFF_FLAGS, from, to),
     gates: (candidates) => failingExcerpts(root, candidates, runGate),
   };

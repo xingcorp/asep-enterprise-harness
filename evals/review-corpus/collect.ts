@@ -14,7 +14,8 @@
 //
 //   pnpm exec tsx evals/review-corpus/collect.ts --write
 //
-// The collector reads the working tree, git and the local object store only. It never
+// The collector reads git and the local object store, and the review documents at one fixed
+// commit (CORPUS_SOURCE_COMMIT), never their working-tree copies. It never
 // creates a ref, never reads the controller's bundle, and never prints excerpt content: the
 // publication gates run over candidate excerpts in a temporary repository and only the
 // names of failing excerpts are kept. A gate or a git command that does not complete within
@@ -547,6 +548,19 @@ export function sha256Hex(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex');
 }
 
+/**
+ * The commit every corpus source document is read at: the tree the corpus was collected from. A source is
+ * content-addressed, so it needs one fixed read. A living document, such as the phase report, is rewritten after
+ * the review it records; a review document reads the same here as in any later tree.
+ */
+export const CORPUS_SOURCE_COMMIT = '00a68895d205122767167942326e2e0466571059';
+
+/** The text of a corpus source document at CORPUS_SOURCE_COMMIT; never the working tree's copy. */
+export function sourceDocument(git: GitReader, doc: string): string {
+  const bytes = git.blob(CORPUS_SOURCE_COMMIT, doc) ?? fail(`${doc} is not a file at ${CORPUS_SOURCE_COMMIT.slice(0, 7)}`);
+  return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+}
+
 /** B_c: the first `BASE_SHA:` line of the phase plan at the reviewed tree. */
 export function baseShaAt(git: GitReader, phase: 1 | 2, reviewedSha: string): string | null {
   const plan = git.blob(reviewedSha, PHASE_PLANS[phase]);
@@ -579,11 +593,11 @@ function lineMatching(docText: string, pattern: RegExp): { readonly line: number
  * (inferred-parent-of-fix). A derived SHA is unknown when the adding commit also added a later
  * cycle's document of the same phase: the parent then postdates that later review.
  */
-export function resolveCycle(git: GitReader, root: string, source: CycleSource): ResolvedCycle {
+export function resolveCycle(git: GitReader, source: CycleSource): ResolvedCycle {
   const unknown = (reason: string): ResolvedCycle => ({ source, reviewedSha: null, reviewedShaSource: 'unknown', shaEvidence: null, unknownReason: reason });
   const rule = source.reviewedSha;
   if (rule.kind === 'unknown') return unknown(rule.reason);
-  const docText = readFileSync(join(root, source.doc), 'utf8');
+  const docText = sourceDocument(git, source.doc);
   if (rule.kind === 'recorded' || rule.kind === 'inferred-parent-of-fix') {
     const hit = lineMatching(docText, rule.pattern) ?? fail(`${source.key}: the document names no SHA`);
     const named = git.commit(hit.value) ?? fail(`${source.key}: ${hit.value} is not in the object store`);
@@ -731,8 +745,8 @@ export function itemId(findingId: string, reviewedSha: string | null): string {
 
 /** Collect every labelled instance and the excerpts its cited files need. */
 export function collectSelfHistory(root: string, git = new GitReader(root), runGate: GateRunner = runGateProcess): CollectedCorpus {
-  const resolved = CYCLES.map((c) => resolveCycle(git, root, c));
-  const labels = new Map(resolved.map((r) => [r.source.key, cycleLabels(r.source, readFileSync(join(root, r.source.doc), 'utf8'))]));
+  const resolved = CYCLES.map((c) => resolveCycle(git, c));
+  const labels = new Map(resolved.map((r) => [r.source.key, cycleLabels(r.source, sourceDocument(git, r.source.doc))]));
   const later = (r: ResolvedCycle) =>
     resolved.filter((o) => o.source.phase === r.source.phase && o.source.cycle > r.source.cycle && r.source.cycle > 0).sort((a, b) => a.source.cycle - b.source.cycle);
 

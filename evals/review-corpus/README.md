@@ -10,6 +10,10 @@ bind to the provenance-stage `corpusSha256`, and nothing here is the frozen corp
 
 - `collect.ts` reads the review documents, git and the local object store and writes the items and excerpts.
   Regenerate with `pnpm exec tsx evals/review-corpus/collect.ts --write` from the repository root.
+- Every source document (the review documents, and the 90-day plan the freeze names each phase from) is read at
+  one fixed commit, `CORPUS_SOURCE_COMMIT` (`00a6889`, the tree the corpus was collected from), never from the
+  working tree. A corpus source is content-addressed and needs a fixed read: a living document such as the phase
+  report was rewritten after the review it records, and its working-tree copy no longer carries the self-found label.
 - `self-history/items/<findingId>@<reviewedSha7>.json` — one labelled instance each (fields: data model §7.1).
 - `self-history/blobs/<sha256>` — content-addressed excerpts of the cited files at the reviewed and post-fix
   trees. Each passes the repository's format, secret, PII and large-file scripts and the path-leak scan of

@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFileSync, readdirSync } from 'node:fs';
+import { cpSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -18,7 +19,7 @@ import {
   type FreezeInputs,
   type ManifestBody,
 } from './freeze.js';
-import type { CorpusItem } from './collect.js';
+import { CORPUS_DIR, GitReader, type CorpusItem } from './collect.js';
 
 console.log('SUITE-ID: asep-suite:review-corpus');
 
@@ -61,6 +62,30 @@ test('a second freeze of the same tree is byte-identical and equals the committe
   assert.notEqual(freezeCorpus(edited).corpusSha256, first.corpusSha256, 'an item byte');
   const reannotated: FreezeInputs = { ...inputs, annotationsBytes: utf8(`${new TextDecoder().decode(inputs.annotationsBytes)} `) };
   assert.notEqual(freezeCorpus(reannotated).corpusSha256, first.corpusSha256, 'an annotation byte');
+});
+
+test('the freeze reads its source documents at the corpus source commit, not from the working tree', () => {
+  // The tree the corpus was collected from, stated here independently of the code.
+  const at = (path: string) => {
+    const shown = spawnSync('git', ['show', `00a68895d205122767167942326e2e0466571059:${path}`], { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+    assert.equal(shown.status, 0, path);
+    return shown.stdout;
+  };
+  const inputs = treeInputs(ROOT);
+  assert.equal(inputs.ninetyDayPlan, at('docs/implementation/90-day-plan.md'));
+  assert.ok(inputs.reviewDocs.size > 0);
+  for (const [doc, text] of inputs.reviewDocs) assert.equal(text, at(doc), doc);
+
+  // A tree that holds the committed corpus files but no document at all freezes to the same bytes: no source
+  // document is read from the working tree. (The publication gates still run from the repository's scripts.)
+  const bare = mkdtempSync(join(tmpdir(), 'asep-freeze-bare-'));
+  try {
+    cpSync(join(ROOT, CORPUS_DIR), join(bare, CORPUS_DIR), { recursive: true });
+    const frozen = freezeCorpus({ ...treeInputs(bare, new GitReader(ROOT)), gates: inputs.gates });
+    assert.deepEqual(frozen.bytes, freezeCorpus(inputs).bytes);
+  } finally {
+    rmSync(bare, { recursive: true, force: true });
+  }
 });
 
 test('the committed manifest is a provenance-stage freeze that nothing binds to', () => {
