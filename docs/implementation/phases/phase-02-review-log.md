@@ -3417,3 +3417,135 @@ are only Docker Desktop's; the canonical runner's tests on a real `/proc`.
 **Observed, not changed.** `scripts/pii-scan.sh` pipes `git log` into its
 matcher the way the first commit-message scanner did, so a failed `git log`
 there would read as clean; it is outside this step.
+
+## Linux CI: the object store image and fixtures under `/tmp`
+
+> Lane `phase-02-ci` (reconciliation R60, R61), branch `lane/linux-ci` from
+> `f613c7f`. Every change, test, measurement and mutation check below was made
+> by the implementer; none has been independently reviewed.
+
+CI run 41204703900 at `f613c7f` failed both jobs on `ubuntu-latest`, and the
+Phase 3 branch failed with the same two causes.
+
+| Job | Defect | Fix | Commit |
+|---|---|---|---|
+| `verify` | 36 tests failed on Linux and passed on macOS: 35 in `agent-claude.test.ts` (the contained-attempt tests on the fake docker, G3, G5, G6, the fail-closed table) and the pilot verifier's real-adapter test. The agent container gets `--tmpfs /tmp` (`claude-provider.ts:339`). The fake docker maps every container path under a tmpfs into that tmpfs's host directory, the command included (`fake-docker.mjs:360-373`), as the daemon resolves a command inside the container's mounts. Both harnesses made their fixture under `os.tmpdir()` (`agent-claude.test.ts:195`, `pilot-verifier.test.ts:114` at `f613c7f`) and put the fake CLI, their stand-in for the agent image, in it. On Linux `os.tmpdir()` is `/tmp`, so the tmpfs hid the CLI. `docker run` failed with exit 127 (`failed to create task: exec: "…/docker-state/tmp/asep-agent-…_tmp/claude-provider-…/bin/claude-ok"`), and every attempt was FAILED before its agent started. The G3 tests that wait for a running agent ran into their 60 s test timeout. macOS gives a directory under `/var/folders`, outside `/tmp`. | `makeFixtureDir` in `scripts/testing/fake-docker-fixture.mjs` makes a fixture by its real path and outside `/tmp`: under `/var/tmp` when the temporary directory lies under `/tmp`. It refuses a fixture that still lands under `/tmp`. Both harnesses use it. No bound, skip or assertion changed, and the fake docker still hides `/tmp` as the daemon does: a new test shows both sides. | `8609e8e` |
+| `integration` | The backends could not start: `minio/minio@sha256:a1ea29fa…` cannot be pulled. Docker Hub's API answers 404 for `minio/minio` (checked 2026-10-31), and `docker pull --platform linux/amd64` of the digest is denied. This host holds the image in its cache for arm64 only. | VersityGW v1.10.0 replaces it, chosen below. `images.mjs` carries how it is run as well as its digest: the POSIX backend over `/srv`, the S3 API on 7070 and a health endpoint. The gate and the `object-store` service of `compose.yaml` run it the same way, and the parity test holds compose to the gate's digest, command, API port and health endpoint. Messages, comments and the docs that named MinIO name the object store. | `2d1e6f7` |
+
+**Reproduction on Linux.** `git archive f613c7f` plus `git init`, copied into
+a `node:24-bookworm` container (Node v24.22.2; kernel 6.12.76-linuxkit aarch64,
+Docker Desktop's VM, so arm64 where the runner is amd64; the cause is a path,
+not the CPU). Then `corepack enable`, `pnpm install --frozen-lockfile`,
+`pnpm typecheck` and `node --no-wasm-code-gc --import tsx --test <file>`:
+- `agent-claude.test.ts` at `f613c7f`: 35 of 72 failed, the set CI lists. In
+  the first run their assertion messages carry the fake docker's exit 127
+  above.
+- The same file with `TMPDIR=/var/tmp`: 72 of 72. This confirmed the cause
+  before any change.
+- `pilot-verifier.test.ts` at `f613c7f`: 1 of 3 failed, `governed execution
+  stopped early at 'agent'`.
+- A first container without an init process failed one more test, "the egress
+  proxy stops serving and exits once the process that started it is killed".
+  Its PID 1 (`sleep`) reaps no orphan, so the killed proxy stayed a zombie that
+  `kill -0` still finds. CI passes that test. The runs above and below use
+  `docker run --init`, which reaps as a runner's init does.
+- At `8609e8e`, default `TMPDIR`: `agent-claude.test.ts` 72 of 72,
+  `pilot-verifier.test.ts` 3 of 3, `fake-docker.test.ts` 7 of 7.
+
+On this host at `8609e8e`: `agent-claude.test.ts` 72 of 72,
+`pilot-verifier.test.ts` 3 of 3, `fake-docker.test.ts` 7 of 7. A first run of
+`agent-claude.test.ts` failed one test at load average ~30: in the
+`max-budget` case `docker rm -f` took 9.3 s and `inspect` was cut at its
+20.7 s bound. That run had no sampler, and its rerun passed.
+
+**Mutation check (fixtures).** `fixtureTmpdir` returning the temporary
+directory unchanged: on Linux the new fake docker test fails, and both pilot
+verifier tests that build a fake docker rig fail with `fixture /tmp/… lies
+under /tmp`.
+
+**Choosing the object store** (2026-10-31). Sources: the Docker Hub API
+(`hub.docker.com/v2/repositories/<repo>/tags`) for tags, dates and platforms;
+`docker buildx imagetools inspect` for each index digest; the GitHub API
+(`api.github.com/repos/<repo>`, `/releases`) for licenses and releases;
+garagehq.deuxfleurs.fr for Garage's license.
+
+| Candidate | Release | License | Pinned index (platforms) | Image size, arm64 |
+|---|---|---|---|---|
+| VersityGW `versity/versitygw` | v1.10.0, 2026-10-22 | Apache-2.0 | `sha256:89cad13c…` (amd64, arm64) | 73 MB |
+| RustFS `rustfs/rustfs` | 1.0.4, 2026-10-25 | Apache-2.0 | `sha256:ed9210d6…` (amd64, arm64) | 260 MB |
+| SeaweedFS `chrislusf/seaweedfs` | 4.51, 2026-10-25 | Apache-2.0 | `sha256:f7a49e3f…` (amd64, arm64 and four more) | 510 MB |
+| Garage `dxflrs/garage` | v2.5.0, tag pushed 2026-10-24 | AGPL-3.0 | not probed | — |
+
+Each of the first three, and the cached MinIO as the baseline, ran on
+loopback and was probed with the repository's `@aws-sdk/client-s3`:
+- create-only `PutObject` with `If-None-Match: *`: 200, then 412
+  `PreconditionFailed` on the same key, the first bytes intact;
+- 16 create-only writers racing for one key: 1 landed, 15 got 412;
+- the SDK sends `x-amz-checksum-crc32` on every put; `GetObject` with checksum
+  mode returns the same CRC32;
+- a wrong CRC32, SHA-256 or Content-MD5 is refused with 400; after the
+  refused CRC32, `HeadObject` finds nothing. VersityGW answers `BadDigest` and
+  names the algorithm. MinIO answers `XAmzContentChecksumMismatch` for the
+  first two. RustFS and SeaweedFS answer `BadDigest` but word every case as
+  Content-MD5;
+- `HeadObject` on an absent key: 404; `GetObject`: `NoSuchKey`;
+- a second `CreateBucket` by its owner: `BucketAlreadyOwnedByYou`, except
+  RustFS, which answers 200.
+
+VersityGW was chosen: Apache-2.0, the smallest image, one process over a plain
+directory, a health endpoint on a flag, and checksum errors that name the
+algorithm. The trade-off: it is a smaller project than RustFS or SeaweedFS
+(3.1k GitHub stars against about 35.6k and 35.8k). Its POSIX backend keeps
+each object's metadata, the checksums among it, in extended attributes of its
+directory. It ran here on the container's own filesystem (the gate) and on a
+named volume (compose). Garage was not probed: it is AGPL-3.0, while the other
+three are Apache-2.0 like this repository. The adapter uses `PutObject`, `GetObject` and
+`HeadObject` only (`object-store.ts`), and its itests `CreateBucket`; nothing
+in the repository lists, deletes or copies objects, so listing is not part of
+what the swap had to keep.
+
+**What the S3 suite proves now.** Its four tests stay as they were, against
+the new server. Two are added for what the swap must keep true: of eight
+create-only writers racing for one key with different bytes exactly one lands
+and the others get `ObjectExistsError`; and the server returns the CRC32 the
+store's write carried and refuses bytes that do not match their checksum,
+storing nothing. No semantic was missing in VersityGW. Mutation checks, run
+against a VersityGW container: `IfNoneMatch` dropped from the put kills the
+existing different-bytes test and the race test; the SDK sending checksums
+only when an operation requires them kills the checksum test; the corrupt
+write sent with its correct CRC32 kills it too. The six tests also pass
+against the cached MinIO.
+
+**Compose.** `docker compose up object-store`, with throwaway credentials and
+no `.env`, became healthy through its healthcheck. The S3 suite passed against
+it on its named volume, then `down -v` removed it.
+
+**Left as they are.**
+- `.env.example` keeps `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD` and
+  `MINIO_API_PORT`, which compose still reads, and `MINIO_CONSOLE_PORT`, which
+  nothing uses now. The lane rules forbid reading `.env*` files, so an owner
+  who may edit it renames them.
+- The gate's `MINIO_*` names, its `ASEP_ITEST_MINIO_*` knobs and the omission
+  token `minio` keep their spelling, so `scripts/integration/*` changes no more
+  than needed beside Lane R's concurrent work there.
+- The locked plan, the exit criteria, the report and the review copies still
+  name MinIO: they record what was planned and proven then.
+
+**Gates.** This section's commit is the step's last; it runs `pnpm
+test:integration`, `pnpm verify:all` and the whole unit suite in the Linux
+container through `gate.sh` at that commit, and a commit cannot carry its own
+results, so those are reported to the controller.
+
+**What only GitHub's Linux run can prove.**
+- The runner pulls the VersityGW index digest for amd64; here only the arm64
+  image ran.
+- VersityGW's POSIX backend on the runner's container filesystem; it needs
+  extended attributes there.
+- The containment and sandbox suites on a native Linux daemon. Their fixtures
+  lie under `/tmp` there, bound into containers that also get a tmpfs on
+  `/tmp`. This host's Docker Engine 29.6.1 mounts such a bind above the tmpfs:
+  a container run with `--tmpfs /tmp` and a read-only bind at
+  `/tmp/inner/deep` read the bound file. The runner's Engine 28.0.4 was not
+  checked, and the suites never ran here with fixtures under `/tmp`: this
+  host's temporary directory is not under it.
+- The `verify` job's other suites on amd64; the container here is arm64.
