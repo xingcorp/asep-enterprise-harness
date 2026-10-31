@@ -3085,7 +3085,11 @@ came, and the mutation runner ended the run at its bound; the test now bounds
 each handshake to 5 s of real time, and rerun, all four failed it.
 **Not distinguished by a test:** fixing `readyBy` before rather than after
 the spawn — the spawn returns within milliseconds here, so no test tells the
-two apart; the code fixes it before.
+two apart; the code fixes it before. [Corrected at the Phase 2 acceptance:
+that holds only for moving the declaration while keeping its base,
+`startedAt`, an equivalent mutant. Basing the deadline on a moment after the
+spawn is not equivalent, and a test of the caller with a slow spawn would tell
+it apart; that missing test is CYCLE16-LOW-001.]
 **The red run did not exit by itself.** Against the previous handshake, the
 end-to-end test waited for a start that never settled. The test file's
 process (pids 36402 and 36403, started by the implementer) was ended by pid;
@@ -3204,3 +3208,116 @@ inside adapters and test tooling:
   'unknown', why }`; a group is signalled only while every member shows its
   token. The fake docker passes a listening container's ready line on with
   the port it was given. New helper `scripts/testing/unreadable.mjs`.
+
+## Phase 2 acceptance — Codex re-review cycle 16
+
+> Reviewer: Codex `gpt-6.1-sol`, re-review cycle 16 at `8e71ed7`
+> (`phase-02-final-rereview-codex-v16.md`), verdict **ACCEPT_PHASE** @ 0.97, at
+> the level `IMPLEMENTATION_COMPLETE_PILOT_PENDING`. The controller recorded
+> the acceptance as reconciliation R51. This section records it; the
+> acceptance record changes documentation only.
+
+### What the review found
+
+Every blocking finding it re-assessed is **RESOLVED**: CYCLE15-HIGH-001,
+CYCLE15-MED-001, CYCLE15-MED-002, CYCLE15-LOW-001, CYCLE15-LOW-002,
+CYCLE14-HIGH-001, CYCLE14-MED-001, CYCLE12-HIGH-001, CYCLE12-MED-001 and
+CYCLE13-MED-001. It raised no new blocking finding.
+
+- It re-ran, in its own probes on the code at `8e71ed7`, the probes and mutants
+  R50 named. A ready line at 30.001 s or at 180 s with the timer pending, and
+  a 45 s spawn against a 30 s bound, get no credential. The end-to-end source
+  model refuses at 190 s and has nothing left at 700 s; with readiness at 29 s
+  it serves until 659 s, within the published 660 s.
+  `CYCLE15_MUTANT_HANDSHAKE_TIMER_PLUS_1000`,
+  `CYCLE15_MUTANT_TIMER_REAL_TEST_ASSERTIONS`, the mutant without the deadline
+  check and the one that checks only before the key are killed.
+- The two live-leader registry probes, a group whose members cannot be listed,
+  a member started before its leader, and an unreadable root, run or owner
+  record each end `unknown`: the record kept, nothing signalled, the runner
+  red.
+- From the code it derived the window after worker death,
+  `max(0, P + L − D) ≤ max(0, S + bound + L − D)`, the bound T2-16 publishes.
+- It checked each commit of repair cycle 16: no test removed, skipped or
+  loosened; no change to contracts, policy, manifests, the lockfile, CI or the
+  required suites.
+- It recomputed the samplers of the controller's four gate runs from their raw
+  logs.
+
+### New findings, neither blocking
+
+| ID | Finding | Disposition |
+|---|---|---|
+| CYCLE16-LOW-001 | No test guards the readiness deadline's wiring around the real spawn. The handshake and end-to-end tests hand `readyBy` in themselves, so a caller that bases the deadline on a moment after the spawn passes them: under the reviewer's `CYCLE16_MUTANT_READYBY_AFTER_SPAWN` a 45 s spawn gets a 75 s deadline and the credential. The code at `8e71ed7` bases it before the spawn (`claude-provider.ts:864-865`). | OPEN follow-up (R51), owner Lane R, to land with the pilot preparation: a test of the caller with a controlled slow spawn. Not part of the acceptance. |
+| CYCLE16-LOW-002 | T2-16 said a partial line fails the start; the code holds a partial line until its newline. | FIXED in the acceptance record: T2-16 now says a partial line waits for its newline, and a complete line that is not the expected one fails the start. |
+
+**A correction to the cycle-15 section.** It said no test tells apart fixing
+`readyBy` before or after the spawn, since the spawn returns within
+milliseconds. That holds only for moving the declaration while keeping its
+base, `startedAt`, which the review confirms is an equivalent mutant. Basing
+the deadline on a moment after the spawn is not equivalent, and a test of the
+caller with a slow spawn would tell it apart; that missing test is
+CYCLE16-LOW-001. The cycle-15 section and the report carry the correction.
+
+### The controller's evidence at `8e71ed7`
+
+Through `gate.sh`, in the controller's own clean worktree at `8e71ed7`:
+
+| Gate | Result | Tests | Duration | Sampler: samples, longest Node launch, launches of 10 s or more | Valid under R47 |
+|---|---|---|---|---|---|
+| `verify:all`, run 1 | exit 0 | 917 of 917 | 599 s | 250, 5293 ms, 0 | yes |
+| `verify:all`, run 2 | exit 0 | 917 of 917 | 544 s | 225, 5991 ms, 0 | yes |
+| `test:integration`, run 1 | exit 0 | 34 of 34 | 105 s | 48, 1135 ms, 0 | yes |
+| `test:integration`, run 2 | exit 0 | 34 of 34 | 107 s | 49, 1124 ms, 0 | yes |
+
+The process registry found no recorded process still running. No container,
+network, orphan proxy or fake docker remained. The sentinel equalled HEAD. The
+controller's Linux check at `8e71ed7` (Docker `node:24-bookworm`, procps-ng
+4.0.2) passed `process-registry.test.ts` (20 of 20) and `fake-docker.test.ts`
+(6 of 6) on a real `/proc`.
+
+The implementer's own final sequence at `8e71ed7`, also through `gate.sh`,
+reported before the review:
+
+| Gate | Result | Tests | Duration | Sampler: samples, longest Node launch, launches of 10 s or more | Valid under R47 |
+|---|---|---|---|---|---|
+| `pnpm install --frozen-lockfile` | exit 0 | — | 1 s | — | — |
+| `verify:all`, run 1 | exit 0 | 917 of 917 | 556 s | 232, 5309 ms, 0 | yes |
+| `verify:all`, run 2 | exit 0 | 917 of 917 | 546 s | 227, 5884 ms, 0 | yes |
+| `test:integration`, run 1 | exit 0 | 34 of 34 | 111 s | 49, 2128 ms, 0 | yes |
+| `test:integration`, run 2 | exit 0 | 34 of 34 | 103 s | 47, 640 ms, 0 | yes |
+
+### The controller's decision (R51)
+
+Phase 2 is accepted at `8e71ed7` at the level
+`IMPLEMENTATION_COMPLETE_PILOT_PENDING`, not `COMPLETE`.
+
+- The acceptance record is documentation only: the review transcript with its
+  provenance, this section, the report's verdict (independently reviewed,
+  accepted at `8e71ed7`, `implementation_head_sha` unchanged) and the
+  CYCLE16-LOW-002 wording in T2-16.
+- Per L1 the record's commit re-runs `verify:all` and `test:integration`
+  through `gate.sh`, and the sentinel is rewritten to its HEAD.
+  `.task-complete` is not created.
+- CYCLE16-LOW-001 is an open follow-up, not part of the acceptance.
+- G-P2 is released once the controller has checked the record: a docs-only
+  diff from `8e71ed7` and one valid green run of each gate at its HEAD.
+- `main` is not moved by this step. The merge, any push and any rewording of
+  commit messages are the user's decisions.
+
+### What stays pending
+
+- K2 (one live task), K5 (ten genuine tasks in a verified manifest) and K6: no
+  model credential and no GitHub App private key here.
+- The live CONFORMANCE test, before any pilot (PP1). It last passed at
+  `dec962b`; the agent network and the proxy's lifetime changed after it.
+- CYCLE11-HIGH-002, under R47: the host's Node launch stall, its cause a
+  strong hypothesis, not proven.
+- CYCLE16-LOW-001, the open follow-up above.
+
+### What the review did not verify
+
+It did not re-run the implementer's 29 mutants of repair cycle 16, and it
+could not verify which tests were written before their code. It ran neither
+the gates nor a real `/proc` itself, and did not check cleanup against the
+Docker daemon: for those it read the controller's logs.
