@@ -164,10 +164,10 @@ async function grafana(path: string, init: { method?: string; body?: unknown } =
 
 // A dashboard provisioner may still be loading when /api/health already says ok.
 async function dashboardByUid(uid: string): Promise<{ status: number; body: any }> {
-  const deadline = Date.now() + 90_000;
+  const deadline = performance.now() + 90_000;
   for (;;) {
     const r = await grafana(`/api/dashboards/uid/${encodeURIComponent(uid)}`);
-    if (r.status !== 404 || Date.now() > deadline) return r;
+    if (r.status !== 404 || performance.now() > deadline) return r;
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }
 }
