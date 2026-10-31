@@ -23,8 +23,11 @@
 > The controller then answered Lane A's turn-10 questions (R34) and ran an independent Codex re-audit of v8 and of the
 > S2 fixes at `bed7a13` (`phase-03-review-codex-v8.md`, ACCEPT_WITH_CHANGES 0.95); its five LOWs are adjudicated in the
 > review log (section "Review v8") and fixed without a version bump, because none changes the design.
-> The controller's shared-surface reconciliation v1 (R1–R21, R24, the Lane A parts of R25–R28, R29, R30–R34 and the
-> Lane A part of R37) is applied, and it wins wherever it disagrees with this plan.
+> The controller's shared-surface reconciliation v1 (R1–R21, R24, the Lane A parts of R25–R28, R29, R30–R34, the
+> Lane A part of R37, R38, R39, R43, R47–R52) is applied, and it wins wherever it disagrees with this plan.
+> **Rebase (R51, R52).** Phase 2 was accepted at `8e71ed7`, and G-P2 released at its acceptance record `d6ee686`.
+> Lane A rebased this branch onto `d6ee686`. §1.4 maps Phase 2 as accepted against this plan and amends the lines it
+> names; S0 is the next commit.
 > **S2 acceptance (R37):** the pure decision core S2 is accepted once the five LOWs of re-audit v8 are fixed and the
 > controller has checked them; there is no further Codex round on S2 unless those fixes touch decision logic beyond
 > them.
@@ -36,15 +39,17 @@
 > Scope source: `docs/implementation/90-day-plan.md:24-31` (Days 31–45).
 
 ```text
-BASE_SHA:        00a6889  (head of phase/02-single-agent-vertical-slice; Phase 2 NOT yet accepted)
+BASE_SHA:        d6ee686  (Phase 2 acceptance record, head of phase/02-single-agent-vertical-slice; Phase 2
+                 accepted at 8e71ed7, R51, R52; the branch forked from 00a6889 and was rebased onto d6ee686)
 PLAN_V1_SHA:     80bb76a  (reviewed by Codex)
 PLAN_V2_SHA:     98e92cf  (lock-checked by Codex)
 PLAN_V3_SHA:     7cbf5d3  (reviewed by Codex at 5e9fb84, together with the S2 code)
 TARGET_BRANCH:   phase/03-durable-orchestration (Lane A worktree)
 BASELINE_GATE:   pnpm install --frozen-lockfile → exit 0; pnpm verify:all → exit 0 (observed 2026-10-29 at
                  00a6889, in workflow step 1; §2)
-IMPLEMENTATION:  starts only after the controller says "implement". Phase 2 is accepted and merged to main,
-                 Lane A rebases, and S0 is the first commit (§25). Only S2 may start earlier.
+IMPLEMENTATION:  starts only after the controller says "implement". Phase 2 is accepted (R51); main is not moved
+                 (merge and push are user decisions), so Lane A rebases onto the Phase 2 branch head, and S0 is the
+                 first slice commit after the rebase (§25). Only S2 started earlier.
 ```
 
 Companion documents: `phase-03-architecture.md`, `phase-03-data-model.md`, `phase-03-exit-criteria.md`,
@@ -75,15 +80,18 @@ Companion documents: `phase-03-architecture.md`, `phase-03-data-model.md`, `phas
 | 3k | Controller | Codex read-only re-audit of v7 and the S2 fixes at `ac0a1bc` → `phase-03-review-codex-v7.md` |
 | 3l | Lane A | re-audit v7 adjudicated and folded; R30's publication contract, R32 and R33 applied; plan LOCKED v8; S2 fixed, test first |
 | 3m | Controller | Codex read-only re-audit of v8 and the S2 fixes at `bed7a13` → `phase-03-review-codex-v8.md` (ACCEPT_WITH_CHANGES) |
-| 3n | Lane A (this step) | the five LOWs of re-audit v8 adjudicated and fixed (R34, R37); plan stays LOCKED v8; S2 accepted once the controller has checked the fixes (R37) |
+| 3n | Lane A | the five LOWs of re-audit v8 adjudicated and fixed (R34, R37); plan stays LOCKED v8; S2 accepted once the controller has checked the fixes (R37) |
+| 3o | Controller | S2 accepted at `75bf4b3` (R38); G-LB released, slot block `9cc21c98…` (R39); Phase 2 accepted at `8e71ed7` and G-P2 released at `d6ee686` (R51, R52) |
+| 3p | Lane A (this step) | rebase onto `d6ee686`; Phase 2 delta mapped against the plan (§1.4); S0; then the controller's check and an independent review |
 | 4 | Lane A, after "implement" | one slice per commit (§26), on this branch only, in the §25 order; S2 first (`a133e32`), as R15 allows |
 | 5 | Controller | independent gate run + Codex final audit; Lane A repairs |
 | 6 | Controller | merge on ACCEPT, in the order Phase 2 → Phase 3 → Phase 4 (R-ordering 4) |
 
 Ordering fixed by the reconciliation:
 
-1. Phase 2 lands first. Lane R repairs Phase 2 in full (cycle 7). The controller accepts it and merges it to
-   `main`, and Lane A rebases onto that `main`.
+1. Phase 2 lands first. Lane R repaired Phase 2 in full (cycles 7–16). The controller accepted it at `8e71ed7` (R51)
+   and released G-P2 at its acceptance record `d6ee686` (R52). `main` is not moved, so Lane A rebased onto the Phase 2
+   branch head `d6ee686`, which carries what `main` would (R51).
 2. **S0 "shared foundation"** is Lane A's first commit after the rebase. It lands every `[S0]` item of the
    reconciliation exactly as specified there (§26). Lane B rebases onto S0 before any Lane B slice that touches
    a shared surface.
@@ -137,7 +145,8 @@ Lane A does not edit any shared surface before the controller says "implement".
 container orphaning on Claude-adapter timeout bears on Phase 2 exit G3 ("timeout … cancellation"). It is still
 unverified at `00a6889`; the code only shows the `docker` client being killed (`claude-provider.ts:225-235`).
 v1's statement that G8 was a residual Phase 2 wedge was wrong and is withdrawn. G5 is Phase 2 HIGH-006, which
-Lane R owns.
+Lane R owns. Status at the rebase base `d6ee686` (§1.4): G3, G5, G10 and G17 are resolved by Phase 2; G4 stands and is
+settled by `findLease` (R29); G16 and G18 stand (CR-26, CR-27).
 
 ### 1.3 Phase 2 lessons applied
 
@@ -157,6 +166,32 @@ From `phase-02-final-review-codex-v1.md`, `phase-02-final-rereview-codex-v5.md` 
 4. **Findings fixed in name only.** Each accepted review finding names the design section, the exit criterion
    and the slice that proves it (review log "Locked change" and "Validation" lines). N3 resolves a CRITICAL/HIGH
    only with a fix plus its test, evidence of non-applicability, or an explicit user-accepted risk.
+
+### 1.4 Phase 2 as accepted, at the rebase base `d6ee686` (R51, R52)
+
+The controller accepted Phase 2 at `8e71ed7` (`IMPLEMENTATION_COMPLETE_PILOT_PENDING`, R51) and released G-P2 at its
+acceptance record `d6ee686`, the head of `phase/02-single-agent-vertical-slice` (R52). `main` is not moved; merge and
+push are user decisions (R51). Lane A rebased this branch from `00a6889` onto `d6ee686` (104 Phase 2 commits). This
+section lists every accepted Phase 2 behaviour the plan depends on, as it stands at `d6ee686`, with the slice that
+consumes it. Where Phase 2 differs from what the plan assumed, the plan line named in the last column is amended in
+the same commit. Line numbers are at `d6ee686`.
+
+| # | Accepted behaviour at `d6ee686` | Evidence | Consumed by | Plan assumption → amendment |
+|---|---|---|---|---|
+| P2-1 | **Forge port, five methods.** `pushBranch` is compare-and-set (`expectedRemoteSha`, `null` = absent); `upsertPullRequest` creates, or updates title and body of the open PR on the same base, and returns a closed, merged or retargeted PR as found; `updatePullRequestContent` is **required** and keyed by PR number: one write of exactly `{title, body}`, nothing listed, selected or created; `resolveRef` and `findPullRequest` are reads. `findPullRequest` returns one PR for the head branch (the adapter's `prForHead`), not the candidate set, and no read reports a repository ID. | `packages/ports/src/index.ts:410-463`; `PullRequestRef` `:343-363`; GitHub adapter `adapters/github-app/src/forge-provider.ts:415-457` (upsert), `:466-483` (by number), `:526-541` (find); port wrapper `adapters/github-app/src/port-adapter.ts:68`, `:129-136`; local double `adapters/local-doubles/src/index.ts:109`, `:207` | S1 (CR-28 port types), S5 (adapter reads, HTTP double), S6 (publication activities), S8 (`DurableLocalForge`) | The plan listed four methods (CR-28 at `a447983`). **Amended:** CR-28 lists five. R47: no adapter or double implements `updatePullRequestContent` through a branch-keyed upsert, so the S5 HTTP double and the S8 `DurableLocalForge` implement it by number, and the S5 parity table has a row for it (§21, S5). CR-28's PR listing and repository IDs stay needed: neither exists at `d6ee686`. |
+| P2-2 | **Reconcile.** `reconcileBranchStep` puts a diverged branch back on the attempt's commit with a compare-and-set push (`absent: 'repair' | 'leave'`); `reconcilePullRequestStep` reads the PR, and only when it is the attempt's **recorded** PR (number, URL, head, open, unmerged, base, head SHA: `publicationGap`) and its title or body differs, writes title and body by that number through `updatePullRequestContent`, then reads again. It has no create, retarget or close path (R43). Both audit `forge.reconcile`. | `packages/application/src/pipeline-steps.ts:1075-1097`, `:1130-1162`, `publicationGap` `:891-913` | S6 (`reconcilePublication`) | R34's narrow repair said "never call `reconcilePullRequestStep` in a mode that creates or retargets"; at `d6ee686` the step has no such mode, so that holds by construction. Two things differ. The step repairs only the PR recorded by the attempt's `COMPLETED` pr-upsert record, and the plan let the activity repair "an open PR on the attempt branch". `reconcileBranchStep` writes to the branch. **Amended** (§11, S6, CR-28): `reconcilePublication` writes only through `reconcilePullRequestStep` with the attempt's `COMPLETED` pr-upsert record. With no such record (an `unknown` push, or an upsert whose record is `PENDING`) it writes nothing, and every PR it lists reports `contentRepaired: false`. A PR the harness created already carries `pullRequestContent(facts)`, so a missing repair changes no content the attempt wrote. It never calls `reconcileBranchStep`: it reads the branch with `resolveRef`, and the core decides. |
+| P2-3 | **Fencing primitive (R1).** A lease is `{ leaseId, fencingEpoch }` per (binding, branch). Its epoch is strictly monotonic and unique, a non-`ACTIVE` lease never becomes `ACTIVE` again, and liveness is read on the database clock. `acquire` sweeps expired leases and inserts the next epoch; a second `ACTIVE` lease on the same (binding, branch) is `LeaseDenied`, also for the same attempt. `heartbeat` extends expiry while live and throws `LeaseLostError` otherwise. The side-effect log requires a live owner lease. A takeover needs a dead owner, the same branch and a strictly newer epoch, and reports `takenOver`. `confirmOwner` acts only on a `PENDING` record and renews the lease. A DB trigger enforces the same rules. | `packages/ports/src/index.ts:139-178`, `:722-744`; `adapters/persistence/src/lease-repository.ts:54-111` (acquire), `:113-127` (heartbeat); `migrations.ts:147` (one active writer), `:598` (epoch unique), `:619` (lease guard), `:665-719` (side-effect guard), `:777` (liveness on `clock_timestamp()`); `side-effect-log.ts:177-213` (takeover), `:236-273` (`confirmOwner`) | S0 (the fence shape), S3 (resolver over the lease table, attempt-locked acquisition), S6 (activities), S10 (chaos) | F1–F5, L1 and L3 hold (CR-05). G3 and G5 of §1.2 are resolved by Phase 2. Two lines differ. **L2:** the same attempt cannot re-acquire while its lease is live, so a crash right after the grant is settled by R29's `findLease`, which returns the committed grant's fence, not by re-acquisition. **`FAILED`:** Phase 2 never reopens a `FAILED` record (`confirmOwner` refuses any non-`PENDING` record), so the plan's "reopenable after reconciliation" is withdrawn: an activity that finds its publication record `FAILED` reports the effect `unknown`, and the core reconciles (R24). **Amended:** CR-05, §22 CX-02, architecture §7.1 and §7.4. The block's `AssuranceFence` is exactly `{ leaseId: Lease.leaseId, fencingEpoch: Lease.fencingEpoch }`: S0 gives the core that fence shape. R28 obligation 5 (an acquisition refuses an attempt with a recorded terminal, under the attempt-row lock) is the composition's: Lane A wraps Phase 2's `acquire` in a transaction that locks the attempt row first. That is no change request against the primitive. |
+| P2-4 | **Result binding (R2).** Each operation's `result_ref` has a closed shape (`commit`, `push`, `pr-upsert`). It is parsed on every read, and a DB `CHECK` refuses any other JSON. | `packages/ports/src/index.ts:550-570`, `:606-661` | S6 | As assumed (F4, CR-05). |
+| P2-5 | **Fitness framework (R8).** The AST guard runs the TypeScript checker (`typescript/unstable/sync`) over the shipped source of every project. It holds the rules `retired-isolation-waiver`, `isolation-claim`, `persistence-call-in-root` and `port-call-in-root`, with seeded virtual-file fixtures in the guard's suite. Import-specifier rules stay in the forbidden-imports suite; the reference graph is checked against imports. | `scripts/lib/ts-guard.mjs:10-41`, `runGuard` `:132-162`; `scripts/ts-guard.test.ts:26-39` (`asep-suite:ts-guard`); `scripts/forbidden-imports.test.ts:192-212`; `scripts/project-references.test.ts` | S7 (core purity, Temporal confinement, workflow purity), S9 (B8, B9) | **Amended** (CR-12): a checker rule (core purity, the B8 import graph, the B9 `FaultInjector` rule) lands as a `FileCheck` rule in `ts-guard.mjs`, with seeded virtual-file fixtures in `ts-guard.test.ts`. An import-specifier rule (`@temporalio/*` confinement) lands in `forbidden-imports.test.ts` with its own self-check. |
+| P2-6 | **Kill grace (R24).** The accepted stop path at the wall-clock deadline (or on abort or a violation) runs `docker kill <name>`, one docker call bounded by `DOCKER_CALL_TIMEOUT_MS`, and SIGKILLs the client when it returns. Removal must then be shown (`docker inspect` finds no such container) within `AGENT_REMOVAL_BOUND_MS`. The exported bound for the whole path is `AGENT_STOP_BOUND_MS = DOCKER_CALL_TIMEOUT_MS + AGENT_REMOVAL_BOUND_MS = 30 000 + 30 000 = 60 000 ms`. | `adapters/agent-claude/src/claude-provider.ts:134` (`AGENT_REMOVAL_BOUND_MS`), `:142` (`AGENT_STOP_BOUND_MS`), `:148-151`, `:998-1012` (stop); `adapters/command-runner/src/container-teardown.ts:59` (`DOCKER_CALL_TIMEOUT_MS = 30_000`); exported at `adapters/agent-claude/src/index.ts:31` | S4 (test bound to the constant), S6 (loader), S7 (mapping) | The plan used 0 (`SIGKILL` at the timeout, CR-25 at `00a6889`). **Amended** (CR-25, S4, S6, architecture §10): `policy.agentKillGraceSeconds = AGENT_STOP_BOUND_MS / 1000 = 60`. The container stop timeout is the kill call's own 30 s bound (there is no separate `docker stop -t`), plus 30 s for forced removal. `packages/policy` may not import an adapter, so the worker composition root passes `AGENT_STOP_BOUND_MS` to the orchestration policy loader. The loader refuses a policy whose value differs, and the S6 test reads the constant, never a copied 60. |
+| P2-7 | **Agent caps and containers.** The adapter enforces all four caps. Turns are `min(config, request)`. Cost goes to the CLI as its budget and is checked again from the result (`BUDGET_EXHAUSTED` above the cap). Tool calls are counted from the stream and stopped above the cap. Wall-clock is the deadline. Containers are named `asep-agent-<id8>-<random>` and `asep-egress-<id8>-<random>` and carry `asep.attempt=<attemptId>`, `asep.role` and `asep.container` labels. The agent network carries `asep.attempt`. Teardown removes every container and network with the attempt's label; verification sandboxes carry `asep.role` and `asep.attempt`. | `claude-provider.ts:755-756`, `:1032-1036`, `:1209-1211`, `:660`, `:664-666`, `:333-337`, `:376-380`, `:815`, `:933`, `:943`; `adapters/command-runner/src/sandbox.ts:108-111` | S4 (reaper, H9 suite) | G10 and G17 are resolved by Phase 2. **Amended** (CR-08, CR-25, S4): names carry a random suffix, so the `ExecutionReaper` finds an attempt's containers by the `asep.attempt` label (and `asep.role`), not by a deterministic name. CR-25 needs no adapter change: S4 proves H9 over Phase 2's enforcement. |
+| P2-8 | **Egress proxy (R48–R50).** One proxy per agent attempt holds the model key. It starts without the key and reports ready. The worker writes the key on stdin only for a ready line that arrives within `PROXY_START_TIMEOUT_MS` (30 s), counted on the monotonic clock from just before the spawn. The proxy exits by itself with no key after `PROXY_CREDENTIAL_WINDOW_MS` (60 s). Its lifetime is `min(remaining budget + PROXY_EXPIRY_GRACE_MS (30 s), PROXY_MAX_LIFETIME_MS (4 h))`, latched on its own monotonic clock; at the end it refuses every request, cuts open streams and exits within `PROXY_EXIT_BOUND_MS` (2 s). A request whose wall-clock budget plus the grace exceeds 4 h is refused before anything is started (`BLOCKED`). | `claude-provider.ts:178`, `:186`, `:196`, `:203`, `:211`, `:627-629`, `:852-866` | S4, S6 (`runAgent`), S7 (input mapping), S10 (CX-04) | New for the plan. **Amended** (S6, S7): the input mapping and the loader refuse an attempt wall-clock budget above `PROXY_MAX_LIFETIME_MS − PROXY_EXPIRY_GRACE_MS` before any activity, read from the constants. `runAgent` keeps engine retry 1: after a worker death the old proxy holds the key until its own end (T2-16: `min(remaining budget + grace, maximum) + readiness bound` from the spawn), a replacement attempt starts its own proxy, and CX-04's reaper removes the dead attempt's labelled containers and network. |
+| P2-9 | **Test tooling.** Every gate runs through the controller's `gate.sh` (one gate at a time, with a Node-launch sampler). A run is valid only with no launch of 10 s or more, and acceptance needs two consecutive valid green runs (R47). Every Node test process starts with `--no-wasm-code-gc` (`NODE_TEST_V8_FLAGS`, `nodeTestArgs`). A run-scoped process registry records long-lived test processes (`spawnRecorded`), and the canonical runner ends leftovers and fails on an unknown record. Fitness tests require every test `spawn(` to be recorded or listed with a reason, and every test wait to be timed on the monotonic clock. | `scripts/lib/node-test-flags.mjs:27`, `:33`; `scripts/lib/process-registry.mjs:55`, `:377`, `:387`, `:405`; `scripts/lib/process-registry.test.ts:785-804` | every slice's gate; S8, S10, S11 (spawned worker, API and Temporal processes) | New for the plan; the monotonic-wait rule failed the first gate after the rebase on S2's purity seeds (fixed in the commit after it). **Amended** (§21, CR-14): the chaos suites start worker and API processes with `spawnRecorded` and time every wait on `performance.now()`. |
+| P2-10 | **CR-28 lands in Lane A's own commits after G-P2 (R34).** None of its three changes is in Phase 2. | `packages/ports/src/index.ts:380-407` (`PullRequestFacts` without assurance facts), `:459-462` (one PR, no IDs); `adapters/github-app/src/binding-resolver.ts:91-101` (`githubRepositoryId`) | S1, S5, S6, S7 | **Amended** (CR-28): item 1, the assurance facts in `PullRequestFacts` and `pullRequestContent`, is S1 (port type and pure function; Phase 2's content is byte-identical when `flagged` is false and the section is null), consumed by S6. Item 2, `listPullRequests` and repository IDs in the reads, is S1 (signature) and S5 (GitHub adapter, HTTP double; `DurableLocalForge` in S8). Item 3, the input's `repository` from the binding's `githubRepositoryId`, is S7. |
+| P2-11 | **Still open at `d6ee686`.** `CommandRunner.run` takes no per-call signal (CR-26). The GitHub upsert is still list-then-create with no `422` handling (CR-27). `run-event` is still 1.1.0. Phase 2 migrations end at `0019`. | `packages/ports/src/index.ts:334-336`; `forge-provider.ts:427-455`; `packages/contracts/schema/run-event.schema.json:4`; `migrations.ts:1109-1127` | S4, S5, S0, S3 | CR-26 and CR-27 stand, with the line numbers re-derived (CR-27). S0 bumps `run-event` from 1.1.0. A5's upgrade path starts from a database at `0019`. |
+
+Phase 2's pilot-pending items (K2, K5, K6, live CONFORMANCE, CYCLE16-LOW-001) and the R47 disposition of
+CYCLE11-HIGH-002 do not change any Phase 3 slice. Phase 3 reports its own gates under R47 (valid runs only).
 
 ---
 
@@ -376,9 +411,10 @@ loop attempt n = 1..maxAttempts:
                                    with its repository and tip, and every PR with that head branch with its number,
                                    head and base repository, head branch, head SHA, base branch, state, merged flag
                                    and contentRepaired; a repository is its numeric forge ID with owner and name;
-                                   its one write rewrites a diverged title and body of an open PR on the attempt
-                                   branch from pullRequestContent(facts) (R30, R33), and the core audits each
-                                   repair; the core applies one identity predicate (R27, R31, R33): the branch is
+                                   its one write rewrites a diverged title and body of the PR that the attempt's
+                                   COMPLETED pr-upsert record names, by its number, through Phase 2's
+                                   reconcilePullRequestStep (R30, R33, R43; §1.4 P2-2); with no such record it
+                                   writes nothing; it never moves the branch; the core audits each repair and applies one identity predicate (R27, R31, R33): the branch is
                                    in the input's repository (by ID) at the attempt's commit, and the candidates
                                    are none or exactly one open, unmerged PR with the input's repository as head and
                                    base repository, that branch and commit as head and the input's baseBranch as
@@ -578,7 +614,9 @@ live Claude and live GitHub remain opt-in, as in Phase 2.
   `DurableLocalForge` (new file). It pushes with real `git push` to a real bare remote. It keeps PRs plus an
   append-only **call log** in a file owned by the test process, outside every worker. It answers a duplicate
   create for a head with GitHub's `422`, exactly like the HTTP double, and a shared semantics table test pins
-  the two to the same behavior.
+  the two to the same behavior. Both implement `updatePullRequestContent` by PR number, never through the
+  branch-keyed upsert (R47, §1.4 P2-1). The chaos suites start their worker and API processes with the process
+  registry's `spawnRecorded` and time every wait on the monotonic clock (§1.4 P2-9).
 - **Real adapter proof.** Uniqueness on the real adapter is proven separately: the real
   `GitHubAppForgeProvider` runs against an honest local HTTP double of the pulls API (E12).
 - **Agent.** The agent double runs inside the real Docker sandbox through the **rebased** real
@@ -590,9 +628,9 @@ live Claude and live GitHub remain opt-in, as in Phase 2.
 | CX | Fault | Injection | Expected convergence |
 |---|---|---|---|
 | CX-01 | kill after `ensureAttempt` insert | crash point + SIGKILL | same attempt row reused; no second ordinal |
-| CX-02 | kill after lease insert | crash point + SIGKILL | lease recovered through the primitive (L2); no `LeaseDenied` wedge |
+| CX-02 | kill after lease insert | crash point + SIGKILL | the committed grant's fence found by `findLease` (L2, R29; §1.4 P2-3); no `LeaseDenied` wedge |
 | CX-03 | kill after `git worktree add`, registry `CREATING` | crash point + SIGKILL | promoted to ACTIVE or quarantined + replaced pre-agent |
-| CX-04 | kill mid-agent, container running | SIGKILL worker | agent activity fails on heartbeat timeout (not redelivered); container reaped; workspace quarantined; attempt 2 runs; 1 PR; `recoveryKind: attempt-replaced` |
+| CX-04 | kill mid-agent, container running | SIGKILL worker | agent activity fails on heartbeat timeout (not redelivered); the attempt's containers and network reaped by the `asep.attempt` label (§1.4 P2-7); workspace quarantined; attempt 2 runs with its own egress proxy; 1 PR; `recoveryKind: attempt-replaced` |
 | CX-05 | kill mid-verification | SIGKILL worker | same verification activity redelivered; stale verify containers reaped; 1 verdict recorded |
 | CX-06/07/08 | kill after commit `begin` / after `git commit` / after `complete` | crash points | exactly 1 harness commit per attempt; adopted SHA = evidence `resultSha` |
 | CX-09 | kill after evidence object write, before metadata insert | crash point | retry writes identical bytes (deterministic `createdAt`); evidence adopted; no wedge |
@@ -682,9 +720,9 @@ v1 → v2 slice mapping: v1 S1 → S0 (shared items) + S1; S2 → S2; S3 → S3;
 | S1 | Lane A contracts and ports: 3 new schemas + fixtures + snapshots + generated types (incl. `fixedTasks`, the `seal` control, `approval-decision.extensionUsd` and `policy.agentKillGraceSeconds`, R21); `TaskStatus` extension + domain transition table (incl. the R21 edges `WAITING_FOR_APPROVAL ⇄ PAUSED` and `PAUSED → BUDGET_EXHAUSTED`); ports CR-04, CR-07, CR-08, CR-09, CR-24, CR-26 types and error classes; principal types (CR-17); metrics dictionary entry; ADR 0017 | `feat(contracts): add durable-orchestration message contracts and ports` | after S0 | A1, A3, D1 (types compile), L5, domain table tests incl. the unchanged no-ACCEPTED invariant |
 | S2 | `@asep/orchestration`: reducer, activity option table, budget arithmetic (agent cap and verification reserve), the agent-outcome and reservation-failure tables, approval and control handling with the critical units, assurance-outcome routing incl. assurance-activity failure, repair lineage on retry, sequential in-memory interpreter; package-local purity self-check over production source. Core traces in the acceptance tables: (1) cap exhaustion and overrun vs H5/H9; (2) `REPAIR` with a failed reservation: `maxBudgetExtensionUsd` set (approve, reject) or unset, and a run-remainder shortfall; (3) `REPAIR` → agent death → replacement keeping the lineage → round-2 assurance; (4) cancel during assurance and during the publication-approval wait; (5) a non-replaceable agent failure beats a cap stop or an overrun (R20); and for v4 (R21): (6) a hostile policy listing each never-replaceable class; (7) wall-clock at the cap, at cap + grace and above; (8) micro-USD boundaries; (9) a failing PR upsert after a successful or ambiguous push, with a cancel pending; (10) a run sealed below `maxTasks`, created sealed, and sealed across continue-as-new; (11) pause during both approval waits; (12) the three `findAttempt` outcomes; (13) the two approval races, with both mutations shown red; the purity check is AST-based; and for v5 (R24): (14) the publication effect for push and PR upsert (`applied`, `none`, `unknown` with each reconciliation result, and a failing reconciliation), with and without a cancel pending (retryability does not reach the core); (15) every money cap equal to `MAX_USD` with usage one micro-USD above it, usage above the bound and invalid usage; (16) content-valid `verified: false` decisions for each approval kind in the generator; the purity check uses the TypeScript checker with the module-resolution closure; and for v6 (R27): (17) the reconciliation identity predicate on both paths, with the reconciliation result carrying the observed SHAs, for a wrong head, a moved or missing branch, a PR at another head or base, and an unreadable remote, each with and without a cancel pending, the reviewer's probe and the generator's seed 1351; (18) terminal outcome before lease release on every leased path, per path and as a per-attempt ordering property, with the reviewer's release-before-outcome mutation shown red; (19) the ambient-global allowlist and the locale-dependent members in the purity check, with the reviewer's locale and `navigator` probes as seeds; and for v7 (R29, R31): (20) the full publication observation on both paths (a fork head, a closed or merged PR, several candidates, a PR at another head or base, a branch in another repository), each with and without a cancel pending, the reviewer's `IDENTITY_MATRIX` cases as tests; (21) `baseBranch` and `repository` validation with the reviewer's four invalid bases, fixtures and generator on non-`main` bases, and the oracle checking every request's base against the input, with the reviewer's base-forced-to-`main` mutation shown red; (22) lease settlement after a failed or aborted `acquireLease` (`findLease` found, absent, a late grant refusing the pre-lease write, a second lookup) and `attempt-state-unknown` on a lookup failure over a pending cancel, the four `R29_*` probes as tests, with fences and lookups checked by the property oracle; (23) a type assertion inside a computed key and the double cast in the purity check, with the reviewer's asserted-key constructor as a seed and as a mutation of the production core; and for v8 (R33): (24) Git ref validation per path component (no leading `/`, no component starting with `.` or ending in `.lock`, not `HEAD`) with the reviewer's four names, held by a committed table of names with their `git check-ref-format --branch` result and a test-only check that re-runs git on the table; (25) the repository identified by its numeric forge ID in the input and the observation: a rename or transfer with the same ID reconciles and is audited, another repository at the old owner and name (another ID) is refused, on both paths with and without a cancel; (26) a content repair the reconciliation reports is audited; (27) the repository on the PR upsert request and the oracle checking every publication request's repository and base against the input; (28) fixtures and the generator varying the repository's ID, owner, name and case and emitting head branches that differ only in case, with the reviewer's two surviving mutations (a case-folded head branch; a hard-coded repository) shown red | `feat(orchestration): add the deterministic workflow decision core` (`a133e32`) + `fix(orchestration): …` follow-ups for v3, R20, v4, v5, v6, v7 and v8 | may start before G-P2 | B2 (package-local), D5 (core), D7 (core), D13 (core), D14 (core), D15 (core), D16 (core), D17 (core), D18 (core), G7/G11/G12/G13/G14 (core), H1, H3/H4 (core), H5 (core), H8 (core), H10 (core), H11 (core), H12 (core), I6, I9, J3 (core table), J4 (core), J5 (property), J7, J10 (core), L6 (core) |
 | S3 | Migrations `0100`–`0102`, `0104`–`0106`; `adapters/persistence/src/orchestration/**` (ordinal, registry, approvals + outbox, ledger, projection); the workspace resolver over the lease table; invariant race itests against the Phase 2 fencing primitive | `feat(persistence): make orchestration state idempotent on the fenced lease primitive` | G-P2 | A5 (full set and the upgrade path), D11, E1–E5, E9, E13 (persistence part), E15 |
-| S4 | On the rebased adapters: Git worktree rehydration from the registry; `create` create-or-adopt (base or `repairBaseSha`); commit HEAD CAS; host-id guard; deterministic container names/labels; `ExecutionReaper`; per-call runner abort (CR-26); per-request agent caps (CR-25), with the adapter's stop-to-kill interval exported as a constant for `policy.agentKillGraceSeconds` (R21), re-derived after the rebase from the accepted stop path (container stop timeout plus the bound on forced removal) and bound in the tests to that constant, not a copied literal (R24); orphan-container itest | `feat(workspace): make workspaces, sandboxes and agent caps restart-safe` | G-P2 | E6, E7, E8 (resolves research Q6), E14, H9 |
-| S5 | Forge PR-upsert convergence on the real GitHub adapter (CR-27) + honest HTTP double + contract test; the forge reads of CR-28 (every PR on a head branch, repositories by numeric ID); `DurableLocalForge` semantics parity table, including the compare-and-set push and the PR listing | `fix(forge): reconcile a pull-request create that conflicts with an existing head` | G-P2 | E12 |
-| S6 | `packages/application/src/orchestration-activities/**`: every activity over `ActivityExecutionContext`; check ids resolved through `VerificationCommandCatalog` (CR-24); fencing on the Phase 2 primitive with the `FAILED` lifecycle; deterministic evidence time; assurance wrapper + context adapter + binding of the S0 `NotConfiguredAssuranceSlot` + `recordAttemptOutcome` activity + admit hook; approval, budget, projection, control and run-event activities; `ensureAttempt` returning the attempt branch and the `findAttempt` lookup (R21); `acquireLease` returning the caller's fence, the read-only `findLease` lookup of the attempt's lease history and the `recordPreLeaseOutcome` write with its refusal result (R29); the publication effect on every push and PR-upsert result and failure, `none` only when the failure provably precedes the forge call; the publication activities over Phase 2's cycle-9 ports (R30, CR-28): `publishBranch` through `pushStep` (compare-and-set push, `expectedRemoteSha: null`), `upsertPullRequest` through `upsertPrStep` with `pullRequestContent(facts)` and the input's repository and `baseBranch`, and the `reconcilePublication` activity (R24), which reports the full observation (the branch with its repository and tip, every PR with that head branch with its repositories by numeric ID, head, base, state, merged flag and `contentRepaired`), repairs a diverged title and body from the facts and decides nothing else (R27, R31, R33); R30's interleavings as tests through these activities: the in-transport PR race, a stale different-commit push refused, a late same-commit push a no-op (exit E16); the `lease-granted` mapping table test (R32); the `recordAttemptOutcome` activity presents the caller's fence and runs before `releaseLease` (R23, R27, R28); the orchestration policy loader `packages/policy/src/orchestration-policy.ts` (CR-21), which rejects a policy listing a never-replaceable class and sets `agentKillGraceSeconds` from the adapter constant (R21); double-invoke and crash-variant tests | `feat(application): expose step use cases as retry-safe activities` | G-P2 | B7, D6, D13 (lookup activity), D14 (loader), D17 (lookup and refusal activities), E10, E11, E13 (activity part), E16, J2, J8, J9 |
+| S4 | On the rebased adapters: Git worktree rehydration from the registry; `create` create-or-adopt (base or `repairBaseSha`); commit HEAD CAS; host-id guard; `ExecutionReaper` over Phase 2's container and network labels (`asep.attempt`, `asep.role`; the names carry a random suffix, §1.4 P2-7); per-call runner abort (CR-26); the H9 suite over Phase 2's per-request agent caps, which need no adapter change (CR-25); the kill grace re-derived from the accepted stop path, `AGENT_STOP_BOUND_MS` = `DOCKER_CALL_TIMEOUT_MS` + `AGENT_REMOVAL_BOUND_MS` = 60 s (§1.4 P2-6), bound in the tests to that constant, not a copied literal (R24); orphan-container itest | `feat(workspace): make workspaces, sandboxes and agent caps restart-safe` | G-P2 | E6, E7, E8 (resolves research Q6), E14, H9 |
+| S5 | Forge PR-upsert convergence on the real GitHub adapter (CR-27) + honest HTTP double + contract test; the forge reads of CR-28 (every PR on a head branch, repositories by numeric ID); `DurableLocalForge` semantics parity table, including the compare-and-set push, the PR listing and `updatePullRequestContent` by number, never through the branch-keyed upsert (R47) | `fix(forge): reconcile a pull-request create that conflicts with an existing head` | G-P2 | E12 |
+| S6 | `packages/application/src/orchestration-activities/**`: every activity over `ActivityExecutionContext`; check ids resolved through `VerificationCommandCatalog` (CR-24); fencing on the Phase 2 primitive with the `FAILED` lifecycle; deterministic evidence time; assurance wrapper + context adapter + binding of the S0 `NotConfiguredAssuranceSlot` + `recordAttemptOutcome` activity + admit hook; approval, budget, projection, control and run-event activities; `ensureAttempt` returning the attempt branch and the `findAttempt` lookup (R21); `acquireLease` returning the caller's fence, the read-only `findLease` lookup of the attempt's lease history and the `recordPreLeaseOutcome` write with its refusal result (R29); the publication effect on every push and PR-upsert result and failure, `none` only when the failure provably precedes the forge call; the publication activities over Phase 2's cycle-9 ports (R30, CR-28): `publishBranch` through `pushStep` (compare-and-set push, `expectedRemoteSha: null`), `upsertPullRequest` through `upsertPrStep` with `pullRequestContent(facts)` and the input's repository and `baseBranch`, and the `reconcilePublication` activity (R24), which reports the full observation (the branch with its repository and tip, every PR with that head branch with its repositories by numeric ID, head, base, state, merged flag and `contentRepaired`), repairs a diverged title and body only of the PR its `COMPLETED` pr-upsert record names, through `reconcilePullRequestStep` (by number, R43), reads the branch with `resolveRef` and never calls `reconcileBranchStep`, and decides nothing else (R27, R31, R33; §1.4 P2-2); a publication record found `FAILED` is reported as effect `unknown`, because Phase 2 never reopens it (§1.4 P2-3); R30's interleavings as tests through these activities: the in-transport PR race, a stale different-commit push refused, a late same-commit push a no-op (exit E16); the `lease-granted` mapping table test (R32); the `recordAttemptOutcome` activity presents the caller's fence and runs before `releaseLease` (R23, R27, R28); the orchestration policy loader `packages/policy/src/orchestration-policy.ts` (CR-21), which rejects a policy listing a never-replaceable class, refuses an `agentKillGraceSeconds` other than the `AGENT_STOP_BOUND_MS / 1000` the worker composition root passes it (the policy package imports no adapter), and refuses an attempt wall-clock budget above `PROXY_MAX_LIFETIME_MS − PROXY_EXPIRY_GRACE_MS` (R21; §1.4 P2-6, P2-8); double-invoke and crash-variant tests | `feat(application): expose step use cases as retry-safe activities` | G-P2 | B7, D6, D13 (lookup activity), D14 (loader), D17 (lookup and refusal activities), E10, E11, E13 (activity part), E16, J2, J8, J9 |
 | S7 | `adapters/temporal`: workflows (task, run, janitor), activity bridge, error mapping, `WorkflowEngine` client with the connection guard, worker factory, bundler test, the test-support callback injector (CR-16); the input and control mapping (workflow input → core input, rejecting inexact or unbounded money and a policy with a never-replaceable class; `approval-decision.extensionUsd` → the core message; `seal`), and the interpreter's publication effect on activity failures, `unknown` when absent (R24); the interpreter awaits each effect before the next, so `recordAttemptOutcome` completes before `releaseLease` starts (R27); `baseBranch` and `repository` (numeric forge ID, owner and name) mapped from the repository binding and checked with the core's input rules (R27, R31, R33); the workflow result's `unrecordedAttempts` passed to the run's telemetry (R29); `workers/temporal-worker` root binding the default slot; Temporal confinement fitness and the shared core-purity rule in `scripts/forbidden-imports.test.ts` | `feat(temporal): run task and run workflows on Temporal` | after S2, S6 | A2, A6, B1, B2 (shared rule), B3, B4, B6, B10, C5, C8, D3, D4, D9 (bridge part), D16 (mapping), H12 (mapping), I8, L6 (e2e) |
 | S8 | Gate: digest-pinned Temporal in `run-integration.mjs` (loopback publish, version line, pull/inspect output, namespace retention read-back), omit hook, negative test, new required itest IDs; `compose.yaml` Temporal fix; `DurableLocalForge`; first real end-to-end itest; the manifest-gated replay suite, now required, with its seeded non-deterministic fixture, the first captured histories and `required-scenarios.json` | `feat(integration): provision a digest-pinned Temporal server in the mandatory gate` | after S7 | A4, B5 (staged: S8 scenarios), C1–C4, C6, C7, C10, D2, D7 (e2e), D15 (e2e), L1 |
 | S9 | API routes + application use cases for executions/controls/approvals/view (incl. the run `seal` route and the decision body's `extensionUsd`, R21); principal resolver and capabilities; decision outbox + delivery relay + API chaos entry; production-root `WorkflowEngine` wiring; pilot-main and CLI dispatch via the engine; no-second-driver fitness | `feat(control-plane): drive executions, controls and approvals through the workflow engine` | after S8 | B8, B9, D1, D8, F19, G9, I2, K1–K7 |
@@ -812,13 +850,19 @@ result binding (Phase 2 HIGH-005) as they land. It requires these invariants (ar
 - **F4.** Completed records carry the closed, validated, DB-coherent result shape. No `resultRef?: unknown`.
 - **F5.** A legitimate successor can always reach a terminal state, so there is no wedge.
 - **L1.** Renewal extends expiry while `ACTIVE` and reports the lease lost otherwise.
-- **L2.** A crash right after the lease insert does not wedge the same attempt's next delivery.
+- **L2.** A crash right after the lease insert does not wedge the same attempt's next delivery. At `d6ee686` the
+  same attempt cannot re-acquire while its lease is live (one active writer per binding and branch), so the next
+  delivery settles the grant through R29's `findLease`, which returns its fence (§1.4 P2-3).
 - **L3.** The lease epoch, or its equivalent, is visible to the activity.
-- **`FAILED` lifecycle** (P3-PLAN-HIGH-002). `FAILED` is reopenable only after remote reconciliation by
-  natural key. An ambiguous transport outcome stays `PENDING`, and terminal failures are never reopened.
+- **`FAILED` lifecycle** (P3-PLAN-HIGH-002). Amended at the rebase (§1.4 P2-3): Phase 2 never reopens a `FAILED`
+  record (`confirmOwner` acts only on a `PENDING` one), which is stricter than the reopen-after-reconciliation this
+  line required. A Phase 3 activity that finds its publication record `FAILED` reports the effect `unknown`, and the
+  core reconciles the remote before any terminal state (R24). An ambiguous transport outcome stays `PENDING`.
 
 If the accepted primitive lacks any of these, Lane A files the minimal generalisation as a change request
-against the Phase 2 primitive. It does not build a parallel design. The Phase 2 lease-handoff test
+against the Phase 2 primitive. It does not build a parallel design. At `d6ee686` it lacks none: F1–F5, L1 and L3
+hold, L2 holds through `findLease`, and R28 obligation 5 is a transaction of Lane A's composition around Phase 2's
+`acquire`, not a change to it (§1.4 P2-3). The block's `AssuranceFence` is the lease's `{ leaseId, fencingEpoch }`. The Phase 2 lease-handoff test
 (`side-effect-log.test.ts:255`) is changed only by the Phase 2 repair. Owner: Phase 2 (Lane R); Lane A proves
 the invariants (S3, S6, S10).
 
@@ -891,9 +935,10 @@ export interface ExecutionReaper {
 }
 ```
 
-Adapter changes (CR-20): on the **rebased** `adapters/agent-claude` and `adapters/command-runner`, add
-`--name asep-agent-<attemptId>` / `--name asep-verify-<attemptId>-<checkId>` and the labels `asep.attempt`,
-`asep.role`, `asep.org` and `asep.project` to their `docker run` argv. Owner: Lane A (S1, S4).
+Adapter changes (CR-20): none for names and labels. Amended at the rebase (§1.4 P2-7): Phase 2 already labels
+every agent, egress-proxy and verification container and the agent network with `asep.attempt=<attemptId>` and
+`asep.role`, and names them with a random suffix, so `reap` finds them by label, never by a deterministic name.
+`asep.org` and `asep.project` are not added. Owner: Lane A (S1 type, S4 implementation).
 
 ### CR-09 — `WorkflowEngine` v2 (replaces the unused shape at `packages/ports/src/index.ts:79-86`)
 
@@ -1023,7 +1068,10 @@ Lane B withdraws `0201_run_events`. Owner: Lane A.
 ### CR-12 — Fitness rules (`scripts/forbidden-imports.test.ts`)
 
 Add the rules in `phase-03-architecture.md` §3, each with a seeded-violation self-check. They are written against
-the AST-based rule framework that the accepted Phase 2 lands, after the rebase (R8). Coverage:
+the AST-based rule framework that the accepted Phase 2 lands, after the rebase (R8). At `d6ee686` that is
+`scripts/lib/ts-guard.mjs` (`runGuard`, TypeScript checker rules over the shipped source, with seeded virtual-file
+fixtures in `scripts/ts-guard.test.ts`, `asep-suite:ts-guard`); a rule that resolves symbols or types lands there, and
+an import-specifier rule lands in `scripts/forbidden-imports.test.ts` with its own self-check (§1.4 P2-5). Coverage:
 
 - core purity on the production source of `packages/orchestration` (the rule S2 proves package-locally);
 - forbid `@temporalio/*` everywhere except `adapters/temporal/**` (its `src/test-support/**` included), with no
@@ -1188,9 +1236,9 @@ emitted. Lane B's metric additions are unioned at merge. Owner: Lane A (S1).
 | `adapters/persistence/src/repositories.ts` | attempt creation via ordinal; Phase 2 call sites unchanged in behavior |
 | `adapters/persistence/src/index.ts` | export lines for `./orchestration/index.js` and `./run-events/index.js` (append-only) |
 | `adapters/git-worktree/src/worktree-manager.ts` | registry-backed rehydration, create-or-adopt, HEAD CAS, host guard (CR-07) |
-| `adapters/agent-claude/src/claude-provider.ts` (rebased) | container name + labels (CR-08); per-request caps (CR-25) |
-| `adapters/command-runner/src/{sandbox.ts,command-runner.ts}` (rebased) | container name + labels; per-call signal (CR-26); new `reaper.ts` (CR-08) |
-| `adapters/github-app/src/forge-provider.ts` | PR create-conflict reconciliation (CR-27); the PR listing and repository IDs of CR-28 |
+| `adapters/agent-claude/src/claude-provider.ts` (rebased) | none: Phase 2 labels its containers and enforces the four caps (§1.4 P2-7) |
+| `adapters/command-runner/src/{sandbox.ts,command-runner.ts}` (rebased) | per-call signal (CR-26); new `reaper.ts` over the `asep.attempt` label (CR-08) |
+| `adapters/github-app/src/forge-provider.ts` | PR create-conflict reconciliation (CR-27); the PR listing and repository IDs of CR-28; `updatePullRequestContent` stays by number (R47) |
 | `adapters/local-doubles/src/index.ts` | one export line for the new `durable-forge.ts` |
 
 ### CR-21 — Existing package modules Lane A must modify
@@ -1242,16 +1290,19 @@ configuration. The test implementation is a fixed in-memory map. Owner: Lane A (
 
 ### CR-25 — Per-request agent caps (agent adapter, after the Phase 2 rebase; P3-PLAN-HIGH-005)
 
-Applies to the rebased `ClaudeCodingProvider` (Phase 2 HIGH-008 lands the real agent runtime first).
+Applies to the rebased `ClaudeCodingProvider` (Phase 2 HIGH-008 lands the real agent runtime first). Amended at the
+rebase (§1.4 P2-6, P2-7): at `d6ee686` the adapter already does what the first three bullets asked, so S4 changes no
+adapter code for them and proves them with the H9 suite.
 
-- `--max-turns` and the turn counter come from `req.budget.maxTurns`. Today they come from `cfg.maxTurns`
-  (`claude-provider.ts:99,141,156`).
-- Turns, tool calls and reported cost are counted from the event stream. The agent's process group is killed,
-  and its container reaped, as soon as `maxTurns`, `maxToolCalls` or `maxCostUsd` is exceeded. The
-  observation's status is `BUDGET_EXHAUSTED`, and its summary names the cap.
-- Wall-clock enforcement stays as today (`:211`). The adapter exports its stop-to-kill interval (today it sends
-  `SIGKILL` when the timeout fires, `:229-235`, so the interval is 0) as a constant; `policy.agentKillGraceSeconds` is set from
-  it, and that is the only tolerance on the wall-clock cap (R21, architecture §10).
+- `--max-turns` comes from `min(cfg.maxTurns, req.budget.maxTurns)` (`claude-provider.ts:755`).
+- Tool calls are counted from the event stream and the agent is stopped above `maxToolCalls` (`:1032-1036`); the
+  cost cap goes to the CLI as its budget (`:756`) and a reported cost above it is `BUDGET_EXHAUSTED` (`:1209-1211`).
+  The observation names the cap.
+- Wall-clock: the deadline is the request's budget (`:660`). The stop path at the deadline is `docker kill`, bounded
+  by `DOCKER_CALL_TIMEOUT_MS`, then removal shown within `AGENT_REMOVAL_BOUND_MS`; the adapter exports the sum as
+  `AGENT_STOP_BOUND_MS` = 60 000 ms (`:142`). `policy.agentKillGraceSeconds` = `AGENT_STOP_BOUND_MS / 1000` = 60, the
+  only tolerance on the wall-clock cap (R21, R24, architecture §10). The worker composition root passes the constant
+  to the policy loader, and the tests read it.
 - **Fail closed on unsupported caps.** The adapter declares which caps it can observe. If a request carries a
   cap it cannot observe, `execute()` throws `AgentBudgetCapUnsupportedError` (new, `packages/ports`,
   non-retryable) before the container starts. All four caps are required by `work-order.schema.json:36`, so
@@ -1289,19 +1340,26 @@ local HTTP double. The test covers:
 - a `422` on create.
 
 The double implements one-open-PR-per-head. No live-GitHub uniqueness is claimed beyond this evidence. Proof:
-E12. Owner: Lane A (S5). The line numbers above are at `00a6889`; at `a447983` the upsert is still find-then-create
-(`upsertPullRequest` in the same file), and after the rebase Lane A re-derives them.
+E12. Owner: Lane A (S5). The line numbers above are at `00a6889`. Re-derived at the rebase (§1.4 P2-11): at `d6ee686`
+the upsert is still list-then-create with no `422` handling (`adapters/github-app/src/forge-provider.ts:427-455`), and
+the injected seam is `octokitFor`.
 
 ### CR-28 — Publication on Phase 2's cycle-9 forge contract (`packages/ports/src/index.ts`; R30, R33)
 
-Phase 2 cycle 9 (`aa946cf`, head `a447983`, under controller verification) replaces epoch fencing at the forge with
-R30's contract, and Phase 3 publishes through it unchanged:
+Phase 2 cycle 9 (`aa946cf`) replaced epoch fencing at the forge with R30's contract, and cycle 12 (R43, R47) added a
+fifth, required port method that repairs a PR by its number. Phase 3 publishes through the accepted contract
+unchanged (§1.4 P2-1, P2-2; `packages/ports/src/index.ts:410-463` at `d6ee686`):
 
 ```typescript
-// Phase 2 at a447983, used as is:
+// Phase 2 at d6ee686 (accepted, R51), used as is:
 ForgeProvider.pushBranch(scope, { repositoryBindingId, branch, commitSha, expectedRemoteSha: string | null }): Promise<void>
 ForgeProvider.upsertPullRequest(scope, { repositoryBindingId, headBranch, base, title, body }): Promise<PullRequestRef>
+ForgeProvider.updatePullRequestContent(scope, { repositoryBindingId, number, title, body }): Promise<PullRequestRef>
+                                     // required; one write naming that PR; no adapter or double may implement it
+                                     // through a branch-keyed upsert (R47)
 ForgeProvider.resolveRef(scope, { repositoryBindingId, branch }): Promise<string | null>
+ForgeProvider.findPullRequest(scope, { repositoryBindingId, headBranch }): Promise<PullRequestRef | null>
+                                     // one PR for the head branch, no repository IDs
 pullRequestContent(facts: PullRequestFacts): { title: string; body: string }   // pure, from immutable facts
 pushStep / upsertPrStep / reconcileBranchStep / reconcilePullRequestStep        // application steps; audit 'forge.reconcile'
 ```
@@ -1327,8 +1385,15 @@ the accepted Phase 2, not in Phase 2's repair), with the union rule for shared f
 
 The `reconcilePublication` activity uses these reads and repairs only the title and body of the attempt's open PR; it
 never creates, retargets or closes a PR, and never calls `reconcilePullRequestStep` in a mode that does (R34,
-architecture §7.3). Creating a PR stays a core decision: the upsert after a confirmed push with no PR. Proof: E16 and
-G13 (activity part). Owner: Lane A (S5 adapter reads, S6 activities), after G-P2, as R34 decides.
+architecture §7.3). At `d6ee686` that step has no such mode at all (R43): it writes only to the PR the attempt's
+`COMPLETED` pr-upsert record names, by its number. So the activity repairs only through it, with that record, writes
+nothing when no such record exists, and reads the branch without `reconcileBranchStep` (§1.4 P2-2). Creating a PR
+stays a core decision: the upsert after a confirmed push with no PR. Proof: E16 and G13 (activity part).
+
+Slices (R34: after G-P2, in Lane A's own commits; §1.4 P2-10): item 1 is S1 (the `PullRequestFacts` fields and
+`pullRequestContent`, whose output stays byte-identical to Phase 2's when `flagged` is false and the section is
+null), consumed by S6; item 2 is S1 (the `listPullRequests` signature and the repository in the reads) and S5 (the
+GitHub adapter and the honest HTTP double; `DurableLocalForge` in S8); item 3 is S7 (the input mapping).
 
 ---
 
@@ -1377,11 +1442,11 @@ Everything else Lane A touches is an existing module and is listed in §30 (CR-0
 
 ## 32. Assumptions and blocking questions
 
-1. **Phase 2 is being repaired in full (cycle 7, user decision).** Its fenced takeover (HIGH-006), typed result
-   binding (HIGH-005) and real agent runtime (HIGH-008) are Phase 2 deliverables that Phase 3 builds on. Lane A
-   describes them by invariant until they are accepted (CR-05, CR-25). After the rebase, Lane A re-derives the
-   affected CRs on the accepted shapes (CR-05, CR-20, CR-21, CR-25, CR-26) and re-states them for the
-   controller if any invariant is missing. No Phase 2 line number is assumed stable.
+1. **Phase 2 is accepted (R51) and this branch is rebased onto `d6ee686` (R52).** Its fenced takeover (HIGH-006),
+   typed result binding (HIGH-005) and real agent runtime (HIGH-008) are the Phase 2 deliverables Phase 3 builds on.
+   §1.4 re-derives the affected CRs on the accepted shapes (CR-05, CR-08, CR-12, CR-20, CR-25, CR-27, CR-28); no
+   invariant is missing, so no change request against the Phase 2 primitive is filed. Line numbers are those at
+   `d6ee686`.
 2. **Docker on the implementation host** is required for the mandatory gate. It was observed present (server
    29.6.1, re-observed in step 3). If it is absent at implementation time, the gate goes red. It never skips.
 3. **No live credentials** are needed for Phase 3 exit (Claude and GitHub stay doubles, with live opt-in as in
@@ -1419,9 +1484,10 @@ PLAN_V6_SHA: 1c3153b (Codex re-audit of v6 + S2 fixes at 392f259: REQUEST_CHANGE
 PLAN_V7_SHA: 0aedc3f (Codex re-audit of v7 + S2 fixes at ac0a1bc: REQUEST_CHANGES 0.96; v6 plan findings FOLDED;
   every v6 S2 HIGH and earlier PARTIAL RESOLVED, P3-S2V6-MED-001 PARTIAL; new: 1 HIGH + 3 MEDIUM + 1 LOW plan,
   3 MEDIUM S2; all 8 ACCEPTED (R33); the PARTIAL closed through P3-S2V7-MED-001)
-BASE_SHA: 00a6889 (Phase 2 head, unaccepted; Phase 2 cycle 7 lands first)
+BASE_SHA: d6ee686 (Phase 2 acceptance record; Phase 2 accepted at 8e71ed7, R51, R52; forked from 00a6889, rebased)
+PHASE2_DELTA: §1.4 maps Phase 2 as accepted at d6ee686 against this plan (P2-1…P2-11) and amends the lines it names
 BASELINE: pnpm install --frozen-lockfile exit 0; pnpm verify:all exit 0 (548/548 canonical tests), observed in step 1
-RECONCILIATION: v1 (R1–R21, R24, R25, R27, the R28 slot rules, R29, R30's publication contract, R31, the Lane A parts of R32, R33, R34, and the Lane A part of R37) applied; S0 shared foundation added; S3–S13 gated on Phase 2 acceptance + rebase
+RECONCILIATION: v1 (R1–R21, R24, R25, R27, the R28 slot rules, R29, R30's publication contract, R31, the Lane A parts of R32, R33, R34, the Lane A part of R37, R38, R39, R43, R47–R52) applied; S0 shared foundation added; G-P2 released (R52), G-LB released (R39)
 OPEN_BY_DESIGN: CR-10 verbatim slot text, pasted on controller hand-off after Lane B's fixed block locks (R18)
 PLAN_FILES:
   - docs/implementation/phases/phase-03-plan.md
@@ -1446,5 +1512,5 @@ NEW_BACKEND_IMAGES: temporalio/temporal:1.9.1@sha256:ad4c82c97bd12b417d1ea942610
   temporalio/server:1.32.1@sha256:acecbab5…, temporalio/admin-tools:1.32.1@sha256:9ef0dc5b… (pre-deployment smoke)
 DEFERRED_WITH_REASON: fair scheduler; multi-host workers (single-host pool IN); worker versioning (drain-only or
   patched deploys); tenant/project budgets; parallel tasks in a run; Temporal mTLS/namespace auth
-BLOCKERS: none for the lock; implementation waits for G-P2 (Phase 2 accepted + rebase) and G-LB (slot text)
+BLOCKERS: none; G-P2 and G-LB are released, the branch is rebased onto d6ee686, and S0 follows
 ```

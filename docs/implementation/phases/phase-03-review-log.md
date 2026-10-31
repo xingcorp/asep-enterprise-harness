@@ -7,7 +7,8 @@
 > the S2 fixes (section "Review v5", which records the v6 freeze gate), of the Codex re-audit of plan v6 and the S2
 > fixes (section "Review v6", which records the v7 freeze gate), of the Codex re-audit of plan v7 and the S2 fixes
 > (section "Review v7", which records the v8 freeze gate), and of the Codex re-audit of plan v8 and the S2 fixes
-> (section "Review v8" at the end, which records the S2 acceptance condition).
+> (section "Review v8", which records the S2 acceptance condition). It also records the rebase onto the accepted
+> Phase 2 (section "Rebase onto the accepted Phase 2" at the end).
 > Planner: Lane A (Claude). Reviewer: Codex `gpt-5.6-sol` via the kiro-proxy gateway, read-only, run by the
 > controller on 2026-10-29. Raw review: `phase-03-plan-review-codex-v1.md`.
 > Reviewed base: `80bb76a` · Verdict: **REQUEST_CHANGES** · Confidence: 0.98.
@@ -2142,3 +2143,37 @@ commit: 996, 1011 and 1012 tests, 0 fail, 0 skipped, 53 test files, 31 required 
 checked them.
 
 **PLAN_STATUS:** LOCKED v8 (pending controller confirmation)
+
+## Rebase onto the accepted Phase 2 (`d6ee686`)
+
+> Lane A record of the rebase that R51 and R52 allow, and of the Phase 2 delta mapping (plan §1.4). No review finding
+> is adjudicated here. S2 was accepted at `75bf4b3` (R38), G-LB released with the slot block `9cc21c98…` (R39), Phase 2
+> accepted at `8e71ed7` (R51) and G-P2 released at its acceptance record `d6ee686` (R52). The controller kept the
+> backup ref `backup/phase-03-pre-rebase-75bf4b3`.
+
+**Rebase.** `git rebase d6ee686` replayed the 49 commits since the fork point `00a6889`. One commit conflicted, the
+first one (`a133e32`, the decision core), in `scripts/lib/canonical-tests.mjs`: Phase 2 appended five required suites
+where S2 appended its three. It is resolved by union (R10), with Phase 2's entries first. `pnpm-lock.yaml` merged without
+a conflict (S2's `packages/orchestration` importer). `pnpm install --offline` then reported "Lockfile is up to date",
+needed no network, and left the merged file byte-identical. `pnpm install --offline --frozen-lockfile` passes on the
+rebased tree. Lane A's files are unchanged by the rebase (`git diff backup/phase-03-pre-rebase-75bf4b3 HEAD` over
+`packages/orchestration` and the phase-03 docs is empty). The S2 suites ran 464 tests before and 464 after (0 fail,
+0 skipped).
+
+**One red gate after the rebase.** The first `verify:all` at the rebased head `aa19f73` failed (exit 1, 1380 pass,
+1 fail; Node-launch sampler max 4.5 s, so a real failure under R47). Phase 2's fitness test "tests time their waits on
+the monotonic clock, never on the wall clock" (`scripts/lib/process-registry.test.ts:785`) reads every test source
+line and took five purity seeds for waits. Their text reads the wall clock on purpose, because the detector must catch
+it. Every rebased commit from `a133e32` on carries those seeds, so each of them fails the same test.
+`f9a886f` builds the seeds' clock read from one constant spelled in two parts. The source each seed hands the
+detector is unchanged, and the Phase 2 rule is unchanged. At `f9a886f`, through `gate.sh`: `verify:all` exit 0, 1381
+pass, 0 fail, 0 skipped, 63 test files, 39 required suites; `test:integration` exit 0, 34 of 34, 7 itest files, 7
+suites; both valid under R47.
+
+**Phase 2 delta mapping.** Plan §1.4 lists every accepted Phase 2 behaviour the plan depends on (P2-1…P2-11) with its
+`file:line` at `d6ee686` and the consuming slice. The plan lines it amends are §0 (step table, ordering), §1.2 (gap
+status), §11 (`reconcilePublication`), §21 (forge doubles, chaos processes), §22 (CX-02, CX-04), §26 (S4, S5, S6),
+CR-05 (L2, `FAILED`), CR-08 (labels), CR-12 (rule framework), CR-20, CR-25 (caps, kill grace 60 s), CR-27, CR-28 (five
+methods, the narrow repair, slices), §32 and the output block. The architecture follows in §7.1, §7.3, §7.4, §7.5 and
+§10. Nothing Phase 3 needs is missing from the primitive, so no change request against Phase 2 is filed. The plan stays
+`LOCKED v8`, with the controller's confirmation pending.

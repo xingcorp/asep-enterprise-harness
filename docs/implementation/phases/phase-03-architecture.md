@@ -578,6 +578,11 @@ COMPLETED ──begin(same fingerprint)──▶ adopted      different fingerpr
   delivery reconciles.
 - Crash tests CX-31 … CX-33 (plan §22) prove three cases: external success then a recorded `fail`; a crash just
   after `FAILED` is written; and a retry after an ambiguous timeout. Each converges to exactly one effect.
+- **As accepted at `d6ee686` (plan §1.4 P2-3).** Phase 2 has no reopen: `confirmOwner` acts only on a `PENDING`
+  record, so a `FAILED` record is terminal and the `FAILED(reopenable)` rows above do not exist. That is stricter
+  than this lifecycle asked, so no change request is filed. A Phase 3 publication activity that finds its record
+  `FAILED` reports the effect `unknown`, and the core reconciles the remote before any terminal state (§4.1, R24),
+  which is where "every reopen reconciles first" now lives.
 
 ### 7.2 Local compare-and-swap (Git)
 
@@ -608,10 +613,11 @@ publication activities call those ports after the rebase:
   byte-identical content. There is no epoch marker and no read-marker-then-update check.
 - **The remote is reconciled before any terminal state.** A redelivered publication activity reconciles the remote
   by natural key before any new call (F3). An `unknown` publication effect is reconciled by `reconcilePublication`
-  before any terminal state (§4.1). That activity reads the branch and every PR candidate, and rewrites the title
-  and body of an open PR whose head is the attempt branch in the binding repository (by repository ID) when they
-  differ from `pullRequestContent(facts)`, as Phase 2's `reconcilePullRequestStep` does for content, but never through
-  a mode of that step that creates or retargets a PR (R34); Phase 2 audits that write as `forge.reconcile`. It reports `contentRepaired: true` on that PR, and the core audits
+  before any terminal state (§4.1). That activity reads the branch (`resolveRef`, never `reconcileBranchStep`) and
+  every PR candidate, and rewrites title and body only of the PR the attempt's `COMPLETED` pr-upsert record names,
+  through Phase 2's `reconcilePullRequestStep`, which writes by that PR's number and has no create, retarget or close
+  path (R34, R43; plan §1.4 P2-2); with no such record it writes nothing. Phase 2 audits that write as
+  `forge.reconcile`. It reports `contentRepaired: true` on that PR, and the core audits
   `publication.content-repaired` for each repair it is told of. The activity never creates, closes, retargets or
   merges a PR and never moves the branch: whether the remote is the attempt's publication stays the core's decision
   under the identity predicate (§4.1, R31), so a branch at another commit, or a PR that fails the predicate, ends the
@@ -638,11 +644,13 @@ no-op. The convergence assertions (§8) count forge **calls**, not just end stat
 
 ### 7.4 Leases (invariants L1–L3, provided by the Phase 2 primitive or requested from it)
 
-- **L1.** Renewal extends the lease expiry while it is `ACTIVE` and reports the lease as lost otherwise. Today
-  `heartbeat` only touches `heartbeat_at` (`lease-repository.ts:83-89`), so a long agent run outlives its TTL.
-- **L2.** A crash right after a lease insert must not wedge the same attempt's next delivery. Today a second
-  acquire by the same attempt returns `LeaseDenied` (`lease-repository.ts:75-79`). Recovery goes through the
-  primitive's takeover or adoption path, under F1.
+- **L1.** Renewal extends the lease expiry while it is `ACTIVE` and reports the lease as lost otherwise. Holds at
+  `d6ee686`: `heartbeat` extends `expires_at` by the TTL on the database clock and throws `LeaseLostError` for a lease
+  that is not live (`lease-repository.ts:113-127`; plan §1.4 P2-3).
+- **L2.** A crash right after a lease insert must not wedge the same attempt's next delivery. At `d6ee686` a second
+  acquire by the same attempt is still `LeaseDenied` while the first lease is live (one active writer per binding and
+  branch). The next delivery settles the committed grant through R29's `findLease`, which returns its fence, so
+  nothing waits for the TTL (plan §1.4 P2-3).
 - **L3.** The lease epoch (or the primitive's equivalent) is exposed to the activity, so F1 can be asserted.
 
 Constants: heartbeat tick 10 s, Temporal `heartbeatTimeout` 60 s, lease renewal on every tick throttled to
@@ -657,9 +665,9 @@ and `pathOf()` throws for unknown IDs (`:142-147`). After a worker restart no wo
 committed, reconciled or cleaned up. Phase 3 adds a durable `workspaces` registry (data model §3.4). The manager
 rehydrates path, base SHA and baseline refs from it, and `create` becomes create-or-adopt keyed by attempt.
 
-Agent and verification containers get deterministic names (`asep-agent-<attemptId>`,
-`asep-verify-<attemptId>-<checkId>`) and labels (`asep.attempt`, `asep.role`, `asep.org`, `asep.project`).
-`ExecutionReaper.reap(attemptId)` force-removes them. It runs before any retry or replacement of a container
+Agent and verification containers carry Phase 2's labels `asep.attempt=<attemptId>` and `asep.role` (agent, egress
+proxy, verification), and the agent network carries `asep.attempt`; their names carry a random suffix (plan §1.4 P2-7),
+so `ExecutionReaper.reap(attemptId)` force-removes every container and network with the attempt's label. It runs before any retry or replacement of a container
 activity, on cancel, after an abort of a running command, and from the janitor. Today the verification runner
 kills the `docker` client's process group on abort or timeout (`adapters/command-runner/src/command-runner.ts:86-104`).
 Whether that stops the container is not verified (research Q6), so the reaper is the guarantee.
@@ -793,11 +801,11 @@ between the agent adapter's stop signal at the cap and its hard kill, during whi
 It is data, `policy.agentKillGraceSeconds` (data model §4.2), not a business allowance. The code default is 0, so
 without a stated interval there is no tolerance at all. The policy file sets it to the adapter's documented
 stop-to-kill interval, which CR-25 pins in S4. The overrun records the wall-clock excess over the cap
-(`recordOverrun.overrunWallClockMs`) (exit H11). The current adapter kills the agent at the timeout with `SIGKILL`
-(`adapters/agent-claude/src/claude-provider.ts:229-235`), so 0 is right for it. **Post-rebase obligation (R24).**
-After the rebase onto the accepted Phase 2, the grace is re-derived from the accepted stop path (the container stop
-timeout plus the bound on forced removal), the adapter exports it as a constant, and the policy and the wall-clock
-tests bind to that constant, not to a copied literal (S4, S6).
+(`recordOverrun.overrunWallClockMs`) (exit H11). **Re-derived at the rebase (R24, plan §1.4 P2-6).** The accepted
+stop path is `docker kill` by name, one docker call bounded by `DOCKER_CALL_TIMEOUT_MS` (30 s, the container stop
+timeout of this path), then removal shown within `AGENT_REMOVAL_BOUND_MS` (30 s). The adapter exports the sum as
+`AGENT_STOP_BOUND_MS` (60 000 ms), so `policy.agentKillGraceSeconds` is 60. The worker composition root passes the
+constant to the policy loader, and the policy and the wall-clock tests bind to it, not to a copied literal (S4, S6).
 
 **Budget precision (R21, P3-S2-MED-001).** Budget arithmetic is in integer micro-USD.
 
