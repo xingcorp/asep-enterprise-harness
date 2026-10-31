@@ -26,7 +26,7 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import { syncBuiltinESMExports } from 'node:module';
 import net from 'node:net';
@@ -53,7 +53,7 @@ import {
   // @ts-expect-error - .mjs has no type declarations; runtime import is fine under tsx.
 } from '../../../scripts/lib/process-registry.mjs';
 import {
-  registryShimLine, removeFakeDockerFixture,
+  makeFixtureDir, registryShimLine, removeFakeDockerFixture,
   // @ts-expect-error - .mjs has no type declarations; runtime import is fine under tsx.
 } from '../../../scripts/testing/fake-docker-fixture.mjs';
 import type {
@@ -191,8 +191,10 @@ async function harness(opts: {
   netCreate?: 'hangs-after' | 'errs-after' | 'refused'; proxyHangs?: boolean; inspectErr?: string;
   slowNetworkInspectS?: number;
 } = {}): Promise<Harness> {
-  // Real paths: the provider resolves the worktree with realpath(3).
-  const dir = await realpath(await mkdtemp(join(tmpdir(), 'claude-provider-')));
+  // Real paths: the provider resolves the worktree with realpath(3). Outside
+  // /tmp: the fake CLI under it stands in for the agent image, which the agent
+  // container's tmpfs on /tmp would hide.
+  const dir = await makeFixtureDir('claude-provider-');
   const state = join(dir, 'docker-state');
   const bin = join(dir, 'bin');
   await mkdir(bin, { recursive: true });

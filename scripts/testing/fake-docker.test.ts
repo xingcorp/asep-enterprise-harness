@@ -17,7 +17,7 @@ import {
   // @ts-expect-error — .mjs helper has no type declarations; we test its runtime contract.
 } from '../lib/process-registry.mjs';
 import {
-  removeFakeDockerFixture,
+  removeFakeDockerFixture, fixtureTmpdir, makeFixtureDir, CONTAINER_TMPFS, OUTSIDE_TMPFS,
   // @ts-expect-error — .mjs helper has no type declarations; we test its runtime contract.
 } from './fake-docker-fixture.mjs';
 // @ts-expect-error — .mjs helper has no type declarations; we test its runtime contract.
@@ -234,6 +234,43 @@ test('when a container\'s process ends, the rest of its group is ended before it
     const left = member !== undefined ? identityOf(member.pid, member) : undefined;
     if (left !== undefined) endProcess(left);
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// A command the fake runs as a container's, from `dir`: it says it ran.
+function commandIn(dir: string): string {
+  mkdirSync(join(dir, 'bin'), { recursive: true });
+  const cmd = join(dir, 'bin', 'say-ran');
+  writeFileSync(cmd, `#!${process.execPath}\nprocess.stdout.write('ran\\n');\n`, { mode: 0o755 });
+  return cmd;
+}
+
+test('a fixture is made outside the containers\' /tmp, where their tmpfs would hide what it stands in for', async () => {
+  assert.equal(CONTAINER_TMPFS, '/tmp');
+  assert.equal(fixtureTmpdir('/tmp'), OUTSIDE_TMPFS);
+  assert.equal(fixtureTmpdir('/tmp/runner'), OUTSIDE_TMPFS);
+  for (const kept of ['/private/var/folders/ab/T', '/private/tmp', '/tmpfs', '/var/tmp', '/home/runner/work/_temp']) {
+    assert.equal(fixtureTmpdir(kept), kept, `${kept} is not under ${CONTAINER_TMPFS}`);
+  }
+
+  const dir = await makeFixtureDir('asep-fake-docker-');
+  // As the daemon does, the fake resolves a container's command inside the
+  // container's mounts, so a command under its tmpfs is hidden by it.
+  const hidden = mkdtempSync(join(CONTAINER_TMPFS, 'asep-fake-docker-'));
+  try {
+    assert.ok(dir !== CONTAINER_TMPFS && !dir.startsWith(`${CONTAINER_TMPFS}/`), `${dir} lies outside ${CONTAINER_TMPFS}`);
+    const state = join(dir, 'docker-state');
+    const ran = docker(state, 'run', '--rm', '--name', 'outside', '--tmpfs', CONTAINER_TMPFS, IMAGE, commandIn(dir));
+    assert.equal(ran.status, 0, ran.stderr);
+    assert.equal(ran.stdout, 'ran\n');
+
+    const shadowed = docker(state, 'run', '--rm', '--name', 'shadowed', '--tmpfs', CONTAINER_TMPFS, IMAGE, commandIn(hidden));
+    assert.equal(shadowed.status, 127, `a command under the tmpfs does not start: ${shadowed.stdout}`);
+    assert.match(shadowed.stderr, new RegExp(`failed to create task: exec: ".*/docker-state/tmp/shadowed_tmp${hidden.slice(CONTAINER_TMPFS.length)}/bin/say-ran"`));
+    assert.deepEqual(readdirSync(join(state, 'containers')), [], 'neither run left a container');
+  } finally {
+    rmSync(hidden, { recursive: true, force: true });
+    await removeFakeDockerFixture(dir);
   }
 });
 

@@ -4,14 +4,47 @@
 // whole process group — and shown gone before the fixture's files are deleted.
 // One that cannot be shown gone — it runs on, or the process table cannot tell
 // — fails the teardown and leaves the fixture, records and all, in place. What
-// it ends leaves the run's process registry too.
+// it ends leaves the run's process registry too. makeFixtureDir makes one,
+// outside the containers' /tmp.
 
-import { readdirSync } from 'node:fs';
-import { rm } from 'node:fs/promises';
+import { readdirSync, realpathSync } from 'node:fs';
+import { mkdtemp, realpath, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { endProcess, endRecorded, REGISTRY_ENV, shownGone, unregister } from '../lib/process-registry.mjs';
 
 export { registryShimLine } from '../lib/process-registry.mjs';
+
+// The agent and sandbox containers get a tmpfs on /tmp, and the fake docker, as
+// the daemon does, resolves a container's command and paths inside the
+// container's mounts. A fixture stands in for the image with host paths — the
+// fake CLI is one — so under /tmp the tmpfs hides them and nothing starts.
+// os.tmpdir() is /tmp on Linux unless TMPDIR says otherwise; macOS gives a
+// directory under /var/folders.
+export const CONTAINER_TMPFS = '/tmp';
+// Where a fixture goes when the temporary directory lies under /tmp: the
+// system's other temporary directory.
+export const OUTSIDE_TMPFS = '/var/tmp';
+
+const within = (path, dir) => path === dir || path.startsWith(`${dir}/`);
+
+/** The directory fixtures are made in: `base`, unless it lies at or under CONTAINER_TMPFS. */
+export function fixtureTmpdir(base = realpathSync(tmpdir())) {
+  return within(base, CONTAINER_TMPFS) ? OUTSIDE_TMPFS : base;
+}
+
+/**
+ * A new fixture directory, `prefix` and a random suffix, by its real path —
+ * which the provider resolves a worktree to — and never under CONTAINER_TMPFS.
+ */
+export async function makeFixtureDir(prefix, base) {
+  const dir = await realpath(await mkdtemp(join(fixtureTmpdir(base), prefix)));
+  if (within(dir, CONTAINER_TMPFS)) {
+    await rm(dir, { recursive: true, force: true });
+    throw new Error(`fixture ${dir} lies under ${CONTAINER_TMPFS}, where the containers' tmpfs would hide it`);
+  }
+  return dir;
+}
 
 // The fake docker state directories under `dir`, as fixtures lay them out: a
 // `docker-state` directory at most three levels down, outside any git

@@ -30,8 +30,7 @@ import assert from 'node:assert/strict';
 import { createHash, generateKeyPairSync, randomUUID } from 'node:crypto';
 import http from 'node:http';
 import type net from 'node:net';
-import { mkdir, mkdtemp, readFile, realpath, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { PgliteClient, migrate } from '@asep/persistence';
@@ -55,7 +54,7 @@ import {
   // @ts-expect-error - .mjs has no type declarations; runtime import is fine under tsx.
 } from '../../../scripts/pilot/human-authorization-crypto.mjs';
 import {
-  registryShimLine, removeFakeDockerFixture,
+  makeFixtureDir, registryShimLine, removeFakeDockerFixture,
   // @ts-expect-error - .mjs has no type declarations; runtime import is fine under tsx.
 } from '../../../scripts/testing/fake-docker-fixture.mjs';
 
@@ -111,7 +110,9 @@ async function fakeModelApi(): Promise<{ url: string; close(): Promise<void> }> 
 }
 
 async function rig(): Promise<Rig> {
-  const dir = await realpath(await mkdtemp(join(tmpdir(), 'asep-pilot-verifier-')));
+  // Outside /tmp: the fake CLI stands in for the agent image, which the agent
+  // container's tmpfs on /tmp would hide.
+  const dir = await makeFixtureDir('asep-pilot-verifier-');
   const bin = join(dir, 'bin');
   await mkdir(bin, { recursive: true });
   const docker = join(bin, 'docker');
