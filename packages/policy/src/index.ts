@@ -89,3 +89,13 @@ export function canUseExperimentalOutputReducer(input: {
   if (input.risk === 'R3' || input.risk === 'R4') return false;
   return input.commandCategory === 'LISTING';
 }
+
+export {
+  NEVER_REPLACEABLE_FAILURE_CLASSES,
+  OrchestrationPolicyError,
+  loadOrchestrationPolicy,
+  parseOrchestrationPolicy,
+  type BoundedDefault,
+  type OrchestrationPolicyBounds,
+  type OrchestrationPolicyDoc,
+} from './orchestration-policy.js';

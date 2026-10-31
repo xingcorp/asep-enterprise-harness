@@ -1,0 +1,52 @@
+# ASEP orchestration policy — the canonical defaults the control plane resolves
+# into every task workflow's input at submit time. The workflow never reads this
+# file. Loaded and refused by packages/policy/src/orchestration-policy.ts.
+#
+#   replaceableFailureClasses  failure classes after which an abandoned attempt
+#                              may be replaced by a new one, in a fresh worktree.
+#                              policy-violation, false-completion and
+#                              duplicate-side-effect are never replaceable; the
+#                              loader refuses a file that lists one.
+#   maxBudgetExtensionUsd      upper bound of one budget-extension grant; null
+#                              makes budget-extension approval unavailable.
+#   agentKillGraceSeconds      the agent adapter's stop-to-kill interval, the
+#                              only tolerance on the measured wall-clock. Must
+#                              equal the adapter's AGENT_STOP_BOUND_MS / 1000,
+#                              which the worker composition root passes the
+#                              loader.
+#   attemptBudgetDefaults      one attempt's caps. Its wall-clock may not exceed
+#                              the agent egress proxy's maximum lifetime less its
+#                              expiry grace.
+#   lease / heartbeat          workspace lease TTL, the activity heartbeat tick
+#                              and timeout, and the lease renewal throttle.
+#   approvalTtlSeconds         default and bounds of an approval's lifetime.
+#   maxPauseHours              default and bounds of a paused task's wait.
+#   relayIntervalSeconds       the approval-decision delivery relay's interval.
+apiVersion: asep.orchestration-policy/v1
+version: 1.0.0
+replaceableFailureClasses: [environment, provider, quota-rate-limit, tool, agent-loop-stall, artifact-loss, workflow-recovery-failure]
+maxBudgetExtensionUsd: null
+agentKillGraceSeconds: 60
+attemptBudgetDefaults:
+  maxTurns: 40
+  maxToolCalls: 400
+  maxCostUsd: 5
+  maxWallClockMinutes: 60
+taskBudgetDefaults:
+  maxAttempts: 3
+  maxCostUsd: 20
+  softCostUsd: 15
+  maxWallClockMinutes: 240
+leaseTtlSeconds: 600
+heartbeatIntervalSeconds: 10
+heartbeatTimeoutSeconds: 60
+leaseRenewalSeconds: 60
+approvalTtlSeconds:
+  default: 86400
+  min: 60
+  max: 604800
+maxPauseHours:
+  default: 72
+  min: 1
+  max: 168
+relayIntervalSeconds: 5

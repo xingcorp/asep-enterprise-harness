@@ -13,5 +13,8 @@
   "dependencies": {
     "@asep/contracts": "workspace:*",
     "yaml": "2.9.0"
+  },
+  "devDependencies": {
+    "@asep/agent-claude": "workspace:*"
   }
 }
