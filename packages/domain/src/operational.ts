@@ -25,17 +25,30 @@ import type {
 // Task
 // ---------------------------------------------------------------------------
 
+// Durable orchestration adds three statuses. A work status (READY, EXECUTING,
+// VERIFYING) can be paused, can wait for an approval, and can run out of budget:
+// VERIFYING too, when a replacement attempt is refused for budget after the task
+// reached verification. A pause applies at once, also during an approval wait,
+// and resume returns to the status the pause left; a budget-extension request can
+// expire or be rejected while paused. The task stays VERIFYING across assurance
+// and repair rounds.
 const taskAllowed: Readonly<Record<TaskStatus, readonly TaskStatus[]>> = {
   PENDING: ['READY', 'BLOCKED', 'CANCELLED'],
-  READY: ['EXECUTING', 'BLOCKED', 'CANCELLED'],
-  EXECUTING: ['VERIFYING', 'FAILED', 'BLOCKED', 'CANCELLED'],
-  VERIFYING: ['WAITING_FOR_HUMAN_REVIEW', 'FAILED', 'BLOCKED', 'CANCELLED'],
+  READY: ['EXECUTING', 'BLOCKED', 'CANCELLED', 'PAUSED', 'WAITING_FOR_APPROVAL', 'BUDGET_EXHAUSTED'],
+  EXECUTING: ['VERIFYING', 'FAILED', 'BLOCKED', 'CANCELLED', 'PAUSED', 'WAITING_FOR_APPROVAL', 'BUDGET_EXHAUSTED'],
+  VERIFYING: [
+    'WAITING_FOR_HUMAN_REVIEW', 'FAILED', 'BLOCKED', 'CANCELLED', 'PAUSED', 'WAITING_FOR_APPROVAL', 'BUDGET_EXHAUSTED',
+  ],
   // Terminal for the harness: only a human advances past review.
   WAITING_FOR_HUMAN_REVIEW: [],
   // BLOCKED can be retried back into the pipeline or cancelled.
   BLOCKED: ['READY', 'EXECUTING', 'CANCELLED'],
   FAILED: [],
   CANCELLED: [],
+  PAUSED: ['READY', 'EXECUTING', 'VERIFYING', 'WAITING_FOR_APPROVAL', 'BLOCKED', 'BUDGET_EXHAUSTED', 'CANCELLED'],
+  WAITING_FOR_APPROVAL: ['READY', 'EXECUTING', 'VERIFYING', 'PAUSED', 'BLOCKED', 'BUDGET_EXHAUSTED', 'CANCELLED'],
+  // The budget is spent and no extension was granted.
+  BUDGET_EXHAUSTED: [],
 };
 
 export interface TaskAggregate {
@@ -56,7 +69,8 @@ export function isTaskTerminal(status: TaskStatus): boolean {
   return (
     status === 'WAITING_FOR_HUMAN_REVIEW' ||
     status === 'FAILED' ||
-    status === 'CANCELLED'
+    status === 'CANCELLED' ||
+    status === 'BUDGET_EXHAUSTED'
   );
 }
 

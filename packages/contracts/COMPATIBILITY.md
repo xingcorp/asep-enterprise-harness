@@ -1,6 +1,6 @@
 # Contract Compatibility Policy
 
-The 12 canonical platform contracts live as JSON Schemas under
+The 16 canonical platform contracts live as JSON Schemas under
 [`schema/*.schema.json`](./schema). Each schema declares a semantic `version`
 (`major.minor.patch`) and a stable `$id`
 (`https://asep.dev/schema/<name>/v1`). The JSON Schema is the **single source of
@@ -26,6 +26,9 @@ when a change is under-versioned.
 | Add a new **required** property | **MAJOR** | Existing producers become invalid. |
 | Tighten an **optional** property to required | **MAJOR** | Existing data may be rejected. |
 | Remove an **enum value** | **MAJOR** | Previously valid data is rejected. |
+| Require **unique items** | **MAJOR** | An array with duplicates is rejected. |
+| Add or remove a **`oneOf`/`anyOf` variant** | **MAJOR** | A removed variant rejects what it accepted; one more `oneOf` variant can make a value match two. Kept variants are classified by position like any other node. |
+| Change a keyword the checker does not classify (`allOf`, `if`/`then`/`else`, `not`, `const`, …) | **MAJOR** | The checker cannot tell whether it tightens, so it escalates. |
 | Description / example / annotation only | PATCH / NONE | No structural effect. |
 
 When unsure, the checker escalates to the higher bump level. A breaking change

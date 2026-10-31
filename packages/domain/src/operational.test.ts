@@ -81,6 +81,67 @@ test('WAITING_FOR_HUMAN_REVIEW is terminal for the harness', () => {
   assert.throws(() => transitionTask(task('WAITING_FOR_HUMAN_REVIEW'), 'READY'));
 });
 
+// Every edge the table allows, as `FROM->TO`.
+function taskEdges(): string[] {
+  const edges: string[] = [];
+  for (const from of taskReachableStates()) {
+    for (const to of taskReachableStates()) {
+      try {
+        transitionTask(task(from), to);
+        edges.push(`${from}->${to}`);
+      } catch {
+        // not an edge
+      }
+    }
+  }
+  return edges.sort();
+}
+
+test('task: the edges between the earlier statuses are unchanged', () => {
+  const earlier = new Set(['PENDING', 'READY', 'EXECUTING', 'VERIFYING', 'WAITING_FOR_HUMAN_REVIEW', 'FAILED', 'BLOCKED', 'CANCELLED']);
+  const kept = taskEdges().filter((edge) => edge.split('->').every((s) => earlier.has(s)));
+  assert.deepEqual(kept, [
+    'BLOCKED->CANCELLED', 'BLOCKED->EXECUTING', 'BLOCKED->READY',
+    'EXECUTING->BLOCKED', 'EXECUTING->CANCELLED', 'EXECUTING->FAILED', 'EXECUTING->VERIFYING',
+    'PENDING->BLOCKED', 'PENDING->CANCELLED', 'PENDING->READY',
+    'READY->BLOCKED', 'READY->CANCELLED', 'READY->EXECUTING',
+    'VERIFYING->BLOCKED', 'VERIFYING->CANCELLED', 'VERIFYING->FAILED', 'VERIFYING->WAITING_FOR_HUMAN_REVIEW',
+  ]);
+});
+
+test('task: the edges touching PAUSED, WAITING_FOR_APPROVAL and BUDGET_EXHAUSTED are exactly the durable-orchestration additions', () => {
+  const added = new Set(['PAUSED', 'WAITING_FOR_APPROVAL', 'BUDGET_EXHAUSTED']);
+  const touching = taskEdges().filter((edge) => edge.split('->').some((s) => added.has(s)));
+  assert.deepEqual(touching, [
+    // A work status can be paused, can wait for an approval, and can run out of budget.
+    'EXECUTING->BUDGET_EXHAUSTED', 'EXECUTING->PAUSED', 'EXECUTING->WAITING_FOR_APPROVAL',
+    // Resume returns to the status the pause left, including an approval wait; a budget-extension request can
+    // expire or be rejected while paused.
+    'PAUSED->BLOCKED', 'PAUSED->BUDGET_EXHAUSTED', 'PAUSED->CANCELLED', 'PAUSED->EXECUTING', 'PAUSED->READY',
+    'PAUSED->VERIFYING', 'PAUSED->WAITING_FOR_APPROVAL',
+    'READY->BUDGET_EXHAUSTED', 'READY->PAUSED', 'READY->WAITING_FOR_APPROVAL',
+    // A replacement attempt refused for budget after the task reached verification.
+    'VERIFYING->BUDGET_EXHAUSTED', 'VERIFYING->PAUSED', 'VERIFYING->WAITING_FOR_APPROVAL',
+    // A pause during an approval wait applies at once.
+    'WAITING_FOR_APPROVAL->BLOCKED', 'WAITING_FOR_APPROVAL->BUDGET_EXHAUSTED', 'WAITING_FOR_APPROVAL->CANCELLED',
+    'WAITING_FOR_APPROVAL->EXECUTING', 'WAITING_FOR_APPROVAL->PAUSED', 'WAITING_FOR_APPROVAL->READY',
+    'WAITING_FOR_APPROVAL->VERIFYING',
+  ]);
+});
+
+test('task: BUDGET_EXHAUSTED is terminal; a pause and an approval wait are not', () => {
+  assert.ok(isTaskTerminal('BUDGET_EXHAUSTED'));
+  assert.ok(!isTaskTerminal('PAUSED'));
+  assert.ok(!isTaskTerminal('WAITING_FOR_APPROVAL'));
+  assert.ok(taskReachableStates().includes('BUDGET_EXHAUSTED'));
+  for (const to of taskReachableStates()) {
+    assert.throws(() => transitionTask(task('BUDGET_EXHAUSTED'), to), `BUDGET_EXHAUSTED -> ${to}`);
+  }
+  // Neither the pause nor the approval wait leads to review: the task goes back to work first.
+  assert.throws(() => transitionTask(task('PAUSED'), 'WAITING_FOR_HUMAN_REVIEW'));
+  assert.throws(() => transitionTask(task('WAITING_FOR_APPROVAL'), 'WAITING_FOR_HUMAN_REVIEW'));
+});
+
 // --- Attempt ----------------------------------------------------------------
 
 test('attempt happy path STARTED -> SUCCEEDED', () => {

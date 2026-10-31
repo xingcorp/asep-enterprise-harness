@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://asep.dev/schema/run-workflow-input/v1",
+  "version": "1.0.0",
+  "title": "RunWorkflowInput",
+  "description": "The input of one run workflow: identifiers, closed enums and numbers only, so no free text enters workflow history. With fixedTasks set the run is created sealed with exactly those tasks, in order; with fixedTasks null tasks are submitted and a seal control ends submissions. The input mapping applies the rules a schema cannot state reliably: money exact in micro-USD, softCostUsd at most maxCostUsd, and at most maxTasks fixed tasks.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "organizationId", "projectId", "repositoryBindingId", "runId", "risk", "runBudget", "governance", "requestedBy", "fixedTasks"],
+  "properties": {
+    "schemaVersion": { "type": "string", "enum": ["1.0.0"] },
+    "organizationId": { "type": "string", "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$", "x-tsType": "OrganizationId" },
+    "projectId": { "type": "string", "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$", "x-tsType": "ProjectId" },
+    "repositoryBindingId": { "type": "string", "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$", "x-tsType": "RepositoryBindingId" },
+    "runId": { "type": "string", "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$", "x-tsType": "RunId" },
+    "risk": { "type": "string", "enum": ["R0", "R1", "R2", "R3", "R4"], "x-tsType": "RiskLevel" },
+    "runBudget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maxCostUsd", "softCostUsd", "maxTasks"],
+      "properties": {
+        "maxCostUsd": { "type": "number", "exclusiveMinimum": 0, "maximum": 100000000 },
+        "softCostUsd": { "type": "number", "minimum": 0, "maximum": 100000000 },
+        "maxTasks": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "governance": {
+      "type": "object",
+      "description": "The defaults each task of the run starts with.",
+      "additionalProperties": false,
+      "required": ["publicationApprovalRequired", "approvalTtlSeconds", "maxPauseHours", "assuranceMode"],
+      "properties": {
+        "publicationApprovalRequired": { "type": "boolean" },
+        "approvalTtlSeconds": { "type": "integer", "minimum": 60, "maximum": 604800 },
+        "maxPauseHours": { "type": "integer", "minimum": 1, "maximum": 168 },
+        "assuranceMode": { "type": "string", "enum": ["shadow", "gating"] }
+      }
+    },
+    "requestedBy": { "type": "string", "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$" },
+    "fixedTasks": {
+      "description": "Set: the run is created sealed with exactly these tasks, in order, each once. Null: tasks are submitted.",
+      "oneOf": [
+        {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$", "x-tsType": "TaskId" }
+        },
+        { "type": "null" }
+      ]
+    }
+  },
+  "examples": [
+    {
+      "schemaVersion": "1.0.0",
+      "organizationId": "01K00000000000000000000001",
+      "projectId": "01K00000000000000000000002",
+      "repositoryBindingId": "01K00000000000000000000003",
+      "runId": "01K00000000000000000000004",
+      "risk": "R1",
+      "runBudget": { "maxCostUsd": 200, "softCostUsd": 150, "maxTasks": 10 },
+      "governance": { "publicationApprovalRequired": false, "approvalTtlSeconds": 86400, "maxPauseHours": 72, "assuranceMode": "shadow" },
+      "requestedBy": "01K00000000000000000000009",
+      "fixedTasks": null
+    }
+  ]
+}

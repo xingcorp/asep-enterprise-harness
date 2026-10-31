@@ -1,0 +1,82 @@
+{
+  "schemaVersion": "1.0.0",
+  "organizationId": "01K00000000000000000000001",
+  "projectId": "01K00000000000000000000002",
+  "repositoryBindingId": "01K00000000000000000000003",
+  "runId": "01K00000000000000000000004",
+  "taskId": "01K00000000000000000000005",
+  "risk": "R1",
+  "baseSha": "0123456789abcdef0123456789abcdef01234567",
+  "repository": {
+    "id": 1440561848,
+    "owner": "acme",
+    "name": "web"
+  },
+  "baseBranch": "main",
+  "workOrderRef": {
+    "artifactId": "01K000000000000000000000W1",
+    "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "kind": "work-order"
+  },
+  "contextPackRef": {
+    "artifactId": "01K000000000000000000000C1",
+    "sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+    "kind": "context-pack"
+  },
+  "attemptBudget": {
+    "maxTurns": 30,
+    "maxToolCalls": 120,
+    "maxCostUsd": 15,
+    "maxWallClockMinutes": 60
+  },
+  "taskBudget": {
+    "maxAttempts": 3,
+    "maxCostUsd": 40,
+    "softCostUsd": 30,
+    "maxWallClockMinutes": 240
+  },
+  "verificationReserve": {
+    "costUsd": 0.5,
+    "wallClockMinutes": 10
+  },
+  "runRemaining": {
+    "costUsd": 200
+  },
+  "verification": {
+    "planId": "vp-web-default",
+    "checks": [
+      {
+        "id": "chk-typecheck",
+        "level": "L1",
+        "category": "static",
+        "mandatory": true,
+        "commandId": "pnpm-typecheck"
+      },
+      {
+        "id": "chk-unit",
+        "level": "L2",
+        "category": "unit",
+        "mandatory": true,
+        "commandId": "pnpm-test"
+      }
+    ]
+  },
+  "governance": {
+    "publicationApprovalRequired": false,
+    "approvalTtlSeconds": 86400,
+    "maxPauseHours": 72,
+    "assuranceMode": "shadow",
+    "requestedBy": "01K00000000000000000000009"
+  },
+  "policy": {
+    "replaceableFailureClasses": [
+      "environment",
+      "flaky-test",
+      "provider",
+      "quota-rate-limit"
+    ],
+    "maxBudgetExtensionUsd": 20,
+    "agentKillGraceSeconds": 60
+  },
+  "note": "please hurry"
+}

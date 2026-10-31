@@ -1,6 +1,6 @@
 // Public surface of @asep/contracts.
 //
-// The 13 canonical platform contracts are GENERATED from the JSON Schemas under
+// The 16 canonical platform contracts are GENERATED from the JSON Schemas under
 // schema/*.schema.json (the single source of truth) into ./generated.ts, and
 // re-exported here. Branded identifiers, lifecycle enums, shared value objects
 // and the internal execution shapes are hand-authored in ./base.ts.

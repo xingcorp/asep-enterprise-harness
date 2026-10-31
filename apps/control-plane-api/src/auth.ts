@@ -64,6 +64,27 @@ export interface OperatorPrincipal {
 // route, the resolver and the tests agree on one string.
 export const CAP_CREATE_ORGANIZATION = 'organizations:create';
 
+// A tenant principal: who acts inside an organization, and what they may do.
+// Orchestration routes authorise each control and approval decision by
+// capability and record the principal's id, which is server state (a ULID) and
+// the only identity that enters workflow history. Only a human principal may
+// decide an approval; an agent principal never controls a workflow.
+export type TenantPrincipalClass = 'human' | 'service' | 'agent';
+
+export interface TenantPrincipal {
+  readonly principalId: string;
+  readonly principalClass: TenantPrincipalClass;
+  readonly organizationId: OrganizationId;
+  readonly capabilities: readonly string[];
+}
+
+// The tenant capabilities of durable orchestration.
+export const CAP_EXECUTIONS_START = 'executions:start';
+export const CAP_EXECUTIONS_CONTROL = 'executions:control';
+export const CAP_APPROVALS_READ = 'approvals:read';
+export const CAP_APPROVALS_DECIDE = 'approvals:decide';
+export const CAP_RUNS_GOVERN = 'runs:govern';
+
 // Resolves a verified credential to the organization it is bound to. The org
 // principal is SERVER state — it can never be chosen by the caller. Returns
 // undefined for an unknown/invalid token so the caller fails closed with 401.

@@ -349,3 +349,82 @@ test('actualBump reports a DOWNGRADE as none/decrease, not a major bump', () => 
   assert.equal(actualBump('1.0.0', '1.1.0'), 'minor');
   assert.equal(actualBump('1.0.0', '1.0.1'), 'patch');
 });
+
+// Variant lists and the keywords the classifier does not read. A schema whose
+// root is a oneOf (the workflow control message) would otherwise change inside
+// its variants unseen, and so would any change to a keyword such as `if`,
+// `allOf` or `const`.
+
+function controlBase(): MutableSchema {
+  return clone(loadSchema('workflow-control'));
+}
+
+function variant(schema: MutableSchema, i: number): MutableSchema {
+  return (schema['oneOf'] as MutableSchema[])[i]!;
+}
+
+test('BYPASS: removing a property inside a oneOf variant is BREAKING', () => {
+  const base = controlBase();
+  const next = controlBase();
+  const v = variant(next, 2);
+  delete v.properties!['extensionUsd'];
+  v.required = v.required!.filter((r) => r !== 'extensionUsd');
+  assert.equal(requiredBump(compareSchemas(base as SchemaNode, next as SchemaNode)), 'major');
+  next.version = '1.1.0';
+  assert.equal(checkCompatibility(base as SchemaNode, next as SchemaNode).ok, false);
+});
+
+test('BYPASS: narrowing an enum inside a oneOf variant is BREAKING', () => {
+  const base = controlBase();
+  const next = controlBase();
+  (variant(next, 0).properties!['kind'] as { enum: string[] }).enum = ['pause'];
+  assert.equal(requiredBump(compareSchemas(base as SchemaNode, next as SchemaNode)), 'major');
+});
+
+test('BYPASS: dropping a oneOf variant is BREAKING, and so is adding one', () => {
+  const base = controlBase();
+  const dropped = controlBase();
+  (dropped['oneOf'] as unknown[]).pop();
+  assert.equal(requiredBump(compareSchemas(base as SchemaNode, dropped as SchemaNode)), 'major');
+  // One more variant can make a value match two of them, which oneOf refuses.
+  const added = controlBase();
+  (added['oneOf'] as unknown[]).push({ type: 'object', properties: { kind: { type: 'string', enum: ['pause'] } } });
+  assert.equal(requiredBump(compareSchemas(base as SchemaNode, added as SchemaNode)), 'major');
+});
+
+test('adding an optional property inside a oneOf variant is a MINOR change', () => {
+  const base = controlBase();
+  const next = controlBase();
+  variant(next, 1).properties!['workflowId'] = { type: 'string', pattern: '^asep-run-[0-9A-HJKMNP-TV-Z]{26}$' } as SchemaNode;
+  assert.equal(requiredBump(compareSchemas(base as SchemaNode, next as SchemaNode)), 'minor');
+});
+
+test('BYPASS: requiring unique items is BREAKING; dropping the requirement is MINOR', () => {
+  const unique = loadSchema('run-workflow-input');
+  const loose = clone(unique);
+  delete ((loose.properties!['fixedTasks'] as { oneOf: MutableSchema[] }).oneOf[0]!)['uniqueItems'];
+  assert.equal(requiredBump(compareSchemas(loose as SchemaNode, unique)), 'major');
+  assert.equal(requiredBump(compareSchemas(unique, loose as SchemaNode)), 'minor');
+});
+
+test('BYPASS: a change to a keyword the classifier does not read is BREAKING', () => {
+  const base = tightenBase() as unknown as SchemaNode;
+  for (const [label, mutate] of [
+    ['an if/then added', (n: MutableSchema) => { n['if'] = { properties: { code: { enum: ['X'] } } }; n['then'] = { required: ['score'] }; }],
+    ['an allOf added', (n: MutableSchema) => { n['allOf'] = [{ required: ['code'] }]; }],
+    ['a const added', (n: MutableSchema) => { (n.properties!['code'] as Record<string, unknown>)['const'] = 'ABC'; }],
+    ['a not added', (n: MutableSchema) => { (n.properties!['name'] as Record<string, unknown>)['not'] = { enum: ['root'] }; }],
+  ] as const) {
+    const next = JSON.parse(JSON.stringify(base)) as MutableSchema;
+    mutate(next);
+    assert.equal(requiredBump(compareSchemas(base, next as unknown as SchemaNode)), 'major', label);
+  }
+});
+
+test('an annotation-only change inside a oneOf variant needs no bump', () => {
+  const base = controlBase();
+  const next = controlBase();
+  (variant(next, 0).properties!['kind'] as Record<string, unknown>)['description'] = 'Pause or resume the target.';
+  next['examples'] = [];
+  assert.equal(requiredBump(compareSchemas(base as SchemaNode, next as SchemaNode)), 'none');
+});

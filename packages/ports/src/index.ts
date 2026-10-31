@@ -1,9 +1,9 @@
 import type {
   AgentAttemptResult, ContextPack, ReviewReport, WorkOrder,
   VerificationResult, VerificationPlan, EvidenceBundle,
-  ArtifactId, ArtifactRef, AttemptId, TaskId, RiskLevel,
+  ArtifactId, ArtifactRef, AttemptId, TaskId,
   RepositoryBindingId, WorkspaceId, TenantScope, Budget, Usage,
-  RunEvent, RunId,
+  RunEvent, RunId, TaskWorkflowInput, RunWorkflowInput, WorkflowControlMessage,
 } from '@asep/contracts';
 
 // ---------------------------------------------------------------------------
@@ -77,13 +77,89 @@ export interface ReviewProvider {
   }): Promise<ReviewReport>;
 }
 
-// The future dispatch seam (Phase 3 Temporal). Phase 2 dispatches via CLI/worker
-// without a durable engine; this interface is the seam, not a dependency.
+// ---------------------------------------------------------------------------
+// WorkflowEngine: the durable-engine seam the API and the CLI dispatch
+// through. Only the Temporal adapter implements it. Inputs and control messages
+// are the canonical workflow contracts, which carry no free text.
+// ---------------------------------------------------------------------------
+
+export type ApprovalKind = 'budget-extension' | 'publish-change';
+
+export type TaskWorkflowPhase =
+  | 'ADMITTING' | 'BUDGET_CHECK' | 'ATTEMPT_STARTING' | 'AGENT_RUNNING' | 'INSPECTING' | 'VERIFYING'
+  | 'COMMITTING' | 'EVIDENCE' | 'ASSURANCE_ROUND' | 'PUBLICATION_GATE' | 'AWAITING_APPROVAL' | 'PUBLISHING'
+  | 'REVIEW_HANDOFF' | 'ATTEMPT_ABANDONED' | 'ATTEMPT_EXHAUSTED' | 'PAUSED' | 'CANCELLING' | 'CLEANUP' | 'CLOSED';
+
+export interface WorkflowStartReceipt {
+  readonly workflowId: string;
+  readonly alreadyStarted: boolean;
+}
+
+export interface WorkflowControlReceipt {
+  readonly accepted: boolean;
+  readonly reason?: 'already-paused' | 'not-paused' | 'closed' | 'unknown-approval'
+    | 'decision-conflict' | 'approval-expired' | 'duplicate' | 'already-sealed' | 'run-sealed';
+}
+
+export interface TaskWorkflowView {
+  readonly workflowId: string;
+  readonly phase: TaskWorkflowPhase;
+  readonly paused: boolean;
+  readonly closed: boolean;
+  readonly attemptNumber: number;
+  readonly assuranceRound: number;
+  readonly pendingApproval: {
+    readonly approvalRequestId: string;
+    readonly kind: ApprovalKind;
+    readonly expiresAt: string;
+  } | null;
+  readonly spentUsd: number;
+  readonly capUsd: number;
+}
+
 export interface WorkflowEngine {
-  startRun(input: { projectId: string; productSpecId: string; risk: RiskLevel }): Promise<string>;
-  signal(runId: string, signal: unknown): Promise<void>;
-  query(runId: string): Promise<unknown>;
-  cancel(runId: string): Promise<void>;
+  /** Idempotent by runId (workflow id asep-run-<runId>, conflict policy USE_EXISTING). */
+  startRun(scope: TenantScope, input: RunWorkflowInput): Promise<WorkflowStartReceipt>;
+  /** Idempotent by taskId (update id submit-<taskId>); starts the run workflow if needed. */
+  submitTask(scope: TenantScope, input: {
+    readonly runId: RunId;
+    readonly task: TaskWorkflowInput;
+    readonly requestId: string;
+  }): Promise<WorkflowStartReceipt>;
+  /** pause | resume | seal (run only) | approval-decision; the update id is message.requestId. */
+  control(scope: TenantScope, message: WorkflowControlMessage): Promise<WorkflowControlReceipt>;
+  /** Durable cancellation of a task or run workflow; idempotent. No free text crosses into history. */
+  cancel(scope: TenantScope, input: {
+    readonly target: { readonly scope: 'task' | 'run'; readonly id: string };
+    readonly requestId: string;
+    readonly principalId: string;
+  }): Promise<WorkflowControlReceipt>;
+  describeTask(scope: TenantScope, taskId: TaskId): Promise<TaskWorkflowView | null>;
+  isClosed(scope: TenantScope, workflowId: string): Promise<boolean>;
+}
+
+// ---------------------------------------------------------------------------
+// Activity execution context: the engine-neutral view of one activity delivery.
+// Application activities depend on it, never on a durable-engine SDK; only the
+// engine's activity bridge knows how it maps to the engine.
+// ---------------------------------------------------------------------------
+
+export interface ActivityProgress {
+  readonly stage: string;
+  readonly detail?: Readonly<Record<string, string | number | boolean>>;
+}
+
+export interface ActivityExecutionContext {
+  /** 1-based count of deliveries of this activity execution by the engine. */
+  readonly engineAttempt: number;
+  /** Aborted on engine cancellation, heartbeat timeout or worker shutdown. */
+  readonly signal: AbortSignal;
+  /** Last progress recorded by a previous delivery, or null. Non-authoritative. */
+  readonly lastProgress: ActivityProgress | null;
+  /** Workflow time at scheduling (ISO-8601). Identical on every redelivery of this execution. */
+  readonly logicalNow: string;
+  /** Liveness and checkpoint. Must not carry secrets, source or prompts. */
+  heartbeat(progress: ActivityProgress): void;
 }
 
 // ---------------------------------------------------------------------------
@@ -184,11 +260,61 @@ export interface Workspace {
   readonly baseSha: string;
 }
 
+// The durable workspace registry: which worktree serves which attempt, on which
+// host, so a restarted worker rehydrates or refuses a workspace instead of
+// guessing from the filesystem.
+export interface WorkspaceRecord {
+  readonly workspaceId: WorkspaceId;
+  readonly repositoryBindingId: RepositoryBindingId;
+  readonly attemptId: AttemptId;
+  readonly leaseId: string;
+  readonly hostId: string;
+  /** Validated path segments relative to the workspace root; never absolute. */
+  readonly pathRel: string;
+  /** The task base, or the repair base for a repair attempt. */
+  readonly baseSha: string;
+  readonly baselineRefs: readonly string[];
+  readonly state: 'CREATING' | 'ACTIVE' | 'CLEANED' | 'QUARANTINED';
+}
+
+export interface WorkspaceRegistry {
+  /** Idempotent by attemptId. */
+  begin(scope: TenantScope, rec: Omit<WorkspaceRecord, 'state' | 'baselineRefs'>): Promise<WorkspaceRecord>;
+  activate(scope: TenantScope, input: {
+    readonly workspaceId: WorkspaceId;
+    readonly baselineRefs: readonly string[];
+  }): Promise<WorkspaceRecord>;
+  findByAttempt(scope: TenantScope, attemptId: AttemptId): Promise<WorkspaceRecord | null>;
+  findById(scope: TenantScope, workspaceId: WorkspaceId): Promise<WorkspaceRecord | null>;
+  markState(scope: TenantScope, input: {
+    readonly workspaceId: WorkspaceId;
+    readonly state: 'CLEANED' | 'QUARANTINED';
+    readonly reason: string;
+  }): Promise<void>;
+}
+
+/**
+ * The workspace cannot be used from this worker: it lives on another host, it is
+ * missing, or it is quarantined. Not retryable: another delivery on this worker
+ * finds the same.
+ */
+export class WorkspaceUnavailableError extends Error {
+  constructor(readonly reason: 'other-host' | 'missing' | 'quarantined', detail: string) {
+    super(`workspace unavailable (${reason}): ${detail}`);
+    this.name = 'WorkspaceUnavailableError';
+  }
+}
+
 export interface WorkspaceManager {
+  // Create-or-adopt, keyed by the attempt: a redelivery for the same attempt
+  // finds its workspace rather than making a second one. `baseSha` is the task
+  // base, or the repair base for a repair attempt; a base commit that does not
+  // exist is not retryable.
   create(scope: TenantScope, input: {
     repositoryBindingId: RepositoryBindingId;
     baseSha: string;
     leaseId: string;
+    attemptId: AttemptId;
   }): Promise<Workspace>;
   cleanup(scope: TenantScope, workspaceId: WorkspaceId): Promise<void>;
   quarantine(scope: TenantScope, workspaceId: WorkspaceId, reason: string): Promise<void>;
@@ -332,8 +458,50 @@ export interface SandboxProvider {
   stop(handle: SandboxHandle): Promise<void>;
 }
 
+export interface CommandRunOptions {
+  /** Aborts this run: the process group is killed and the result reports cancellation. */
+  readonly signal?: AbortSignal;
+}
+
 export interface CommandRunner {
-  run(spec: CommandSpec, sandbox: SandboxHandle): Promise<CommandResult>;
+  run(spec: CommandSpec, sandbox: SandboxHandle, options?: CommandRunOptions): Promise<CommandResult>;
+}
+
+// Removes what an attempt left running. Containers are found by the attempt
+// label every agent, egress-proxy and verification container carries
+// (asep.attempt=<attemptId>, with asep.role), never by name: names carry a
+// random suffix.
+export interface ExecutionReaper {
+  /** Force-removes every container labelled with the attempt (optionally one role). Idempotent. */
+  reap(scope: TenantScope, input: {
+    readonly attemptId: AttemptId;
+    readonly role?: 'agent' | 'verify';
+  }): Promise<{ readonly removed: number }>;
+}
+
+// Verification commands by approved id. A callback cannot cross the workflow
+// boundary and a command string must not enter workflow history, so the
+// workflow carries check ids and a trusted, config-sourced catalog resolves
+// them inside the activity.
+export interface VerificationCommandCatalog {
+  /**
+   * The trusted command an approved id stands for, for a binding. An unknown id
+   * or binding throws UnknownVerificationCommandError. Never accepts a command
+   * string.
+   */
+  resolve(scope: TenantScope, input: {
+    readonly repositoryBindingId: RepositoryBindingId;
+    readonly commandId: string;
+    readonly workspaceId: WorkspaceId;
+  }): Promise<CommandSpec>;
+}
+
+/** The catalog has no such command for the binding. Not retryable. */
+export class UnknownVerificationCommandError extends Error {
+  constructor(readonly repositoryBindingId: RepositoryBindingId, readonly commandId: string) {
+    super(`no approved verification command ${JSON.stringify(commandId)} for binding ${repositoryBindingId}`);
+    this.name = 'UnknownVerificationCommandError';
+  }
 }
 
 // ---------------------------------------------------------------------------

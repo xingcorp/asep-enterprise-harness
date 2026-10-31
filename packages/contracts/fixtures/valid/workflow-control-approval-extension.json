@@ -1,0 +1,8 @@
+{
+  "kind": "approval-decision",
+  "requestId": "01K000000000000000000000Q3",
+  "approvalRequestId": "01K000000000000000000000A1",
+  "decision": "approve",
+  "extensionUsd": 12.5,
+  "principalId": "01K00000000000000000000009"
+}

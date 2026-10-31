@@ -35,7 +35,7 @@ test('live schemas are compatible with the frozen v1 snapshots', () => {
     result.ok,
     `compat gate found breaking drift vs snapshot v1:\n${result.problems.join('\n')}`,
   );
-  assert.ok(result.checked >= 12, `expected >=12 schemas checked, got ${result.checked}`);
+  assert.ok(result.checked >= 16, `expected >=16 schemas checked, got ${result.checked}`);
 });
 
 // 2. Removing a field from a snapshotted schema without a major bump/$id rev must

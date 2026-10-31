@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://asep.dev/schema/workflow-control/v1",
+  "version": "1.0.0",
+  "title": "WorkflowControlMessage",
+  "description": "A control message to a task or run workflow, discriminated by kind. It has no free-text field: principals are opaque ids, and rationale text stays in PostgreSQL. requestId is the message's idempotency key (for an approval decision, the decision id). Cancel is not a message: it is the engine's workflow cancellation. extensionUsd is non-null exactly for a budget-extension approve; the input mapping checks it against the approval's kind, the policy bound and micro-USD exactness.",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "requestId", "target", "principalId"],
+      "properties": {
+        "kind": { "type": "string", "enum": ["pause", "resume"] },
+        "requestId": { "type": "string", "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$" },
+        "target": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["scope", "id"],
+          "properties": {
+            "scope": { "type": "string", "enum": ["task", "run"] },
+            "id": { "type": "string", "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$" }
+          }
+        },
+        "principalId": { "type": "string", "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$" }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "requestId", "target", "principalId"],
+      "properties": {
+        "kind": { "type": "string", "enum": ["seal"] },
+        "requestId": { "type": "string", "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$" },
+        "target": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["scope", "id"],
+          "properties": {
+            "scope": { "type": "string", "enum": ["run"] },
+            "id": { "type": "string", "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$" }
+          }
+        },
+        "principalId": { "type": "string", "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$" }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "requestId", "approvalRequestId", "decision", "extensionUsd", "principalId"],
+      "properties": {
+        "kind": { "type": "string", "enum": ["approval-decision"] },
+        "requestId": { "type": "string", "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$" },
+        "approvalRequestId": { "type": "string", "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$" },
+        "decision": { "type": "string", "enum": ["approve", "reject"] },
+        "extensionUsd": { "type": ["number", "null"], "exclusiveMinimum": 0, "maximum": 100000000 },
+        "principalId": { "type": "string", "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$" }
+      }
+    }
+  ],
+  "examples": [
+    {
+      "kind": "pause",
+      "requestId": "01K000000000000000000000Q1",
+      "target": { "scope": "task", "id": "01K00000000000000000000005" },
+      "principalId": "01K00000000000000000000009"
+    },
+    {
+      "kind": "seal",
+      "requestId": "01K000000000000000000000Q2",
+      "target": { "scope": "run", "id": "01K00000000000000000000004" },
+      "principalId": "01K00000000000000000000009"
+    },
+    {
+      "kind": "approval-decision",
+      "requestId": "01K000000000000000000000Q3",
+      "approvalRequestId": "01K000000000000000000000A1",
+      "decision": "approve",
+      "extensionUsd": 12.5,
+      "principalId": "01K00000000000000000000009"
+    }
+  ]
+}

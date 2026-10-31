@@ -206,6 +206,7 @@ export async function governedExecution(
       repositoryBindingId: input.repositoryBindingId,
       baseSha: input.baseSha,
       leaseId: lease.leaseId,
+      attemptId: input.attemptId,
     }),
   );
 

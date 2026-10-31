@@ -185,6 +185,29 @@ export interface RunEvent {
   readonly assuranceUnavailable?: boolean;
 }
 
+/** The input of one run workflow: identifiers, closed enums and numbers only, so no free text enters workflow history. With fixedTasks set the run is created sealed with exactly those tasks, in order; with fixedTasks null tasks are submitted and a seal control ends submissions. The input mapping applies the rules a schema cannot state reliably: money exact in micro-USD, softCostUsd at most maxCostUsd, and at most maxTasks fixed tasks. */
+export interface RunWorkflowInput {
+  readonly schemaVersion: "1.0.0";
+  readonly organizationId: OrganizationId;
+  readonly projectId: ProjectId;
+  readonly repositoryBindingId: RepositoryBindingId;
+  readonly runId: RunId;
+  readonly risk: RiskLevel;
+  readonly runBudget: {
+  readonly maxCostUsd: number;
+  readonly softCostUsd: number;
+  readonly maxTasks: number;
+};
+  readonly governance: {
+  readonly publicationApprovalRequired: boolean;
+  readonly approvalTtlSeconds: number;
+  readonly maxPauseHours: number;
+  readonly assuranceMode: "shadow" | "gating";
+};
+  readonly requestedBy: string;
+  readonly fixedTasks: readonly TaskId[] | null;
+}
+
 export interface SkillManifest {
   readonly id: string;
   readonly version: string;
@@ -220,6 +243,62 @@ export interface SkillManifest {
 };
 }
 
+/** The input of one task workflow. It carries identifiers, references, closed enums and numbers only: every string is constrained, so no free text enters workflow history. The input mapping applies the rules a schema cannot state reliably: every money amount exact in micro-USD, softCostUsd at most maxCostUsd, attemptBudget equal to the work order's budget, and a policy that lists no never-replaceable failure class. */
+export interface TaskWorkflowInput {
+  readonly schemaVersion: "1.0.0";
+  readonly organizationId: OrganizationId;
+  readonly projectId: ProjectId;
+  readonly repositoryBindingId: RepositoryBindingId;
+  readonly runId: RunId;
+  readonly taskId: TaskId;
+  readonly risk: RiskLevel;
+  readonly baseSha: string;
+  readonly repository: {
+  readonly id: number;
+  readonly owner: string;
+  readonly name: string;
+};
+  readonly baseBranch: string;
+  readonly workOrderRef: ArtifactRef;
+  readonly contextPackRef: ArtifactRef;
+  readonly attemptBudget: Budget;
+  readonly taskBudget: {
+  readonly maxAttempts: number;
+  readonly maxCostUsd: number;
+  readonly softCostUsd: number;
+  readonly maxWallClockMinutes: number;
+};
+  readonly verificationReserve: {
+  readonly costUsd: number;
+  readonly wallClockMinutes: number;
+};
+  readonly runRemaining: {
+  readonly costUsd: number;
+};
+  readonly verification: {
+  readonly planId: string;
+  readonly checks: readonly ({
+    readonly id: string;
+    readonly level: "L0" | "L1" | "L2" | "L3" | "L4" | "L5" | "L6" | "L7" | "L8" | "L9";
+    readonly category: "workspace" | "static" | "unit" | "integration" | "architecture" | "security" | "acceptance" | "nonfunctional" | "review" | "release";
+    readonly mandatory: boolean;
+    readonly commandId: string;
+  })[];
+};
+  readonly governance: {
+  readonly publicationApprovalRequired: boolean;
+  readonly approvalTtlSeconds: number;
+  readonly maxPauseHours: number;
+  readonly assuranceMode: "shadow" | "gating";
+  readonly requestedBy: string;
+};
+  readonly policy: {
+  readonly replaceableFailureClasses: readonly ("baseline" | "pre-existing" | "introduced-regression" | "environment" | "flaky-test" | "provider" | "quota-rate-limit" | "context" | "skill-routing" | "tool" | "policy-violation" | "agent-loop-stall" | "false-completion" | "review-escape" | "duplicate-side-effect" | "artifact-loss" | "workflow-recovery-failure")[];
+  readonly maxBudgetExtensionUsd?: number;
+  readonly agentKillGraceSeconds: number;
+};
+}
+
 export interface VerificationPlan {
   readonly id: string;
   readonly workOrderId: TaskId;
@@ -248,3 +327,32 @@ export interface WorkOrder {
   readonly requiredSkills: readonly SkillRef[];
   readonly budget: Budget;
 }
+
+/** A control message to a task or run workflow, discriminated by kind. It has no free-text field: principals are opaque ids, and rationale text stays in PostgreSQL. requestId is the message's idempotency key (for an approval decision, the decision id). Cancel is not a message: it is the engine's workflow cancellation. extensionUsd is non-null exactly for a budget-extension approve; the input mapping checks it against the approval's kind, the policy bound and micro-USD exactness. */
+export type WorkflowControlMessage =
+  | {
+    readonly kind: "pause" | "resume";
+    readonly requestId: string;
+    readonly target: {
+      readonly scope: "task" | "run";
+      readonly id: string;
+    };
+    readonly principalId: string;
+  }
+  | {
+    readonly kind: "seal";
+    readonly requestId: string;
+    readonly target: {
+      readonly scope: "run";
+      readonly id: string;
+    };
+    readonly principalId: string;
+  }
+  | {
+    readonly kind: "approval-decision";
+    readonly requestId: string;
+    readonly approvalRequestId: string;
+    readonly decision: "approve" | "reject";
+    readonly extensionUsd: number | null;
+    readonly principalId: string;
+  };

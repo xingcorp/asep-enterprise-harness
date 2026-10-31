@@ -1,0 +1,204 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://asep.dev/schema/task-workflow-input/v1",
+  "version": "1.0.0",
+  "title": "TaskWorkflowInput",
+  "description": "The input of one task workflow. It carries identifiers, references, closed enums and numbers only: every string is constrained, so no free text enters workflow history. The input mapping applies the rules a schema cannot state reliably: every money amount exact in micro-USD, softCostUsd at most maxCostUsd, attemptBudget equal to the work order's budget, and a policy that lists no never-replaceable failure class.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion", "organizationId", "projectId", "repositoryBindingId", "runId", "taskId", "risk", "baseSha",
+    "repository", "baseBranch", "workOrderRef", "contextPackRef", "attemptBudget", "taskBudget", "verificationReserve",
+    "runRemaining", "verification", "governance", "policy"
+  ],
+  "properties": {
+    "schemaVersion": { "type": "string", "enum": ["1.0.0"] },
+    "organizationId": { "type": "string", "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$", "x-tsType": "OrganizationId" },
+    "projectId": { "type": "string", "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$", "x-tsType": "ProjectId" },
+    "repositoryBindingId": { "type": "string", "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$", "x-tsType": "RepositoryBindingId" },
+    "runId": { "type": "string", "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$", "x-tsType": "RunId" },
+    "taskId": { "type": "string", "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$", "x-tsType": "TaskId" },
+    "risk": { "type": "string", "enum": ["R0", "R1", "R2", "R3", "R4"], "x-tsType": "RiskLevel" },
+    "baseSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "repository": {
+      "type": "object",
+      "description": "The repository binding's forge repository. Its identity is the forge's numeric id; owner and name are as the binding records them, informational.",
+      "additionalProperties": false,
+      "required": ["id", "owner", "name"],
+      "properties": {
+        "id": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "owner": { "type": "string", "pattern": "^[A-Za-z0-9](?:-?[A-Za-z0-9]){0,38}$" },
+        "name": { "type": "string", "pattern": "^(?!\\.{1,2}$)[A-Za-z0-9._-]{1,100}$" }
+      }
+    },
+    "baseBranch": {
+      "type": "string",
+      "description": "The branch the task's PR targets: a Git branch name (git check-ref-format --branch), at most 255 characters.",
+      "minLength": 1,
+      "maxLength": 255,
+      "pattern": "^(?!-)(?!HEAD$)(?!.*\\.\\.)(?!.*@\\{)(?!.*\\.$)(?!(?:.*/)?[^/]*\\.lock(?:/|$))[^/.\\u0000-\\u0020\\u007f~^:?*\\[\\\\][^/\\u0000-\\u0020\\u007f~^:?*\\[\\\\]*(?:/[^/.\\u0000-\\u0020\\u007f~^:?*\\[\\\\][^/\\u0000-\\u0020\\u007f~^:?*\\[\\\\]*)*$"
+    },
+    "workOrderRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifactId", "sha256", "kind"],
+      "properties": {
+        "artifactId": { "type": "string", "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$" },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "kind": { "type": "string", "enum": ["work-order"] }
+      },
+      "x-tsType": "ArtifactRef"
+    },
+    "contextPackRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifactId", "sha256", "kind"],
+      "properties": {
+        "artifactId": { "type": "string", "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$" },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "kind": { "type": "string", "enum": ["context-pack"] }
+      },
+      "x-tsType": "ArtifactRef"
+    },
+    "attemptBudget": {
+      "type": "object",
+      "description": "One attempt's caps; equal to the work order's budget.",
+      "additionalProperties": false,
+      "required": ["maxTurns", "maxToolCalls", "maxCostUsd", "maxWallClockMinutes"],
+      "properties": {
+        "maxTurns": { "type": "integer", "minimum": 0 },
+        "maxToolCalls": { "type": "integer", "minimum": 0 },
+        "maxCostUsd": { "type": "number", "exclusiveMinimum": 0, "maximum": 100000000 },
+        "maxWallClockMinutes": { "type": "number", "exclusiveMinimum": 0 }
+      },
+      "x-tsType": "Budget"
+    },
+    "taskBudget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maxAttempts", "maxCostUsd", "softCostUsd", "maxWallClockMinutes"],
+      "properties": {
+        "maxAttempts": { "type": "integer", "minimum": 1, "maximum": 10 },
+        "maxCostUsd": { "type": "number", "exclusiveMinimum": 0, "maximum": 100000000 },
+        "softCostUsd": { "type": "number", "minimum": 0, "maximum": 100000000 },
+        "maxWallClockMinutes": { "type": "number", "exclusiveMinimum": 0 }
+      }
+    },
+    "verificationReserve": {
+      "type": "object",
+      "description": "Reserved for mandatory verification at every attempt start, apart from the agent's cap.",
+      "additionalProperties": false,
+      "required": ["costUsd", "wallClockMinutes"],
+      "properties": {
+        "costUsd": { "type": "number", "minimum": 0, "maximum": 100000000 },
+        "wallClockMinutes": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "runRemaining": {
+      "type": "object",
+      "description": "The run budget left when this task's workflow started.",
+      "additionalProperties": false,
+      "required": ["costUsd"],
+      "properties": {
+        "costUsd": { "type": "number", "minimum": 0, "maximum": 100000000 }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "description": "The checks to run, by approved command id. A command string never enters the workflow: a trusted catalog resolves each commandId inside the activity.",
+      "additionalProperties": false,
+      "required": ["planId", "checks"],
+      "properties": {
+        "planId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+        "checks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "level", "category", "mandatory", "commandId"],
+            "properties": {
+              "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+              "level": { "type": "string", "enum": ["L0", "L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8", "L9"] },
+              "category": { "type": "string", "enum": ["workspace", "static", "unit", "integration", "architecture", "security", "acceptance", "nonfunctional", "review", "release"] },
+              "mandatory": { "type": "boolean" },
+              "commandId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" }
+            }
+          }
+        }
+      }
+    },
+    "governance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["publicationApprovalRequired", "approvalTtlSeconds", "maxPauseHours", "assuranceMode", "requestedBy"],
+      "properties": {
+        "publicationApprovalRequired": { "type": "boolean" },
+        "approvalTtlSeconds": { "type": "integer", "minimum": 60, "maximum": 604800 },
+        "maxPauseHours": { "type": "integer", "minimum": 1, "maximum": 168 },
+        "assuranceMode": { "type": "string", "enum": ["shadow", "gating"] },
+        "requestedBy": { "type": "string", "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$" }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "description": "Resolved from the orchestration policy at submit time; the workflow never reads policy files. An absent maxBudgetExtensionUsd makes budget-extension approval unavailable. agentKillGraceSeconds is the agent adapter's stop-to-kill interval, the only tolerance on the wall-clock cap.",
+      "additionalProperties": false,
+      "required": ["replaceableFailureClasses", "agentKillGraceSeconds"],
+      "properties": {
+        "replaceableFailureClasses": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "baseline", "pre-existing", "introduced-regression", "environment", "flaky-test", "provider",
+              "quota-rate-limit", "context", "skill-routing", "tool", "policy-violation", "agent-loop-stall",
+              "false-completion", "review-escape", "duplicate-side-effect", "artifact-loss", "workflow-recovery-failure"
+            ]
+          }
+        },
+        "maxBudgetExtensionUsd": { "type": "number", "exclusiveMinimum": 0, "maximum": 100000000 },
+        "agentKillGraceSeconds": { "type": "integer", "minimum": 0 }
+      }
+    }
+  },
+  "examples": [
+    {
+      "schemaVersion": "1.0.0",
+      "organizationId": "01K00000000000000000000001",
+      "projectId": "01K00000000000000000000002",
+      "repositoryBindingId": "01K00000000000000000000003",
+      "runId": "01K00000000000000000000004",
+      "taskId": "01K00000000000000000000005",
+      "risk": "R1",
+      "baseSha": "0123456789abcdef0123456789abcdef01234567",
+      "repository": { "id": 1440561848, "owner": "acme", "name": "web" },
+      "baseBranch": "main",
+      "workOrderRef": { "artifactId": "01K000000000000000000000W1", "sha256": "1111111111111111111111111111111111111111111111111111111111111111", "kind": "work-order" },
+      "contextPackRef": { "artifactId": "01K000000000000000000000C1", "sha256": "2222222222222222222222222222222222222222222222222222222222222222", "kind": "context-pack" },
+      "attemptBudget": { "maxTurns": 30, "maxToolCalls": 120, "maxCostUsd": 15, "maxWallClockMinutes": 60 },
+      "taskBudget": { "maxAttempts": 3, "maxCostUsd": 40, "softCostUsd": 30, "maxWallClockMinutes": 240 },
+      "verificationReserve": { "costUsd": 0.5, "wallClockMinutes": 10 },
+      "runRemaining": { "costUsd": 200 },
+      "verification": {
+        "planId": "vp-web-default",
+        "checks": [
+          { "id": "chk-typecheck", "level": "L1", "category": "static", "mandatory": true, "commandId": "pnpm-typecheck" },
+          { "id": "chk-unit", "level": "L2", "category": "unit", "mandatory": true, "commandId": "pnpm-test" }
+        ]
+      },
+      "governance": {
+        "publicationApprovalRequired": false,
+        "approvalTtlSeconds": 86400,
+        "maxPauseHours": 72,
+        "assuranceMode": "shadow",
+        "requestedBy": "01K00000000000000000000009"
+      },
+      "policy": {
+        "replaceableFailureClasses": ["environment", "flaky-test", "provider", "quota-rate-limit"],
+        "maxBudgetExtensionUsd": 20,
+        "agentKillGraceSeconds": 60
+      }
+    }
+  ]
+}

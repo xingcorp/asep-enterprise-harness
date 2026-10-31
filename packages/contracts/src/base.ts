@@ -1,6 +1,6 @@
-// Hand-authored runtime types that are NOT part of the 13 canonical JSON-Schema
+// Hand-authored runtime types that are NOT part of the 16 canonical JSON-Schema
 // contracts. Branded identifiers, lifecycle enums, and the internal execution
-// shapes (agent attempt / verification result) live here. The 13 canonical
+// shapes (agent attempt / verification result) live here. The 16 canonical
 // contract types are generated from schema/*.schema.json into ./generated.ts;
 // they import the shared names below via ./base.js.
 
@@ -34,10 +34,13 @@ export type RunStatus =
 // ---------------------------------------------------------------------------
 
 // Task: no machine transition into ACCEPTED/DONE — WAITING_FOR_HUMAN_REVIEW is
-// terminal for the harness (data-model §4, exit criterion I2).
+// terminal for the harness (data-model §4, exit criterion I2). Durable
+// orchestration adds a pause, an approval wait and a spent budget; the task
+// stays VERIFYING across assurance and repair rounds.
 export type TaskStatus =
   | 'PENDING' | 'READY' | 'EXECUTING' | 'VERIFYING'
-  | 'WAITING_FOR_HUMAN_REVIEW' | 'FAILED' | 'BLOCKED' | 'CANCELLED';
+  | 'WAITING_FOR_HUMAN_REVIEW' | 'FAILED' | 'BLOCKED' | 'CANCELLED'
+  | 'PAUSED' | 'WAITING_FOR_APPROVAL' | 'BUDGET_EXHAUSTED';
 
 export type AttemptStatus =
   | 'STARTED' | 'AGENT_RUNNING' | 'AGENT_DONE' | 'INSPECTING' | 'VERIFYING'

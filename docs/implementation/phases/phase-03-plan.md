@@ -926,6 +926,15 @@ export interface GitCommitter {
 
 v1's `seedDiffRef` is withdrawn (R3). Owner: Lane A (S1 types, S4 implementation).
 
+Amended at S1 (on the accepted Phase 2): the `GitCommitter` lines above were written at `00a6889`. At `d6ee686`,
+`commit` already takes `attemptId` and `baseSha`, refuses unless the workspace HEAD is `baseSha`
+(`adapters/git-worktree/src/worktree-manager.ts:268-270`) and moves HEAD with a compare-and-swap from `baseSha`
+(`:308`), and `reconcile` needs no workspace, so a successor that never held the dead executor's worktree can
+reconcile. `expectedHeadSha` is therefore Phase 2's `baseSha`: S1 changes neither method, and S4 proves the HEAD
+compare-and-swap on the accepted adapter. S1 lands `WorkspaceRecord`, `WorkspaceRegistry`,
+`WorkspaceUnavailableError` (with a closed `reason`: `other-host`, `missing`, `quarantined`) and the `attemptId` of
+`WorkspaceManager.create`.
+
 ### CR-08 — Container reaping
 
 ```typescript
@@ -2179,7 +2188,9 @@ export interface VerificationCommandCatalog {
 ```
 
 The production implementation reads an operator-approved, versioned catalog file named in the worker
-configuration. The test implementation is a fixed in-memory map. Owner: Lane A (S1, S6).
+configuration. The test implementation is a fixed in-memory map. Owner: Lane A (S1, S6). S1 also lands the error
+`resolve` throws for an unknown id or binding, `UnknownVerificationCommandError` (not retryable), so the activity
+bridge can classify it without matching a message.
 
 ### CR-25 — Per-request agent caps (agent adapter, after the Phase 2 rebase; P3-PLAN-HIGH-005)
 

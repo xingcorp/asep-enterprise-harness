@@ -371,6 +371,21 @@ metrics:
     zeroDenominatorPolicy: report-null-when-no-recoveries
     privacyClass: operational
 
+  - name: duplicate_side_effect_incidents
+    family: harness
+    purpose: Incidents opened because an irreversible side effect (commit, push, pull request) happened twice. SLO target 0 (docs/operations/slo-and-alerting.md).
+    formula: count(incident.opened where failureClass=duplicate-side-effect)
+    numerator:
+      aggregation: count
+      events: [incident.opened]
+      filter: { field: failureClass, equals: duplicate-side-effect }
+    dimensions: [projectId]
+    sourceEvents: [incident.opened]
+    owner: harness-platform
+    sampling: full
+    alertRelevance: high
+    privacyClass: operational
+
   # --- Cost / economics ----------------------------------------------------
   - name: cost_per_accepted_task
     family: cost

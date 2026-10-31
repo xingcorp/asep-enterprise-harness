@@ -1,6 +1,6 @@
 // Deterministic JSON-Schema -> TypeScript contract generator.
 //
-// The 13 canonical contracts under packages/contracts/schema/*.schema.json are
+// The 16 canonical contracts under packages/contracts/schema/*.schema.json are
 // the single source of truth. This generator derives ../generated.ts from them.
 // It is intentionally dependency-free (no json-schema-to-typescript) so the
 // output is fully deterministic and the drift-guard test can regenerate the
@@ -13,6 +13,9 @@
 //   - type: boolean -> boolean
 //   - type: array   -> readonly T[]
 //   - type: [X, "null"] -> (X | null)
+//   - type: "null" -> null
+//   - oneOf: [A, B, ...] -> A | B | ...; a schema whose root is a oneOf becomes a
+//     union type alias rather than an interface
 //   - $ref to a sibling schema -> that schema's title type
 //   - x-tsType override (on a property or on array items) -> named import from ./base.js
 //
@@ -37,6 +40,7 @@ interface JsonSchema {
   items?: JsonSchema;
   $ref?: string;
   additionalProperties?: boolean;
+  oneOf?: readonly JsonSchema[];
   description?: string;
   'x-tsType'?: string;
 }
@@ -94,6 +98,9 @@ function renderType(
   if (s.$ref) {
     return refName(s.$ref, refIndex);
   }
+  if (s.oneOf) {
+    return s.oneOf.map((v) => renderType(v, refIndex, indent)).join(' | ');
+  }
   if (s.enum) {
     return s.enum.map((v) => JSON.stringify(v)).join(' | ');
   }
@@ -111,6 +118,8 @@ function renderType(
       return 'number';
     case 'boolean':
       return 'boolean';
+    case 'null':
+      return 'null';
     case 'array': {
       const item = s.items ?? {};
       const inner = renderType(item, refIndex, indent);
@@ -156,6 +165,12 @@ function renderObject(
 
 function renderInterface(s: JsonSchema, refIndex: Map<string, string>): string {
   const title = s.title!;
+  const doc = s.description ? `/** ${s.description} */\n` : '';
+  if (s.oneOf) {
+    // A schema whose root is a union of variants: a type alias, each variant an inline object.
+    const variants = s.oneOf.map((v) => renderType(v, refIndex, '  '));
+    return `${doc}export type ${title} =\n  | ${variants.join('\n  | ')};`;
+  }
   const props = s.properties ?? {};
   const required = new Set(s.required ?? []);
   const keys = Object.keys(props);
@@ -164,7 +179,6 @@ function renderInterface(s: JsonSchema, refIndex: Map<string, string>): string {
     const type = renderType(props[key]!, refIndex, '');
     return `  readonly ${key}${optional}: ${type};`;
   });
-  const doc = s.description ? `/** ${s.description} */\n` : '';
   return `${doc}export interface ${title} {\n${lines.join('\n')}\n}`;
 }
 

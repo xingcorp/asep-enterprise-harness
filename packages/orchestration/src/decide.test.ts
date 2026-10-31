@@ -14,7 +14,7 @@ import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { RunId, TaskId } from '@asep/contracts';
+import { validate, type RunId, type TaskId } from '@asep/contracts';
 import {
   PRE_LEASE_ATTEMPT_TERMINALS,
   REVIEW_LOOP_DISABLED,
@@ -408,6 +408,41 @@ test('input rules: a repository with its forge id passes, its owner and name in 
     { id: 4242, owner: 'Acme-Corp', name: 'Widgets.JS' },
   ]) {
     assert.deepEqual(taskInputErrors(baseInput({ repository })), [], JSON.stringify(repository));
+  }
+});
+
+// The task-workflow-input schema mirrors the base-branch and repository rules, so the boundary refuses what the input
+// rules refuse and accepts what they accept.
+function schemaTaskInput(change: Readonly<Record<string, unknown>>): unknown {
+  const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+  const valid = JSON.parse(readFileSync(join(repoRoot, 'packages', 'contracts', 'fixtures', 'valid', 'task-workflow-input-basic.json'), 'utf8')) as Record<string, unknown>;
+  return { ...valid, ...change };
+}
+
+test('input schema: the base-branch pattern gives git check-ref-format --branch\'s answer for every name of the committed table', () => {
+  for (const { name, git } of GIT_BRANCH_NAMES) {
+    const result = validate('task-workflow-input', schemaTaskInput({ baseBranch: name }));
+    assert.equal(result.valid ? 'valid' : 'invalid', git, `${JSON.stringify(name)}: ${JSON.stringify(result.errors)}`);
+  }
+});
+
+test('input schema: every base branch and repository the input rules refuse is refused, and the ones they accept pass', () => {
+  for (const [name, baseBranch] of REFUSED_BASE_BRANCHES) {
+    assert.equal(validate('task-workflow-input', schemaTaskInput({ baseBranch })).valid, false, `base branch: ${name}`);
+  }
+  for (const [name, repository] of REFUSED_REPOSITORIES) {
+    assert.equal(validate('task-workflow-input', schemaTaskInput({ repository })).valid, false, `repository: ${name}`);
+  }
+  for (const baseBranch of ['main', 'release/2026.10', 'develop', 'feature/x-1', 'refs/heads/main', 'v1.2-rc', 'a@b', 'r'.repeat(255)]) {
+    assert.deepEqual(validate('task-workflow-input', schemaTaskInput({ baseBranch })).errors, [], baseBranch);
+  }
+  for (const repository of [
+    TASK_REPOSITORY,
+    { id: 1, owner: 'a-b-1', name: 'x.y_z-1' },
+    { id: Number.MAX_SAFE_INTEGER, owner: 'a'.repeat(39), name: 'w'.repeat(100) },
+    { id: 4242, owner: 'Acme-Corp', name: 'Widgets.JS' },
+  ]) {
+    assert.deepEqual(validate('task-workflow-input', schemaTaskInput({ repository })).errors, [], JSON.stringify(repository));
   }
 });
 
@@ -2768,10 +2803,13 @@ test('the core failure classes are exactly the classes of the canonical failure 
 // Projection edges
 // ---------------------------------------------------------------------------
 
-test('projection: between the existing statuses the core allows exactly the domain transition table', () => {
-  const existing = taskReachableStates();
-  for (const from of existing) {
-    for (const to of existing) {
+test('projection: the core allows exactly the domain transition table, over every task status', () => {
+  const statuses = taskReachableStates();
+  for (const status of ['PAUSED', 'WAITING_FOR_APPROVAL', 'BUDGET_EXHAUSTED'] as const) {
+    assert.ok(statuses.includes(status), `the domain table has ${status}`);
+  }
+  for (const from of statuses) {
+    for (const to of statuses) {
       let domainAllows = true;
       try {
         transitionTask({ id: 't' as TaskId, status: from, version: 0 }, to);
@@ -2785,7 +2823,7 @@ test('projection: between the existing statuses the core allows exactly the doma
 
 test('projection: the edges touching the new statuses are the data-model additions, VERIFYING -> BUDGET_EXHAUSTED and the approval-wait pause edges', () => {
   const added = new Set(['PAUSED', 'WAITING_FOR_APPROVAL', 'BUDGET_EXHAUSTED']);
-  const all = [...taskReachableStates(), ...added] as Parameters<typeof isLegalProjection>[0][];
+  const all = [...new Set([...taskReachableStates(), ...added])] as Parameters<typeof isLegalProjection>[0][];
   const edges: string[] = [];
   for (const from of all) {
     for (const to of all) {

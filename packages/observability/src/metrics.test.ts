@@ -93,6 +93,21 @@ test('false-completion-rate metric is present (E2)', () => {
   assert.ok(metricNames().includes('false_completion_rate'));
 });
 
+test('duplicate side effects are counted from the incidents opened with that failure class', () => {
+  const m = loadMeasurementDictionary().metrics.find((x) => x.name === 'duplicate_side_effect_incidents');
+  assert.ok(m, 'the duplicate_side_effect_incidents metric is in the dictionary');
+  assert.equal(m.formula, 'count(incident.opened where failureClass=duplicate-side-effect)');
+  assert.deepEqual(m.numerator, {
+    aggregation: 'count',
+    events: ['incident.opened'],
+    filter: { field: 'failureClass', equals: 'duplicate-side-effect' },
+  });
+  assert.equal(m.denominator, undefined, 'a count, not a ratio');
+  assert.deepEqual(m.sourceEvents, ['incident.opened']);
+  assert.equal(m.family, 'harness');
+  assert.equal(m.alertRelevance, 'high');
+});
+
 // --- negative cases: the validator must actually reject bad dictionaries -----
 
 test('an unknown source event is rejected (referential integrity)', () => {

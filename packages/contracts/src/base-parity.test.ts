@@ -145,6 +145,20 @@ test('MUTATION: an x-tsType naming an unknown type with no $ref is rejected', ()
   assert.match(err!, /unchecked override/);
 });
 
+test('MUTATION: an override inside a oneOf variant is checked like any other', () => {
+  const refTitles = new Map<string, string>();
+  const mutated: SubSchema = {
+    oneOf: [
+      { type: 'array', items: { type: 'integer', 'x-tsType': 'TaskId' } },
+      { type: 'null' },
+    ],
+  };
+  const sites = collectOverrides(mutated);
+  assert.deepEqual(sites.map((s) => s.pointer), ['#/oneOf/0/items']);
+  const err = sites.map((s) => checkOverride(s, refTitles)).find(Boolean);
+  assert.match(err ?? '', /TaskId.*expects schema type "string"/);
+});
+
 test('$ref-backed override is valid when x-tsType equals the referenced title', () => {
   const refTitles = new Map<string, string>([
     ['https://asep.dev/schema/finding/v1', 'Finding'],

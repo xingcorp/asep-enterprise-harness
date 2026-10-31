@@ -184,6 +184,8 @@ export interface SubSchema {
   properties?: Record<string, SubSchema>;
   required?: readonly string[];
   items?: SubSchema;
+  oneOf?: readonly SubSchema[];
+  anyOf?: readonly SubSchema[];
   $ref?: string;
   'x-tsType'?: string;
   [k: string]: unknown;
@@ -204,6 +206,10 @@ export function collectOverrides(schema: SubSchema, base = '#'): OverrideSite[] 
       }
     }
     if (node.items) walk(node.items, `${pointer}/items`);
+    // An override inside a union variant is checked like any other.
+    for (const key of ['oneOf', 'anyOf'] as const) {
+      node[key]?.forEach((variant, i) => walk(variant, `${pointer}/${key}/${i}`));
+    }
   };
   walk(schema, base);
   return out;

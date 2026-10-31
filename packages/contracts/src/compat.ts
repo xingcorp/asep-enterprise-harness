@@ -19,6 +19,12 @@
 //       - a `required` list gained a member (also covered per-property)
 //       - `enum` narrowed (values removed)
 //       - `multipleOf` added or made stricter
+//       - `uniqueItems` required
+//       - a `oneOf`/`anyOf` variant added or removed (one more oneOf variant can
+//         make a value match two of them); each kept variant is classified by
+//         position like any other node
+//       - any change to a keyword the classifier does not read (`allOf`,
+//         `if`/`then`/`else`, `not`, `const`, ...): when unsure, escalate
 //   MINOR (additive): a new optional property was added; a new enum value was
 //     added; a required property was relaxed to optional; a constraint was
 //     LOOSENED (minLength down, maxLength up, additionalProperties false->true,
@@ -33,6 +39,8 @@ export interface SchemaNode {
   readonly properties?: Record<string, SchemaNode>;
   readonly required?: readonly string[];
   readonly items?: SchemaNode;
+  readonly oneOf?: readonly SchemaNode[];
+  readonly anyOf?: readonly SchemaNode[];
   readonly version?: string;
   // Validation constraints whose tightening is breaking (P1-FINAL-HIGH-002).
   readonly minLength?: number;
@@ -44,6 +52,7 @@ export interface SchemaNode {
   readonly exclusiveMinimum?: number | boolean;
   readonly exclusiveMaximum?: number | boolean;
   readonly multipleOf?: number;
+  readonly uniqueItems?: boolean;
   readonly pattern?: string;
   readonly format?: string;
   readonly additionalProperties?: boolean | SchemaNode;
@@ -57,6 +66,18 @@ export interface CompatChange {
 }
 
 const ORDER: Record<BumpLevel, number> = { none: 0, patch: 1, minor: 2, major: 3 };
+
+// The keywords diffNode and diffConstraints classify, and the annotations that
+// never change what validates. A change to any other keyword is MAJOR.
+const CLASSIFIED_KEYWORDS: ReadonlySet<string> = new Set([
+  'type', 'enum', 'properties', 'required', 'items', 'oneOf', 'anyOf',
+  'minLength', 'maxLength', 'minItems', 'maxItems', 'minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum',
+  'multipleOf', 'uniqueItems', 'pattern', 'format', 'additionalProperties',
+]);
+const ANNOTATION_KEYWORDS: ReadonlySet<string> = new Set([
+  '$schema', '$id', '$comment', 'version', 'title', 'description', 'examples', 'default', 'deprecated',
+  'readOnly', 'writeOnly', 'x-tsType',
+]);
 
 export function maxLevel(a: BumpLevel, b: BumpLevel): BumpLevel {
   return ORDER[a] >= ORDER[b] ? a : b;
@@ -133,6 +154,30 @@ function diffNode(
   // Recurse into array items.
   if (prev.items && next.items) {
     diffNode(prev.items, next.items, `${path}[]`, out);
+  }
+
+  // Variant lists, compared by position. A change in the number of variants is
+  // breaking: a removed variant rejects what it accepted, and an added oneOf
+  // variant can make a value match two variants, which oneOf rejects.
+  for (const key of ['oneOf', 'anyOf'] as const) {
+    const pv = prev[key] ?? [];
+    const nv = next[key] ?? [];
+    if (pv.length === 0 && nv.length === 0) continue;
+    const at = `${path || '(root)'}<${key}>`;
+    if (pv.length !== nv.length) {
+      out.push({ level: 'major', path: at, reason: `${key} variants changed ${pv.length} -> ${nv.length}` });
+    }
+    for (let i = 0; i < Math.min(pv.length, nv.length); i++) {
+      diffNode(pv[i]!, nv[i]!, `${at}[${i}]`, out);
+    }
+  }
+
+  // Any other keyword is not classified here, so a change to it is breaking.
+  for (const key of new Set([...Object.keys(prev), ...Object.keys(next)])) {
+    if (CLASSIFIED_KEYWORDS.has(key) || ANNOTATION_KEYWORDS.has(key)) continue;
+    if (JSON.stringify(prev[key]) !== JSON.stringify(next[key])) {
+      out.push({ level: 'major', path: path || '(root)', reason: `${key} changed, and the classifier does not read ${key}` });
+    }
   }
 }
 
@@ -249,6 +294,16 @@ function diffConstraints(
     } else {
       out.push({ level: 'minor', path: p, reason: `multipleOf relaxed ${prev.multipleOf} -> ${next.multipleOf}` });
     }
+  }
+
+  // uniqueItems: requiring it rejects previously-valid arrays with duplicates
+  // (breaking); dropping it is additive.
+  const pUnique = prev.uniqueItems === true;
+  const nUnique = next.uniqueItems === true;
+  if (nUnique && !pUnique) {
+    out.push({ level: 'major', path: p, reason: 'uniqueItems required' });
+  } else if (pUnique && !nUnique) {
+    out.push({ level: 'minor', path: p, reason: 'uniqueItems dropped' });
   }
 
   // pattern: adding or changing a regex can reject previously-valid strings

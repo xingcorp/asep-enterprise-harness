@@ -1,0 +1,21 @@
+{
+  "schemaVersion": "1.0.0",
+  "organizationId": "01K00000000000000000000001",
+  "projectId": "01K00000000000000000000002",
+  "repositoryBindingId": "01K00000000000000000000003",
+  "runId": "01K00000000000000000000004",
+  "risk": "R1",
+  "runBudget": {
+    "maxCostUsd": 200,
+    "softCostUsd": 150,
+    "maxTasks": 10
+  },
+  "governance": {
+    "publicationApprovalRequired": false,
+    "approvalTtlSeconds": 86400,
+    "maxPauseHours": 72,
+    "assuranceMode": "shadow"
+  },
+  "requestedBy": "01K00000000000000000000009",
+  "fixedTasks": null
+}
