@@ -73,6 +73,9 @@ const FORBIDDEN_INFRA: ReadonlyArray<{ label: string; test: (spec: string) => bo
   { label: 'AWS SDK', test: (s) => /^(aws-sdk|@aws-sdk\/)/.test(s) },
   { label: 'Docker SDK', test: (s) => /^(dockerode|@docker\/)/.test(s) },
   { label: 'child_process (shell/git)', test: (s) => /^(node:)?child_process$/.test(s) },
+  // The orchestration activities depend on ActivityExecutionContext, never on the
+  // engine: the Temporal SDK is confined to its adapter and the worker root.
+  { label: 'Temporal SDK', test: (s) => /^@temporalio\//.test(s) },
 ];
 
 // Match ESM import ... from '<spec>' , bare import '<spec>' , dynamic import('<spec>')
@@ -220,10 +223,12 @@ test('self-check: application infra matcher catches seeded infra + provider impo
     `import Docker from 'dockerode';`,
     `import { spawn } from 'node:child_process';`,
     `import Anthropic from '@anthropic-ai/sdk';`,
+    `import { proxyActivities } from '@temporalio/workflow';`,
+    `import { Context } from '@temporalio/activity';`,
   ].join('\n');
   const specs = specifiersOf(seeded);
   const flagged = specs.filter((s) => firstForbiddenAppLayer(s) !== null);
-  assert.equal(flagged.length, 7, `expected all 7 seeded app-layer violations flagged, got ${flagged.length}`);
+  assert.equal(flagged.length, 9, `expected all 9 seeded app-layer violations flagged, got ${flagged.length}`);
 });
 
 test('self-check: legitimate application imports (ports/policy/domain) are NOT flagged', () => {
