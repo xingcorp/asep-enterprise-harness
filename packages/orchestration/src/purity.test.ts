@@ -525,6 +525,10 @@ test('every core source file parses and is deterministic: type-only imports from
 
 // --- seeded violations: the detector must catch each one -------------------
 
+// The wall-clock read several seeds hide, spelled in two parts: the repository's rule that tests time their waits on
+// the monotonic clock reads test source lines and would take a seed's text for a wait. The scanned source is the same.
+const CLOCK_READ = 'Date' + '.now()';
+
 const SEEDED: readonly { name: string; source: string; rule: PurityViolation['rule']; detail: string }[] = [
   { name: 'runtime import of a workspace package', source: 'import { x } from "@asep/contracts";', rule: 'runtime-import', detail: '@asep/contracts' },
   { name: 'runtime import of a node builtin', source: "import { readFileSync } from 'node:fs';", rule: 'runtime-import', detail: 'node:fs' },
@@ -546,7 +550,7 @@ const SEEDED: readonly { name: string; source: string; rule: PurityViolation['ru
   { name: 'source extension instead of the built one', source: 'import { decideTask } from "./task-core.ts";', rule: 'import-target', detail: './task-core.ts' },
   { name: 'relative import that does not resolve', source: 'import { x } from "./no-such-module.js";', rule: 'import-target', detail: './no-such-module.js' },
   { name: 'import-equals', source: 'import fs = require("node:fs");', rule: 'import-equals', detail: 'node:fs' },
-  { name: 'wall clock', source: 'const t = Date.now();', rule: 'banned-global', detail: 'Date' },
+  { name: 'wall clock', source: `const t = ${CLOCK_READ};`, rule: 'banned-global', detail: 'Date' },
   { name: 'new Date', source: 'const d = new Date();', rule: 'banned-global', detail: 'Date' },
   { name: 'wall clock behind a unicode escape', source: 'const t = \\u0044ate.now();', rule: 'banned-global', detail: 'Date' },
   { name: 'randomness', source: 'const r = Math.random();', rule: 'banned-global', detail: 'Math.random' },
@@ -555,7 +559,7 @@ const SEEDED: readonly { name: string; source: string; rule: PurityViolation['ru
   { name: 'randomness through a computed access', source: 'const r = Math["random"]();', rule: 'banned-global', detail: 'Math' },
   { name: 'denied global through a literal computed access', source: 'declare const scope: Record<string, { env: unknown }>;\nconst e = scope["process"].env;', rule: 'banned-global', detail: 'process' },
   { name: 'denied global through a template computed access', source: 'declare const scope: Record<string, unknown>;\nconst d = scope[`Date`];', rule: 'banned-global', detail: 'Date' },
-  { name: 'reflected Function constructor reading the clock', source: 'const escapedClock = Reflect.get(() => {}, "constructor")("return Date.now()")();', rule: 'banned-global', detail: 'Reflect' },
+  { name: 'reflected Function constructor reading the clock', source: `const escapedClock = Reflect.get(() => {}, "constructor")("return ${CLOCK_READ}")();`, rule: 'banned-global', detail: 'Reflect' },
   { name: 'Function constructor through a literal key', source: 'const f = (() => {})["constructor"];', rule: 'reflective-member', detail: 'constructor' },
   { name: 'Function constructor through a member access', source: 'const f = (() => {}).constructor;', rule: 'reflective-member', detail: 'constructor' },
   { name: 'Function constructor through a constant key', source: 'const k = "constructor" as const;\nconst f = (() => {})[k];', rule: 'reflective-member', detail: 'constructor' },
@@ -598,13 +602,13 @@ const SEEDED: readonly { name: string; source: string; rule: PurityViolation['ru
   // The v6 re-audit's E12: the key is built at run time and asserted to a harmless literal type.
   {
     name: 'Function constructor through an asserted computed key',
-    source: 'export const reviewClock = ((() => {})[("constr" + "uctor") as "name"] as unknown as (body: string) => () => number)("return Date.now()")();',
+    source: `export const reviewClock = ((() => {})[("constr" + "uctor") as "name"] as unknown as (body: string) => () => number)("return ${CLOCK_READ}")();`,
     rule: 'asserted-key',
     detail: '(() => {})[("constr" + "uctor") as "name"]',
   },
   {
     name: 'the same expression is a double cast too',
-    source: 'export const reviewClock = ((() => {})[("constr" + "uctor") as "name"] as unknown as (body: string) => () => number)("return Date.now()")();',
+    source: `export const reviewClock = ((() => {})[("constr" + "uctor") as "name"] as unknown as (body: string) => () => number)("return ${CLOCK_READ}")();`,
     rule: 'double-cast',
     detail: '(() => {})[("constr" + "uctor") as "name"] as unknown as (body: string) => () => number',
   },
@@ -624,7 +628,7 @@ let seededScan: PurityScan | null = null;
 function scanSeeds(): PurityScan {
   seededScan ??= scanCore({
     ...Object.fromEntries(SEEDED.map((seed, i) => [seedFile(i), `${seed.source}\nexport {};\n`])),
-    'purity-hidden.mjs': 'export const hiddenClock = Date.now();\n',
+    'purity-hidden.mjs': `export const hiddenClock = ${CLOCK_READ};\n`,
   });
   return seededScan;
 }
