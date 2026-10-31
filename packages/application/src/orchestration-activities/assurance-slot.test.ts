@@ -9,6 +9,8 @@
 //   - the literal opt-out and the scripted slot, both stateless, pass every case
 //     a stateless slot can, with all four outcome kinds;
 //   - the default slot proceeds without review only for R0 and R1;
+//   - each attempt terminal, and verification ERROR, is stored as the events its
+//     meaning says, against an oracle written apart from the slot's own table;
 //   - subjects broken on purpose (no fence check, no lease history check, a
 //     non-atomic write, an outcome that breaks an invariant, an effect before
 //     registration, resolvers that skip a check) fail the case that guards it.
@@ -36,6 +38,7 @@ import {
   type AssuranceSlotInput,
   type AssuranceStepContext,
   type AssuranceWorkspaceResolver,
+  type AttemptTerminal,
   type LeasedAttemptOutcomeInput,
   type PreLeaseAttemptOutcomeInput,
   type ReviewLoopContractErrorCode,
@@ -505,6 +508,106 @@ test('the default slot records the terminal as the two attempt events, with ever
       ...ids, ...tenant, risk: 'R0', declaredComplete: true, passedRequiredAssurance: true,
     },
   ]);
+});
+
+// ---------------------------------------------------------------------------
+// Each terminal's stored events, against what the terminal means
+// ---------------------------------------------------------------------------
+
+// The expected words come from what each terminal means and from the run-event vocabulary, not from the slot's
+// own table:
+//  - proceeded, escalated: the attempt went through to a pull request that waits for human review, so it succeeded.
+//    The harness never accepts work, so no attempt is ever `accepted`;
+//  - repair-requested: assurance turned the attempt's result down and asked for a repair, so it was rejected;
+//  - blocked: assurance blocked it;
+//  - verification-stopped: verification ended the attempt, and the outcome is the verdict's own word: FAIL is
+//    `fail`, ERROR is `error`;
+//  - agent-failed, infrastructure-failed, budget-exhausted: the agent, the infrastructure or the budget ended it,
+//    so it failed;
+//  - cancelled: cancelled. When the core took the slot's terminal names, only its `failed` was renamed (to
+//    infrastructure-failed); `cancelled` kept its name and its meaning.
+// passedRequiredAssurance follows the data model's rule for a slot that does not require review: verification
+// passed, and no assurance round blocked the attempt.
+interface TerminalCase {
+  readonly terminal: AttemptTerminal;
+  readonly round: number;
+  readonly declaredComplete: boolean;
+  readonly verdict: 'PASS' | 'FAIL' | 'ERROR' | null;
+  readonly adjudicated: boolean;
+  readonly failureClass: string | null;
+  readonly agentRan: boolean;
+  readonly outcome: NonNullable<RunEvent['outcome']>;
+  readonly passedRequiredAssurance: boolean;
+}
+
+const TERMINAL_CASES: readonly TerminalCase[] = [
+  { terminal: 'proceeded', round: 1, declaredComplete: true, verdict: 'PASS', adjudicated: true, failureClass: null, agentRan: true, outcome: 'succeeded', passedRequiredAssurance: true },
+  { terminal: 'escalated', round: 2, declaredComplete: true, verdict: 'PASS', adjudicated: true, failureClass: null, agentRan: true, outcome: 'succeeded', passedRequiredAssurance: true },
+  { terminal: 'repair-requested', round: 1, declaredComplete: true, verdict: 'PASS', adjudicated: true, failureClass: 'introduced-regression', agentRan: true, outcome: 'rejected', passedRequiredAssurance: true },
+  { terminal: 'blocked', round: 1, declaredComplete: true, verdict: 'PASS', adjudicated: true, failureClass: null, agentRan: true, outcome: 'blocked', passedRequiredAssurance: false },
+  { terminal: 'verification-stopped', round: 1, declaredComplete: true, verdict: 'FAIL', adjudicated: false, failureClass: 'introduced-regression', agentRan: true, outcome: 'fail', passedRequiredAssurance: false },
+  { terminal: 'verification-stopped', round: 1, declaredComplete: true, verdict: 'ERROR', adjudicated: false, failureClass: 'environment', agentRan: true, outcome: 'error', passedRequiredAssurance: false },
+  { terminal: 'agent-failed', round: 1, declaredComplete: false, verdict: null, adjudicated: false, failureClass: 'agent-loop-stall', agentRan: true, outcome: 'failed', passedRequiredAssurance: false },
+  { terminal: 'infrastructure-failed', round: 1, declaredComplete: false, verdict: null, adjudicated: false, failureClass: 'environment', agentRan: false, outcome: 'failed', passedRequiredAssurance: false },
+  { terminal: 'budget-exhausted', round: 1, declaredComplete: false, verdict: null, adjudicated: false, failureClass: null, agentRan: true, outcome: 'failed', passedRequiredAssurance: false },
+  { terminal: 'cancelled', round: 1, declaredComplete: false, verdict: null, adjudicated: false, failureClass: null, agentRan: false, outcome: 'cancelled', passedRequiredAssurance: false },
+];
+
+// Every terminal of the slot contract, checked against the union at compile time.
+const EVERY_TERMINAL: Readonly<Record<AttemptTerminal, true>> = {
+  'verification-stopped': true, 'proceeded': true, 'repair-requested': true, 'escalated': true, 'blocked': true,
+  'agent-failed': true, 'budget-exhausted': true, 'cancelled': true, 'infrastructure-failed': true,
+};
+
+test('each attempt terminal, and verification ERROR, is stored as the two events its meaning says', async () => {
+  assert.deepEqual([...new Set(TERMINAL_CASES.map((c) => c.terminal))].sort(), Object.keys(EVERY_TERMINAL).sort());
+  assert.ok(TERMINAL_CASES.some((c) => c.verdict === 'ERROR'), 'the verification ERROR case is covered');
+  const db = await seededDb();
+  const store = new SqlAttemptTerminalStore(db);
+  const slot = new NotConfiguredAssuranceSlot(store);
+  const occurredAt = '2026-01-03T04:05:06.000Z';
+  const tenant = { organizationId: IDS.organizationId, projectId: IDS.projectId, repositoryBindingId: IDS.bindingId };
+  const stored: string[] = [];
+  for (const [i, c] of TERMINAL_CASES.entries()) {
+    const label = `${c.terminal}${c.verdict === null ? '' : ` (${c.verdict})`}`;
+    const attemptId = `01K${'0'.repeat(21)}T${i}` as AttemptId;
+    const attempt = await registerAttempt(db, attemptId);
+    const lease = await store.acquireLease(SCOPE, { attempt, branch: branchOf(attemptId), ttlMs: 3_600_000 });
+    if ('denied' in lease) throw new Error(`lease denied: ${lease.reason}`);
+    const adjudicationId = c.adjudicated ? 'c'.repeat(64) : null;
+    await slot.recordAttemptOutcome({
+      ...leasedOutcome({ leaseId: lease.leaseId, fencingEpoch: lease.fencingEpoch }, attemptId),
+      terminal: c.terminal,
+      round: c.round,
+      declaredComplete: c.declaredComplete,
+      verificationVerdict: c.verdict,
+      adjudicationId,
+      failureClass: c.failureClass,
+      cost: c.agentRan ? { modelCostMicroUsd: 1_250_000, computeCostMicroUsd: null, inputTokens: 1200, outputTokens: 300, toolCalls: 7 } : null,
+    }, makeCtx(occurredAt));
+    const rows = await db.query(
+      `select payload from run_events where organization_id = $1 and project_id = $2 and attempt_id = $3 order by event_type`,
+      [IDS.organizationId, IDS.projectId, attemptId],
+    );
+    const payloads = rows.rows.map((row) => row['payload'] as RunEvent);
+    const ids = { runId: IDS.runId, taskId: IDS.taskId, attemptId };
+    assert.deepEqual(payloads, [
+      {
+        eventId: `${attemptId}:attempt.completed`, eventType: 'attempt.completed', occurredAt, ...ids, ...tenant, risk: 'R0',
+        outcome: c.outcome, attemptTerminal: c.terminal, reviewRound: c.round, repairRound: c.round > 1, assuranceUnavailable: false,
+        ...(c.verdict === null ? {} : { verificationVerdict: c.verdict }),
+        ...(adjudicationId === null ? {} : { adjudicationId }),
+        ...(c.failureClass === null ? {} : { failureClass: c.failureClass }),
+        ...(c.agentRan ? { modelCostUsd: 1.25, inputTokens: 1200, outputTokens: 300, toolCalls: 7 } : {}),
+      },
+      {
+        eventId: `${attemptId}:attempt.declared_complete`, eventType: 'attempt.declared_complete', occurredAt, ...ids, ...tenant,
+        risk: 'R0', declaredComplete: c.declaredComplete, passedRequiredAssurance: c.passedRequiredAssurance,
+      },
+    ], label);
+    stored.push(String(payloads[0]!.outcome));
+  }
+  assert.ok(!stored.includes('accepted'), 'no attempt is ever stored as accepted');
 });
 
 test('the default slot refuses an outcome it cannot write as distinct events, before any write', async () => {
