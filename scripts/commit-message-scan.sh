@@ -33,6 +33,7 @@ PINNED_HISTORICAL_HEADS=(
   e046885ad9f800f8d0c7a1fee965f9e670baee96   # the evaluation-contracts branch, origin/main
   00a68895d205122767167942326e2e0466571059   # the vertical-slice branch as first published
   d6ee68683ccd62fe72187e164387e2732cb85fa0   # the vertical-slice branch as accepted
+  5b20589acdfb32597784e4bde5999b8adca67a55   # the durable-orchestration branch before it adopted this check
 )
 
 scan_commit_messages() {
