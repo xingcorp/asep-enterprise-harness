@@ -14,8 +14,8 @@
 //     direct connection to the model API's own address fails, DNS for a public
 //     name fails, through the embedded resolver or asked of a public one;
 //   * no way to the host: a service listening on the wildcard address of the
-//     daemon's host network namespace, and the gate's PostgreSQL and MinIO
-//     ports, are unreachable at the would-be bridge gateway, the default
+//     daemon's host network namespace, and the gate's PostgreSQL and object
+//     store ports, are unreachable at the would-be bridge gateway, the default
 //     bridge's gateway, Docker Desktop's host address and host.docker.internal,
 //     and the test host's own addresses — while a container on a plain `--internal` network DOES reach that
 //     service through its gateway, so the refusal is the isolation, not a

@@ -6,12 +6,14 @@
 # host interface. scripts/integration/run-integration.test.ts enforces it.
 #
 # Image pinning (disp. P2-FINAL-HIGH-001): the two services the integration gate
-# depends on — postgres and minio — are pinned BY DIGEST, not by a mutable tag,
-# and their digests are kept byte-identical to scripts/integration/images.mjs by
-# an executable gate (scripts/integration/run-integration.test.ts). A tag can be
-# re-pointed at new bytes under our feet; a @sha256:<64hex> digest names exactly
-# one immutable manifest, so `pnpm infra:up` and the CI integration job provision
-# the SAME backend build the suites were proven against.
+# depends on — postgres and the object store — are pinned BY DIGEST, not by a
+# mutable tag, and their digests are kept byte-identical to
+# scripts/integration/images.mjs by an executable gate
+# (scripts/integration/run-integration.test.ts), which also holds the object
+# store's command and API port to the gate's. A tag can be re-pointed at new
+# bytes under our feet; a @sha256:<64hex> digest names exactly one immutable
+# manifest, so `pnpm infra:up` and the CI integration job provision the SAME
+# backend build the suites were proven against.
 services:
   postgres:
     # postgres:17 — digest-pinned; mirrored in scripts/integration/images.mjs.
@@ -48,22 +50,24 @@ services:
       TEMPORAL_ADDRESS: temporal:7233
     ports: ["127.0.0.1:${TEMPORAL_UI_PORT}:8080"]
 
-  minio:
-    # minio RELEASE.2025-04-22T22-12-26Z — digest-pinned; mirrored in
-    # scripts/integration/images.mjs.
-    image: minio/minio@sha256:a1ea29fa28355559ef137d71fc570e508a214ec84ff8083e39bc5428980b015e
-    command: server /data --console-address ":9001"
+  object-store:
+    # VersityGW v1.10.0, an S3-compatible gateway over a POSIX directory —
+    # digest-pinned, and run as the integration gate runs it: image, command
+    # and API port are mirrored in scripts/integration/images.mjs. It replaced
+    # MinIO, whose image Docker Hub no longer serves; the credential and port
+    # variables keep their names from .env.example.
+    image: versity/versitygw@sha256:89cad13cc981986ee284cbafea4613f9533ce6fd5f37a2c96c4c4fb8adb3a316
+    command: ["--health", "/health", "posix", "/srv"]
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      ROOT_ACCESS_KEY: ${MINIO_ROOT_USER}
+      ROOT_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
     ports:
-      - "127.0.0.1:${MINIO_API_PORT}:9000"
-      - "127.0.0.1:${MINIO_CONSOLE_PORT}:9001"
-    volumes: ["minio_data:/data"]
+      - "127.0.0.1:${MINIO_API_PORT}:7070"
+    volumes: ["object_store_data:/srv"]
     # Health-checked so `depends_on: service_healthy` and the integration gate
     # can WAIT for readiness instead of racing it (disp. P2-FINAL-HIGH-001).
     healthcheck:
-      test: ["CMD-SHELL", "mc ready local || exit 1"]
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:7070/health"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -101,5 +105,5 @@ services:
 
 volumes:
   postgres_data:
-  minio_data:
+  object_store_data:
   grafana_data:

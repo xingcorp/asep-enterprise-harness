@@ -12,7 +12,7 @@
 | `fastify` | 5.10.0 | exact `5.10.0` | Control-plane HTTP transport, plugin encapsulation | `apps/control-plane-api` |
 | `pg` | 8.22.0 | exact `8.22.0` | PostgreSQL client + pool | `adapters/postgres` |
 | `@types/pg` | 8.20.0 | exact `8.20.0` (dev) | Types for `pg` | `adapters/postgres` |
-| `@aws-sdk/client-s3` | 3.1093.0 | exact `3.1093.0` | S3/MinIO object storage | `adapters/artifact-s3` |
+| `@aws-sdk/client-s3` | 3.1093.0 | exact `3.1093.0` | S3-compatible object storage | `adapters/artifact-s3` |
 | `@octokit/auth-app` | 8.2.0 | exact `8.2.0` | GitHub App installation-token auth | `adapters/github-app` |
 | `@octokit/rest` | 22.0.1 | exact `22.0.1` | GitHub REST (PR create/update) | `adapters/github-app` |
 | `@anthropic-ai/claude-agent-sdk` | 0.3.218 | exact `0.3.218` | Claude coding provider | `adapters/agent-claude` |
@@ -47,9 +47,10 @@
 - **License:** MIT.
 
 ### @aws-sdk/client-s3 3.1093.0 — Object storage
-- **Why:** immutable content-addressed artifacts to MinIO (local) and S3 (prod parity). `PutObjectCommand`,
+- **Why:** immutable content-addressed artifacts to an S3-compatible server (VersityGW locally and in the
+  integration gate; MinIO until 2026-10-31) and S3 (prod parity). `PutObjectCommand`,
   `GetObjectCommand`, `HeadObjectCommand`; supports `AbortSignal` cancellation and streaming.
-- **Why not stdlib:** no native S3 client. MinIO speaks the S3 API, so one adapter covers both.
+- **Why not stdlib:** no native S3 client. Those servers speak the S3 API, so one adapter covers both.
 - **Confined to** `adapters/artifact-s3`; filesystem adapter (no dep) is default for tests.
 - **License:** Apache-2.0.
 

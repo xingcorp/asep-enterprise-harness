@@ -7,8 +7,9 @@
 //   * `pnpm test:integration` (this script) builds the workspace the suites
 //     import (`tsc -b`, so a fresh checkout runs and no suite runs against
 //     output older than its source), provisions digest-pinned PostgreSQL and
-//     MinIO, HEALTH-CHECKS them, then runs the *.itest.ts suites against the
-//     live backends with ASEP_PG_URL / S3 env pointing at them.
+//     an S3-compatible object store (VersityGW), HEALTH-CHECKS them, then runs
+//     the *.itest.ts suites against the live backends with ASEP_PG_URL / S3 env
+//     pointing at them.
 //
 // The gate FAILS CLOSED (exit non-zero, loud message) — never a silent skip —
 // when: docker is unavailable or its engine older than the agent network's
@@ -25,7 +26,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { Client } from 'pg';
-import { IMAGES } from './images.mjs';
+import { IMAGES, OBJECT_STORE_ARGS, OBJECT_STORE_HEALTH_PATH, OBJECT_STORE_PORT } from './images.mjs';
 import {
   resolveDocker, runContainer, removeContainer, waitReady, loopbackPublish, LOOPBACK_HOST,
   discoverItestFiles, missingRequiredItestSuites, REQUIRED_ITEST_SUITES, buildWorkspace, engineVersionGap,
@@ -36,6 +37,8 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(HERE, '..', '..');
 
 const PG_NAME = `asep-itest-pg-${process.pid}`;
+// The object store's names and knobs keep the `minio` spelling of the backend
+// they were made for; they name the role, now played by VersityGW.
 const MINIO_NAME = `asep-itest-minio-${process.pid}`;
 const PG_PORT = process.env.ASEP_ITEST_PG_PORT ?? '55440';
 const MINIO_PORT = process.env.ASEP_ITEST_MINIO_PORT ?? '59000';
@@ -59,12 +62,12 @@ const MINIO_PASSWORD = 'asepminio-secret';
 //   ASEP_ITEST_HEALTH_ATTEMPTS=n — shrink the readiness budget so a negative
 //       test fails fast instead of burning the full 40s. Per-backend overrides
 //       (ASEP_ITEST_PG_HEALTH_ATTEMPTS / ASEP_ITEST_MINIO_HEALTH_ATTEMPTS) exist
-//       because the negative tests need ASYMMETRIC budgets: the "MinIO missing"
-//       case must still let the REAL PostgreSQL it started become healthy (cold
-//       postgres init takes several seconds) so the run actually REACHES the
-//       MinIO health check it is meant to prove. With one global 2-attempt
-//       budget the run died on the PG check instead and proved nothing about
-//       MinIO — the failure mode this knob removes.
+//       because the negative tests need ASYMMETRIC budgets: the "object store
+//       missing" case must still let the REAL PostgreSQL it started become
+//       healthy (cold postgres init takes several seconds) so the run actually
+//       REACHES the object-store health check it is meant to prove. With one
+//       global 2-attempt budget the run died on the PG check instead and proved
+//       nothing about the object store — the failure mode this knob removes.
 //
 // These only ever make the gate STRICTER (they can cause a red, never a green),
 // so they cannot be abused to fake a pass: a backend that is genuinely required
@@ -106,7 +109,7 @@ async function main() {
   if (!docker) {
     return fail(
       'no working docker binary found — the integration gate REQUIRES a real ' +
-        'PostgreSQL + MinIO backend and refuses to skip (P2-FINAL-HIGH-001)',
+        'PostgreSQL + object store backend and refuses to skip (P2-FINAL-HIGH-001)',
     );
   }
   process.stdout.write(`integration-gate: docker ${docker.serverVersion} at ${docker.bin}\n`);
@@ -151,15 +154,15 @@ async function main() {
     }
 
     if (OMITTED_BACKENDS.has('minio')) {
-      process.stdout.write('integration-gate: MinIO DELIBERATELY OMITTED (negative test)\n');
+      process.stdout.write('integration-gate: object store DELIBERATELY OMITTED (negative test)\n');
     } else {
-      process.stdout.write(`integration-gate: starting MinIO (${IMAGES.minio})\n`);
+      process.stdout.write(`integration-gate: starting the object store (${IMAGES.objectStore})\n`);
       runContainer(docker.bin, {
-        image: IMAGES.minio,
+        image: IMAGES.objectStore,
         name: MINIO_NAME,
-        env: { MINIO_ROOT_USER: MINIO_USER, MINIO_ROOT_PASSWORD: MINIO_PASSWORD },
-        ports: [loopbackPublish(MINIO_PORT, 9000)],
-        args: ['server', '/data'],
+        env: { ROOT_ACCESS_KEY: MINIO_USER, ROOT_SECRET_KEY: MINIO_PASSWORD },
+        ports: [loopbackPublish(MINIO_PORT, OBJECT_STORE_PORT)],
+        args: [...OBJECT_STORE_ARGS],
       });
     }
 
@@ -170,11 +173,11 @@ async function main() {
     process.stdout.write('integration-gate: PostgreSQL healthy\n');
 
     const minioOk = await waitReady(async () => {
-      const r = await fetch(`${s3Endpoint}/minio/health/live`).catch(() => null);
+      const r = await fetch(`${s3Endpoint}${OBJECT_STORE_HEALTH_PATH}`).catch(() => null);
       return !!r && r.ok;
     }, { attempts: MINIO_HEALTH_ATTEMPTS, intervalMs: 1000 });
-    if (!minioOk) return fail(`MinIO never became healthy at ${s3Endpoint}`);
-    process.stdout.write('integration-gate: MinIO healthy\n');
+    if (!minioOk) return fail(`the object store never became healthy at ${s3Endpoint}`);
+    process.stdout.write('integration-gate: object store healthy\n');
 
     // Run the itest suites in ONE shell-free child with live-backend env, with
     // the V8 flags every test process needs (lib/node-test-flags.mjs).

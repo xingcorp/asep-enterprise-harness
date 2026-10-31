@@ -77,8 +77,8 @@ export function requireS3Config(): ItestS3Config {
   if (!endpoint || !accessKeyId || !secretAccessKey) {
     throw new Error(
       `${S3_ENV.endpoint}/${S3_ENV.accessKey}/${S3_ENV.secretKey} are not set — ` +
-        `the artifact object-store suite requires a real S3-compatible backend ` +
-        `(MinIO). This suite must run under the integration gate, never bare. ` +
+        `the artifact object-store suite requires a real S3-compatible backend. ` +
+        `This suite must run under the integration gate, never bare. ` +
         `Failing closed rather than skipping (P2-REREVIEW-MED-NEW-001).`,
     );
   }

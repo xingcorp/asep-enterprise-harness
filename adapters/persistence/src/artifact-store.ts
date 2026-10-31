@@ -1,5 +1,5 @@
 // Content-addressed immutable artifact store (S3, exit criteria D2–D7). Bytes
-// live in an ObjectStore (filesystem in tests, S3/MinIO in prod); metadata rows
+// live in an ObjectStore (filesystem in tests, S3 in prod); metadata rows
 // live in the PostgreSQL `artifacts` table (migration 0004). Implements the
 // ArtifactStore port so the application composes against the port, never this.
 //

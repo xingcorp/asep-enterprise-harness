@@ -18,7 +18,7 @@ ASEP is not a “single AI agent that keeps coding forever.” It is an engineer
 - Security, tenancy, audit, incident response and release governance.
 - Technology radar covering Temporal, Claude Code, Codex, OpenHands, ADK, DeerFlow, Spec Kit, Open Design, Mem0, Graphiti, RTK, Caveman and related projects.
 - A small TypeScript reference kernel that can be run and extended.
-- Local development Compose stack for PostgreSQL, Temporal, MinIO and observability components.
+- Local development Compose stack for PostgreSQL, Temporal, an S3-compatible object store (VersityGW) and observability components.
 - 90-day plan, backlog, acceptance gates and ADRs.
 
 ## Start here

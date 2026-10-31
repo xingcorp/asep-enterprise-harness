@@ -21,7 +21,8 @@
   pilot task.
 - Preconditions before any pilot task:
   - `pnpm verify:all` green from a clean checkout (exit A1/A4).
-  - PostgreSQL, object store (MinIO) and the sandbox provisioned and healthy
+  - PostgreSQL, the S3-compatible object store (VersityGW in the gate) and the
+    sandbox provisioned and healthy
     (exit K4) — the integration gate fails rather than skips if any is down.
   - The control-plane database created **fresh** at the current schema
     (migrations through 0019). Migrations 0017, 0018 and 0019 refuse rows that
@@ -59,7 +60,7 @@ The Claude provider has no host-execution mode. Every attempt runs like this
    embedded resolver and when a public resolver is asked directly; the agent
    holds no IPv6 address; and a service listening on the wildcard address of
    the daemon's host network namespace — plus the integration gate's PostgreSQL
-   and MinIO ports — is unreachable at the would-be bridge gateway, the default
+   and object-store ports — is unreachable at the would-be bridge gateway, the default
    bridge gateway (`172.17.0.1`), Docker Desktop's host address
    (`192.168.65.254`) and `host.docker.internal`. The same test shows a
    container on a plain `--internal` network DOES reach that service through

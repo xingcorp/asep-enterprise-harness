@@ -16,7 +16,7 @@
 // these runs exit 0 and turn this suite RED.
 //
 // It lives under the integration gate itself (*.itest.ts) because it needs a
-// real docker binary to reach the health-check stage for the PG/MinIO cases: with
+// real docker binary to reach the health-check stage for the PG/S3 cases: with
 // no docker at all every case would collapse into the same "no docker" branch and
 // prove nothing about backend health. The nested runs use `ASEP_ITEST_OMIT_BACKEND`
 // so no container is ever started for the omitted service, and a tiny
@@ -29,12 +29,12 @@
 // BUDGETS ARE ASYMMETRIC ON PURPOSE. Each negative case must fail at the health
 // check for the backend it claims to be about, which means every OTHER backend it
 // starts has to be given a realistic budget to come up. A single global
-// 2-attempt budget made the "MinIO missing" case die on the cold-start
+// 2-attempt budget made the "object store missing" case die on the cold-start
 // PostgreSQL check instead — exit code still non-zero, so the weak form of the
-// assertion passed while proving nothing whatsoever about MinIO. Each case below
-// therefore shrinks ONLY the budget of the backend it omits, and asserts on the
-// specific health-check message, so a case that stops failing for its stated
-// reason turns RED instead of passing for the wrong one.
+// assertion passed while proving nothing whatsoever about the object store.
+// Each case below therefore shrinks ONLY the budget of the backend it omits,
+// and asserts on the specific health-check message, so a case that stops
+// failing for its stated reason turns RED instead of passing for the wrong one.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -114,26 +114,27 @@ test('HIGH-001 e2e: a MISSING PostgreSQL makes the required gate exit NON-ZERO',
 });
 
 // ---------------------------------------------------------------------------
-// Object store (MinIO) absent → RED at the health check.
+// Object store absent → RED at the health check.
 // ---------------------------------------------------------------------------
 
-test('HIGH-001 e2e: a MISSING object store (MinIO) makes the required gate exit NON-ZERO', () => {
-  // This case starts a REAL PostgreSQL and omits only MinIO, so PG must be given
-  // a full cold-start budget: the whole point is to get PAST the PG health check
-  // and fail at the MinIO one. MinIO's own budget stays tiny so the run is quick.
+test('HIGH-001 e2e: a MISSING object store makes the required gate exit NON-ZERO', () => {
+  // This case starts a REAL PostgreSQL and omits only the object store, so PG
+  // must be given a full cold-start budget: the whole point is to get PAST the
+  // PG health check and fail at the object store's. Its own budget stays tiny
+  // so the run is quick.
   const run = runGate({
     ASEP_ITEST_OMIT_BACKEND: 'minio',
     ASEP_ITEST_PG_HEALTH_ATTEMPTS: '40',
     ASEP_ITEST_MINIO_HEALTH_ATTEMPTS: '2',
   });
-  assert.notEqual(run.status, 0, `gate must fail when MinIO is absent; output:\n${run.out}`);
+  assert.notEqual(run.status, 0, `gate must fail when the object store is absent; output:\n${run.out}`);
   // Proof the run genuinely REACHED the object-store check: PostgreSQL came up
   // healthy first. Without this, a failure anywhere earlier would satisfy the
   // exit-code assertion while proving nothing about the object store.
   assert.match(run.out, /PostgreSQL healthy/,
     'the run got past PG, so the failure below is genuinely about the object store');
-  assert.match(run.out, /MinIO never became healthy/,
-    'the gate fails on the MinIO health check rather than proceeding');
+  assert.match(run.out, /the object store never became healthy/,
+    'the gate fails on the object-store health check rather than proceeding');
   assert.ok(!/integration-gate: PASS/.test(run.out), 'no PASS banner without the object store');
   assert.match(run.out, /containers torn down/, 'containers are torn down even on failure');
 });

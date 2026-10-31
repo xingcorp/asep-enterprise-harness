@@ -12,6 +12,8 @@ import assert from 'node:assert/strict';
 // @ts-expect-error — .mjs helpers have no type declarations; we test their runtime contract.
 import { assertDigestPinned, DIGEST_PINNED, IMAGES } from './images.mjs';
 // @ts-expect-error — .mjs helpers have no type declarations; we test their runtime contract.
+import { OBJECT_STORE_ARGS, OBJECT_STORE_HEALTH_PATH, OBJECT_STORE_PORT } from './images.mjs';
+// @ts-expect-error — .mjs helpers have no type declarations; we test their runtime contract.
 import { discoverItestFiles, missingRequiredItestSuites, REQUIRED_ITEST_SUITES, suiteMarker, resolveDocker, waitReady } from './lib.mjs';
 // @ts-expect-error — .mjs helpers have no type declarations; we test their runtime contract.
 import { assertLoopbackPublish, containerRunArgv, loopbackPublish, runContainer } from './lib.mjs';
@@ -120,53 +122,65 @@ test('resolveDocker returns null when no candidate binary responds (→ gate RED
 // ---------------------------------------------------------------------------
 // compose.yaml <-> images.mjs digest parity (disp. P2-FINAL-HIGH-001).
 //
-// The review flagged compose.yaml pinning postgres/minio by MUTABLE TAG while
-// the gate pinned by digest. Both are now digest-pinned, and this test keeps
-// them byte-identical forever: `pnpm infra:up` (developer) and the integration
-// gate (CI) must provision the SAME immutable backend build, or the suites are
-// proven against something other than what a developer runs. Re-pointing one
-// without the other turns this RED.
+// The review flagged compose.yaml pinning postgres/the object store by MUTABLE
+// TAG while the gate pinned by digest. Both are now digest-pinned, and this
+// test keeps them byte-identical forever: `pnpm infra:up` (developer) and the
+// integration gate (CI) must provision the SAME immutable backend build, or the
+// suites are proven against something other than what a developer runs.
+// Re-pointing one without the other turns this RED. The object store is also
+// run the same way in both: one command, one API port.
 // ---------------------------------------------------------------------------
 
-test('compose.yaml pins postgres + minio BY DIGEST (no mutable tag)', () => {
+// A top-level service block of compose.yaml.
+function serviceBlock(compose: string, name: string): string {
+  const start = compose.indexOf(`\n  ${name}:`);
+  assert.notEqual(start, -1, `compose declares a '${name}' service`);
+  const rest = compose.slice(start + 1);
+  const next = rest.search(/\n {2}\w[\w-]*:\n/);
+  return next === -1 ? rest : rest.slice(0, next);
+}
+
+test('compose.yaml pins postgres + the object store BY DIGEST (no mutable tag)', () => {
   const compose = readFileSync(join(REPO_ROOT, 'compose.yaml'), 'utf8');
-  const images = [...compose.matchAll(/^\s*image:\s*(\S+)\s*$/gm)].map((m) => m[1] as string);
-  const pg = images.filter((i) => i.startsWith('postgres'));
-  const minio = images.filter((i) => i.startsWith('minio/minio'));
-  assert.ok(pg.length >= 1, 'compose declares a postgres image');
-  assert.ok(minio.length >= 1, 'compose declares a minio image');
-  for (const ref of [...pg, ...minio]) {
+  for (const svc of ['postgres', 'object-store']) {
+    const ref = /^\s*image:\s*(\S+)\s*$/m.exec(serviceBlock(compose, svc))?.[1];
+    assert.ok(ref !== undefined, `compose declares an image for '${svc}'`);
     assert.match(ref, DIGEST_PINNED, `compose image '${ref}' must be @sha256-pinned, not a tag`);
   }
 });
 
 test('compose.yaml digests are IDENTICAL to the integration gate images', () => {
   const compose = readFileSync(join(REPO_ROOT, 'compose.yaml'), 'utf8');
-  const images = [...compose.matchAll(/^\s*image:\s*(\S+)\s*$/gm)].map((m) => m[1] as string);
-  assert.ok(
-    images.includes(IMAGES.postgres),
-    `compose postgres digest must equal the gate's (${IMAGES.postgres})`,
-  );
-  assert.ok(
-    images.includes(IMAGES.minio),
-    `compose minio digest must equal the gate's (${IMAGES.minio})`,
-  );
+  const imageOf = (svc: string) => /^\s*image:\s*(\S+)\s*$/m.exec(serviceBlock(compose, svc))?.[1];
+  assert.equal(imageOf('postgres'), IMAGES.postgres, 'compose postgres digest must equal the gate\'s');
+  assert.equal(imageOf('object-store'), IMAGES.objectStore, 'compose object store digest must equal the gate\'s');
 });
 
-test('compose.yaml health-checks BOTH postgres and minio (gate can wait, not race)', () => {
+test('compose.yaml runs the object store as the gate does: one command, one API port, its health endpoint', () => {
   const compose = readFileSync(join(REPO_ROOT, 'compose.yaml'), 'utf8');
-  // Split into top-level service blocks and assert each of the two backends the
-  // integration gate depends on declares its own healthcheck.
-  const serviceBlock = (name: string): string => {
-    const start = compose.indexOf(`\n  ${name}:`);
-    assert.notEqual(start, -1, `compose declares a '${name}' service`);
-    const rest = compose.slice(start + 1);
-    const next = rest.search(/\n {2}\w[\w-]*:\n/);
-    return next === -1 ? rest : rest.slice(0, next);
-  };
-  for (const svc of ['postgres', 'minio']) {
+  const block = serviceBlock(compose, 'object-store');
+  const command = /^\s*command:\s*(\[.*\])\s*$/m.exec(block)?.[1];
+  assert.ok(command !== undefined, 'the object store service gives its command as a JSON-style list');
+  assert.deepEqual(JSON.parse(command), [...OBJECT_STORE_ARGS], 'compose runs the object store with the gate\'s arguments');
+  assert.match(block, new RegExp(`^\\s*- "127\\.0\\.0\\.1:\\$\\{[A-Z_]+\\}:${OBJECT_STORE_PORT}"\\s*$`, 'm'),
+    'compose publishes the API port the gate publishes');
+  assert.ok(block.includes(`http://127.0.0.1:${OBJECT_STORE_PORT}${OBJECT_STORE_HEALTH_PATH}`),
+    'compose health-checks the endpoint the gate polls');
+
+  const cli = readFileSync(join(REPO_ROOT, 'scripts/integration/run-integration.mjs'), 'utf8');
+  assert.match(cli, /image: IMAGES\.objectStore,/);
+  assert.match(cli, /ports: \[loopbackPublish\(MINIO_PORT, OBJECT_STORE_PORT\)\],/);
+  assert.match(cli, /args: \[\.\.\.OBJECT_STORE_ARGS\],/);
+  assert.match(cli, /fetch\(`\$\{s3Endpoint\}\$\{OBJECT_STORE_HEALTH_PATH\}`\)/);
+});
+
+test('compose.yaml health-checks BOTH postgres and the object store (gate can wait, not race)', () => {
+  const compose = readFileSync(join(REPO_ROOT, 'compose.yaml'), 'utf8');
+  // Each of the two backends the integration gate depends on declares its own
+  // healthcheck.
+  for (const svc of ['postgres', 'object-store']) {
     assert.match(
-      serviceBlock(svc),
+      serviceBlock(compose, svc),
       /healthcheck:/,
       `service '${svc}' must declare a healthcheck so readiness is waited on`,
     );
@@ -237,7 +251,7 @@ test('no gate source publishes a port except through the loopback-checked builde
 
   const cli = readFileSync(join(REPO_ROOT, 'scripts/integration/run-integration.mjs'), 'utf8');
   const portLists = [...cli.matchAll(/\bports:\s*\[([^\]]*)\]/g)].map((m) => m[1] as string);
-  assert.ok(portLists.length >= 2, 'the CLI publishes PostgreSQL and MinIO');
+  assert.ok(portLists.length >= 2, 'the CLI publishes PostgreSQL and the object store');
   for (const list of portLists) {
     for (const entry of list.split(/,(?![^(]*\))/).map((e) => e.trim()).filter(Boolean)) {
       assert.match(entry, /^loopbackPublish\(/, `the CLI must build '${entry}' with loopbackPublish()`);

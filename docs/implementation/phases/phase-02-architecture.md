@@ -30,7 +30,7 @@ flowchart TB
   end
   subgraph adapters[adapters behind ports]
     PG[(PostgreSQL)]
-    OBJ[(Object store: MinIO/S3)]
+    OBJ[(Object store: S3-compatible)]
     GIT[Git mirror + worktrees]
     SBX[Sandbox: rootless Docker]
     CLA[Claude coding provider]

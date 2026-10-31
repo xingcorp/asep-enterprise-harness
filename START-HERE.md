@@ -70,7 +70,7 @@ Oracle của repo: `pnpm verify` (format + typecheck + test). Cổng công khai:
 - Control-plane modular monolith.
 - Temporal cho durable orchestration.
 - PostgreSQL cho operational state/projections.
-- S3/MinIO cho immutable artifacts.
+- S3 hoặc server tương thích S3 cho immutable artifacts.
 - Git worktree cho isolation.
 - Claude Code hoặc Codex làm implementer; provider khác làm reviewer.
 - Rootless container trước; gVisor/microVM khi multi-tenant.

@@ -1,7 +1,7 @@
 // Object-store seam for artifact BYTES (metadata rows live in PostgreSQL via the
 // artifacts table). The whole artifact store composes against this minimal
 // interface so a filesystem backend (tests / no-Docker dev) and an
-// S3-compatible backend (MinIO/S3 parity) are drop-in — nothing above knows
+// S3-compatible backend (S3 parity) are drop-in — nothing above knows
 // which is live. Keys are content-addressed and tenant-namespaced by the
 // artifact store; this seam only stores/reads opaque bytes at an opaque key.
 //
@@ -103,12 +103,12 @@ export class FilesystemObjectStore implements ObjectStore {
   }
 }
 
-// S3-compatible object store (MinIO in the integration gate, S3 in prod parity),
-// disp. P2-REREVIEW-MED-NEW-001. The prior gate only HEALTH-CHECKED MinIO and
-// then ran every artifact test on the filesystem backend — so a broken S3
-// PUT/GET/create-only path could never turn the gate red. This adapter drives
-// the SAME ObjectStore contract against a real bucket so the artifact suite
-// exercises MinIO for real.
+// S3-compatible object store (the integration gate's S3-compatible server, S3
+// in prod parity), disp. P2-REREVIEW-MED-NEW-001. The prior gate only
+// HEALTH-CHECKED its object store and then ran every artifact test on the
+// filesystem backend — so a broken S3 PUT/GET/create-only path could never turn
+// the gate red. This adapter drives the SAME ObjectStore contract against a
+// real bucket so the artifact suite exercises the S3 path for real.
 //
 // Create-only (D7): a PutObject with `IfNoneMatch: '*'` fails with
 // PreconditionFailed / 412 when the key already exists, so a second write to an
@@ -155,7 +155,7 @@ export class S3ObjectStore implements ObjectStore {
       endpoint: cfg.endpoint,
       region: cfg.region,
       credentials: { accessKeyId: cfg.accessKeyId, secretAccessKey: cfg.secretAccessKey },
-      // MinIO requires path-style addressing (no virtual-hosted-style buckets).
+      // Self-hosted S3 servers address buckets by path, not by virtual host.
       forcePathStyle: true,
     });
   }
