@@ -68,8 +68,8 @@ requestDigest        64-hex
 inputs               { policy { version semver, sha256 64-hex },
                        repositoryIndex { snapshotId ULID, sha256 64-hex, indexerDigest 64-hex, indexerVersion semver,
                                          capabilities (as in 1.2) },
-                       skillRegistry { mode production|evaluation|none, sourceSha256 64-hex|null,
-                                       sequence ≥ 1 | null, trustRootSha256 64-hex|null } }
+                       skillRegistry { mode production|evaluation|none, registry (pattern of 1.4)|null,
+                                       sourceSha256 64-hex|null, sequence ≥ 1 | null, trustRootSha256 64-hex|null } }
 inputDigest          64-hex
 query                { tokens[] ^[a-z0-9]{3,64}$ }
 files[]              { path, rank ≥ 1, score ≥ 0,

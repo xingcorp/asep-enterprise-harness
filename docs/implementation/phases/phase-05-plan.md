@@ -10,7 +10,8 @@
 BASE_SHA:       f613c7fd86e49317bb439b57575518e2ff48c641  (accepted Phase 2 with its CI fixes, R51, R59)
 BRANCH:         phase/05-skill-context-platform
 OTHER LANES:    Phase 3 plan read at phase/03-durable-orchestration (S1 at 5cc8eaf); Phase 4 plan read at
-                phase/04-independent-assurance; Phase 6 plan not yet committed (read again before lock)
+                phase/04-independent-assurance; Phase 6 plan (DRAFT) read at phase/06-brownfield-hardening
+                @ bd9c9be (boundary in §18.1)
 IMPLEMENTATION: starts only after the plan locks and the controller says "implement" (R58 item 4)
 ```
 
@@ -134,11 +135,11 @@ provenance record and DB binding; deterministic skill router; offline evaluation
 |---|---|---|
 | Model routing evaluation | needs live outcomes per model (D5-9) | pilot runs exist (Phase 2 K5) |
 | Outcome-level skill evaluation (pass-rate and false-completion deltas), shadow and canary | needs live agent runs | pilot; the offline scorecard becomes the pre-filter |
-| tree-sitter / non-TypeScript AST and references | new dependency; the pilot and this repo are TypeScript | a non-TS pilot module (Phase 6 brownfield), behind the indexer's capability flags |
+| tree-sitter / non-TypeScript AST and references | new dependency; the pilot and this repo are TypeScript | a non-TypeScript brownfield repository whose readiness gap matters to the user, behind the indexer's capability flags. Phase 6 does not take it (its §23); it stays deferred past Day 90 |
 | Embedding or semantic retrieval | model calls, non-determinism; no evidence of need | the scorecard shows a recall gap lexical signals cannot close |
-| Git change-coupling signal | not in the 90-day scope | the scorecard shows a gap; it is then one measured change |
-| Coverage-based (dynamic) test map | runs repository tests | sandboxed indexing (Phase 6) |
-| Containerized indexing | the indexer only parses (no repository code runs); isolation is Phase 6 hardening | Phase 6 network/credential policies |
+| Git change-coupling signal for ranking | not in the 90-day scope | the scorecard shows a gap; it is then one measured change. Phase 6 computes change coupling from trusted `git log` for readiness only (its §23); a ranking signal would reuse that computation, not add a second one |
+| Coverage-based (dynamic) test map | runs repository tests | a sandboxed index run can reuse Phase 6's onboarding sandbox; Phase 6 does not take it (its §23) |
+| Containerized indexing | the indexer only parses (no repository code runs) | the indexer runs anything from the repository; Phase 6 does not take it and records the indexer as a host process with no network of its own (its §23) |
 | Skill scripts, references, assets | executable content (D5-4) | a permission review procedure |
 | Production run events for context and skills (`skill_routing_precision`) | needs a `run-event` bump; R5 freezes it during Phases 3–4 | a new reconciliation after Phase 4 merges |
 | Provenance rows for Phase 4's repair packs | Phase 4's slot is locked | integration follow-up (CR-P5-11) |
@@ -397,7 +398,7 @@ Nothing below is edited before "implement". Every change is additive.
 | CR-P5-09 | `scripts/forbidden-imports.test.ts` / `scripts/lib/ts-guard.mjs` (R8 framework) | rules, each with a seeded self-check: `typescript` and LSP spawn only in `adapters/repo-index`; no `fetch`/`node:http(s)`/`node:net` in `adapters/repo-index`, `adapters/skill-registry`; the evaluation registry factory not imported by `apps/**` or `workers/**` | append-only | S9 |
 | CR-P5-10 | `evals/package.json`, `evals/tsconfig.json` | deps `@asep/application`, `@asep/repo-index`, `@asep/skill-registry`, `@asep/policy`; script `eval:context`; include `context-corpus/**`, `context-eval/**`; union with Phase 4's SR-X8 | append-only | S7, S8 |
 | CR-P5-11 | Phase 4 (Lane B), `buildRepairContextPack` | compute `hash` with `contextPackHash` from `@asep/application`; carry the 1.1.0 skill fields over unchanged; a parity test that a repair pack's `hash` equals `contextPackHash` of its body. Optional later: a provenance row with `derivation: repair` | no schema change | Lane B S13 or integration |
-| CR-P5-12 | Phase 3 (Lane A), the submit use case and `storeAttemptInputs` | an optional `contextComposer?: ContextComposer` dependency. When bound: the use case calls `compose` with the task's binding, base SHA, stored work-order ref, tool policy and its logical time, puts the returned `contextPackRef` into `task-workflow-input`, and refuses a body-supplied `contextPack` with 400. `storeAttemptInputs` attaches that ref as is and never re-serializes the pack. When unbound: behaviour byte-identical to today. A `ContextCompositionError` with `retryable: false` maps to a non-retryable activity failure | additive; no schema change (`contextPackRef` already exists) | Lane A S9 or integration |
+| CR-P5-12 | Phase 3 (Lane A), the submit use case and `storeAttemptInputs` | an optional `contextComposer?: ContextComposer` dependency. When bound: the use case calls `compose` with the task's binding, base SHA, stored work-order ref, tool policy and its logical time, puts the returned `contextPackRef` into `task-workflow-input`, and refuses a body-supplied `contextPack` with 400. `storeAttemptInputs` attaches that ref as is and never re-serializes the pack. When unbound: behaviour byte-identical to today. A `ContextCompositionError` with `retryable: false` maps to a non-retryable activity failure. When Phase 6's `TaskSubmissionPolicy` is also bound, its `decide` runs first: a refused task composes no pack and writes no provenance row (Phase 6 CR-P5X1) | additive; no schema change (`contextPackRef` already exists) | Lane A S9 or integration |
 | CR-P5-13 | `.github/workflows/ci.yml`, `scripts/verify-all.sh` | **only if** S8 measures the gate above 180 s: a parallel `context-eval` job running the gate suite, and the suite moved out of `REQUIRED_SUITES` into that job's required list | conditional | S8 |
 
 No change to `apps/control-plane-api/src/production-root.ts` (R10: sibling `context-root.ts`), to
@@ -463,7 +464,32 @@ Field lists: `phase-05-data-model.md` §1.
 | G-NET | Approve one network fetch for S4: the five `SKILL.md` files and two `LICENSE` files at the commits and blob SHAs of the research register §2 (raw.githubusercontent.com). Either the controller fetches them into a path the lane reads, or it allows the lane exactly those seven URLs. The import tool refuses any byte whose git blob SHA differs. |
 | ADR | Assign an ADR number (R11 gives 0017 to Lane A and 0018+ to Lane B). Proposed: 0019, "Signed skill registry and context provenance". |
 | KEY | For `COMPLETE` only: an operator key ceremony (runbook) and one operator-signed registry index promoting at least one vendored skill. The lane never holds or uses the registry key (R54 item 5). |
-| PH6 | Phase 6 reads this plan for the brownfield boundary (non-TS indexing, sandboxed indexing, change coupling). Phase 6's plan is not committed yet; the lane re-reads it before lock. |
+| PH6 | Phase 6 reads this plan for the brownfield boundary. Read back at `bd9c9be` (Phase 6 DRAFT); the result is §18.1. The controller re-checks §18.1 when either plan locks. |
+
+### 18.1 Phase 6 boundary (read from `phase-06-plan.md` §19.7 and §23 at `bd9c9be`)
+
+- **Ownership.** Disjoint: Phase 6 builds no index and changes no context code; no path of its §22 overlaps §15
+  here. Migrations: 0300–0301 here, 0400–0499 there; no shared table.
+- **Phase 6 reads the index.** Its "test strength" readiness check reads the static test map through
+  `RepositoryIndexStore.find` and the `repository-index/v1` artifact (its G-P5IDX = S1, S5 and S6 here). The port of
+  architecture §8 and the `files[]`, `tests[]` and `capabilities.tests` fields of data model §1.2 are therefore a
+  cross-phase contract from S1 on; a change after S1 is a change request to Phase 6. A non-TypeScript module has no
+  map and Phase 6 scores it `not-evidenced`.
+- **Submit seam order.** Phase 6's `TaskSubmissionPolicy.decide` runs before `compose` (CR-P5-12 above). A binding
+  Phase 6 keeps `onboarding-incomplete` (for example after its secret scan finds a committed credential) refuses
+  submission, so no index or pack is built for it. This is the mitigation Phase 6 adds to T5-09.
+- **Shared append-only files.** Union at merge, no reordering (Phase 6 CR-P5X2): ports, `ContractName`,
+  `COMPATIBILITY.md`, suite registries, `migrations.ts`, root `tsconfig.json`, lockfile importers, package export
+  lines, forbidden-imports rules.
+- **Row security.** Phase 6's last migration (`0490`) forces row security on every table with `organization_id`,
+  which includes `repository_index_snapshots` and `context_provenance`. Phase 5's stores already filter by tenant
+  scope (data model §3), so they need no change; Phase 6's catalog itest covers both tables.
+- **Release pins and retention.** Phase 6's harness release manifest carries the context-policy hash and the skill
+  registry pin (registry, sequence, source and trust-root hashes) as optional fields; provenance records the same
+  facts (data model §1.3). Phase 6 assigns retention classes to the artifact kinds `repository-index`,
+  `context-pack` and `context-provenance`.
+- **Deferrals.** Phase 6 declines non-TypeScript indexing, the coverage test map and containerized indexing; §4
+  records them as deferred past Day 90 with Phase 6's pickup conditions.
 
 ---
 
@@ -515,6 +541,6 @@ MIGRATIONS: 0300_repository_index_snapshots, 0301_context_provenance
 NEW_CONTRACTS: repository-index/v1, context-provenance/v1, skill-registry-index/v1, skill-trust-root/v1;
   context-pack 1.1.0 (MINOR)
 NEW_DEPENDENCIES: none third-party (typescript 7.0.2 exact in adapters/repo-index, already in the store)
-REQUESTS: G-P3S1, G-NET, ADR number, KEY (for COMPLETE), PH6 alignment
+REQUESTS: G-P3S1, G-NET, ADR number, KEY (for COMPLETE); PH6 boundary read at bd9c9be (§18.1)
 DEFERRED_WITH_REASON: §4
 ```

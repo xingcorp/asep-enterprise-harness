@@ -283,7 +283,7 @@ is transient").
 | registry `sourceSha256` | sha256 of the DSSE payload bytes (the statement), or of the `quarantine.json` bytes |
 | `indexerDigest` | §4.3 |
 | `requestDigest` | §6.3 |
-| `inputDigest` | sha256 of canonical `[requestDigest, generatedAt, policySha256, indexSha256, indexerDigest, registry mode, registry sourceSha256, registry sequence, composerVersion]` |
+| `inputDigest` | sha256 of canonical `[requestDigest, generatedAt, policySha256, indexSha256, indexerDigest, registry mode, registry name, registry sourceSha256, registry sequence, composerVersion]` |
 
 ## 8. Port text (CR-P5-02, appended to `packages/ports/src/index.ts`)
 
@@ -361,6 +361,8 @@ export interface VerifiedSkillRelease {
 
 export interface VerifiedSkillRegistry {
   readonly mode: 'production' | 'evaluation' | 'none';
+  /** The statement's registry name (production); null for evaluation and none. */
+  readonly registry: string | null;
   /** sha256 hex of the signed statement (production) or of the quarantine record (evaluation); null for none. */
   readonly sourceSha256: string | null;
   readonly sequence: number | null;

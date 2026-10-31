@@ -11,7 +11,7 @@
 
 | Version | Commit | Review | Verdict |
 |---|---|---|---|
-| DRAFT v1 | (this commit) | `phase-05-plan-review-codex-v1.md` | pending |
+| DRAFT v1 | `6a4391a`, with the Phase 6 boundary (plan §18.1) in the following docs commit | `phase-05-plan-review-codex-v1.md` | pending |
 
 ## Summary
 
