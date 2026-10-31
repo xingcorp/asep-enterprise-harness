@@ -133,6 +133,24 @@ function nestedClient(tx: SqlExecutor): SqlClient {
 export class SqlAttemptTerminalStore implements AttemptTerminalStore {
   constructor(private readonly client: SqlClient) {}
 
+  /**
+   * The fence of the lease the attempt holds or held, from its durable lease history, or null when history shows
+   * none. A lease row is never deleted, so a grant that committed is always found; the newest epoch wins. Read
+   * only: it settles whether a failed or aborted acquisition left the attempt a lease.
+   */
+  async findLease(scope: TenantScope, attempt: AttemptRef): Promise<AttemptLeaseFence | null> {
+    if (!idsWellFormed(scope, attempt)) return null;
+    const r = await this.client.query(
+      `select id, fencing_epoch from workspace_leases
+        where attempt_id = $1 and organization_id = $2 and project_id = $3 and repository_binding_id = $4
+        order by fencing_epoch desc
+        limit 1`,
+      [attempt.attemptId, scope.organizationId, scope.projectId, attempt.repositoryBindingId],
+    );
+    const row = r.rows[0];
+    return row === undefined ? null : { leaseId: String(row['id']), fencingEpoch: Number(row['fencing_epoch']) };
+  }
+
   async checkLease(scope: TenantScope, attempt: AttemptRef, fence: AttemptLeaseFence): Promise<AttemptLeaseCheck> {
     if (!(await attemptInScope(this.client, scope, attempt, false))) return 'not-in-scope';
     return (await leaseHeld(this.client, scope, attempt, fence)) ? 'held' : 'fenced';

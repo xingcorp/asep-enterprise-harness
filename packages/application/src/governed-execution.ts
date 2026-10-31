@@ -95,6 +95,12 @@ export interface GovernedExecutionInput {
   readonly taskId?: string;
   readonly actor?: string;
   readonly now?: () => string;
+
+  // Risk admission, injectable. Absent → admitRisk, so admission is unchanged.
+  // A composition with independent assurance passes the review-loop
+  // slot's admitWithAssurance; whatever decides, a result that is not admitted
+  // stops the sequence before any side effect.
+  readonly admit?: (risk: RiskLevel) => AdmissionResult;
 }
 
 export interface GovernedExecutionResult {
@@ -167,7 +173,7 @@ export async function governedExecution(
   };
 
   // --- GATE: admission runs before ANY side effect --------------------------
-  const admission = admitRisk(input.risk);
+  const admission = (input.admit ?? admitRisk)(input.risk);
   if (!admission.admitted) {
     return {
       admission,

@@ -227,6 +227,11 @@ export const REQUIRED_SUITES = Object.freeze({
   // writes on it.
   'asep-suite:assurance-slot-contract': 'packages/application/src/orchestration-activities/assurance-slot.test.ts',
   'asep-suite:run-event-sink': 'adapters/persistence/src/run-events/run-event-sink.test.ts',
+  // The orchestration activities over the pipeline primitives: each converges when
+  // invoked twice, also after a failure between its writes; the lease and
+  // registration lookups; the fence and abort check before each external call;
+  // publication under a stale owner (publication.test.ts prints the same id).
+  'asep-suite:orchestration-activities': 'packages/application/src/orchestration-activities/activities.test.ts',
   // The orchestration policy loader refuses a never-replaceable class, a kill
   // grace other than the agent adapter's stop bound, and an attempt wall-clock
   // the egress proxy cannot outlive.

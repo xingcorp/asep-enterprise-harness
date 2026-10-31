@@ -554,15 +554,28 @@ export interface PullRequestFacts {
   readonly evidenceId: string;
   // The branch the PR targets.
   readonly base: string;
+  // The attempt's assurance round escalated: assurance is not satisfied, and
+  // the PR says so. Absent means false.
+  readonly flagged?: boolean;
+  // The round's PR-body section, as its content-addressed artifact holds it.
+  // Absent or null when the round had nothing to show or was unavailable. With
+  // no flag and no section the content is exactly what it was before
+  // assurance existed.
+  readonly assuranceSection?: string | null;
 }
+
+/** The line a flagged pull request carries, in its title and its body. */
+export const ASSURANCE_NOT_SATISFIED = 'assurance not satisfied';
 
 /**
  * The title and body of an attempt's pull request: a pure function of its
  * facts, with nothing that depends on which owner writes it or when.
  */
 export function pullRequestContent(facts: PullRequestFacts): { readonly title: string; readonly body: string } {
+  const flagged = facts.flagged === true;
+  const section = facts.assuranceSection ?? null;
   return {
-    title: `ASEP ${facts.taskId}: attempt ${facts.attemptId}`,
+    title: `ASEP ${facts.taskId}: attempt ${facts.attemptId}${flagged ? ` (${ASSURANCE_NOT_SATISFIED})` : ''}`,
     body: [
       'Automated ASEP attempt, waiting for human review.',
       '',
@@ -572,6 +585,8 @@ export function pullRequestContent(facts: PullRequestFacts): { readonly title: s
       `Evidence: ${facts.evidenceId}`,
       `Base: ${facts.base}`,
       '',
+      ...(flagged ? [`Independent ${ASSURANCE_NOT_SATISFIED}: a human decides whether this change is acceptable.`, ''] : []),
+      ...(section !== null ? [section, ''] : []),
     ].join('\n'),
   };
 }

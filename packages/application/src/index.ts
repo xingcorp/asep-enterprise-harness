@@ -94,6 +94,7 @@ export {
   reconcileBranchStep,
   reconcilePullRequestStep,
   pullRequestFactsOf,
+  type PullRequestAssurance,
   pullRequestGap,
   publicationGap,
   pullRequestFound,
@@ -136,9 +137,4 @@ export {
 export * from './review-loop/slot.js';
 export { createDisabledAssuranceSlot } from './review-loop/disabled-slot.js';
 export * from './review-loop/review-loop-contract.js';
-export {
-  NotConfiguredAssuranceSlot,
-  AssuranceUnavailableError,
-  attemptTerminalEvents,
-} from './orchestration-activities/not-configured-slot.js';
-export { recordPreLeaseOutcome, type PreLeaseOutcomeResult } from './orchestration-activities/pre-lease-outcome.js';
+export * from './orchestration-activities/index.js';

@@ -3,6 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   SPAN_NAMES,
+  ORCHESTRATION_SPAN_NAMES,
   isSpanName,
   SpanTracer,
   CapturingTelemetrySink,
@@ -144,4 +145,25 @@ test('every mandated span name is startable with a full context', () => {
     tracer.start(name, fullCtx).end('OK');
   }
   assert.equal(sink.events.length, SPAN_NAMES.length);
+});
+
+test('the orchestration activity span is declared apart from the pipeline set and needs only the run', () => {
+  assert.deepEqual([...ORCHESTRATION_SPAN_NAMES], ['orchestration.activity']);
+  assert.equal(isSpanName('orchestration.activity'), true);
+  assert.equal((SPAN_NAMES as readonly string[]).includes('orchestration.activity'), false);
+  const sink = new CapturingTelemetrySink();
+  const tracer = new SpanTracer(sink, fakeClock());
+  // A task-level activity has no attempt, and a run-level one no task.
+  const runOnly: CorrelationContext = { traceId: 't', tenantId: 'org-1', projectId: 'proj-1', runId: 'run-1' };
+  const span = tracer.start('orchestration.activity', runOnly);
+  span.setAttribute('asep.activity', 'recordControl');
+  span.end('OK');
+  assert.equal(sink.events[0]!.name, 'asep.span.orchestration.activity');
+  assert.equal(sink.events[0]!.attributes['asep.activity'], 'recordControl');
+  assert.throws(
+    () => tracer.start('orchestration.activity', { traceId: 't', tenantId: 'org-1', projectId: 'proj-1' }),
+    /missing required correlation ids: runId/,
+  );
+  // The pipeline spans keep their full requirement.
+  assert.throws(() => tracer.start('git.commit', runOnly), /taskId, attemptId/);
 });

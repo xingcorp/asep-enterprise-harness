@@ -128,6 +128,10 @@ export interface VerifyStepInput {
   // all. Injected (not built here) because this module is pure — see
   // ObserveBoundary. Absent → the loop runs exactly as before.
   readonly observe?: ObserveBoundary;
+  // Cancels the verification: each command is run with it, so an abort kills
+  // the running command's process group. Absent → each command runs exactly as
+  // before. A caller that aborts must not take the verdict of a cancelled run.
+  readonly signal?: AbortSignal;
 }
 
 // Isolation is mandatory, but the started sandbox does not enforce it. Thrown
@@ -210,7 +214,9 @@ export async function verifyStep(input: VerifyStepInput): Promise<VerifyStepResu
           action: 'command.execute',
           detail: { checkId: check.id, level: check.level, command: commandText(check.command) },
         },
-        () => input.runner.run(check.command, handle),
+        () => (input.signal !== undefined
+          ? input.runner.run(check.command, handle, { signal: input.signal })
+          : input.runner.run(check.command, handle)),
       );
       // Map the raw command outcome to a verdict, failing closed on any
       // non-zero exit, timeout, or evidence-truncation.
@@ -847,16 +853,28 @@ export interface UpsertPrStepInput {
   readonly commitSha: string;
   readonly evidenceId: string;
   readonly leaseId: string;
+  // The attempt's assurance facts, when an assurance round ran: part of the
+  // PR's content like every other fact. Absent: no assurance round.
+  readonly assurance?: PullRequestAssurance;
+}
+
+/** What an attempt's assurance round adds to its pull request. */
+export interface PullRequestAssurance {
+  readonly flagged: boolean;
+  readonly section: string | null;
 }
 
 /** The facts an attempt's pull request presents. */
 export function pullRequestFactsOf(input: {
   readonly taskId: TaskId; readonly attemptId: AttemptId; readonly commitSha: string;
-  readonly evidenceId: string; readonly base: string;
+  readonly evidenceId: string; readonly base: string; readonly assurance?: PullRequestAssurance;
 }): PullRequestFacts {
   return {
     taskId: input.taskId, attemptId: input.attemptId, commitSha: input.commitSha,
     evidenceId: input.evidenceId, base: input.base,
+    ...(input.assurance !== undefined
+      ? { flagged: input.assurance.flagged, assuranceSection: input.assurance.section }
+      : {}),
   };
 }
 

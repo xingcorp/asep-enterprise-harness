@@ -3,7 +3,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   PRIVILEGED_ACTIONS,
+  ORCHESTRATION_AUDIT_ACTIONS,
   isPrivilegedAction,
+  isOrchestrationAuditAction,
   auditEvent,
 } from './audit.js';
 import type { CorrelationContext } from './index.js';
@@ -106,5 +108,31 @@ test('J4: an audit event with a blank actor fails closed', () => {
         occurredAt: '2026-07-14T00:00:00.000Z',
       }),
     /missing required fields: actor/,
+  );
+});
+
+test('the orchestration actions are a closed set of their own, each needing only the run', () => {
+  assert.deepEqual([...ORCHESTRATION_AUDIT_ACTIONS].sort(), [
+    'approval.expire', 'approval.request', 'approval.unverified', 'assurance-unavailable', 'attempt.state-unknown',
+    'budget.extend', 'budget.overrun', 'budget.threshold', 'publication.content-repaired', 'publication.incomplete',
+    'publication.repository-renamed', 'review-slot.contract-violation', 'side-effect.takeover', 'workflow.cancel',
+    'workflow.cancel.after-publication', 'workflow.pause', 'workflow.pause-timeout', 'workflow.resume', 'workflow.seal',
+    'workspace.quarantine',
+  ]);
+  for (const action of ORCHESTRATION_AUDIT_ACTIONS) {
+    assert.equal(isOrchestrationAuditAction(action), true, action);
+    assert.equal(isPrivilegedAction(action), false, `${action} is not a pipeline boundary`);
+  }
+  // A run's seal has no task, and a task-level control no attempt.
+  const runOnly: CorrelationContext = { traceId: 't', tenantId: 'org-1', projectId: 'proj-1', runId: 'run-1' };
+  const ev = auditEvent({ actor: 'principal-1', action: 'workflow.seal', context: runOnly, occurredAt: '2026-10-31T00:00:00.000Z' });
+  assert.equal(ev.action, 'workflow.seal');
+  assert.throws(
+    () => auditEvent({ actor: 'principal-1', action: 'workflow.seal', context: { traceId: 't', tenantId: 'org-1', projectId: 'proj-1' }, occurredAt: 'x' }),
+    /missing required fields: runId/,
+  );
+  assert.throws(
+    () => auditEvent({ actor: 'h', action: 'workflow.start' as never, context: runOnly, occurredAt: 'x' }),
+    /unknown privileged action "workflow.start"/,
   );
 });

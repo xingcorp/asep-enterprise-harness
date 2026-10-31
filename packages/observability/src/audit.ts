@@ -53,6 +53,51 @@ export function isPrivilegedAction(value: string): value is PrivilegedAction {
   return PRIVILEGED_ACTION_SET.has(value);
 }
 
+// The audited actions of durable orchestration, each written by the workflow
+// activity that performs or detects it:
+//   - an accepted control (pause, resume, cancel, a run's seal), by recordControl;
+//   - an approval request opened or expired, by the approval activities;
+//   - a budget extension granted, by recordUsage; a soft threshold crossed and a
+//     usage overrun, detected by the workflow and written by recordAudit;
+//   - a side-effect record taken over from a dead owner, by the commit and
+//     publication activities;
+//   - a quarantined workspace, by quarantineWorkspace;
+//   - the rest are detected by the workflow and written by recordAudit.
+// An orchestration action may sit above an attempt, or above a task (a run's
+// seal), so it requires the tenant, project and run only.
+export const ORCHESTRATION_AUDIT_ACTIONS = [
+  'workflow.pause',
+  'workflow.resume',
+  'workflow.cancel',
+  'workflow.seal',
+  'approval.request',
+  'approval.expire',
+  'budget.threshold',
+  'budget.extend',
+  'budget.overrun',
+  'side-effect.takeover',
+  'workspace.quarantine',
+  'review-slot.contract-violation',
+  'assurance-unavailable',
+  'approval.unverified',
+  'workflow.pause-timeout',
+  'workflow.cancel.after-publication',
+  'publication.incomplete',
+  'publication.content-repaired',
+  'publication.repository-renamed',
+  'attempt.state-unknown',
+] as const;
+
+export type OrchestrationAuditAction = (typeof ORCHESTRATION_AUDIT_ACTIONS)[number];
+
+const ORCHESTRATION_ACTION_SET: ReadonlySet<string> = new Set(ORCHESTRATION_AUDIT_ACTIONS);
+
+export function isOrchestrationAuditAction(value: string): value is OrchestrationAuditAction {
+  return ORCHESTRATION_ACTION_SET.has(value);
+}
+
+export type AuditAction = PrivilegedAction | OrchestrationAuditAction;
+
 // A privileged-operation audit event. `context` carries the full correlation
 // identity (org/project + run/task/attempt) so the persisted row resolves to
 // exactly one point in the hierarchy (exit J2/J4). `detail` is an optional
@@ -60,7 +105,7 @@ export function isPrivilegedAction(value: string): value is PrivilegedAction {
 // raw source/prompt/tool output (exit J3: that is off by default).
 export interface AuditEvent {
   readonly actor: string;
-  readonly action: PrivilegedAction;
+  readonly action: AuditAction;
   readonly context: CorrelationContext;
   readonly occurredAt: string;
   readonly detail?: Readonly<Record<string, unknown>>;
@@ -78,12 +123,13 @@ export interface AuditSink {
 // action outside the closed set or without full tenant/hierarchy attribution.
 export function auditEvent(input: {
   actor: string;
-  action: PrivilegedAction;
+  action: AuditAction;
   context: CorrelationContext;
   occurredAt: string;
   detail?: Readonly<Record<string, unknown>>;
 }): AuditEvent {
-  if (!isPrivilegedAction(input.action)) {
+  const orchestration = isOrchestrationAuditAction(input.action);
+  if (!isPrivilegedAction(input.action) && !orchestration) {
     throw new Error(`unknown privileged action "${input.action}" (not in the closed J4 set)`);
   }
   const missing: string[] = [];
@@ -91,8 +137,8 @@ export function auditEvent(input: {
   if (!input.context.tenantId) missing.push('tenantId');
   if (!input.context.projectId) missing.push('projectId');
   if (!input.context.runId) missing.push('runId');
-  if (!input.context.taskId) missing.push('taskId');
-  if (!input.context.attemptId) missing.push('attemptId');
+  if (!orchestration && !input.context.taskId) missing.push('taskId');
+  if (!orchestration && !input.context.attemptId) missing.push('attemptId');
   if (missing.length > 0) {
     throw new Error(
       `audit event for "${input.action}" is missing required fields: ${missing.join(', ')} ` +

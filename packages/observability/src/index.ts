@@ -62,10 +62,13 @@ export {
 // by tests and a Temporal-shaped in-memory exporter.
 export {
   SPAN_NAMES,
+  ORCHESTRATION_SPAN_NAMES,
   isSpanName,
   SpanTracer,
   CapturingTelemetrySink,
   type SpanName,
+  type PipelineSpanName,
+  type OrchestrationSpanName,
   type SpanStatus,
   type SpanRecord,
   type SpanHandle,
@@ -78,9 +81,13 @@ export {
 // + the closed set of auditable privileged actions.
 export {
   PRIVILEGED_ACTIONS,
+  ORCHESTRATION_AUDIT_ACTIONS,
   isPrivilegedAction,
+  isOrchestrationAuditAction,
   auditEvent,
   type PrivilegedAction,
+  type OrchestrationAuditAction,
+  type AuditAction,
   type AuditEvent,
   type AuditSink,
 } from './audit.js';

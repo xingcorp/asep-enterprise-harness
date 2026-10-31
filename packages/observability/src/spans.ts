@@ -32,9 +32,23 @@ export const SPAN_NAMES = [
   'forge.pull_request',
 ] as const;
 
-export type SpanName = (typeof SPAN_NAMES)[number];
+export type PipelineSpanName = (typeof SPAN_NAMES)[number];
 
-const SPAN_NAME_SET: ReadonlySet<string> = new Set(SPAN_NAMES);
+// Durable orchestration's spans. `orchestration.activity` wraps one delivery of
+// one workflow activity (attribute `asep.activity` names it) and carries the
+// workflow id, the engine's delivery count and the caller's lease fence.
+// Unlike the pipeline spans, an orchestration span may sit above an attempt (a
+// task-level activity has none), so it requires the tenant, project and run.
+export const ORCHESTRATION_SPAN_NAMES = [
+  'orchestration.activity',
+] as const;
+
+export type OrchestrationSpanName = (typeof ORCHESTRATION_SPAN_NAMES)[number];
+
+export type SpanName = PipelineSpanName | OrchestrationSpanName;
+
+const PIPELINE_SPAN_SET: ReadonlySet<string> = new Set(SPAN_NAMES);
+const SPAN_NAME_SET: ReadonlySet<string> = new Set([...SPAN_NAMES, ...ORCHESTRATION_SPAN_NAMES]);
 
 export function isSpanName(value: string): value is SpanName {
   return SPAN_NAME_SET.has(value);
@@ -68,14 +82,16 @@ export type Clock = () => number;
 // are always required; the run/task/attempt ids are required once a span is
 // scoped to that level of the hierarchy. task.execute and everything downstream
 // operate on a specific task+attempt, so we require runId/taskId/attemptId for
-// all pipeline spans and fail closed if any is missing.
+// all pipeline spans and fail closed if any is missing. An orchestration span
+// requires the run; it carries the task and attempt when it has them.
 function assertCorrelated(name: SpanName, ctx: CorrelationContext): void {
+  const pipeline = PIPELINE_SPAN_SET.has(name);
   const missing: string[] = [];
   if (!ctx.tenantId) missing.push('tenantId');
   if (!ctx.projectId) missing.push('projectId');
   if (!ctx.runId) missing.push('runId');
-  if (!ctx.taskId) missing.push('taskId');
-  if (!ctx.attemptId) missing.push('attemptId');
+  if (pipeline && !ctx.taskId) missing.push('taskId');
+  if (pipeline && !ctx.attemptId) missing.push('attemptId');
   if (missing.length > 0) {
     throw new Error(
       `span "${name}" is missing required correlation ids: ${missing.join(', ')} ` +
