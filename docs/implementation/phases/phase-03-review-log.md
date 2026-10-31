@@ -2284,3 +2284,149 @@ attempt-terminal store port; migration `0107_run_events`, which the Phase 2 set 
 
 **Gates.** The gate lines of this commit are reported to the controller with it and recorded here in the next docs
 commit.
+
+**Gates, recorded after the commit.** Lane A's gate runs on `b549aeb`, from `gate.sh`'s node-launch sampler logs of
+the two runs (started 11:27 and 11:35): `verify:all` samples=216
+max_node_launch_ms=4589 stalls_ge_10s=0; `test:integration` samples=45 max_node_launch_ms=849 stalls_ge_10s=0. Their
+exit status and counts went to the controller in the S0 status report; the controller's own runs on a detached
+worktree are in R55 (`verify:all` twice, exit 0; `test:integration` twice, 40 of 40).
+
+## S0 follow-ups and S1 — contracts and ports
+
+> Lane A record of the two S0 follow-ups the controller assigned with R55 and of S1
+> (`feat(contracts): add durable-orchestration message contracts and ports`). No review finding is adjudicated here.
+
+### Follow-up: the parser refuses a shadow key outside PROCEED (`18b37e7`)
+
+The slot contract gives only `PROCEED` a `shadow` field. `parseAssuranceOutcome` refused a malformed shadow on
+`PROCEED` but accepted `ESCALATE`, `REPAIR` and `BLOCK` carrying the key. It now refuses any outcome other than
+`PROCEED` whose object has a `shadow` key at all, `null` included (`packages/orchestration/src/assurance.ts:104-105`).
+The verbatim slot block is untouched (`asep-suite:assurance-slot-contract` still pins its sha256).
+
+- Tests (`decide.test.ts`): six rows in the "outside the contract" table, `shadow: null` and a shadow verdict on each
+  of `ESCALATE`, `REPAIR` and `BLOCK` (the `BLOCK` one in shadow mode); the table now reports every row it accepted, by
+  label. One routing row drives the core with a `BLOCK` carrying `shadow: null` and expects the contract-violation path.
+- Test first: before the fix, 2 of 398 tests failed, and the table listed all six labels as accepted. After it,
+  `decide`, `invariants` and `purity` pass 488 of 488 and `tsc -b` exits 0.
+- Gate: the first `verify:all` exited 0 with 1447 tests passing, but recorded one Node launch of 16827 ms
+  (`samples=245 max_node_launch_ms=16827 stalls_ge_10s=1`), so it does not count. The rerun: exit 0, `canonical-tests:
+  PASS (65 test file(s), 41 required suite(s) verified)`, tests 1447, pass 1447, fail 0, skipped 0,
+  `samples=220 max_node_launch_ms=4887 stalls_ge_10s=0`.
+
+### Follow-up: an independent oracle for the terminal-to-event mapping (`d51e0b6`)
+
+The default slot's table (`not-configured-slot.ts:72-82`) was pinned only for `proceeded`. A new case in
+`assurance-slot.test.ts` records one attempt per terminal, plus verification `ERROR`, on one PGlite database through
+the real attempt-terminal store, and compares both stored payloads with expectations written from what each terminal
+means, not from the table: a review handoff (`proceeded`, `escalated`) `succeeded` and is never `accepted`; a repair
+request is `rejected`; a block is `blocked`; a verification stop carries the verdict's word (`fail`, `error`); an
+agent, infrastructure or budget end is `failed`; a cancellation stays `cancelled` (R33). `passedRequiredAssurance`
+follows the data model's not-required rule: verification passed and no round blocked the attempt. A compile-time
+`Record<AttemptTerminal, true>` keeps the case list covering every terminal of the contract.
+
+The test was written after the code it checks (S0's). The evidence that it bites is mutation: each mutant applied alone
+to `not-configured-slot.ts`, the suite run with and without the new case, the file restored byte for byte.
+
+| Mutant | Suite without the new case (26 tests) | With it (27 tests) |
+|---|---|---|
+| `'cancelled': 'succeeded'` (`:81`) | 26 pass | 1 fails: the new case |
+| verification `ERROR` no longer stored as `error` (`:143`) | 26 pass | 1 fails: the new case |
+| a blocked attempt no longer fails `passedRequiredAssurance` (`:137`) | 26 pass | 1 fails: the new case |
+
+Gate: exit 0, `canonical-tests: PASS (65 test file(s), 41 required suite(s) verified)`, tests 1448, pass 1448, fail 0,
+skipped 0, `samples=223 max_node_launch_ms=4732 stalls_ge_10s=0`.
+
+### S1 (`5cc8eaf`)
+
+| Exit | Proof |
+|---|---|
+| A1 | `verify:all` on `5cc8eaf`: every stage passes except the publication gate's history scan, which fails on a commit outside this branch (Gates, below) |
+| A3 | `compat-gate.test.ts`: the live schemas against snapshot v1, at least 16 checked (`compat-gate: PASS (16 schema(s) compatible with snapshot v1)`); `workflow-contracts.test.ts`: the three new contracts at `1.0.0` with a v1 `$id` and a snapshot equal to the schema. `run-event` stays 1.2.0, MINOR against its snapshot. `COMPATIBILITY.md` says 16 |
+| D1 (types) | `tsc -b` exits 0 over the repository with the CR-04, CR-07, CR-08, CR-09, CR-24 and CR-26 ports (CR-10 is S0's block) |
+| L5 | `metrics.test.ts`: the referential-integrity validator passes with `duplicate_side_effect_incidents`, and a test pins its formula and operand (`count(incident.opened where failureClass=duplicate-side-effect)`, no denominator) |
+| domain table | `operational.test.ts`: the edges between the earlier statuses are unchanged; the edges touching `PAUSED`, `WAITING_FOR_APPROVAL` and `BUDGET_EXHAUSTED` are exactly data model §4.1's, `VERIFYING → BUDGET_EXHAUSTED` and the approval-wait pause edges included; `BUDGET_EXHAUSTED` is terminal. The no-accepted-state invariant test is byte-identical and now walks the new statuses too. `decide.test.ts`: the core's projection table equals the domain table over every status |
+
+What landed:
+
+- **Contracts.** `task-workflow-input`, `run-workflow-input` and `workflow-control`, each at `1.0.0` with
+  `https://asep.dev/schema/<name>/v1`, valid and invalid fixtures, a v1 snapshot and generated types (`TaskWorkflowInput`,
+  `RunWorkflowInput`, `WorkflowControlMessage`). The field lists are data model §4.2's, with `fixedTasks`, the `seal`
+  control, `approval-decision.extensionUsd` and `policy.agentKillGraceSeconds`. Every string field has a pattern, an
+  enum or a format; a test walks the three schemas for any that has none, and shows on a seeded variant that it finds
+  one. The base-branch and repository patterns mirror the core's input rules: a core test runs Git's committed
+  branch-name table and every refused base branch and repository of the core's tables against the schema.
+- **Contract tooling.** `workflow-control`'s root is a `oneOf`, which the type generator, the compatibility classifier
+  and the `x-tsType` parity walk did not read. The generator renders a `oneOf` as a union (a root `oneOf` as a type
+  alias) and `null` as `null`. The classifier compares `oneOf`/`anyOf` variants by position (a changed variant count is
+  breaking), classifies `uniqueItems`, and treats a change to any keyword it does not read (`allOf`, `if`, `const`, ...)
+  as breaking; without this a breaking change inside a variant classified as no change. The parity walk enters union
+  variants. Each rule has a test in `compat.test.ts` or `base-parity.test.ts`.
+- **Task statuses.** `TaskStatus` gains the three statuses (`packages/contracts/src/base.ts`), and the domain table
+  their edges (`packages/domain/src/operational.ts`).
+- **Ports** (`packages/ports/src/index.ts`): `WorkflowEngine` replaced by CR-09's engine seam over the workflow
+  contracts, with `ApprovalKind`, `TaskWorkflowPhase`, the receipts and `TaskWorkflowView`; `ActivityProgress` and
+  `ActivityExecutionContext` (CR-04); `WorkspaceRecord`, `WorkspaceRegistry`, `WorkspaceUnavailableError` and the
+  `attemptId` of `WorkspaceManager.create` (CR-07); `ExecutionReaper` (CR-08); `CommandRunOptions` and the optional
+  per-call options of `CommandRunner.run` (CR-26); `VerificationCommandCatalog` and `UnknownVerificationCommandError`
+  (CR-24). `governedExecution` passes the attempt id to `create`.
+- **Principal types (CR-17):** `TenantPrincipal`, `TenantPrincipalClass` and the five orchestration capabilities in
+  `apps/control-plane-api/src/auth.ts`.
+- **Metric (CR-19):** `duplicate_side_effect_incidents`, SLO target 0.
+- **ADR 0017**, "Durable orchestration topology: pure workflow core, retry-safe activities, lease-bound fencing".
+
+**Test first.** The fixtures and every new or changed test were written first and run red against the unchanged
+production code: contracts 18 of 90 failing (fixtures of unknown contracts, the workflow-contract tests, the schema
+count, the variant and keyword classification, the parity walk), domain 2 of 13, the four selected core tests 3 of 4
+(the two schema-mirror tests and the projection test), observability 1 of 27. After the production change the same
+sets pass: contracts 90 of 90 (97 of 97 over all contract tests), domain 13 of 13, the selected core tests 4 of 4 (the
+core suite 490 of 490), observability 27 of 27, and `tsc -b` exits 0. The ports, the principal
+types and the ADR have no failing-first test: the check for them is that the repository compiles (D1), and the
+generator's union output is held by the drift guard and by the `@ts-expect-error` lines in `workflow-contracts.test.ts`,
+which fail the typecheck if a seal could target a task or `cancel` were a message.
+
+**Decisions and deviations for the controller.**
+
+- **`GitCommitter` is unchanged.** At `d6ee686` `commit` already refuses unless the workspace HEAD is `baseSha` and
+  moves HEAD with a compare-and-swap from it; `reconcile` needs no workspace. CR-07 is amended to say so.
+- **Port before adapter.** `WorkspaceManager.create` takes the attempt id, but the Git adapter ignores it until S4
+  (create-or-adopt, rehydration); no runner honours the per-call signal until S4; `ExecutionReaper`, `WorkspaceRegistry`
+  and `VerificationCommandCatalog` have no implementation before S4 and S6. This is the plan's "S1 types, S4
+  implementation" split.
+- **Added beyond the CR text:** `UnknownVerificationCommandError` (CR-24 amended), and a closed `reason` on
+  `WorkspaceUnavailableError` (`other-host`, `missing`, `quarantined`).
+- **Schema choices.** `fixedTasks` is a `oneOf` of a unique-item array and `null`, with no minimum length (the data
+  model allows an empty list). The attempt cap's cost and wall-clock are above 0. `replaceableFailureClasses` may name
+  any of the 17 classes; refusing a never-replaceable one stays the loader's and the mapping's (data model §4.2). The
+  work-order and context-pack references carry fixed kinds. `run-workflow-input` carries `repositoryBindingId`, because
+  a run belongs to one binding. That `extensionUsd` is non-null exactly for a budget-extension approve is the mapping's
+  check: the message does not carry the approval's kind, so the schema accepts a reject with an amount.
+- **The count.** `COMPATIBILITY.md` said 12 contracts and the gate test asserted at least 12 while 13 schemas existed
+  (`validate.ts` said 13). Both now say 16: the 13 plus Lane A's three.
+- **Statuses before their constraint.** The new statuses are in the type and the domain table; the `tasks.status`
+  CHECK learns them in `0100` (S3), and no code writes them before then.
+- **Principal resolution** (`PrincipalResolver.principalForToken`) lands with its implementations in S9; S1 has the
+  types only.
+- **CR-19's check of the source events.** `attempt.declared_complete` is emitted since S0 (the default slot,
+  `not-configured-slot.ts:131-138`). `workflow.recovered` and `human.intervention` are in `run-event` 1.2.0 but have no
+  producer before S6 and S7, so `workflow_recovery_rate` and `human_intervention_rate` have no data yet.
+- **Scope of S1: CR-18 and CR-28 not landed.** Their own text (and §1.4 P2-10 for CR-28) names S1, but the S1 row in
+  §26, which this step follows, does not list them. Landing them with their consumers avoids two defects: a span or
+  audit action declared with no emitter is the "declared but never emitted" defect the repository already fixed once
+  (`packages/application/src/pipeline-steps.test.ts:1731-1744`), and `listPullRequests` added to `ForgeProvider` must
+  be implemented by every forge adapter and double to compile, which is S5's work. Proposed: CR-18 with its emitters
+  (S6, S7); CR-28 item 1 with its consumer (S6); item 2 in S5. The controller decides.
+
+**Counts.** `pnpm test` at `5cc8eaf`: tests 1468, pass 1468, fail 0, skipped 0; 66 files, 41 required suites (1448, 65
+and 41 at `d51e0b6`; +1 file, `workflow-contracts.test.ts`).
+
+**Gates.** `verify:all` on `5cc8eaf` exited 1, `samples=250 max_node_launch_ms=3949 stalls_ge_10s=0`. Every stage up to
+the publication gate passed (typecheck, canonical tests, contracts, policy, compat, forbidden imports, project
+references, the three scans), and in the publication gate the license, path, dependency-license, secret, large-file and
+PII checks passed. The history scan failed on one line:
+`9fbde9da…:scripts/secret-patterns.test.ts:46`, a negative control that writes a task workflow id (`asep-task-`
+followed by a ULID, which this branch's pattern reads as an `sk-` key). That commit is not in this
+branch: it is the head of `phase/02-single-agent-vertical-slice` (`fix(secret-scan): an sk- key must stand on its own`,
+committed at 14:20 while this gate ran), and the scan reads `git rev-list --all` of the shared repository with this
+branch's pattern, which that fix replaces. The same scan over this branch's own history (`git rev-list HEAD`) finds
+nothing. The clean-tree stage did not run; `git status --porcelain` was empty after the gate. Until this branch moves
+onto that fix, every `verify:all` here fails the same way.
