@@ -2204,4 +2204,15 @@ golden values are binary fractions and do not move.
   are `apps/control-plane-api/src/crash-recovery.test.ts` cases whose sandbox start died at its 30 s bound
   (`docker sandbox unavailable: docker CLI or daemon not reachable: version --format … signal SIGKILL after 30005ms`);
   neither touches code this lane changed.
-- S18: `pnpm test:integration` and `pnpm verify:all` at the head after this section; results are in the lane report.
+- S18 at `1a712a4`, `gate.sh phase-04-b2 pnpm test:integration`: exit 0, tests 42, pass 42, 9 required suites
+  verified, Grafana started by digest and healthy, the dashboards itest and the Grafana-missing case passed, containers
+  torn down; `samples=50 max_node_launch_ms=710 stalls_ge_10s=0`.
+- S18 at `1a712a4`, `gate.sh phase-04-b2 pnpm verify:all`: exit 1, tests 1617, pass 1615, fail 2,
+  `samples=223 max_node_launch_ms=44166 stalls_ge_10s=1`. One failure is real and this lane's: the repository's
+  fitness test "tests time their waits on the monotonic clock, never on the wall clock"
+  (`scripts/lib/process-registry.test.ts`) found two `Date.now()` lines in the dashboard itest's wait for a
+  provisioned dashboard. `a9185e7` introduced them, so it and every commit after it up to `1a712a4` are red on that
+  test. `486bde4` moves the wait to `performance.now()`; the fitness test passes after it. The other failure is a
+  `crash-recovery.test.ts` case with the same 30 s `docker version` kill as the S17 run, in code this lane did not
+  change.
+- Re-run at the head after this entry: results in the lane report.
