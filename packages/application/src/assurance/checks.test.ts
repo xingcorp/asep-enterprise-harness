@@ -17,7 +17,7 @@ import { parseUnifiedDiff } from './diff.js';
 import { canonicalBytes, sha256Hex } from './canonical-json.js';
 import { CheckReportError, buildCheckReport, checkReportSummary, parseCheckReport, reviewerClearance } from './check-report.js';
 import { CHECK_RULES, findingFingerprint, type CheckFinding } from './findings.js';
-import { SECRET_PATTERNS, findSecrets } from './secret-patterns.js';
+import { SECRET_PATTERNS, findSecrets, javascriptPattern } from './secret-patterns.js';
 import type { ArchitectureInvariantRecord } from './local-types.js';
 import {
   SARIF_MESSAGE_ID_LOG,
@@ -114,6 +114,53 @@ test('secret patterns match the repository scanner', () => {
     assert.ok(findSecrets(`prefix ${sample} suffix`).some((hit) => hit.patternIndex === i), `scanner misses pattern ${i}`);
     assert.deepEqual(findSecrets(`prefix ${NEAR_MISSES[i]!} suffix`), [], `near miss ${i} must not match`);
   });
+});
+
+test('an sk- key counts only where it stands on its own, and a workflow id is never one', () => {
+  // Assembled at run time, so this file holds nothing a scanner would flag. The Anthropic-style body is base64url
+  // and carries an underscore and a dash early, as real ones can.
+  const openAi = 'sk-' + 'Ab3'.repeat(16);
+  const anthropic = 'sk-' + 'ant-api03-' + 'x7_Q2-' + 'Zz9'.repeat(10);
+  // `asep-task-` and a ULID: the tail of "task-" is "sk-", followed by 26 letters and digits.
+  const workflowIds = ['asep-task-' + '01JC8Z3K5V7N9QWRT2XYZ4ABCD', 'asep-task-' + '0123456789ABCDEFGHJKMNPQRS'];
+
+  const negatives = [
+    ...workflowIds.map((id) => `workflowId: ${id}\n`),
+    ...workflowIds.map((id) => `{"workflowId": "${id}"}\n`),
+    ...workflowIds.map((id) => `WORKFLOW_ID=${id}-attempt-1\n`),
+    // In JSON text, an escaped line break before the id leaves "task-" in front of the key-shaped tail.
+    ...workflowIds.map((id) => JSON.stringify({ log: `started\n${id}` })),
+    // Inside a longer word the Anthropic form is no key either.
+    'slug: whisk-' + 'ant-' + 'Ab3'.repeat(8) + '\n',
+  ];
+  for (const text of negatives) assert.deepEqual(findSecrets(text), [], text);
+
+  // Where a key stands on its own, as the repository scanner reads a line; and in JSON text, after an escaped line
+  // break or tab, once or twice escaped, since the packet and the reviewer request carry text as JSON strings.
+  const contexts: readonly (readonly [string, (k: string) => string])[] = [
+    ['the start of a line', (k) => `${k}\n`],
+    ['the start of a later line', (k) => `first\n${k}\n`],
+    ['after =', (k) => `OPENAI_API_KEY=${k}\n`],
+    ['after a double quote', (k) => `{"apiKey": "${k}"}\n`],
+    ['after a single quote', (k) => `const key = '${k}';\n`],
+    ['after a space', (k) => `the key is ${k}\n`],
+    ['after a tab', (k) => `key:\t${k}\n`],
+    ['after an escaped line break', (k) => JSON.stringify({ out: `ok\n${k}` })],
+    ['after an escaped tab', (k) => JSON.stringify({ out: `ok\t${k}` })],
+    ['after an escaped control character', (k) => JSON.stringify({ out: `ok\u0001${k}` })],
+    ['after a twice-escaped line break', (k) => JSON.stringify({ input: JSON.stringify({ out: `ok\n${k}` }) })],
+  ];
+  for (const [label, key] of [['OpenAI-style secret key', openAi], ['Anthropic-style key', anthropic]] as const) {
+    for (const [where, place] of contexts) {
+      const text = place(key);
+      const hits = findSecrets(text);
+      assert.ok(hits.some((h) => h.label === label), `${label} ${where}`);
+      // The offset is where the key starts, never the character before it.
+      for (const h of hits) assert.ok(text.startsWith('sk-', h.offset), `${label} ${where}: offset ${h.offset}`);
+    }
+  }
+  // A boundary anywhere but at the start of a pattern has no JavaScript form here.
+  assert.throws(() => javascriptPattern('x(^|[^a])y'), /unsupported boundary/);
 });
 
 test('each diff check catches its seeded violation', () => {

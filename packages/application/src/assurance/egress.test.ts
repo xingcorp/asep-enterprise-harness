@@ -331,3 +331,23 @@ test('classification and opt-in come from the review policy', () => {
   assert.equal(rescanRequestBytes(utf8(`{"input":"${AWS_KEY}"}`)), 'STOP_SECRET');
   assert.equal(rescanRequestBytes(new Uint8Array([0x7b, 0xff, 0x7d])), 'STOP_UNSCANNABLE');
 });
+
+test('a key at the start of a line still stops egress when the line is inside JSON text', () => {
+  const policy = optedIn();
+  const decide = (world: FixtureWorld) => decideEgress(policy, buildReviewPacket(world.sources, world.limits), world.contents);
+  // Assembled at run time, so this file holds nothing a scanner would flag.
+  const key = 'sk-' + 'Ab3'.repeat(16);
+  const workflowId = 'asep-task-' + '01JC8Z3K5V7N9QWRT2XYZ4ABCD';
+
+  // A test's output excerpt is a JSON string in the packet: its line breaks are escaped there.
+  const leaked = decide(fixtureWorld({ unitStdout: `ℹ tests 1\nℹ pass 1\nℹ fail 0\n${key}\n` }));
+  assert.equal(leaked.decision, 'STOP_SECRET');
+  assert.ok(leaked.hits.some((h) => h.kind === 'secret' && h.part === 'packet'), JSON.stringify(leaked.hits));
+  // A workflow id in the same place is no key.
+  assert.equal(decide(fixtureWorld({ unitStdout: `ℹ tests 1\nℹ pass 1\nℹ fail 0\n${workflowId}\n` })).decision, 'CLEAR');
+
+  // The request carries the prompt, which carries the packet: a line break there is escaped once or twice.
+  assert.equal(rescanRequestBytes(utf8(JSON.stringify({ input: `ok\n${key}` }))), 'STOP_SECRET');
+  assert.equal(rescanRequestBytes(utf8(JSON.stringify({ input: JSON.stringify({ out: `ok\n${key}` }) }))), 'STOP_SECRET');
+  assert.equal(rescanRequestBytes(utf8(JSON.stringify({ input: JSON.stringify({ out: `ok\n${workflowId}` }) }))), 'CLEAR');
+});
