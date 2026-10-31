@@ -18,7 +18,7 @@
 
 import { spawnSync } from 'node:child_process';
 import { readdirSync, statSync, existsSync } from 'node:fs';
-import { join, relative, sep } from 'node:path';
+import { isAbsolute, join, relative, sep } from 'node:path';
 import { assertDigestPinned } from './images.mjs';
 
 // Roots that may hold *.itest.ts integration suites.
@@ -57,6 +57,10 @@ export const REQUIRED_ITEST_SUITES = Object.freeze({
   // scoped run FK, the race of a pre-lease terminal with the attempt's lease
   // acquisition, and the upgrade path that adds 0107 to a database without it.
   'asep-suite:pg-run-events': 'adapters/persistence/src/run-events/run-event-sink.itest.ts',
+  // Grafana with the committed provisioning: the data source and every
+  // assurance dashboard load by uid, and every panel query returns the snapshot
+  // values the metric evaluator wrote.
+  'asep-suite:assurance-dashboards-real': 'apps/control-plane-api/src/assurance/assurance-dashboards.itest.ts',
 });
 
 export const SUITE_ID_PREFIX = 'SUITE-ID:';
@@ -205,22 +209,59 @@ export function assertLoopbackPublish(spec) {
   return spec;
 }
 
-// The `docker run` argv for a gate backend. Pure, so the publish rule is
-// asserted without a daemon.
-export function containerRunArgv({ image, name, args = [], env = {}, ports = [] }) {
+// A bind mount the container can only read. `--mount`, not `-v`: docker creates
+// a missing `-v` source as an empty directory, which would start a backend with
+// nothing to load; a missing `--mount` source fails the run. A comma or newline
+// would end the field inside docker's mount spec, so either is refused.
+export function readOnlyMountArg({ source, target }) {
+  if (!isAbsolute(String(source)) || !String(target).startsWith('/') || /[,\n"]/.test(`${source}${target}`)) {
+    throw new Error(
+      `read-only mount ${JSON.stringify({ source, target })} needs an absolute source and target ` +
+        'with no comma, quote or newline',
+    );
+  }
+  return `type=bind,source=${source},target=${target},readonly`;
+}
+
+// The `docker run` argv for a gate backend. Pure, so the publish and mount
+// rules are asserted without a daemon.
+export function containerRunArgv({ image, name, args = [], env = {}, ports = [], readOnlyMounts = [] }) {
   assertDigestPinned(image);
   const argv = ['run', '-d', '--rm', '--name', name];
   for (const [k, v] of Object.entries(env)) argv.push('-e', `${k}=${v}`);
   for (const p of ports) argv.push('-p', assertLoopbackPublish(p));
+  for (const m of readOnlyMounts) argv.push('--mount', readOnlyMountArg(m));
   argv.push(image, ...args);
   return argv;
 }
 
+// The one IPv4 address `docker inspect` reports for a container on its network.
+export function parseContainerAddress(stdout, name) {
+  const found = String(stdout).trim().split(/\s+/).filter(Boolean);
+  if (found.length !== 1 || !/^\d{1,3}(\.\d{1,3}){3}$/.test(found[0])) {
+    throw new Error(`container ${name} has no single IPv4 address on its network (inspect gave ${JSON.stringify(stdout)})`);
+  }
+  return found[0];
+}
+
+// The address another gate container reaches `name` at. Gate backends publish
+// on the host's loopback only, which another container cannot reach, so a
+// backend that talks to another one uses this address on the Docker network.
+export function containerAddress(docker, name) {
+  const r = spawnSync(docker, ['inspect', '--format', '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}', name], {
+    encoding: 'utf8', shell: false,
+  });
+  if (r.error || r.status !== 0) {
+    throw new Error(`cannot inspect container ${name}: ${r.error?.message ?? r.stderr ?? 'unknown'}`);
+  }
+  return parseContainerAddress(r.stdout, name);
+}
+
 // Start a digest-pinned container detached, returning its id. Fails closed if
-// the image is not digest-pinned, a port is not published on loopback only, or
-// docker cannot start it.
-export function runContainer(docker, { image, name, args = [], env = {}, ports = [] }) {
-  const argv = containerRunArgv({ image, name, args, env, ports });
+// the image is not digest-pinned, a port is not published on loopback only, a
+// mount is not read-only and well-formed, or docker cannot start it.
+export function runContainer(docker, { image, name, args = [], env = {}, ports = [], readOnlyMounts = [] }) {
+  const argv = containerRunArgv({ image, name, args, env, ports, readOnlyMounts });
   const r = spawnSync(docker, argv, { encoding: 'utf8', shell: false });
   if (r.error || r.status !== 0) {
     throw new Error(

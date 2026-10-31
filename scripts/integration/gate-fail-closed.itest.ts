@@ -70,6 +70,9 @@ function runGate(env: Record<string, string>): GateRun {
       // Ports distinct from the outer gate's live containers (55440 / 59000).
       ASEP_ITEST_PG_PORT: '55441',
       ASEP_ITEST_MINIO_PORT: '59001',
+      // Never the outer gate's Grafana: a nested run that omits Grafana must not
+      // find the outer one healthy on the same port.
+      ASEP_ITEST_GRAFANA_PORT: '53001',
       ...env,
     },
   });
@@ -135,5 +138,25 @@ test('HIGH-001 e2e: a MISSING object store (MinIO) makes the required gate exit 
   assert.match(run.out, /MinIO never became healthy/,
     'the gate fails on the MinIO health check rather than proceeding');
   assert.ok(!/integration-gate: PASS/.test(run.out), 'no PASS banner without the object store');
+  assert.match(run.out, /containers torn down/, 'containers are torn down even on failure');
+});
+
+// ---------------------------------------------------------------------------
+// Grafana absent → RED at its health check.
+// ---------------------------------------------------------------------------
+
+test('a MISSING Grafana makes the required gate exit NON-ZERO', () => {
+  // PostgreSQL and MinIO start for real and get full budgets, so the run reaches
+  // the Grafana health check, which is the one this case is about.
+  const run = runGate({
+    ASEP_ITEST_OMIT_BACKEND: 'grafana',
+    ASEP_ITEST_PG_HEALTH_ATTEMPTS: '40',
+    ASEP_ITEST_MINIO_HEALTH_ATTEMPTS: '40',
+    ASEP_ITEST_GRAFANA_HEALTH_ATTEMPTS: '2',
+  });
+  assert.notEqual(run.status, 0, `gate must fail when Grafana is absent; output:\n${run.out}`);
+  assert.match(run.out, /MinIO healthy/, 'the run got past PostgreSQL and MinIO');
+  assert.match(run.out, /Grafana never became healthy/, 'the gate fails on the Grafana health check');
+  assert.ok(!/integration-gate: PASS/.test(run.out), 'no PASS banner without Grafana');
   assert.match(run.out, /containers torn down/, 'containers are torn down even on failure');
 });

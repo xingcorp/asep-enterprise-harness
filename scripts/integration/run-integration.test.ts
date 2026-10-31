@@ -17,6 +17,8 @@ import { discoverItestFiles, missingRequiredItestSuites, REQUIRED_ITEST_SUITES, 
 import { assertLoopbackPublish, containerRunArgv, loopbackPublish, runContainer } from './lib.mjs';
 // @ts-expect-error — .mjs helpers have no type declarations; we test their runtime contract.
 import { buildWorkspace, engineVersionGap, MIN_DOCKER_ENGINE } from './lib.mjs';
+// @ts-expect-error — .mjs helpers have no type declarations; we test their runtime contract.
+import { containerAddress, parseContainerAddress } from './lib.mjs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -456,4 +458,59 @@ test('the gate refuses a Docker Engine older than the isolated gateway mode need
   assert.notEqual(check, -1, 'the gate checks the engine it found');
   assert.ok(check < src.indexOf('runContainer(docker.bin'), 'before any backend starts');
   assert.match(src.slice(check), /^const engineGap = engineVersionGap\(docker\.serverVersion\);\n\s*if \(engineGap\) return fail\(engineGap\);/);
+});
+
+// ---------------------------------------------------------------------------
+// Grafana in the gate: the committed provisioning, mounted read-only, and a
+// data source that reaches the gate's PostgreSQL by its container address.
+// ---------------------------------------------------------------------------
+
+test('a read-only mount is always read-only and refuses a source docker would misread', () => {
+  const image = `grafana/grafana@sha256:${'b'.repeat(64)}`;
+  const argv: string[] = containerRunArgv({
+    image, name: 'g', readOnlyMounts: [{ source: '/repo/deploy/grafana/provisioning', target: '/etc/grafana/provisioning' }],
+  });
+  const mounts = argv.flatMap((a, i) => (a === '--mount' ? [argv[i + 1]] : []));
+  assert.deepEqual(mounts, ['type=bind,source=/repo/deploy/grafana/provisioning,target=/etc/grafana/provisioning,readonly']);
+  assert.ok(!argv.includes('-v') && !argv.includes('--volume'), 'no -v: a missing source must fail the run, not be created');
+  assert.ok(argv.indexOf('--mount') < argv.indexOf(image), 'the mount precedes the image');
+  for (const bad of [
+    { source: 'deploy/grafana/provisioning', target: '/etc/grafana/provisioning' },
+    { source: '/repo/a,readonly=false', target: '/etc/grafana/provisioning' },
+    { source: '/repo/provisioning', target: 'etc/grafana' },
+    { source: '/repo/provi\nsioning', target: '/etc/grafana/provisioning' },
+  ]) {
+    assert.throws(() => containerRunArgv({ image, name: 'g', readOnlyMounts: [bad] }), /read-only mount/, JSON.stringify(bad));
+  }
+});
+
+test('a container address is one IPv4 address, or the gate fails closed', () => {
+  assert.equal(parseContainerAddress('172.17.0.3 \n', 'pg'), '172.17.0.3');
+  for (const bad of ['', ' \n', '172.17.0.3 10.0.0.2 ', 'invalid', '<no value>']) {
+    assert.throws(() => parseContainerAddress(bad, 'pg'), /no single IPv4 address/, JSON.stringify(bad));
+  }
+  assert.throws(() => containerAddress('/nonexistent/docker-xyz', 'pg'), /cannot inspect container pg/);
+});
+
+test('compose.yaml runs the gate\'s Grafana digest with the committed provisioning mounted read-only', () => {
+  const compose = readFileSync(join(REPO_ROOT, 'compose.yaml'), 'utf8');
+  const start = compose.indexOf('\n  grafana:');
+  assert.notEqual(start, -1, 'compose declares a grafana service');
+  const next = compose.slice(start + 1).search(/\n  [a-z][a-z0-9_-]*:\s*$|\nvolumes:/m);
+  const service = compose.slice(start + 1, next === -1 ? undefined : start + 1 + next);
+  assert.match(IMAGES.grafana, DIGEST_PINNED);
+  assert.ok(service.includes(`image: ${IMAGES.grafana}`), `compose grafana runs the gate's ${IMAGES.grafana}`);
+  assert.ok(service.includes('"./deploy/grafana/provisioning:/etc/grafana/provisioning:ro"'), 'the provisioning is mounted read-only');
+  // the variables the committed data source reads, and no outbound plugin install
+  for (const key of ['ASEP_METRICS_PG_HOST', 'ASEP_METRICS_PG_DATABASE', 'ASEP_METRICS_PG_USER', 'ASEP_METRICS_PG_PASSWORD']) {
+    assert.match(service, new RegExp(`^\\s+${key}: \\S`, 'm'), `compose grafana sets ${key}`);
+  }
+  assert.match(service, /^\s+GF_PLUGINS_PREINSTALL_DISABLED: "true"$/m);
+});
+
+test('the dashboards suite is a REQUIRED integration suite', () => {
+  assert.equal(
+    REQUIRED_ITEST_SUITES['asep-suite:assurance-dashboards-real'],
+    'apps/control-plane-api/src/assurance/assurance-dashboards.itest.ts',
+  );
 });

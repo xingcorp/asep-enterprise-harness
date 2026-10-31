@@ -95,9 +95,25 @@ services:
     ports: ["127.0.0.1:${PROMETHEUS_PORT}:9090"]
 
   grafana:
-    image: grafana/grafana:12.0.2
+    # grafana/grafana:12.0.2 — digest-pinned; mirrored in scripts/integration/images.mjs.
+    # The committed provisioning is mounted read-only: the ASEP metrics data
+    # source reads metric_snapshots from the postgres service, and the four
+    # assurance dashboards read it.
+    image: grafana/grafana@sha256:b5b59bfc7561634c2d7b136c4543d702ebcc94a3da477f21ff26f89ffd4214fa
+    depends_on:
+      postgres: { condition: service_healthy }
+    environment:
+      ASEP_METRICS_PG_HOST: postgres:5432
+      ASEP_METRICS_PG_DATABASE: ${POSTGRES_DB}
+      ASEP_METRICS_PG_USER: ${POSTGRES_USER}
+      ASEP_METRICS_PG_PASSWORD: ${POSTGRES_PASSWORD}
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"
     ports: ["127.0.0.1:${GRAFANA_PORT}:3000"]
-    volumes: ["grafana_data:/var/lib/grafana"]
+    volumes: ["grafana_data:/var/lib/grafana", "./deploy/grafana/provisioning:/etc/grafana/provisioning:ro"]
 
 volumes:
   postgres_data:

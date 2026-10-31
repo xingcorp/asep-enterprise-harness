@@ -7,8 +7,11 @@
 //   * `pnpm test:integration` (this script) builds the workspace the suites
 //     import (`tsc -b`, so a fresh checkout runs and no suite runs against
 //     output older than its source), provisions digest-pinned PostgreSQL and
-//     MinIO, HEALTH-CHECKS them, then runs the *.itest.ts suites against the
-//     live backends with ASEP_PG_URL / S3 env pointing at them.
+//     MinIO, HEALTH-CHECKS them, then starts a digest-pinned Grafana with the
+//     committed provisioning (deploy/grafana/provisioning, read-only) whose
+//     data source reads that PostgreSQL, health-checks it on GET /api/health,
+//     and runs the *.itest.ts suites against the live backends with
+//     ASEP_PG_URL / S3 / ASEP_GRAFANA_* env pointing at them.
 //
 // The gate FAILS CLOSED (exit non-zero, loud message) — never a silent skip —
 // when: docker is unavailable or its engine older than the agent network's
@@ -29,6 +32,7 @@ import { IMAGES } from './images.mjs';
 import {
   resolveDocker, runContainer, removeContainer, waitReady, loopbackPublish, LOOPBACK_HOST,
   discoverItestFiles, missingRequiredItestSuites, REQUIRED_ITEST_SUITES, buildWorkspace, engineVersionGap,
+  containerAddress,
 } from './lib.mjs';
 import { nodeTestArgs } from '../lib/node-test-flags.mjs';
 
@@ -44,6 +48,14 @@ const PG_PASSWORD = 'asep-itest';
 const PG_DB = 'asep';
 const MINIO_USER = 'asepminio';
 const MINIO_PASSWORD = 'asepminio-secret';
+const GRAFANA_NAME = `asep-itest-grafana-${process.pid}`;
+const GRAFANA_PORT = process.env.ASEP_ITEST_GRAFANA_PORT ?? '53000';
+const GRAFANA_USER = 'admin';
+const GRAFANA_PASSWORD = 'asep-itest-grafana';
+const GRAFANA_PROVISIONING = join(REPO_ROOT, 'deploy', 'grafana', 'provisioning');
+// The database the provisioned data source reads; the dashboards itest creates
+// and fills it on the gate's PostgreSQL.
+const GRAFANA_METRICS_DB = 'asep_dashboards';
 
 // ---------------------------------------------------------------------------
 // Fault-injection hooks for the gate's OWN negative tests (disp.
@@ -52,8 +64,8 @@ const MINIO_PASSWORD = 'asepminio-secret';
 // actually run this CLI with a backend deliberately absent and observe a
 // non-zero exit, so the absence is injectable:
 //
-//   ASEP_ITEST_OMIT_BACKEND=postgres,minio  — do NOT start those containers; the
-//       health check must then fail the gate (never skip it).
+//   ASEP_ITEST_OMIT_BACKEND=postgres,minio,grafana  — do NOT start those
+//       containers; the health check must then fail the gate (never skip it).
 //   ASEP_ITEST_DOCKER_BIN=/nonexistent/docker — probe this binary FIRST, so a
 //       bogus value proves "no docker → RED".
 //   ASEP_ITEST_HEALTH_ATTEMPTS=n — shrink the readiness budget so a negative
@@ -79,6 +91,12 @@ const PG_HEALTH_ATTEMPTS = Number(
 const MINIO_HEALTH_ATTEMPTS = Number(
   process.env.ASEP_ITEST_MINIO_HEALTH_ATTEMPTS ?? HEALTH_ATTEMPTS,
 );
+// Grafana migrates its own database and provisions before it reports healthy,
+// which takes far longer than the other backends on a loaded host, so its
+// default budget is its own; the shrinking knobs still apply.
+const GRAFANA_HEALTH_ATTEMPTS = Number(
+  process.env.ASEP_ITEST_GRAFANA_HEALTH_ATTEMPTS ?? process.env.ASEP_ITEST_HEALTH_ATTEMPTS ?? '180',
+);
 
 function fail(msg) {
   process.stderr.write(`integration-gate: FAIL — ${msg}\n`);
@@ -96,6 +114,14 @@ async function pgReady(url) {
   } finally {
     try { await client.end(); } catch { /* ignore */ }
   }
+}
+
+// Healthy means GET /api/health answers 200 and reports its database ok.
+async function grafanaReady(url) {
+  const r = await fetch(`${url}/api/health`, { signal: AbortSignal.timeout(3000) }).catch(() => null);
+  if (!r || !r.ok) return false;
+  const body = await r.json().catch(() => null);
+  return body?.database === 'ok';
 }
 
 async function main() {
@@ -133,6 +159,7 @@ async function main() {
   // Clean any stale containers from a previous crashed run.
   removeContainer(docker.bin, PG_NAME);
   removeContainer(docker.bin, MINIO_NAME);
+  removeContainer(docker.bin, GRAFANA_NAME);
 
   const pgUrl = `postgresql://${PG_USER}:${PG_PASSWORD}@${LOOPBACK_HOST}:${PG_PORT}/${PG_DB}`;
   const s3Endpoint = `http://${LOOPBACK_HOST}:${MINIO_PORT}`;
@@ -176,6 +203,44 @@ async function main() {
     if (!minioOk) return fail(`MinIO never became healthy at ${s3Endpoint}`);
     process.stdout.write('integration-gate: MinIO healthy\n');
 
+    // Grafana's data source reaches PostgreSQL by its address on the Docker
+    // network: the published port binds the host's loopback, which another
+    // container cannot reach. Started after PostgreSQL is healthy so that
+    // address exists.
+    const grafanaUrl = `http://${LOOPBACK_HOST}:${GRAFANA_PORT}`;
+    if (OMITTED_BACKENDS.has('grafana')) {
+      process.stdout.write('integration-gate: Grafana DELIBERATELY OMITTED (negative test)\n');
+    } else {
+      const pgAddress = containerAddress(docker.bin, PG_NAME);
+      process.stdout.write(`integration-gate: starting Grafana (${IMAGES.grafana})\n`);
+      runContainer(docker.bin, {
+        image: IMAGES.grafana,
+        name: GRAFANA_NAME,
+        env: {
+          GF_SECURITY_ADMIN_USER: GRAFANA_USER,
+          GF_SECURITY_ADMIN_PASSWORD: GRAFANA_PASSWORD,
+          // Nothing leaves the gate: no usage report, update check, news feed
+          // or plugin download (12.0.2 preinstalls a plugin by default).
+          GF_ANALYTICS_REPORTING_ENABLED: 'false',
+          GF_ANALYTICS_CHECK_FOR_UPDATES: 'false',
+          GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: 'false',
+          GF_NEWS_NEWS_FEED_ENABLED: 'false',
+          GF_PLUGINS_PREINSTALL_DISABLED: 'true',
+          ASEP_METRICS_PG_HOST: `${pgAddress}:5432`,
+          ASEP_METRICS_PG_DATABASE: GRAFANA_METRICS_DB,
+          ASEP_METRICS_PG_USER: PG_USER,
+          ASEP_METRICS_PG_PASSWORD: PG_PASSWORD,
+        },
+        ports: [loopbackPublish(GRAFANA_PORT, 3000)],
+        readOnlyMounts: [{ source: GRAFANA_PROVISIONING, target: '/etc/grafana/provisioning' }],
+      });
+    }
+    const grafanaOk = await waitReady(() => grafanaReady(grafanaUrl), {
+      attempts: GRAFANA_HEALTH_ATTEMPTS, intervalMs: 1000,
+    });
+    if (!grafanaOk) return fail(`Grafana never became healthy at ${grafanaUrl}`);
+    process.stdout.write('integration-gate: Grafana healthy\n');
+
     // Run the itest suites in ONE shell-free child with live-backend env, with
     // the V8 flags every test process needs (lib/node-test-flags.mjs).
     const args = nodeTestArgs(files);
@@ -191,6 +256,10 @@ async function main() {
         ASEP_S3_ACCESS_KEY: MINIO_USER,
         ASEP_S3_SECRET_KEY: MINIO_PASSWORD,
         ASEP_S3_REGION: 'us-east-1',
+        ASEP_GRAFANA_URL: grafanaUrl,
+        ASEP_GRAFANA_USER: GRAFANA_USER,
+        ASEP_GRAFANA_PASSWORD: GRAFANA_PASSWORD,
+        ASEP_GRAFANA_PG_DATABASE: GRAFANA_METRICS_DB,
       },
     });
     const stdout = child.stdout ?? '';
@@ -219,6 +288,7 @@ async function main() {
     }
     return code;
   } finally {
+    removeContainer(docker.bin, GRAFANA_NAME);
     removeContainer(docker.bin, PG_NAME);
     removeContainer(docker.bin, MINIO_NAME);
     process.stdout.write('integration-gate: containers torn down\n');

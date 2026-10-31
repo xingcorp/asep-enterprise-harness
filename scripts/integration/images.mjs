@@ -21,6 +21,11 @@ export const IMAGES = Object.freeze({
   // proxy image a pilot can pin (ASEP_EGRESS_PROXY_IMAGE_DIGEST).
   node:
     'node@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293',
+  // grafana/grafana:12.0.2 (multi-arch index) — loads deploy/grafana/provisioning
+  // read-only; apps/control-plane-api/src/assurance/assurance-dashboards.itest.ts
+  // queries its dashboards. Mirrored in compose.yaml.
+  grafana:
+    'grafana/grafana@sha256:b5b59bfc7561634c2d7b136c4543d702ebcc94a3da477f21ff26f89ffd4214fa',
 });
 
 // The literal digest-pin guard the negative tests assert on: any value that is
