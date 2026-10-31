@@ -1,0 +1,69 @@
+{
+  "reviewId": "19f365a95185035965832eb2ea072ba6a9741ba32c7a5348260ab681856818f1",
+  "roundKey": "01J0000000000000000000ATT:1",
+  "attemptId": "01J0000000000000000000ATT",
+  "round": 1,
+  "reviewKind": "fresh",
+  "reviewerConfigId": "primary-openai",
+  "reviewerConfigSha256": "44b25fd6993edeb3b8ded5d90a7ed24479b70103fe0653e3cf5facadbfb1d1df",
+  "reviewerRole": "primary",
+  "requestedModel": "gpt-example",
+  "resolvedFamily": "openai",
+  "servedModel": "gpt-example-2026-10-01",
+  "packetSha256": "c48e8d2fd69d694f90962ad5c6da898c6e83f070c32804601d4c8b4b02854127",
+  "promptSha256": "7ed65932e8020d4d9f9f6a3685dd16ea62b9bd0477726edcf734750de827e343",
+  "rawRequestArtifactId": "01J00000000000000000REQ01",
+  "rawResponseArtifactId": "01J00000000000000000RSP01",
+  "validity": "VALID",
+  "verdict": "REQUEST_CHANGES",
+  "findings": [
+    {
+      "id": "primary-openai#db7c7efcdd1aea7b6708f741dd0a7b7ef1979da4f147084f507171d5a81d13fe#3f2a9c1d0b8e7f61",
+      "source": "model",
+      "raisedBy": "primary-openai",
+      "fingerprint": "db7c7efcdd1aea7b6708f741dd0a7b7ef1979da4f147084f507171d5a81d13fe",
+      "severity": "HIGH",
+      "category": "CORRECTNESS",
+      "evidence": "src/users.ts:42 compares the page index with < limit, so the last page is never returned.",
+      "requiredFix": "Compare with <= limit, and add a test that reads the last page.",
+      "grounded": true,
+      "lifecycleState": "OPEN",
+      "requirementId": "REQ-001",
+      "file": "src/users.ts",
+      "lineStart": 40,
+      "lineEnd": 44
+    }
+  ],
+  "priorFindingClaims": [
+    {
+      "priorFindingId": "01J0000000000000000FIND01",
+      "status": "RESOLVED",
+      "evidence": "fixed",
+      "resolutionFile": "src/users.ts",
+      "resolutionLine": 42
+    }
+  ],
+  "usage": {
+    "inputTokens": 18234,
+    "cachedInputTokens": 0,
+    "outputTokens": 912,
+    "reasoningTokens": 4410,
+    "wallClockMs": 38122,
+    "transportAttempts": 1
+  },
+  "providerCalls": 1,
+  "gatewayAlteration": {
+    "status": "unaltered",
+    "appendedBytes": 0,
+    "appendedSha256": null,
+    "appendixArtifactId": null,
+    "toolsAttributed": false,
+    "attributedFields": [
+      "input",
+      "instructions",
+      "text"
+    ]
+  },
+  "confidence": 0.82,
+  "packetCoverage": "complete"
+}

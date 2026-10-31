@@ -1,0 +1,14 @@
+{
+  "id": "sarif:unparsed#1a096d1e83544986cedc969b4a7c26192dc8e667ba9b4003c9acbf26a550baf4",
+  "source": "sarif",
+  "raisedBy": "sarif:unparsed",
+  "fingerprint": "1a096d1e83544986cedc969b4a7c26192dc8e667ba9b4003c9acbf26a550baf4",
+  "severity": "HIGH",
+  "category": "EVIDENCE_INTEGRITY",
+  "evidence": "Check semgrep produced a SARIF log (sha256 f44c30d07d331c6ff6aeb64dc4a63070c1cc002946e49019617cd18e5211a6f6, 18342 bytes) that the harness does not parse.",
+  "requiredFix": "A human reviews the SARIF log and records a disposition.",
+  "grounded": true,
+  "lifecycleState": "OPEN",
+  "ruleId": "sarif-unparsed",
+  "file": "reports/semgrep.sarif"
+}

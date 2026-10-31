@@ -4,6 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, readdirSync,
 } from 'node:fs';
@@ -11,7 +12,8 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { checkCompatibility, type SchemaNode } from './compat.js';
-import { validate } from './validate.js';
+import { generateTypes } from './gen/generate-types.js';
+import { contractNames, contractVersion, validate } from './validate.js';
 import {
   runCompatGate,
   parseCanonicalId,
@@ -588,4 +590,91 @@ test('the run-event fixtures of both lanes validate, and the 1.2.0 negative fixt
     const result = validate('run-event', JSON.parse(readFileSync(join(fixtures, 'invalid', file), 'utf8')));
     assert.equal(result.valid, false, `${file} must be refused`);
   }
+});
+
+// ===========================================================================
+// The review contracts of independent assurance: five new logical contracts,
+// frozen as snapshots at 1.0.0, and one MINOR change of architecture-invariant.
+// The legacy review contracts and every snapshot recorded before them keep their
+// bytes. The digests below are recorded from the tree the work forked from, not
+// read back from the files under test.
+// ===========================================================================
+
+const SCHEMA_ROOT = join(HERE, '..', 'schema');
+const SNAPSHOT_V1 = join(SCHEMA_ROOT, 'snapshots', 'v1');
+
+function sha256Of(path: string): string {
+  return createHash('sha256').update(readFileSync(path)).digest('hex');
+}
+
+const LEGACY_SCHEMA_DIGESTS: Readonly<Record<string, string>> = {
+  'review-report.schema.json': '5a9c716c1977f2a3ac59c3ddef487deeab9dd57cb5d017811c4ecca2b77b2930',
+  'finding.schema.json': '51a8ba4eb010975a95160b3cc67482f48545d65640803242367be0d3d7dc0586',
+};
+
+const RECORDED_SNAPSHOT_DIGESTS: Readonly<Record<string, string>> = {
+  'acceptance-scenario.schema.json': '8189b509ea3fc08159d1f9e316f53b03c1a2442c957381d51dfa101782002dc9',
+  'architecture-invariant.schema.json': '188ae26bba8c6092b63917051a7f1e939c9cf3555e48875af4c5a9094eb791b2',
+  'context-pack.schema.json': '045e09839405b5b442513230079ccafd4e70adc3e42d3dac43fe7c977a646921',
+  'evidence-bundle.schema.json': '4f16f513b9b1b279b500a11346cbd2f206eed79d0151aa9bbee787bbb3e1cace',
+  'execution-envelope.schema.json': '14445d2517701fba0ae95b6500de2b9315176f7473924e73ae24778c3ef6f7ca',
+  'finding.schema.json': '51a8ba4eb010975a95160b3cc67482f48545d65640803242367be0d3d7dc0586',
+  'product-spec.schema.json': '39ab6284c2e46487269ba43ce1006158d8d9d9f608d612b188db5d856065a1d1',
+  'requirement.schema.json': '7555561b16ded9a273bb7e7d73b45c853e0a1a0321199472895265f3c0d5ab5f',
+  'review-report.schema.json': '5a9c716c1977f2a3ac59c3ddef487deeab9dd57cb5d017811c4ecca2b77b2930',
+  'run-event.schema.json': 'b5ee179eb71d172084cf67603c875a230b688f42534ce8a6dcf2e1c6c6e3b540',
+  'skill-manifest.schema.json': '7554aa55dc72c7d9ba044cc55000753e452d8d0df8774dc820a3a4e00223b3ae',
+  'verification-plan.schema.json': 'd7ed97544131bf871268ec5f2af625d50ac1ad999044ace50158a0697dc4d2da',
+  'work-order.schema.json': '626ed6b437a1956fef0b489d27e63eb2210eb61cd01b38cc4b142aaeab45e257',
+};
+
+const REVIEW_CONTRACTS = ['review-finding', 'review-record', 'review-packet', 'adjudication-record', 'repair-order'] as const;
+
+test('legacy review contracts and v1 snapshots keep their recorded digests', () => {
+  for (const [file, digest] of Object.entries(LEGACY_SCHEMA_DIGESTS)) {
+    assert.equal(sha256Of(join(SCHEMA_ROOT, file)), digest, `schema/${file}`);
+  }
+  for (const [file, digest] of Object.entries(RECORDED_SNAPSHOT_DIGESTS)) {
+    assert.equal(sha256Of(join(SNAPSHOT_V1, file)), digest, `schema/snapshots/v1/${file}`);
+  }
+  // The snapshot line holds the recorded files and the five frozen review contracts, nothing else.
+  const expected = [...Object.keys(RECORDED_SNAPSHOT_DIGESTS), ...REVIEW_CONTRACTS.map((n) => `${n}.schema.json`)].sort();
+  assert.deepEqual(readdirSync(SNAPSHOT_V1).filter((f) => f.endsWith('.schema.json')).sort(), expected);
+});
+
+test('assurance contract additions are additive', () => {
+  // Five new logical contracts, registered at 1.0.0 under their canonical ids and frozen as snapshots.
+  const names = contractNames();
+  for (const name of REVIEW_CONTRACTS) {
+    assert.ok(names.includes(name), `${name} is not a known contract`);
+    assert.equal(contractVersion(name), '1.0.0', name);
+    const live = join(SCHEMA_ROOT, `${name}.schema.json`);
+    const schema = JSON.parse(readFileSync(live, 'utf8')) as { $id: string; additionalProperties: unknown };
+    assert.equal(schema.$id, `https://asep.dev/schema/${name}/v1`);
+    assert.equal(schema.additionalProperties, false, `${name} refuses unknown fields`);
+    assert.equal(sha256Of(join(SNAPSHOT_V1, `${name}.schema.json`)), sha256Of(live), `${name}: the snapshot is the live schema`);
+  }
+
+  // architecture-invariant: 1.0.0 frozen, 1.1.0 live, and the only change is the optional check.
+  const snapshot = JSON.parse(readFileSync(join(SNAPSHOT_V1, 'architecture-invariant.schema.json'), 'utf8')) as SchemaNode;
+  const live = JSON.parse(readFileSync(join(SCHEMA_ROOT, 'architecture-invariant.schema.json'), 'utf8')) as SchemaNode & {
+    $id: string;
+  };
+  assert.equal(snapshot.version, '1.0.0');
+  assert.equal(live.version, '1.1.0');
+  assert.equal(live.$id, 'https://asep.dev/schema/architecture-invariant/v1');
+  const verdict = checkCompatibility(snapshot, live);
+  assert.equal(verdict.ok, true, verdict.message);
+  assert.equal(verdict.requiredBump, 'minor');
+  assert.equal(verdict.actualBump, 'minor');
+  assert.deepEqual(
+    verdict.changes.filter((c) => c.level !== 'none' && c.level !== 'patch').map((c) => [c.path, c.level, c.reason]),
+    [['check', 'minor', 'new optional property added']],
+  );
+
+  // The gate checks every live schema against its snapshot and passes; the drift guard holds.
+  const gate = runCompatGate();
+  assert.equal(gate.ok, true, gate.problems.join('\n'));
+  assert.equal(gate.checked, readdirSync(SCHEMA_ROOT).filter((f) => f.endsWith('.schema.json')).length);
+  assert.equal(readFileSync(join(HERE, 'generated.ts'), 'utf8'), generateTypes(), 'generated.ts is stale');
 });

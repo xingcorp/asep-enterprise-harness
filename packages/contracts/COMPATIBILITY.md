@@ -1,7 +1,9 @@
 # Contract Compatibility Policy
 
-The 12 canonical platform contracts live as JSON Schemas under
-[`schema/*.schema.json`](./schema). Each schema declares a semantic `version`
+The canonical platform contracts live as JSON Schemas under
+[`schema/*.schema.json`](./schema). They include the five review contracts of
+independent assurance: `review-finding`, `review-record`, `review-packet`,
+`adjudication-record` and `repair-order`. Each schema declares a semantic `version`
 (`major.minor.patch`) and a stable `$id`
 (`https://asep.dev/schema/<name>/v1`). The JSON Schema is the **single source of
 truth**: the TypeScript types in `src/generated.ts` are generated from it, and

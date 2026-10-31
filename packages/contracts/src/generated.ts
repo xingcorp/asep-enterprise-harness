@@ -13,11 +13,76 @@ export interface AcceptanceScenario {
   readonly automated: boolean;
 }
 
+/** The deterministic decision of one assurance round: the outcome, the rule that fired, the blocking set, grounding, closure decisions and the inputs and fence the decision was made from. adjudicationId is the sha256 of the canonical JSON array [roundKey, policyVersion, packetSha256, checkReportSha256, sorted reviewRecordSha256s]. There is no timestamp: the decision time is stored beside the record, never in it. */
+export interface AdjudicationRecord {
+  readonly adjudicationId: string;
+  readonly roundKey: string;
+  readonly reviewRoundId: string;
+  readonly attemptId: AttemptId;
+  readonly round: number;
+  readonly mode: "not-required" | "shadow" | "gating";
+  readonly outcome: "PROCEED" | "REPAIR" | "ESCALATE" | "BLOCK";
+  readonly reason: "packet-over-budget" | "egress-stopped" | "independence-unsatisfiable" | "reviewer-unavailable" | "reviewer-escalated" | "max-repair-rounds" | "budget-exhausted" | "secret-in-diff" | "forbidden-path" | "unscannable-sensitive-change" | null;
+  readonly ruleFired: "A1" | "A2" | "A3" | "A4" | "A5" | "A6" | "A7" | "A8" | "A9" | "A10" | "A11";
+  readonly shadow: {
+  readonly wouldBe: "PROCEED" | "REPAIR" | "ESCALATE";
+  readonly reason: "packet-over-budget" | "egress-stopped" | "independence-unsatisfiable" | "reviewer-unavailable" | "reviewer-escalated" | "max-repair-rounds" | "budget-exhausted" | "blocking-findings" | null;
+  readonly blockingFindings: number;
+} | null;
+  readonly pushGuard: {
+  readonly decision: "PASS" | "BLOCK";
+  readonly reason?: "secret-in-diff" | "forbidden-path" | "unscannable-sensitive-change";
+};
+  readonly egressDecision: "CLEAR" | "STOP_SECRET" | "STOP_CLASSIFIED" | "STOP_UNSCANNABLE";
+  readonly blocking: readonly ({
+  readonly findingId: string;
+  readonly source: "model" | "deterministic" | "sarif";
+  readonly raisedBy: string;
+  readonly severity: "INFO" | "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+  readonly reason: "deterministic-rule" | "grounded-model-finding" | "prior-finding";
+})[];
+  readonly grounding: readonly ({
+  readonly findingId: string;
+  readonly grounded: boolean;
+  readonly reason: "evidence-too-short" | "required-fix-too-short" | "citation-not-in-packet" | "citation-missing" | "lines-without-file" | "path-not-normalized" | "path-not-in-packet" | "line-range-invalid" | "lines-outside-file" | "content-not-in-packet" | "not-a-resolution" | null;
+})[];
+  readonly verdictMismatches: readonly ({
+  readonly reviewId: string;
+  readonly verdict: "APPROVE" | "REQUEST_CHANGES";
+  readonly groundedBlockingCount: number;
+})[];
+  readonly closureDecisions: readonly ({
+  readonly priorFindingId: string;
+  readonly raisedBy: string;
+  readonly claims: readonly ({
+    readonly by: string;
+    readonly status: "RESOLVED" | "PARTIAL" | "OPEN";
+  })[];
+  readonly effectiveState: "OPEN" | "ACKNOWLEDGED" | "FIXED" | "VERIFIED" | "CLOSED" | "REFUTED" | "ADJUDICATED" | "WAIVED";
+  readonly rule: "deterministic-recheck" | "human" | "independent-reviewer" | "raiser-claim" | "closure-without-change" | "regression" | "unchanged";
+})[];
+  readonly policyVersion: string;
+  readonly inputs: {
+  readonly packetSha256: string;
+  readonly checkReportSha256: string;
+  readonly reviewRecordSha256s: readonly string[];
+};
+  readonly fence: {
+  readonly leaseId: string;
+  readonly fencingEpoch: number;
+};
+}
+
 export interface ArchitectureInvariant {
   readonly id: string;
   readonly statement: string;
   readonly category: "DEPENDENCY" | "LAYERING" | "SECURITY" | "DATA" | "NAMING" | "OTHER";
   readonly rationale?: string;
+  readonly check?: {
+  readonly kind: "forbidden-import";
+  readonly fromGlobs: readonly string[];
+  readonly specifierPattern: string;
+};
 }
 
 export interface ContextPack {
@@ -100,11 +165,184 @@ export interface ProductSpec {
   readonly architectureInvariants: readonly string[];
 }
 
+/** What the next attempt is told after a gating REPAIR decision: the grounded blocking findings and a capped set of informational findings, anchored to the reviewed attempt's commit. The size limits on finding text are policy data, applied when the order is built. */
+export interface RepairOrder {
+  readonly repairOrderId: string;
+  readonly taskId: TaskId;
+  readonly fromAttemptId: AttemptId;
+  readonly nextRound: number;
+  readonly taskBaseSha: string;
+  readonly repairBaseSha: string;
+  readonly adjudicationId: string;
+  readonly blockingFindings: readonly ReviewFindingRecord[];
+  readonly informationalFindings: readonly ReviewFindingRecord[];
+  readonly closureRule: "a fix is verified only by a different eligible reviewer, a human, or a deterministic re-check";
+  readonly workOrderRef: ArtifactRef;
+}
+
 export interface Requirement {
   readonly id: string;
   readonly statement: string;
   readonly rationale?: string;
   readonly priority: "MUST" | "SHOULD" | "COULD";
+}
+
+/** A finding as the harness records it: raised by a model reviewer, a deterministic rule or a SARIF log, fingerprinted, grounded by the harness (never by a model) and carried through its lifecycle. A SARIF log is not parsed: it yields exactly one sarif-unparsed finding. */
+export interface ReviewFindingRecord {
+  readonly id: string;
+  readonly source: "model" | "deterministic" | "sarif";
+  readonly raisedBy: string;
+  readonly fingerprint: string;
+  readonly severity: "INFO" | "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+  readonly category: "SPEC" | "ARCHITECTURE" | "CORRECTNESS" | "SECURITY" | "PERFORMANCE" | "TEST_QUALITY" | "MAINTAINABILITY" | "EVIDENCE_INTEGRITY";
+  readonly evidence: string;
+  readonly requiredFix: string;
+  readonly grounded: boolean;
+  readonly groundingReason?: string;
+  readonly lifecycleState: "OPEN" | "ACKNOWLEDGED" | "FIXED" | "VERIFIED" | "CLOSED" | "REFUTED" | "ADJUDICATED" | "WAIVED";
+  readonly requirementId?: string;
+  readonly file?: string;
+  readonly lineStart?: number;
+  readonly lineEnd?: number;
+  readonly ruleId?: string;
+  readonly priorFindingId?: string;
+}
+
+/** The only input a reviewer receives: the work order, the change as the harness committed it, the recorded execution and, on a re-review, the adjudicated prior findings. Built from trusted sources only. There is no field for the coder's self-report, a context pack, events, commit messages or another reviewer's output. The packet does not carry its own measured size. */
+export interface ReviewPacket {
+  readonly packetVersion: "review-packet/v1";
+  readonly identity: {
+  readonly organizationId: OrganizationId;
+  readonly projectId: ProjectId;
+  readonly repositoryBindingId: RepositoryBindingId;
+  readonly runId: RunId;
+  readonly taskId: TaskId;
+  readonly attemptId: AttemptId;
+  readonly round: number;
+  readonly roundKey: string;
+};
+  readonly risk: RiskLevel;
+  readonly reviewKind: "fresh" | "re-review";
+  readonly workOrder: {
+  readonly objective: string;
+  readonly requirementIds: readonly string[];
+  readonly requirements?: readonly {
+    readonly id: string;
+    readonly statement: string;
+    readonly priority: string;
+  }[];
+  readonly allowedPaths: readonly string[];
+  readonly forbiddenChanges: readonly string[];
+  readonly architectureInvariants: readonly string[];
+  readonly acceptanceCheckIds: readonly string[];
+};
+  readonly change: {
+  readonly taskBaseSha: string;
+  readonly resultSha: string;
+  readonly repairBaseSha: string | null;
+  readonly cumulativeDiff: ArtifactRef;
+  readonly repairDelta: ArtifactRef | null;
+  readonly files: readonly ({
+    readonly path: string;
+    readonly status: "A" | "M" | "D" | "R";
+    readonly binary: boolean;
+    readonly postImage: ArtifactRef | null;
+    readonly lineCount: number;
+    readonly omittedReason: "binary" | "too-large" | "deleted" | "submodule" | "non-utf8" | "unsafe-path" | null;
+  })[];
+};
+  readonly execution: {
+  readonly verdict: "PASS" | "FAIL" | "ERROR" | "NOT_RECORDED";
+  readonly environment: {
+    readonly imageDigest: string;
+    readonly lockfileHash: string;
+    readonly nodeVersion: string | null;
+  } | null;
+  readonly checks: readonly ({
+    readonly id: string;
+    readonly category: "workspace" | "static" | "unit" | "integration" | "architecture" | "security" | "acceptance" | "nonfunctional" | "review" | "release";
+    readonly command: string;
+    readonly exitCode: number;
+    readonly durationMs: number;
+    readonly stdout: {
+      readonly artifactId: string;
+      readonly sha256: string;
+      readonly bytes: number;
+      readonly excerptTail: string | null;
+    } | null;
+    readonly stderr: {
+      readonly artifactId: string;
+      readonly sha256: string;
+      readonly bytes: number;
+      readonly excerptTail: string | null;
+    } | null;
+    readonly testSummary: {
+      readonly runner: "node:test" | "tap" | "vitest" | "jest";
+      readonly tests: number;
+      readonly pass: number;
+      readonly fail: number;
+      readonly skipped: number;
+      readonly todo: number;
+    } | null;
+  })[];
+};
+  readonly priorFindings: readonly ReviewFindingRecord[];
+  readonly budget: {
+  readonly maxBytes: number;
+  readonly overBudget: boolean;
+  readonly omissions: readonly ({
+    readonly path: string;
+    readonly reason: "binary" | "too-large" | "deleted" | "submodule" | "non-utf8" | "unsafe-path";
+  })[];
+};
+}
+
+/** The harness's record of one completed reviewer call, produced from validated model output only: who reviewed which packet with which prompt, what the provider served, what the model concluded and what the call cost. It never carries the coder's self-report or another reviewer's output. */
+export interface ReviewRecord {
+  readonly reviewId: string;
+  readonly roundKey: string;
+  readonly attemptId: AttemptId;
+  readonly round: number;
+  readonly reviewKind: "fresh" | "re-review";
+  readonly reviewerConfigId: string;
+  readonly reviewerConfigSha256: string;
+  readonly reviewerRole: "primary" | "comparator";
+  readonly requestedModel: string;
+  readonly resolvedFamily: string;
+  readonly servedModel: string;
+  readonly packetSha256: string;
+  readonly promptSha256: string;
+  readonly rawRequestArtifactId: string;
+  readonly rawResponseArtifactId: string;
+  readonly validity: "VALID" | "INVALID";
+  readonly verdict: "APPROVE" | "REQUEST_CHANGES" | "ESCALATE" | null;
+  readonly findings: readonly ReviewFindingRecord[];
+  readonly priorFindingClaims: readonly ({
+  readonly priorFindingId: string;
+  readonly status: "RESOLVED" | "PARTIAL" | "OPEN";
+  readonly evidence: string;
+  readonly resolutionFile: string | null;
+  readonly resolutionLine: number | null;
+})[];
+  readonly usage: {
+  readonly inputTokens: number;
+  readonly cachedInputTokens: number;
+  readonly outputTokens: number;
+  readonly reasoningTokens: number;
+  readonly wallClockMs: number;
+  readonly transportAttempts: number;
+};
+  readonly providerCalls: number;
+  readonly gatewayAlteration: {
+  readonly status: "altered" | "unaltered" | "unknown";
+  readonly appendedBytes: number | null;
+  readonly appendedSha256: string | null;
+  readonly appendixArtifactId: string | null;
+  readonly toolsAttributed: boolean | null;
+  readonly attributedFields: readonly string[];
+};
+  readonly confidence?: number;
+  readonly packetCoverage?: "complete" | "partial";
 }
 
 export interface ReviewReport {

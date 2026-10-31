@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://asep.dev/schema/review-finding/v1",
+  "version": "1.0.0",
+  "title": "ReviewFindingRecord",
+  "description": "A finding as the harness records it: raised by a model reviewer, a deterministic rule or a SARIF log, fingerprinted, grounded by the harness (never by a model) and carried through its lifecycle. A SARIF log is not parsed: it yields exactly one sarif-unparsed finding.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "source", "raisedBy", "fingerprint", "severity", "category", "evidence", "requiredFix", "grounded", "lifecycleState"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "source": { "type": "string", "enum": ["model", "deterministic", "sarif"] },
+    "raisedBy": { "type": "string", "minLength": 1 },
+    "fingerprint": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "severity": { "type": "string", "enum": ["INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL"] },
+    "category": { "type": "string", "enum": ["SPEC", "ARCHITECTURE", "CORRECTNESS", "SECURITY", "PERFORMANCE", "TEST_QUALITY", "MAINTAINABILITY", "EVIDENCE_INTEGRITY"] },
+    "evidence": { "type": "string", "minLength": 1, "maxLength": 8192 },
+    "requiredFix": { "type": "string", "minLength": 1, "maxLength": 8192 },
+    "grounded": { "type": "boolean" },
+    "groundingReason": { "type": "string", "minLength": 1 },
+    "lifecycleState": { "type": "string", "enum": ["OPEN", "ACKNOWLEDGED", "FIXED", "VERIFIED", "CLOSED", "REFUTED", "ADJUDICATED", "WAIVED"] },
+    "requirementId": { "type": "string", "minLength": 1 },
+    "file": {
+      "type": "string",
+      "description": "A normalized repository path: not empty, not absolute, no empty, '.' or '..' segment, no backslash, no C0, DEL, C1, U+2028 or U+2029 character, and no leading double quote.",
+      "pattern": "^(?!\")(?:(?!\\.{1,2}(?:/|$))[^/\\\\\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+/)*(?!\\.{1,2}$)[^/\\\\\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$"
+    },
+    "lineStart": { "type": "integer", "minimum": 1 },
+    "lineEnd": { "type": "integer", "minimum": 1 },
+    "ruleId": { "type": "string", "minLength": 1 },
+    "priorFindingId": { "type": "string", "minLength": 1 }
+  },
+  "dependentRequired": { "lineEnd": ["lineStart"] },
+  "allOf": [
+    {
+      "if": { "required": ["grounded"], "properties": { "grounded": { "const": false } } },
+      "then": { "required": ["groundingReason"] }
+    },
+    {
+      "if": { "required": ["source"], "properties": { "source": { "const": "model" } } },
+      "then": { "properties": { "raisedBy": { "not": { "pattern": "^(deterministic|sarif):" } } } }
+    },
+    {
+      "if": { "required": ["source"], "properties": { "source": { "const": "deterministic" } } },
+      "then": { "required": ["ruleId"], "properties": { "raisedBy": { "pattern": "^deterministic:." } } }
+    },
+    {
+      "if": { "required": ["source"], "properties": { "source": { "const": "sarif" } } },
+      "then": {
+        "required": ["ruleId"],
+        "properties": {
+          "raisedBy": { "const": "sarif:unparsed" },
+          "ruleId": { "const": "sarif-unparsed" },
+          "severity": { "const": "HIGH" },
+          "category": { "const": "EVIDENCE_INTEGRITY" },
+          "grounded": { "const": true }
+        },
+        "not": { "anyOf": [{ "required": ["file"] }, { "required": ["lineStart"] }, { "required": ["lineEnd"] }] }
+      }
+    }
+  ],
+  "examples": [
+    {
+      "id": "deterministic:false-green#5d41402abc4b2a76b9719d911017c5925d41402abc4b2a76b9719d911017c592",
+      "source": "deterministic",
+      "raisedBy": "deterministic:false-green",
+      "fingerprint": "5d41402abc4b2a76b9719d911017c5925d41402abc4b2a76b9719d911017c592",
+      "severity": "HIGH",
+      "category": "EVIDENCE_INTEGRITY",
+      "evidence": "Check unit passed with zero tests executed.",
+      "requiredFix": "Make the unit check run the tests it claims to run.",
+      "grounded": true,
+      "lifecycleState": "OPEN",
+      "ruleId": "false-green"
+    }
+  ]
+}

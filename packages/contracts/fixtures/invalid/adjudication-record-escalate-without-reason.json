@@ -1,0 +1,76 @@
+{
+  "adjudicationId": "b2b5b94287092710798c94bdb54c3ac78226327a2401b2dde8673c6016907643",
+  "roundKey": "01J0000000000000000000AT2:2",
+  "reviewRoundId": "01J0000000000000000ROUND2",
+  "attemptId": "01J0000000000000000000AT2",
+  "round": 2,
+  "mode": "gating",
+  "outcome": "ESCALATE",
+  "reason": null,
+  "ruleFired": "A11",
+  "shadow": null,
+  "pushGuard": {
+    "decision": "PASS"
+  },
+  "egressDecision": "CLEAR",
+  "blocking": [
+    {
+      "findingId": "prior:01J0000000000000000FIND02",
+      "source": "model",
+      "raisedBy": "primary-openai",
+      "severity": "CRITICAL",
+      "reason": "prior-finding"
+    },
+    {
+      "findingId": "deterministic:false-green#9c91cf6496f7c0eab838a624d9a392899b67886e4b92472b18bc4dd21a4a7010",
+      "source": "deterministic",
+      "raisedBy": "deterministic:false-green",
+      "severity": "HIGH",
+      "reason": "deterministic-rule"
+    }
+  ],
+  "grounding": [],
+  "verdictMismatches": [],
+  "closureDecisions": [
+    {
+      "priorFindingId": "01J0000000000000000FIND01",
+      "raisedBy": "primary-openai",
+      "claims": [
+        {
+          "by": "comparator-anthropic",
+          "status": "RESOLVED"
+        }
+      ],
+      "effectiveState": "VERIFIED",
+      "rule": "independent-reviewer"
+    },
+    {
+      "priorFindingId": "01J0000000000000000FIND02",
+      "raisedBy": "primary-openai",
+      "claims": [
+        {
+          "by": "primary-openai",
+          "status": "RESOLVED"
+        },
+        {
+          "by": "comparator-anthropic",
+          "status": "OPEN"
+        }
+      ],
+      "effectiveState": "FIXED",
+      "rule": "raiser-claim"
+    }
+  ],
+  "policyVersion": "review-policy/1.0.0+34206ec9e3b08ec888dc9fe0ad867694f54696124e7838c389a2844b5d6db33a",
+  "inputs": {
+    "packetSha256": "7dc051ca32fed97ab9aa682dc5afec82a8674dab215bc165398d9a5e2fb1313b",
+    "checkReportSha256": "8f6decfb25303bbe670581f55c846b5a24109568fa487e446bca3144b0bffc6a",
+    "reviewRecordSha256s": [
+      "7bd87ca67f07e7904cc69653a6b4b41af5951dff5eabece3ef3553a034c592a4"
+    ]
+  },
+  "fence": {
+    "leaseId": "01J0000000000000000LEASE2",
+    "fencingEpoch": 1
+  }
+}

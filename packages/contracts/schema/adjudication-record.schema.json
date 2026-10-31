@@ -1,0 +1,214 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://asep.dev/schema/adjudication-record/v1",
+  "version": "1.0.0",
+  "title": "AdjudicationRecord",
+  "description": "The deterministic decision of one assurance round: the outcome, the rule that fired, the blocking set, grounding, closure decisions and the inputs and fence the decision was made from. adjudicationId is the sha256 of the canonical JSON array [roundKey, policyVersion, packetSha256, checkReportSha256, sorted reviewRecordSha256s]. There is no timestamp: the decision time is stored beside the record, never in it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "adjudicationId", "roundKey", "reviewRoundId", "attemptId", "round", "mode", "outcome", "reason", "ruleFired", "shadow",
+    "pushGuard", "egressDecision", "blocking", "grounding", "verdictMismatches", "closureDecisions", "policyVersion",
+    "inputs", "fence"
+  ],
+  "properties": {
+    "adjudicationId": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "roundKey": { "type": "string", "minLength": 1 },
+    "reviewRoundId": { "type": "string", "minLength": 1 },
+    "attemptId": { "type": "string", "minLength": 1, "x-tsType": "AttemptId" },
+    "round": { "type": "integer", "minimum": 1 },
+    "mode": { "type": "string", "enum": ["not-required", "shadow", "gating"] },
+    "outcome": { "type": "string", "enum": ["PROCEED", "REPAIR", "ESCALATE", "BLOCK"] },
+    "reason": {
+      "type": ["string", "null"],
+      "enum": [
+        "packet-over-budget", "egress-stopped", "independence-unsatisfiable", "reviewer-unavailable", "reviewer-escalated",
+        "max-repair-rounds", "budget-exhausted", "secret-in-diff", "forbidden-path", "unscannable-sensitive-change", null
+      ]
+    },
+    "ruleFired": { "type": "string", "enum": ["A1", "A2", "A3", "A4", "A5", "A6", "A7", "A8", "A9", "A10", "A11"] },
+    "shadow": {
+      "type": ["object", "null"],
+      "description": "What gating mode would have decided; recorded only, it never changes the workflow.",
+      "additionalProperties": false,
+      "required": ["wouldBe", "reason", "blockingFindings"],
+      "properties": {
+        "wouldBe": { "type": "string", "enum": ["PROCEED", "REPAIR", "ESCALATE"] },
+        "reason": {
+          "type": ["string", "null"],
+          "enum": [
+            "packet-over-budget", "egress-stopped", "independence-unsatisfiable", "reviewer-unavailable", "reviewer-escalated",
+            "max-repair-rounds", "budget-exhausted", "blocking-findings", null
+          ]
+        },
+        "blockingFindings": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "pushGuard": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["decision"],
+      "properties": {
+        "decision": { "type": "string", "enum": ["PASS", "BLOCK"] },
+        "reason": { "type": "string", "enum": ["secret-in-diff", "forbidden-path", "unscannable-sensitive-change"] }
+      },
+      "allOf": [
+        {
+          "if": { "required": ["decision"], "properties": { "decision": { "const": "BLOCK" } } },
+          "then": { "required": ["reason"] },
+          "else": { "not": { "required": ["reason"] } }
+        }
+      ]
+    },
+    "egressDecision": { "type": "string", "enum": ["CLEAR", "STOP_SECRET", "STOP_CLASSIFIED", "STOP_UNSCANNABLE"] },
+    "blocking": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["findingId", "source", "raisedBy", "severity", "reason"],
+        "properties": {
+          "findingId": { "type": "string", "minLength": 1 },
+          "source": { "type": "string", "enum": ["model", "deterministic", "sarif"] },
+          "raisedBy": { "type": "string", "minLength": 1 },
+          "severity": { "type": "string", "enum": ["INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL"] },
+          "reason": { "type": "string", "enum": ["deterministic-rule", "grounded-model-finding", "prior-finding"] }
+        }
+      }
+    },
+    "grounding": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["findingId", "grounded", "reason"],
+        "properties": {
+          "findingId": { "type": "string", "minLength": 1 },
+          "grounded": { "type": "boolean" },
+          "reason": {
+            "type": ["string", "null"],
+            "enum": [
+              "evidence-too-short", "required-fix-too-short", "citation-not-in-packet", "citation-missing", "lines-without-file",
+              "path-not-normalized", "path-not-in-packet", "line-range-invalid", "lines-outside-file", "content-not-in-packet",
+              "not-a-resolution", null
+            ]
+          }
+        },
+        "allOf": [
+          {
+            "if": { "required": ["grounded"], "properties": { "grounded": { "const": true } } },
+            "then": { "properties": { "reason": { "type": "null" } } },
+            "else": { "properties": { "reason": { "type": "string" } } }
+          }
+        ]
+      }
+    },
+    "verdictMismatches": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["reviewId", "verdict", "groundedBlockingCount"],
+        "properties": {
+          "reviewId": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "verdict": { "type": "string", "enum": ["APPROVE", "REQUEST_CHANGES"] },
+          "groundedBlockingCount": { "type": "integer", "minimum": 0 }
+        }
+      }
+    },
+    "closureDecisions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["priorFindingId", "raisedBy", "claims", "effectiveState", "rule"],
+        "properties": {
+          "priorFindingId": { "type": "string", "minLength": 1 },
+          "raisedBy": { "type": "string", "minLength": 1 },
+          "claims": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["by", "status"],
+              "properties": {
+                "by": { "type": "string", "minLength": 1 },
+                "status": { "type": "string", "enum": ["RESOLVED", "PARTIAL", "OPEN"] }
+              }
+            }
+          },
+          "effectiveState": { "type": "string", "enum": ["OPEN", "ACKNOWLEDGED", "FIXED", "VERIFIED", "CLOSED", "REFUTED", "ADJUDICATED", "WAIVED"] },
+          "rule": {
+            "type": "string",
+            "description": "regression: a finding of this round re-raised the prior after it was verified or closed. No scanner re-check closes a finding: a SARIF finding closes only by a human disposition.",
+            "enum": ["deterministic-recheck", "human", "independent-reviewer", "raiser-claim", "closure-without-change", "regression", "unchanged"]
+          }
+        }
+      }
+    },
+    "policyVersion": { "type": "string", "minLength": 1 },
+    "inputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["packetSha256", "checkReportSha256", "reviewRecordSha256s"],
+      "properties": {
+        "packetSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "checkReportSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "reviewRecordSha256s": { "type": "array", "items": { "type": "string", "pattern": "^[0-9a-f]{64}$" } }
+      }
+    },
+    "fence": {
+      "type": "object",
+      "description": "The lease identity that authorized the decision write.",
+      "additionalProperties": false,
+      "required": ["leaseId", "fencingEpoch"],
+      "properties": {
+        "leaseId": { "type": "string", "minLength": 1 },
+        "fencingEpoch": { "type": "integer", "minimum": 1 }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "required": ["outcome"], "properties": { "outcome": { "enum": ["ESCALATE", "BLOCK"] } } },
+      "then": { "properties": { "reason": { "type": "string" } } },
+      "else": { "properties": { "reason": { "type": "null" } } }
+    },
+    {
+      "if": { "required": ["mode"], "properties": { "mode": { "const": "gating" } } },
+      "else": { "properties": { "outcome": { "enum": ["PROCEED", "BLOCK"] } } }
+    },
+    {
+      "if": { "required": ["mode", "outcome"], "properties": { "mode": { "const": "shadow" }, "outcome": { "const": "PROCEED" } } },
+      "then": { "properties": { "shadow": { "type": "object" } } },
+      "else": { "properties": { "shadow": { "type": "null" } } }
+    }
+  ],
+  "examples": [
+    {
+      "adjudicationId": "5555555555555555555555555555555555555555555555555555555555555555",
+      "roundKey": "01J0000000000000000000ATT:1",
+      "reviewRoundId": "01J00000000000000000ROUND",
+      "attemptId": "01J0000000000000000000ATT",
+      "round": 1,
+      "mode": "shadow",
+      "outcome": "PROCEED",
+      "reason": null,
+      "ruleFired": "A9",
+      "shadow": { "wouldBe": "PROCEED", "reason": null, "blockingFindings": 0 },
+      "pushGuard": { "decision": "PASS" },
+      "egressDecision": "CLEAR",
+      "blocking": [],
+      "grounding": [],
+      "verdictMismatches": [],
+      "closureDecisions": [],
+      "policyVersion": "review-policy/1.0.0+6666666666666666666666666666666666666666666666666666666666666666",
+      "inputs": {
+        "packetSha256": "3333333333333333333333333333333333333333333333333333333333333333",
+        "checkReportSha256": "7777777777777777777777777777777777777777777777777777777777777777",
+        "reviewRecordSha256s": ["8888888888888888888888888888888888888888888888888888888888888888"]
+      },
+      "fence": { "leaseId": "01J00000000000000000LEASE", "fencingEpoch": 1 }
+    }
+  ]
+}

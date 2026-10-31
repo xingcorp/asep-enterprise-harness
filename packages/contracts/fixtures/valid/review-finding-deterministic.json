@@ -1,0 +1,17 @@
+{
+  "id": "deterministic:trojan-source#9c91cf6496f7c0eab838a624d9a392899b67886e4b92472b18bc4dd21a4a7010",
+  "source": "deterministic",
+  "raisedBy": "deterministic:trojan-source",
+  "fingerprint": "9c91cf6496f7c0eab838a624d9a392899b67886e4b92472b18bc4dd21a4a7010",
+  "severity": "CRITICAL",
+  "category": "SECURITY",
+  "evidence": "Added line 7 of src/café/strings.ts contains U+202E (RIGHT-TO-LEFT OVERRIDE).",
+  "requiredFix": "Remove the bidirectional control character.",
+  "grounded": true,
+  "lifecycleState": "VERIFIED",
+  "file": "src/café/strings.ts",
+  "lineStart": 7,
+  "lineEnd": 7,
+  "ruleId": "trojan-source",
+  "priorFindingId": "01J0000000000000000FIND01"
+}

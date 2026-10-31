@@ -1,0 +1,25 @@
+{
+  "adjudicationId": "23bfeea9422a9a22e6b3d8b70119694e59cbf1261f54cf4019b435bd8e4b3fed",
+  "roundKey": "01J0000000000000000000ATT:1",
+  "reviewRoundId": "01J00000000000000000ROUND",
+  "attemptId": "01J0000000000000000000ATT",
+  "round": 1,
+  "mode": "shadow",
+  "outcome": "BLOCK",
+  "reason": "secret-in-diff",
+  "ruleFired": "A1",
+  "shadow": null,
+  "pushGuard": { "decision": "BLOCK", "reason": "secret-in-diff" },
+  "egressDecision": "STOP_SECRET",
+  "blocking": [],
+  "grounding": [],
+  "verdictMismatches": [],
+  "closureDecisions": [],
+  "policyVersion": "review-policy/1.0.0+34206ec9e3b08ec888dc9fe0ad867694f54696124e7838c389a2844b5d6db33a",
+  "inputs": {
+    "packetSha256": "c48e8d2fd69d694f90962ad5c6da898c6e83f070c32804601d4c8b4b02854127",
+    "checkReportSha256": "8f6decfb25303bbe670581f55c846b5a24109568fa487e446bca3144b0bffc6a",
+    "reviewRecordSha256s": []
+  },
+  "fence": { "leaseId": "01J00000000000000000LEASE", "fencingEpoch": 2 }
+}

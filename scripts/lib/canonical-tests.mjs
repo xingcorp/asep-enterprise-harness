@@ -250,6 +250,9 @@ export const REQUIRED_SUITES = Object.freeze({
   'asep-suite:review-grounding': 'packages/application/src/assurance/grounding.test.ts',
   'asep-suite:adjudication': 'packages/application/src/assurance/adjudication.test.ts',
   'asep-suite:repair-order': 'packages/application/src/assurance/repair.test.ts',
+  // Every valid fixture of every canonical contract passes its schema and every
+  // invalid one fails; the review contracts' field rules are pinned here.
+  'asep-suite:contract-fixtures': 'packages/contracts/src/validate.test.ts',
 });
 
 /** The machine-readable marker a suite prints at module load: `SUITE-ID: <id>`. */

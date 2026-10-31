@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://asep.dev/schema/review-record/v1",
+  "version": "1.0.0",
+  "title": "ReviewRecord",
+  "description": "The harness's record of one completed reviewer call, produced from validated model output only: who reviewed which packet with which prompt, what the provider served, what the model concluded and what the call cost. It never carries the coder's self-report or another reviewer's output.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "reviewId", "roundKey", "attemptId", "round", "reviewKind", "reviewerConfigId", "reviewerConfigSha256", "reviewerRole",
+    "requestedModel", "resolvedFamily", "servedModel", "packetSha256", "promptSha256", "rawRequestArtifactId",
+    "rawResponseArtifactId", "validity", "verdict", "findings", "priorFindingClaims", "usage", "providerCalls",
+    "gatewayAlteration"
+  ],
+  "properties": {
+    "reviewId": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "roundKey": { "type": "string", "minLength": 1 },
+    "attemptId": { "type": "string", "minLength": 1, "x-tsType": "AttemptId" },
+    "round": { "type": "integer", "minimum": 1 },
+    "reviewKind": { "type": "string", "enum": ["fresh", "re-review"] },
+    "reviewerConfigId": { "type": "string", "minLength": 1 },
+    "reviewerConfigSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "reviewerRole": { "type": "string", "enum": ["primary", "comparator"] },
+    "requestedModel": { "type": "string", "minLength": 1 },
+    "resolvedFamily": { "type": "string", "minLength": 1 },
+    "servedModel": { "type": "string", "minLength": 1 },
+    "packetSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "promptSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "rawRequestArtifactId": { "type": "string", "minLength": 1 },
+    "rawResponseArtifactId": { "type": "string", "minLength": 1 },
+    "validity": { "type": "string", "enum": ["VALID", "INVALID"] },
+    "verdict": { "type": ["string", "null"], "enum": ["APPROVE", "REQUEST_CHANGES", "ESCALATE", null] },
+    "findings": {
+      "type": "array",
+      "items": { "$ref": "https://asep.dev/schema/review-finding/v1", "x-tsType": "ReviewFindingRecord" }
+    },
+    "priorFindingClaims": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["priorFindingId", "status", "evidence", "resolutionFile", "resolutionLine"],
+        "properties": {
+          "priorFindingId": { "type": "string", "minLength": 1 },
+          "status": { "type": "string", "enum": ["RESOLVED", "PARTIAL", "OPEN"] },
+          "evidence": { "type": "string" },
+          "resolutionFile": { "type": ["string", "null"] },
+          "resolutionLine": { "type": ["integer", "null"] }
+        }
+      }
+    },
+    "usage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["inputTokens", "cachedInputTokens", "outputTokens", "reasoningTokens", "wallClockMs", "transportAttempts"],
+      "properties": {
+        "inputTokens": { "type": "integer", "minimum": 0 },
+        "cachedInputTokens": { "type": "integer", "minimum": 0 },
+        "outputTokens": { "type": "integer", "minimum": 0 },
+        "reasoningTokens": { "type": "integer", "minimum": 0 },
+        "wallClockMs": { "type": "integer", "minimum": 0 },
+        "transportAttempts": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "providerCalls": { "type": "integer", "minimum": 1 },
+    "gatewayAlteration": {
+      "type": "object",
+      "description": "What the gateway did to the request in transit, as far as the response shows it.",
+      "additionalProperties": false,
+      "required": ["status", "appendedBytes", "appendedSha256", "appendixArtifactId", "toolsAttributed", "attributedFields"],
+      "properties": {
+        "status": { "type": "string", "enum": ["altered", "unaltered", "unknown"] },
+        "appendedBytes": { "type": ["integer", "null"], "minimum": 0 },
+        "appendedSha256": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" },
+        "appendixArtifactId": { "type": ["string", "null"], "minLength": 1 },
+        "toolsAttributed": { "type": ["boolean", "null"] },
+        "attributedFields": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+      }
+    },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "packetCoverage": { "type": "string", "enum": ["complete", "partial"] }
+  },
+  "allOf": [
+    {
+      "if": { "required": ["validity"], "properties": { "validity": { "const": "VALID" } } },
+      "then": { "properties": { "verdict": { "type": "string" } } },
+      "else": { "properties": { "verdict": { "type": "null" } } }
+    },
+    {
+      "if": { "required": ["reviewKind"], "properties": { "reviewKind": { "const": "fresh" } } },
+      "then": { "properties": { "round": { "const": 1 }, "priorFindingClaims": { "maxItems": 0 } } },
+      "else": { "properties": { "round": { "minimum": 2 } } }
+    }
+  ],
+  "examples": [
+    {
+      "reviewId": "1111111111111111111111111111111111111111111111111111111111111111",
+      "roundKey": "01J0000000000000000000ATT:1",
+      "attemptId": "01J0000000000000000000ATT",
+      "round": 1,
+      "reviewKind": "fresh",
+      "reviewerConfigId": "primary-openai",
+      "reviewerConfigSha256": "2222222222222222222222222222222222222222222222222222222222222222",
+      "reviewerRole": "primary",
+      "requestedModel": "gpt-example",
+      "resolvedFamily": "openai",
+      "servedModel": "gpt-example-2026-10-01",
+      "packetSha256": "3333333333333333333333333333333333333333333333333333333333333333",
+      "promptSha256": "4444444444444444444444444444444444444444444444444444444444444444",
+      "rawRequestArtifactId": "01J00000000000000000REQ01",
+      "rawResponseArtifactId": "01J00000000000000000RSP01",
+      "validity": "VALID",
+      "verdict": "APPROVE",
+      "findings": [],
+      "priorFindingClaims": [],
+      "usage": { "inputTokens": 1200, "cachedInputTokens": 0, "outputTokens": 300, "reasoningTokens": 100, "wallClockMs": 4200, "transportAttempts": 1 },
+      "providerCalls": 1,
+      "gatewayAlteration": { "status": "unaltered", "appendedBytes": null, "appendedSha256": null, "appendixArtifactId": null, "toolsAttributed": false, "attributedFields": [] }
+    }
+  ]
+}

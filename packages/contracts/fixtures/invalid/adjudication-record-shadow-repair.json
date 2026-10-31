@@ -1,0 +1,58 @@
+{
+  "adjudicationId": "0c9af09d0143acc1ddd6996959208bfb1e4a41db07e39800bfc02ec05c964bf3",
+  "roundKey": "01J0000000000000000000ATT:1",
+  "reviewRoundId": "01J00000000000000000ROUND",
+  "attemptId": "01J0000000000000000000ATT",
+  "round": 1,
+  "mode": "shadow",
+  "outcome": "REPAIR",
+  "reason": null,
+  "ruleFired": "A11",
+  "shadow": null,
+  "pushGuard": {
+    "decision": "PASS"
+  },
+  "egressDecision": "CLEAR",
+  "blocking": [
+    {
+      "findingId": "primary-openai#db7c7efcdd1aea7b6708f741dd0a7b7ef1979da4f147084f507171d5a81d13fe#3f2a9c1d0b8e7f61",
+      "source": "model",
+      "raisedBy": "primary-openai",
+      "severity": "HIGH",
+      "reason": "grounded-model-finding"
+    }
+  ],
+  "grounding": [
+    {
+      "findingId": "primary-openai#db7c7efcdd1aea7b6708f741dd0a7b7ef1979da4f147084f507171d5a81d13fe#3f2a9c1d0b8e7f61",
+      "grounded": true,
+      "reason": null
+    },
+    {
+      "findingId": "comparator-anthropic#bb47bdac495ef78a120041dd8ad883d8b77fb372d71eb5d3d66e2130ae822660#90c4d2e7a15b3f08",
+      "grounded": false,
+      "reason": "path-not-in-packet"
+    }
+  ],
+  "verdictMismatches": [
+    {
+      "reviewId": "1d795ba0b258280096c1cd959a4505736a3e1e76c7a0b809aca826f1279f8057",
+      "verdict": "REQUEST_CHANGES",
+      "groundedBlockingCount": 0
+    }
+  ],
+  "closureDecisions": [],
+  "policyVersion": "review-policy/1.0.0+34206ec9e3b08ec888dc9fe0ad867694f54696124e7838c389a2844b5d6db33a",
+  "inputs": {
+    "packetSha256": "c48e8d2fd69d694f90962ad5c6da898c6e83f070c32804601d4c8b4b02854127",
+    "checkReportSha256": "8f6decfb25303bbe670581f55c846b5a24109568fa487e446bca3144b0bffc6a",
+    "reviewRecordSha256s": [
+      "7bd87ca67f07e7904cc69653a6b4b41af5951dff5eabece3ef3553a034c592a4",
+      "b7462d6ced2c15add3dbe47755277fa9618aceb17c68f507128896d622d4c5ee"
+    ]
+  },
+  "fence": {
+    "leaseId": "01J00000000000000000LEASE",
+    "fencingEpoch": 3
+  }
+}

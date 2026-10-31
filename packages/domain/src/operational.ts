@@ -86,7 +86,12 @@ const attemptHappyPath: Readonly<Record<AttemptStatus, readonly AttemptStatus[]>
   INSPECTING: ['VERIFYING'],
   VERIFYING: ['EVIDENCE_BUILT'],
   EVIDENCE_BUILT: ['COMMITTED'],
-  COMMITTED: ['PUSHED'],
+  // A committed attempt is pushed directly, or reviewed first. Review sits
+  // between the commit and the push: an accepted round pushes; a round that
+  // asks for a repair ends the attempt and the repair runs as the next attempt.
+  COMMITTED: ['UNDER_REVIEW', 'PUSHED'],
+  UNDER_REVIEW: ['PUSHED', 'CHANGES_REQUESTED'],
+  CHANGES_REQUESTED: [],
   PUSHED: ['PR_OPEN'],
   PR_OPEN: ['SUCCEEDED'],
   SUCCEEDED: [],
@@ -98,6 +103,7 @@ const attemptHappyPath: Readonly<Record<AttemptStatus, readonly AttemptStatus[]>
 
 const ATTEMPT_TERMINAL: readonly AttemptStatus[] = [
   'SUCCEEDED',
+  'CHANGES_REQUESTED',
   'FAILED',
   'BLOCKED',
   'BUDGET_EXHAUSTED',

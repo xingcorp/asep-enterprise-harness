@@ -1,0 +1,281 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://asep.dev/schema/review-packet/v1",
+  "version": "1.0.0",
+  "title": "ReviewPacket",
+  "description": "The only input a reviewer receives: the work order, the change as the harness committed it, the recorded execution and, on a re-review, the adjudicated prior findings. Built from trusted sources only. There is no field for the coder's self-report, a context pack, events, commit messages or another reviewer's output. The packet does not carry its own measured size.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["packetVersion", "identity", "risk", "reviewKind", "workOrder", "change", "execution", "priorFindings", "budget"],
+  "properties": {
+    "packetVersion": { "type": "string", "enum": ["review-packet/v1"] },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["organizationId", "projectId", "repositoryBindingId", "runId", "taskId", "attemptId", "round", "roundKey"],
+      "properties": {
+        "organizationId": { "type": "string", "minLength": 1, "x-tsType": "OrganizationId" },
+        "projectId": { "type": "string", "minLength": 1, "x-tsType": "ProjectId" },
+        "repositoryBindingId": { "type": "string", "minLength": 1, "x-tsType": "RepositoryBindingId" },
+        "runId": { "type": "string", "minLength": 1, "x-tsType": "RunId" },
+        "taskId": { "type": "string", "minLength": 1, "x-tsType": "TaskId" },
+        "attemptId": { "type": "string", "minLength": 1, "x-tsType": "AttemptId" },
+        "round": { "type": "integer", "minimum": 1 },
+        "roundKey": { "type": "string", "minLength": 1 }
+      }
+    },
+    "risk": { "type": "string", "enum": ["R0", "R1", "R2", "R3", "R4"], "x-tsType": "RiskLevel" },
+    "reviewKind": { "type": "string", "enum": ["fresh", "re-review"] },
+    "workOrder": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["objective", "requirementIds", "allowedPaths", "forbiddenChanges", "architectureInvariants", "acceptanceCheckIds"],
+      "properties": {
+        "objective": { "type": "string", "minLength": 1 },
+        "requirementIds": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "requirements": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "statement", "priority"],
+            "properties": {
+              "id": { "type": "string", "minLength": 1 },
+              "statement": { "type": "string", "minLength": 1 },
+              "priority": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "allowedPaths": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "forbiddenChanges": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "architectureInvariants": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "acceptanceCheckIds": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+      }
+    },
+    "change": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["taskBaseSha", "resultSha", "repairBaseSha", "cumulativeDiff", "repairDelta", "files"],
+      "properties": {
+        "taskBaseSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "resultSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "repairBaseSha": { "type": ["string", "null"], "pattern": "^[0-9a-f]{40}$" },
+        "cumulativeDiff": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["artifactId", "sha256", "kind"],
+          "properties": {
+            "artifactId": { "type": "string", "minLength": 1 },
+            "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+            "kind": { "type": "string", "minLength": 1 }
+          },
+          "x-tsType": "ArtifactRef"
+        },
+        "repairDelta": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["artifactId", "sha256", "kind"],
+          "properties": {
+            "artifactId": { "type": "string", "minLength": 1 },
+            "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+            "kind": { "type": "string", "minLength": 1 }
+          },
+          "x-tsType": "ArtifactRef"
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "status", "binary", "postImage", "lineCount", "omittedReason"],
+            "properties": {
+              "path": { "type": "string", "minLength": 1, "description": "As git reports it. A path that is not normalizable is kept with omission unsafe-path, never read." },
+              "status": { "type": "string", "enum": ["A", "M", "D", "R"] },
+              "binary": { "type": "boolean" },
+              "postImage": {
+                "type": ["object", "null"],
+                "additionalProperties": false,
+                "required": ["artifactId", "sha256", "kind"],
+                "properties": {
+                  "artifactId": { "type": "string", "minLength": 1 },
+                  "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+                  "kind": { "type": "string", "minLength": 1 }
+                },
+                "x-tsType": "ArtifactRef"
+              },
+              "lineCount": { "type": "integer", "minimum": 0 },
+              "omittedReason": {
+                "type": ["string", "null"],
+                "enum": ["binary", "too-large", "deleted", "submodule", "non-utf8", "unsafe-path", null]
+              }
+            },
+            "allOf": [
+              {
+                "if": { "required": ["omittedReason"], "properties": { "omittedReason": { "type": "null" } } },
+                "then": { "properties": { "postImage": { "type": "object" } } },
+                "else": { "properties": { "postImage": { "type": "null" } } }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "execution": {
+      "type": "object",
+      "description": "The attempt's recorded execution. NOT_RECORDED, with no environment and no checks, is used only by corpus packets, never at runtime.",
+      "additionalProperties": false,
+      "required": ["verdict", "environment", "checks"],
+      "properties": {
+        "verdict": { "type": "string", "enum": ["PASS", "FAIL", "ERROR", "NOT_RECORDED"] },
+        "environment": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["imageDigest", "lockfileHash", "nodeVersion"],
+          "properties": {
+            "imageDigest": { "type": "string", "minLength": 1 },
+            "lockfileHash": { "type": "string", "minLength": 1 },
+            "nodeVersion": { "type": ["string", "null"], "minLength": 1 }
+          }
+        },
+        "checks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "category", "command", "exitCode", "durationMs", "stdout", "stderr", "testSummary"],
+            "properties": {
+              "id": { "type": "string", "minLength": 1 },
+              "category": { "type": "string", "enum": ["workspace", "static", "unit", "integration", "architecture", "security", "acceptance", "nonfunctional", "review", "release"] },
+              "command": { "type": "string", "minLength": 1 },
+              "exitCode": { "type": "integer" },
+              "durationMs": { "type": "number", "minimum": 0 },
+              "stdout": {
+                "type": ["object", "null"],
+                "additionalProperties": false,
+                "required": ["artifactId", "sha256", "bytes", "excerptTail"],
+                "properties": {
+                  "artifactId": { "type": "string", "minLength": 1 },
+                  "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+                  "bytes": { "type": "integer", "minimum": 0 },
+                  "excerptTail": { "type": ["string", "null"] }
+                }
+              },
+              "stderr": {
+                "type": ["object", "null"],
+                "additionalProperties": false,
+                "required": ["artifactId", "sha256", "bytes", "excerptTail"],
+                "properties": {
+                  "artifactId": { "type": "string", "minLength": 1 },
+                  "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+                  "bytes": { "type": "integer", "minimum": 0 },
+                  "excerptTail": { "type": ["string", "null"] }
+                }
+              },
+              "testSummary": {
+                "type": ["object", "null"],
+                "additionalProperties": false,
+                "required": ["runner", "tests", "pass", "fail", "skipped", "todo"],
+                "properties": {
+                  "runner": { "type": "string", "enum": ["node:test", "tap", "vitest", "jest"] },
+                  "tests": { "type": "integer", "minimum": 0 },
+                  "pass": { "type": "integer", "minimum": 0 },
+                  "fail": { "type": "integer", "minimum": 0 },
+                  "skipped": { "type": "integer", "minimum": 0 },
+                  "todo": { "type": "integer", "minimum": 0 }
+                }
+              }
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": { "required": ["verdict"], "properties": { "verdict": { "const": "NOT_RECORDED" } } },
+          "then": { "properties": { "environment": { "type": "null" }, "checks": { "maxItems": 0 } } },
+          "else": { "properties": { "environment": { "type": "object" } } }
+        }
+      ]
+    },
+    "priorFindings": {
+      "type": "array",
+      "description": "Re-review only: the prior adjudicated findings, with ids and lifecycle state.",
+      "items": { "$ref": "https://asep.dev/schema/review-finding/v1", "x-tsType": "ReviewFindingRecord" }
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maxBytes", "overBudget", "omissions"],
+      "properties": {
+        "maxBytes": { "type": "integer", "minimum": 1 },
+        "overBudget": { "type": "boolean", "description": "A decision, not a size: the packet as it would be sent, plus the parts the prompt embeds, exceeds maxBytes, or a diff did not fit its reader limit." },
+        "omissions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "reason"],
+            "properties": {
+              "path": { "type": "string", "minLength": 1 },
+              "reason": { "type": "string", "enum": ["binary", "too-large", "deleted", "submodule", "non-utf8", "unsafe-path"] }
+            }
+          }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "required": ["reviewKind"], "properties": { "reviewKind": { "const": "fresh" } } },
+      "then": { "properties": { "priorFindings": { "maxItems": 0 } } }
+    }
+  ],
+  "examples": [
+    {
+      "packetVersion": "review-packet/v1",
+      "identity": {
+        "organizationId": "01J000000000000000000ORG0",
+        "projectId": "01J000000000000000000PROJ",
+        "repositoryBindingId": "01J0000000000000000000RB0",
+        "runId": "01J0000000000000000000RUN",
+        "taskId": "01J000000000000000000TASK",
+        "attemptId": "01J0000000000000000000ATT",
+        "round": 1,
+        "roundKey": "01J0000000000000000000ATT:1"
+      },
+      "risk": "R2",
+      "reviewKind": "fresh",
+      "workOrder": {
+        "objective": "Add pagination to the users endpoint.",
+        "requirementIds": ["REQ-001"],
+        "allowedPaths": ["src/**"],
+        "forbiddenChanges": [],
+        "architectureInvariants": [],
+        "acceptanceCheckIds": ["unit"]
+      },
+      "change": {
+        "taskBaseSha": "0000000000000000000000000000000000000000",
+        "resultSha": "1111111111111111111111111111111111111111",
+        "repairBaseSha": null,
+        "cumulativeDiff": { "artifactId": "01J0000000000000000DIFF01", "sha256": "2222222222222222222222222222222222222222222222222222222222222222", "kind": "diff" },
+        "repairDelta": null,
+        "files": [
+          {
+            "path": "src/users.ts",
+            "status": "M",
+            "binary": false,
+            "postImage": { "artifactId": "01J0000000000000000BLOB01", "sha256": "3333333333333333333333333333333333333333333333333333333333333333", "kind": "blob" },
+            "lineCount": 120,
+            "omittedReason": null
+          }
+        ]
+      },
+      "execution": {
+        "verdict": "PASS",
+        "environment": { "imageDigest": "sha256:abc", "lockfileHash": "sha256:def", "nodeVersion": "v22.12.0" },
+        "checks": []
+      },
+      "priorFindings": [],
+      "budget": { "maxBytes": 262144, "overBudget": false, "omissions": [] }
+    }
+  ]
+}
