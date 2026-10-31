@@ -15,7 +15,7 @@ BASE_SHA:        f613c7f  (head of phase/02-single-agent-vertical-slice with its
                  8e71ed7, IMPLEMENTATION_COMPLETE_PILOT_PENDING, R51)
 PLAN_BRANCH:     phase/06-brownfield-hardening (lane phase-06, docs only until the plan locks)
 READ_THROUGH_GIT phase/03-durable-orchestration @ 2c63fbd (plan LOCKED v8), phase/04-independent-assurance @ e750d4c
-                 (plan LOCKED v7); phase/05-skill-context-platform @ f613c7f carries no Phase 5 plan yet (§23)
+                 (plan LOCKED v7), phase/05-skill-context-platform @ 6a4391a (plan DRAFT v1; boundary in §23)
 IMPLEMENTATION:  only after the plan locks, the controller reconciles §19 with the other lanes, and the lane
                  branches are rebased onto a Phase 3 head that carries S1 (5cc8eaf or later) (R58 item 4)
 MIGRATIONS:      0400–0499 (lane contract addendum R58); per-lane sub-ranges in §21
@@ -106,8 +106,9 @@ plans, not their worktrees.
    be left out of the commit. This is read from the code, **not reproduced**. Phase 6 needs the check for
    characterization tasks (B3) and files it as CR-X1 (§19.6). It may bear on Phase 2 exit claims; the controller
    decides.
-2. **MinIO's community repository is archived** (archived 2026-04-25, source-only, AGPLv3; research register §8).
-   The pinned image `RELEASE.2025-04-22` still resolves by digest, but receives no fixes. Phase 6 keeps it for the
+2. **MinIO's community repository is archived** (GitHub reports `archived: true`, last push 2026-04-24, AGPL-3.0;
+   research register §8). The gate pins `RELEASE.2025-04-22T22-12-26Z` by digest (`compose.yaml:52-54`); it gets no
+   further fixes, and whether the registry keeps serving that digest was not checked in this step. Phase 6 keeps it for the
    gate only and makes no store-enforced isolation claim on it (§9.3, risk P6R-08).
 3. **The metrics pipeline goes nowhere.** `deploy/otel/collector.yaml` exports metrics to `debug`; no SLO can be
    built on OTel metrics today. Phase 6 builds SLOs on PostgreSQL events and Phase 4's snapshots (§11) and leaves
@@ -171,6 +172,7 @@ documentation only.
 | Readiness score calibration | Weights and bands are policy, not a validated predictor; calibration needs outcomes over time | outcome history per module |
 | Temporal mTLS and namespace authorization; Grafana SSO | Single-host pilot on loopback (Phase 3 threat T3-01 stays open) | a multi-host deployment |
 | Automatic promotion of autonomy or releases | Never planned: promotion stays human (ADR 0011, ADR 0014) | — |
+| Non-TypeScript indexing, a coverage-based test map, containerized indexing (handed to "Phase 6" by Phase 5's §4) | Not in Days 76–90; each needs a new dependency (tree-sitter) or a sandboxed index run; Phase 5's indexer only parses and runs nothing from the repository (its D5-7) | a non-TypeScript OP5 repository whose readiness gap matters to the user; an indexer that executes repository code (§23) |
 
 ---
 
@@ -185,7 +187,7 @@ were used. The two are tracked separately and never substituted for each other.
 | SLO dashboards | catalog, evaluator, invariant checks, dashboards and alert rules load in a digest-pinned Grafana in the gate; a seeded breach fires and reaches a webhook; the deadman fires (G1–G5) | **OP2**: the dashboards and alerts live on the pilot deployment for a continuous observation window of at least **7 days** (3 days is the floor, the longest alert window, if the user chooses speed) containing at least 10 genuine pilot tasks (Phase 2 K5 definition), with a daily export of `slo_evaluations` and the alert history. It takes the window itself plus the time for a human to authorize the tasks |
 | Rollback | release rollback, worker-build drain, schema N−1 and backup/restore rehearsed on real backends (F2, F4) | **OP4**: one real candidate release through canary on the pilot with ≥3 genuine tasks in each cohort and a recorded human promote or rollback decision, plus one deliberate rollback executed on the deployment; it runs inside the OP2 window. **OP6**: the pilot's own backup restored into a scratch environment with equal traceability results; one session |
 | Incident runbook | runbook coverage test (every alert links an existing runbook section), incident tooling, executable drills for each incident class (H1–H3) | **OP3**: one game-day on the pilot deployment run by the human operator end to end — alert, incident opened, containment, evidence held, scope report, recovery, a learning item (a regression test) — recorded with timestamps; one scheduled session |
-| Brownfield onboarding | baseline, classification, scoring, autonomy enforcement, characterization on fixture repositories and the agent double (B1–B3, C1–C3) | **OP5**: a real brownfield repository onboarded read-only at a pinned SHA (baseline, readiness report, autonomy map v1 with every module L0) — hours; and one genuine characterization task to `WAITING_FOR_HUMAN_REVIEW` with a human disposition — needs the live pilot prerequisites |
+| Brownfield onboarding | baseline, classification, scoring, autonomy enforcement, characterization, secret-pattern stop on fixture repositories and the agent double (B1–B4, C1–C3) | **OP5**: a real brownfield repository onboarded read-only at a pinned SHA (baseline, readiness report, autonomy map v1 with every module L0) — hours; and one genuine characterization task to `WAITING_FOR_HUMAN_REVIEW` with a human disposition — needs the live pilot prerequisites |
 | Deployment | the recipe, role bootstrap and gates (S15) | **OP1**: the hardened deployment up on the pilot host with a test notification received by the operator; hours after the code is complete |
 
 Every operating item depends on Phase 2's pending pilot prerequisites PP1–PP4 (`phase-02-report.md:363-367`; R54,
@@ -227,6 +229,8 @@ Each carries `_UNREVIEWED` until the controller's final review accepts it. No ve
 
 ```text
 register onboarding (binding, pinned SHA, onboarding policy hash)              operator, capability onboarding:run
+→ secret-pattern scan of the pinned tree (shared patterns of scripts/lib/secret-patterns.sh; paths and pattern ids
+  recorded, never the matched text); any finding stops onboarding until a named human acknowledges it (T6-18)
 → for k = 1..K (K from policy, 3..10, default 3):
     fresh leased worktree at the pinned SHA (namespace asep-onboarding/<runId>/<k>; never pushed)
     materialize dependencies   (source none | vendored | registry; registry → profile dependency-registry, §8.2)
@@ -260,6 +264,12 @@ register onboarding (binding, pinned SHA, onboarding policy hash)              o
 - **Ecosystems.** Registry materialization supports `pnpm` and `npm` lockfiles only; any other ecosystem must declare
   `none` or `vendored`. Fetching runs with install scripts off; builds that need scripts run in the no-network sandbox
   afterwards (§8.2).
+- **Secrets already in the repository.** The scan reuses the one pattern list the repository's own scans use
+  (`scripts/lib/secret-patterns.sh`), read by a TypeScript loader that a parity test pins to the file. It runs on
+  trusted Git blob bytes at the pinned SHA and executes nothing. A finding is not fixed by the harness: the binding
+  stays `onboarding-incomplete` (so submission refuses and Phase 5 composes no index for it, §19.7 CR-P5X1) until a
+  named human records an acknowledgement. Without the scan, baseline outputs and Phase 5's lexical index would copy
+  the credential into stored artifacts.
 
 ## 7. Readiness score and module autonomy map
 
@@ -273,7 +283,9 @@ register onboarding (binding, pinned SHA, onboarding policy hash)              o
   `Σ weight_d × score_d` with weights summing to 10, so 0–100, aggregated like OpenSSF Scorecard's risk-weighted
   average (research register §14). Measured checks come from the baseline (build, tests, isolation), the repository
   at the pinned SHA (CODEOWNERS, docs presence) and trusted `git log` over a bounded window (change coupling, revert
-  ratio). Test-map checks use Phase 5's index when it is on the base (G-P5IDX); before that they are `not-evidenced`.
+  ratio). Test-map checks use Phase 5's static test map (`repository-index/v1`, read through its
+  `RepositoryIndexStore` port) when it is on the base (G-P5IDX); before that, and for any module the TypeScript-only
+  index does not cover, they are `not-evidenced`.
 - **Bands** (`brownfield-onboarding.md`): 0–30 read-only, 31–50 draft, 51–70 agent PR, 71–85 and 86–100 are bands
   whose autonomy does not exist in this harness (no auto-merge, `phase-02-plan.md` §8.1), so the recommendation is
   capped at L2 and the report says so.
@@ -311,7 +323,9 @@ harness starts records its profile id in provenance.
 ### 8.2 The registry profile
 
 The registry proxy (Node built-ins only) accepts `CONNECT host:443` for allowlisted host names, refuses IP literals,
-other ports, plain HTTP and absolute-form requests, and logs `host, port, decision, bytes` (never headers or bodies) as
+other ports, plain HTTP and absolute-form requests, refuses an allowlisted name that resolves to a loopback,
+link-local, private or metadata address (the resolved-address check of sandbox-runtime, research register §13), and
+connects to the address it checked; it logs `host, port, decision, bytes` (never headers or bodies) as
 a `dependency-egress-log` artifact. The fetch container has no other route (internal network, isolated gateway, as
 Phase 2's agent network). The package manager runs with install scripts disabled; a repository `.npmrc` with keys
 outside an allowlist fails the step closed; tarball hosts in the lockfile must be allowlisted. OS-level canaries
@@ -369,8 +383,9 @@ histories into held artifacts before that retention removes them.
 
 - **Release manifest** (`harness-release/v1`): agent image digest, CLI version, model id, egress-proxy and verification
   image digests, dependency-fetch image digest, the sha256 of each policy file the attempt path reads, the worker
-  build's Git SHA, and optional Phase 4 reviewer configuration hash and Phase 5 skill-registry snapshot id. Its id is
-  derived from its canonical bytes.
+  build's Git SHA, and optional Phase 4 reviewer configuration hash, Phase 5 context-policy hash and Phase 5 skill
+  registry pin (registry, sequence, source and trust-root hashes, the same facts `context-provenance/v1` records). Its
+  id is derived from its canonical bytes.
 - **Pools.** A worker pool reads its manifest at start and refuses to start unless its effective configuration equals
   it (CR-L3). It polls the task queue `asep-activities-<release-id prefix>`. An audit check compares every attempt's
   recorded invocation pins with its task's release; a difference is an invariant violation (page).
@@ -512,7 +527,7 @@ migration so that its catalog test covers them.
 | Slice | Lane | Deliverable | Gate | Acceptance (exit criteria) | Commit |
 |---|---|---|---|---|---|
 | S0 | phase-06 | Contracts `harness-release/v1`, `brownfield-baseline/v1`, `readiness-report/v1`, `autonomy-map/v1` (schemas, valid and invalid fixtures, `snapshots/v1` entries, generated types, `ContractName` entries, `COMPATIBILITY.md` for these four only, R7); the `packages/ports` additions of §19.1 exactly as reconciled; `packages/application/src/hardening/submission.ts`: the policy composer (most restrictive verdict wins) and the `AdmitAllSubmissionPolicy` default, with tests | G-LOCK, G-BASE | A3, and the composer half of C2 | `feat(contracts): add harness release, baseline, readiness and autonomy contracts` |
-| S1 | phase-06-h2 | Baseline step use cases (register, run K, classify, write baseline), `dependencySource: none \| vendored`; migration `0410`; repositories; sequential test driver; itest with a fixture repository holding one passing, one failing and one alternating command on real Docker, Git and PostgreSQL | S0 | B1 (none/vendored) | `feat(brownfield): record a classified baseline of approved commands at a pinned commit` |
+| S1 | phase-06-h2 | Baseline step use cases (register, secret-pattern scan with acknowledgement, run K, classify, write baseline), `dependencySource: none \| vendored`; migration `0410`; repositories; sequential test driver; itest with a fixture repository holding one passing, one failing and one alternating command, and a second fixture holding a seeded canary credential, on real Docker, Git and PostgreSQL | S0 | B1 (none/vendored), B4 | `feat(brownfield): record a classified baseline of approved commands at a pinned commit` |
 | S2 | phase-06-h2 | Scoring policy and loader, pure scorer, Git-history checks through trusted Git, attestations, autonomy map versions; migration `0411`; golden reports | S1 | C1, C3 (recording) | `feat(brownfield): score module readiness from cited evidence and version the autonomy map` |
 | S3 | phase-06-h2 | The brownfield half of `TaskSubmissionPolicy`: baseline-aware plan, autonomy admission, test-only scope detection, automatic demotion with task cancellation; real-Temporal e2e with the agent double | S2, G-P3S9, G-CR-L1, G-CR-X1 | B2, B3, C2, C3 | `feat(brownfield): admit tasks by module autonomy with baseline-aware verification plans` |
 | S4 | phase-06-h2 | `onboardingWorkflow` in the carve-out (CR-L4); registry materialization through S5's materializer; production dispatch through the engine; e2e on real Temporal | S1, S5, G-P3S8, G-CR-L4 | B1 (registry, durable) | `feat(brownfield): run onboarding as a durable workflow` |
@@ -528,7 +543,7 @@ migration so that its catalog test covers them.
 | S14 | phase-06 | Incident record (migration `0400`), use cases (open, scope report, holds through S7, history export through the carve-out), CLI and routes; itest | S7, G-P3S8 | H2 | `feat(incidents): open incidents with evidence holds, history export and a scope report` |
 | S15 | phase-06 | `deploy/pilot/**` recipe and role bootstrap; `hardening-root.ts` wiring every Phase 6 policy and decorator; backup and restore scripts with the equivalence itest | S3, S6, S7, S8, S11, G-P3S12, G-CR-L5 | F4 (backup/restore), OP1 readiness | `feat(deploy): add a production-shaped pilot deployment with backup and restore` |
 | S16 | phase-06 | Executable incident drills and rollback rehearsals (release, drain, schema N−1) on real backends | S11, S14, S15 | H3, F4 | `test(operations): rehearse incident containment and every rollback path on real backends` |
-| S17 | phase-06 | `phase-06-report.md`, `phase-06-operating-evidence.md` (OP1–OP6 ledger), preserved gate logs | last | I1–I4 | `docs(hardening): record the hardening evidence and what still needs operating time` |
+| S17 | phase-06 | `phase-06-report.md`, `phase-06-operating-evidence.md` (OP1–OP6 ledger), preserved gate logs | last; G-CR-B4 | I1–I4 | `docs(hardening): record the hardening evidence and what still needs operating time` |
 | S18 | phase-06 (optional) | Spec Kit importer trial | S0 | SHOULD only | `feat(importers): import Spec Kit feature specs as draft product specs` |
 
 Every slice: re-read its exit criteria; tests first where sensible; the smallest change; focused tests and
@@ -568,7 +583,7 @@ export type TaskSubmissionRefusal =
   | 'baseline-missing'            // the binding is baselined but has no baseline at this SHA's policy
   | 'baseline-stale'              // the task's baseSha differs from the baseline's pinned SHA
   | 'baseline-insufficient'       // a mandatory level of the task's risk has no stable-pass command
-  | 'onboarding-incomplete'       // the binding is registered for onboarding and has no autonomy map yet
+  | 'onboarding-incomplete'       // registered for onboarding, no autonomy map yet (includes a secret-scan stop)
   | 'release-unavailable';        // the assigned release has no running pool or was rolled back
 
 export type VerificationLevel = 'L0' | 'L1' | 'L2' | 'L3' | 'L4' | 'L5' | 'L6' | 'L7' | 'L8' | 'L9';
@@ -643,7 +658,7 @@ telemetry completeness, Phase 4 architecture §13).
 | CR-L1 | `submitTask` (Phase 3 S9) calls `TaskSubmissionPolicy.decide` after validating the work order and before `WorkflowEngine.submitTask`. `REFUSE` → 409 with the refusal, audited, no workflow; `ADMIT_WITH_PUBLICATION_APPROVAL` → the task input's `governance.publicationApprovalRequired` is true (OR with the run's); `checks` and routing go into the input. Default binding `AdmitAllSubmissionPolicy` from S0 | the single seam (§5) |
 | CR-L2 | `task-workflow-input/v1` 1.1.0 (§19.2); the task workflow schedules attempt-scoped activities (prepare workspace through cleanup, agent, verification, commit, publication) on `activityTaskQueue` when set; task-level activities stay on the default queue | release pools (§10) |
 | CR-L3 | `workers/temporal-worker/src/main.ts`: when `ASEP_HARNESS_RELEASE_MANIFEST` is set, call Phase 6's `assertWorkerMatchesRelease(manifest, effectiveConfig)` before `createWorker()` and poll that release's activity queue; fail at startup on mismatch | pool pinning |
-| CR-L4 | Carve-outs inside `adapters/temporal/**`, owned by Phase 6 and bound by Lane A's fitness rules (Temporal confinement, workflow purity, explicit activity options): `src/workflows/onboarding/**` (h2), `src/workflows/operations/**` and the operations schedule (h4), `src/operations/history-exporter.ts` (phase-06); one append-only registration line each in Lane A's workflow index | onboarding and operations need Temporal; only this package may import it |
+| CR-L4 | Carve-outs inside `adapters/temporal/**`, owned by Phase 6 and bound by Lane A's fitness rules (Temporal confinement, workflow purity, explicit activity options): `src/workflows/onboarding/**` (h2), `src/workflows/operations/**` and the operations schedule (h4), `src/operations/history-exporter.ts` (phase-06); one append-only registration line each in Lane A's workflow index; Phase 6's captured histories, manifest entries and `required-scenarios.json` entries appended to Lane A's replay corpus (`adapters/temporal/test-histories/`, Phase 3 architecture §6.5) in the commit that captures them | onboarding and operations need Temporal; only this package may import it |
 | CR-L5 | Composition roots (`production-root.ts`, the worker main, `pilot-main.ts`, `server-main.ts`) migrate with `ASEP_PG_MIGRATOR_URL` and serve with `ASEP_PG_URL`; a missing migrator URL fails at startup in production mode; they import `hardening-root.ts` (sibling root, R10) | role separation (§9.1) |
 | CR-L6 | Capability constants appended to the principal resolver: `onboarding:run`, `autonomy:decide`, `releases:manage`, `releases:promote`, `incidents:manage`, `retention:approve`, `credentials:kill`; `autonomy:decide`, `releases:promote` and `retention:approve` require class `human` | human-only decisions |
 | CR-L7 | One registration line in `apps/control-plane-api/src/app.ts` for Phase 6's operator routes | routes live in Phase 6 directories |
@@ -655,6 +670,7 @@ telemetry completeness, Phase 4 architecture §13).
 | CR-B1 | Carve-out inside `deploy/grafana/**` for Phase 6: `provisioning/dashboards/slo/**`, `provisioning/alerting/**` and one dashboard-provider file; Phase 6 reuses Lane B's data source uid. After `0490` the data source connects as a reader login role |
 | CR-B2 | In the integration gate's Grafana container (SR-T4): a reachable webhook receiver for alert delivery (a container on the gate network or a host-gateway route), and alert evaluation enabled |
 | CR-B3 | Phase 4's evaluator API is imported, not copied (Phase 4 architecture §13: one place for formulas); Phase 6 needs a call that evaluates one dictionary metric over an explicit window |
+| CR-B4 | Lane B's post-run proof check (SR-T3, `scripts/lib/proof-manifest.test.ts`) also reads Phase 6's mapped test names, from an append-only list or by parsing `phase-06-exit-criteria.md`; Phase 6 does not build a second JUnit check |
 
 ### 19.5 Gates, registries and build files
 
@@ -668,6 +684,8 @@ telemetry completeness, Phase 4 architecture §13).
 | CR-G6 | `.github/workflows/**`: none expected; a `timeout-minutes` raise only if measured |
 | CR-G7 | Package `index.ts` export lines (application, policy, observability, persistence) append-only (R10) |
 | CR-G8 | ADR numbers from the controller (R11 pattern): "Progressive brownfield autonomy enforced at submission" and "Harness releases as pinned worker pools with guardrail rollback" |
+| CR-G9 | `scripts/integration/**`: Phase 6 itests that start worker pools, proxies or receivers use the process registry's `spawnRecorded` and time every wait on the monotonic clock (Phase 2 test tooling; Phase 3 plan §1.4 P2-9); no change to the tooling itself |
+| CR-G10 | `packages/observability/src/audit.ts`: append-only audit actions of architecture §16 |
 
 ### 19.6 Phase 2 code (owner chosen by the controller)
 
@@ -677,7 +695,13 @@ telemetry completeness, Phase 4 architecture §13).
 
 ### 19.7 Phase 5
 
-None filed: no Phase 5 plan exists on its branch (§23). Phase 6 only reads Phase 5's ports.
+No change request to Phase 5 code. Two ordering notes for the reconciliation, because both phases touch the same
+Lane A seam and the same append-only files:
+
+| CR | Note |
+|---|---|
+| CR-P5X1 | Lane A's submit use case gets two optional dependencies: Phase 5's `contextComposer` (CR-P5-12) and Phase 6's `TaskSubmissionPolicy` (CR-L1). `decide` runs **first**: a refused task composes no context pack and writes no provenance row. Both defaults keep today's behaviour byte-identical, so either may land first |
+| CR-P5X2 | Append-only files both phases extend: `packages/ports/src/index.ts` (CR-P5-02 and §19.1), `ContractName` and `COMPATIBILITY.md` (CR-P5-01 and §19.2), `REQUIRED_SUITES`/`REQUIRED_ITEST_SUITES`, `migrations.ts`, root `tsconfig.json`, `pnpm-lock.yaml` importers, the `index.ts` export lines of application and policy, and the forbidden-imports rules. The merge is a union; neither phase reorders the other's entries |
 
 ## 20. New logical contracts (D-1)
 
@@ -689,7 +713,7 @@ false` at every level, every string constrained by `pattern`, `enum` or `format`
 | Id | Lane | Content |
 |---|---|---|
 | `0400_incidents` | phase-06 | `incidents`, `incident_scopes`, `incident_actions` |
-| `0410_brownfield_baselines` | h2 | `onboarding_runs`, `baseline_command_runs`, `baseline_classifications` |
+| `0410_brownfield_baselines` | h2 | `onboarding_runs`, `onboarding_secret_findings`, `baseline_command_runs`, `baseline_classifications` |
 | `0411_readiness_autonomy` | h2 | `readiness_reports`, `human_attestations`, `autonomy_map_versions`, `task_autonomy_decisions` |
 | `0430_retention` | h3 | `retention_holds`, `retention_sweeps`, `artifact_purges` |
 | `0431_credential_kill_switches` | h3 | `credential_kill_switches` |
@@ -712,6 +736,7 @@ Each lane owns exactly these new paths. They overlap with no Lane A, Lane B or P
 phase-06 (lead)
   packages/contracts/schema/{harness-release,brownfield-baseline,readiness-report,autonomy-map}.schema.json
   packages/contracts/fixtures/{valid,invalid}/ entries for those four   (S0; later changes via the compat gate)
+  packages/contracts/src/hardening-contracts.test.ts
   packages/application/src/hardening/**                (submission composer, default policy, incidents)
   packages/application/src/importers/spec-kit/**        (optional S18)
   adapters/persistence/src/incidents/**
@@ -756,18 +781,35 @@ sub-lane exports a factory from its own directory and the lead wires them in S15
 
 ## 23. Phase 5 boundary
 
-No Phase 5 plan is on `phase/05-skill-context-platform` (`git ls-tree` at `f613c7f`, checked in this step). Until it
-exists, the boundary is stated by assumption and re-checked before the plan locks:
+Read from `phase-05-plan.md` DRAFT v1 on `phase/05-skill-context-platform` @ `6a4391a` (its §3, §4, §14–§18). Both
+plans are drafts; the controller re-checks this section when either locks.
 
-- Phase 5 owns the repository index (lexical, AST, LSP, dependency and test maps), the signed skill registry and
-  ContextPack provenance (`90-day-plan.md:42-49`). Phase 6 builds no index of its own.
-- Phase 6 reads the index's test map for the "test strength" readiness checks (G-P5IDX). Without it those checks are
-  `not-evidenced`, which lowers the score and never raises it.
-- Phase 6 computes change coupling and revert ratio from trusted `git log` itself. If Phase 5's index provides Git
-  history maps, Phase 6 uses them instead; the controller settles it at reconciliation.
-- The harness release manifest has an optional `skillRegistrySnapshotId`; it is filled once Phase 5's registry
-  exposes snapshot ids.
-- Migrations: Phase 5 `0300`–`0399`, Phase 6 `0400`–`0499`; no shared table.
+- **Ownership.** Phase 5 owns the repository index (`adapters/repo-index/**`: files, lexical, TypeScript AST,
+  imports, LSP references, static test map), the signed skill registry (`adapters/skill-registry/**`, `skills/**`),
+  the context composer (`packages/application/src/context/**`) and its stores (`0300`–`0301`). No Phase 6 path of §22
+  overlaps its §15. Phase 6 builds no index and changes no context code.
+- **What Phase 6 reads.** The static test map, through Phase 5's `RepositoryIndexStore`, for the "test strength"
+  readiness check (G-P5IDX = Phase 5 S1, S5 and S6 on the base). Phase 5 indexes TypeScript only (its D5-6); a
+  non-TypeScript brownfield module gets `not-evidenced` for that check, which lowers its score and never raises it.
+- **Change coupling.** Phase 5 defers a Git change-coupling signal (its §4). Phase 6 computes change coupling and the
+  revert ratio from trusted `git log` itself, inside `packages/application/src/brownfield/**`, for readiness only.
+- **Items Phase 5 defers to "Phase 6".** Phase 5's §4 names Phase 6 as the pick-up point for non-TypeScript indexing
+  (tree-sitter), a coverage-based test map and containerized indexing. Phase 6 does **not** take them: they are not in
+  Days 76–90, and each needs its own dependency or sandbox work. They stay deferred (§3.3), with these conditions:
+  non-TypeScript indexing when the OP5 brownfield repository is not TypeScript and the readiness gap matters to the
+  user; a coverage test map when a sandboxed index run can reuse the onboarding sandbox of §6; containerized indexing
+  when the indexer runs anything from the repository (today it only parses, Phase 5 D5-7). Phase 6's network policy
+  records the indexer as a host process with no network of its own (Phase 5 CR-P5-09 forbids network imports there).
+- **Release pins.** The harness release manifest carries Phase 5's context-policy hash and skill-registry pin as
+  optional fields (data model §2.1); they are filled once Phase 5's context root is bound.
+- **Retention and tenancy.** Phase 5's artifact kinds (`repository-index`, `context-pack`, `context-provenance`) get
+  retention classes (data model §6), and its two tables get access classes and forced row security in `0490` like
+  every tenant table.
+- **Secrets copied from a repository.** The lexical index stores tokens of repository blobs, so a credential committed
+  to a brownfield repository is copied into a stored artifact. Onboarding scans the pinned tree first and keeps the
+  binding `onboarding-incomplete` on any finding until a human acknowledges it (§6; threat T6-18).
+- **Migrations.** Phase 5 `0300`–`0399`, Phase 6 `0400`–`0499`; no shared table. Shared append-only files and the
+  submit-seam order: §19.7.
 
 ## 24. Rollback of Phase 6 itself
 
@@ -801,7 +843,7 @@ Nothing blocks the plan. Decisions the user owns, asked without stopping work (R
 PLAN_STATUS: DRAFT v1 (plan only; awaiting the controller's Codex plan review)
 BASE_SHA: f613c7f
 SCOPE: 90-day plan Days 76–90; exit "production pilot has rollback, incident runbook and SLO dashboards"
-MUSTS: 30 code MUSTs (A1–A4, B1–B3, C1–C3, D1–D3, E1–E3, F1–F4, G1–G5, H1–H3, I1–I4) + operating evidence OP1–OP6
+MUSTS: 33 code MUSTs (A1–A4, B1–B4, C1–C3, D1–D3, E1–E3, F1–F4, G1–G5, H1–H3, I1–I4) + operating evidence OP1–OP6
 SLICES: S0–S17 (+ S18 optional) across 4 proposed lanes (§18)
 MIGRATIONS: 0400, 0410, 0411, 0430, 0431, 0450, 0451, 0490
 NEW_CONTRACTS: harness-release/v1, brownfield-baseline/v1, readiness-report/v1, autonomy-map/v1 (+ Lane A's
