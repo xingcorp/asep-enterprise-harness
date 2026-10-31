@@ -5,11 +5,13 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import {
-  mkdtempSync, mkdirSync, writeFileSync, rmSync,
+  mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, readdirSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { checkCompatibility, type SchemaNode } from './compat.js';
+import { validate } from './validate.js';
 import {
   runCompatGate,
   parseCanonicalId,
@@ -465,4 +467,125 @@ test('CYCLE5-HIGH-001 POSITIVE: a valid multi-digit major (/v42) parses', () => 
   const r = parseCanonicalId('https://asep.dev/schema/thing/v42');
   assert.ok(!('error' in r), `multi-digit major must parse: ${JSON.stringify(r)}`);
   assert.equal(String((r as { major: unknown }).major), '42');
+});
+
+// ===========================================================================
+// run-event 1.2.0: one MINOR superset of both lanes' additions.
+//
+// The expected additions are written out here from the two plans (Lane A's data
+// model §4.3 plus the three attempt-terminal fields of the default slot, and Lane
+// B's locked run-event table), not read back from the schema under test, so a
+// dropped or retyped field fails.
+// ===========================================================================
+
+const RUN_EVENT_ADDED_EVENT_TYPES = [
+  'approval.requested', 'approval.expired', 'budget.threshold_crossed', 'review.finding_dispositioned',
+] as const;
+
+const RUN_EVENT_ADDED_FIELDS: Readonly<Record<string, Readonly<Record<string, unknown>>>> = {
+  // Lane A
+  interventionKind: { type: 'string', enum: ['pause', 'resume', 'cancel', 'seal', 'approval-approve', 'approval-reject'] },
+  recoveryKind: {
+    type: 'string',
+    enum: ['activity-retry', 'side-effect-reconciled', 'fencing-takeover', 'attempt-replaced', 'workspace-rehydrated', 'decision-redelivered'],
+  },
+  approvalKind: { type: 'string', enum: ['budget-extension', 'publish-change'] },
+  budgetScope: { type: 'string', enum: ['attempt', 'task', 'run'] },
+  thresholdKind: { type: 'string', enum: ['soft', 'hard'] },
+  workflowId: { type: 'string', minLength: 1 },
+  attemptTerminal: {
+    type: 'string',
+    enum: ['verification-stopped', 'proceeded', 'repair-requested', 'escalated', 'blocked', 'agent-failed', 'budget-exhausted', 'cancelled', 'infrastructure-failed'],
+  },
+  verificationVerdict: { type: 'string', enum: ['PASS', 'FAIL', 'ERROR'] },
+  adjudicationId: { type: 'string', pattern: '^[0-9a-f]{64}$' },
+  // Lane B
+  reviewRound: { type: 'integer', minimum: 1 },
+  reviewerConfigId: { type: 'string' },
+  reviewerRole: { type: 'string', enum: ['primary', 'comparator', 'deterministic'] },
+  reviewMode: { type: 'string', enum: ['not-required', 'shadow', 'gating'] },
+  assuranceOutcome: { type: 'string', enum: ['PROCEED', 'REPAIR', 'ESCALATE', 'BLOCK'] },
+  shadowWouldBlock: { type: 'boolean' },
+  reviewFindingsUngrounded: { type: 'integer', minimum: 0 },
+  reviewFindingsBlocking: { type: 'integer', minimum: 0 },
+  reviewerFailed: { type: 'boolean' },
+  egressStopped: { type: 'boolean' },
+  reviewCostPriced: { type: 'boolean' },
+  repairRound: { type: 'boolean' },
+  repairClosedAllBlocking: { type: 'boolean' },
+  findingId: { type: 'string' },
+  findingValid: { type: 'boolean' },
+  findingDisposition: { type: 'string', enum: ['ACCEPTED', 'REJECTED', 'WAIVED'] },
+  dispositionActorKind: { type: 'string', enum: ['human', 'harness-rule'] },
+  findingSource: { type: 'string', enum: ['model', 'deterministic', 'sarif'] },
+  findingSeverity: { type: 'string', enum: ['INFO', 'LOW', 'MEDIUM', 'HIGH', 'CRITICAL'] },
+  reviewRoundCompletedAt: { type: 'string', format: 'date-time' },
+  dispositionLatencyMs: { type: 'integer', minimum: 0 },
+  assuranceUnavailable: { type: 'boolean' },
+};
+
+interface RunEventSchemaShape extends SchemaNode {
+  readonly version: string;
+  readonly $id: string;
+  readonly properties: Record<string, SchemaNode>;
+  readonly required: readonly string[];
+}
+
+function readRunEvent(dir: string): RunEventSchemaShape {
+  return JSON.parse(readFileSync(join(dir, 'run-event.schema.json'), 'utf8')) as RunEventSchemaShape;
+}
+
+test('run-event 1.2.0 carries every addition of both lanes with its declared type', () => {
+  const live = readRunEvent(join(HERE, '..', 'schema'));
+  assert.equal(live.version, '1.2.0');
+  assert.equal(live.$id, 'https://asep.dev/schema/run-event/v1');
+  const eventTypes = live.properties['eventType']?.enum ?? [];
+  for (const t of RUN_EVENT_ADDED_EVENT_TYPES) assert.ok(eventTypes.includes(t), `eventType ${t} is missing`);
+  for (const [name, expected] of Object.entries(RUN_EVENT_ADDED_FIELDS)) {
+    const actual = live.properties[name];
+    assert.ok(actual !== undefined, `field ${name} is missing`);
+    for (const [key, value] of Object.entries(expected)) {
+      assert.deepEqual(actual[key], value, `field ${name}: ${key}`);
+    }
+  }
+});
+
+test('run-event 1.2.0 is a MINOR change of the frozen snapshot and of the 1.1.0 shape', () => {
+  const live = readRunEvent(join(HERE, '..', 'schema'));
+  const snapshot = readRunEvent(join(HERE, '..', 'schema', 'snapshots', 'v1'));
+  const fromSnapshot = checkCompatibility(snapshot, live);
+  assert.equal(fromSnapshot.ok, true, fromSnapshot.message);
+  assert.equal(fromSnapshot.requiredBump, 'minor');
+  assert.equal(fromSnapshot.actualBump, 'minor');
+  assert.deepEqual([...live.required].sort(), [...snapshot.required].sort(), 'no field became required');
+
+  // 1.1.0 is the live schema without the 1.2.0 additions: removing them must leave exactly the shape published
+  // before (its two additive tenancy fields included), and putting them back must classify as MINOR only.
+  const previous = JSON.parse(JSON.stringify(live)) as { version: string; properties: Record<string, SchemaNode & { enum?: unknown[] }> };
+  previous.version = '1.1.0';
+  for (const name of Object.keys(RUN_EVENT_ADDED_FIELDS)) delete previous.properties[name];
+  const types = previous.properties['eventType']!;
+  types.enum = (types.enum ?? []).filter((t) => !(RUN_EVENT_ADDED_EVENT_TYPES as readonly unknown[]).includes(t));
+  for (const kept of ['organizationId', 'repositoryBindingId']) assert.ok(kept in previous.properties, `1.1.0 field ${kept} kept`);
+  const verdict = checkCompatibility(previous as unknown as SchemaNode, live);
+  assert.equal(verdict.ok, true, verdict.message);
+  assert.equal(verdict.requiredBump, 'minor');
+  assert.ok(verdict.changes.every((c) => c.level === 'minor' || c.level === 'none' || c.level === 'patch'), JSON.stringify(verdict.changes));
+});
+
+test('the run-event fixtures of both lanes validate, and the 1.2.0 negative fixtures are refused', () => {
+  const fixtures = join(HERE, '..', 'fixtures');
+  const valid = readdirSync(join(fixtures, 'valid')).filter((f) => /^run-event-lane-[ab]-/.test(f));
+  assert.ok(valid.some((f) => f.startsWith('run-event-lane-a-')) && valid.some((f) => f.startsWith('run-event-lane-b-')));
+  for (const file of valid) {
+    const result = validate('run-event', JSON.parse(readFileSync(join(fixtures, 'valid', file), 'utf8')));
+    assert.equal(result.valid, true, `${file}: ${JSON.stringify(result.errors)}`);
+  }
+  for (const file of [
+    'run-event-bad-attempt-terminal.json', 'run-event-bad-recovery-kind.json', 'run-event-bad-adjudication-id.json',
+    'run-event-bad-review-round.json', 'run-event-bad-finding-disposition.json',
+  ]) {
+    const result = validate('run-event', JSON.parse(readFileSync(join(fixtures, 'invalid', file), 'utf8')));
+    assert.equal(result.valid, false, `${file} must be refused`);
+  }
 });

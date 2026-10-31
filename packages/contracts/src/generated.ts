@@ -118,7 +118,7 @@ export interface ReviewReport {
 /** Immutable telemetry record emitted by the trusted harness. This is the single source catalog for every metric operand: the measurement dictionary may only reference eventType values and field names defined here. */
 export interface RunEvent {
   readonly eventId: string;
-  readonly eventType: "run.started" | "run.completed" | "task.started" | "task.completed" | "attempt.started" | "attempt.declared_complete" | "attempt.completed" | "verification.completed" | "review.completed" | "repair.started" | "integration.completed" | "deployment.completed" | "incident.opened" | "human.intervention" | "workflow.recovered";
+  readonly eventType: "run.started" | "run.completed" | "task.started" | "task.completed" | "attempt.started" | "attempt.declared_complete" | "attempt.completed" | "verification.completed" | "review.completed" | "repair.started" | "integration.completed" | "deployment.completed" | "incident.opened" | "human.intervention" | "workflow.recovered" | "approval.requested" | "approval.expired" | "budget.threshold_crossed" | "review.finding_dispositioned";
   readonly occurredAt: string;
   readonly runId: RunId;
   readonly taskId?: TaskId;
@@ -152,6 +152,37 @@ export interface RunEvent {
   readonly projectId?: ProjectId;
   readonly organizationId?: OrganizationId;
   readonly repositoryBindingId?: RepositoryBindingId;
+  readonly interventionKind?: "pause" | "resume" | "cancel" | "seal" | "approval-approve" | "approval-reject";
+  readonly recoveryKind?: "activity-retry" | "side-effect-reconciled" | "fencing-takeover" | "attempt-replaced" | "workspace-rehydrated" | "decision-redelivered";
+  readonly approvalKind?: "budget-extension" | "publish-change";
+  readonly budgetScope?: "attempt" | "task" | "run";
+  readonly thresholdKind?: "soft" | "hard";
+  readonly workflowId?: string;
+  readonly attemptTerminal?: "verification-stopped" | "proceeded" | "repair-requested" | "escalated" | "blocked" | "agent-failed" | "budget-exhausted" | "cancelled" | "infrastructure-failed";
+  readonly verificationVerdict?: "PASS" | "FAIL" | "ERROR";
+  readonly adjudicationId?: string;
+  readonly reviewRound?: number;
+  readonly reviewerConfigId?: string;
+  readonly reviewerRole?: "primary" | "comparator" | "deterministic";
+  readonly reviewMode?: "not-required" | "shadow" | "gating";
+  readonly assuranceOutcome?: "PROCEED" | "REPAIR" | "ESCALATE" | "BLOCK";
+  readonly shadowWouldBlock?: boolean;
+  readonly reviewFindingsUngrounded?: number;
+  readonly reviewFindingsBlocking?: number;
+  readonly reviewerFailed?: boolean;
+  readonly egressStopped?: boolean;
+  readonly reviewCostPriced?: boolean;
+  readonly repairRound?: boolean;
+  readonly repairClosedAllBlocking?: boolean;
+  readonly findingId?: string;
+  readonly findingValid?: boolean;
+  readonly findingDisposition?: "ACCEPTED" | "REJECTED" | "WAIVED";
+  readonly dispositionActorKind?: "human" | "harness-rule";
+  readonly findingSource?: "model" | "deterministic" | "sarif";
+  readonly findingSeverity?: "INFO" | "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+  readonly reviewRoundCompletedAt?: string;
+  readonly dispositionLatencyMs?: number;
+  readonly assuranceUnavailable?: boolean;
 }
 
 export interface SkillManifest {

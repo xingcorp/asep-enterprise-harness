@@ -231,6 +231,10 @@ importers:
       '@asep/ports':
         specifier: workspace:*
         version: link:../ports
+    devDependencies:
+      '@asep/persistence':
+        specifier: workspace:*
+        version: link:../../adapters/persistence
 
   packages/contracts:
     dependencies:
@@ -265,6 +269,9 @@ importers:
         specifier: workspace:*
         version: link:../contracts
     devDependencies:
+      '@asep/application':
+        specifier: workspace:*
+        version: link:../application
       '@asep/domain':
         specifier: workspace:*
         version: link:../domain

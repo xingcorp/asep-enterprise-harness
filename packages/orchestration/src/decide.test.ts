@@ -15,6 +15,14 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { RunId, TaskId } from '@asep/contracts';
+import {
+  PRE_LEASE_ATTEMPT_TERMINALS,
+  REVIEW_LOOP_DISABLED,
+  createDisabledAssuranceSlot,
+  runRegistrationOrderingContract,
+  type AttemptLifecycleStep,
+} from '@asep/application';
+import type * as Slot from '@asep/application';
 import { taskReachableStates, transitionTask } from '@asep/domain';
 import {
   ACTIVITY_OPTIONS,
@@ -31,16 +39,21 @@ import { isLegalProjection } from './projection.js';
 import { decideRun, startRun } from './run-core.js';
 import type { RunCommand, RunCoreInput } from './run-core.js';
 import { runTaskSequentially } from './sequential-interpreter.js';
-import type { TaskTrace } from './sequential-interpreter.js';
+import type { TaskEnvironment, TaskTrace } from './sequential-interpreter.js';
 import { decideTask, startTask, taskWorkflowId } from './task-core.js';
 import { orchestrationPolicyErrors, runInputErrors, taskInputErrors } from './validation.js';
 import {
+  NO_USAGE,
   TASK_BASE,
   TASK_BASE_BRANCH,
   TASK_REPOSITORY,
   OTHER_BINDINGS,
+  adjudicationId,
+  attemptIdFor,
   baseInput,
+  block,
   effectsOf,
+  escalate,
   fenceFor,
   governance,
   happyAnswer,
@@ -52,13 +65,31 @@ import {
   repair,
   requestKinds,
   requests,
+  roundRequest,
   scripted,
   shaFor,
 } from './test-support/fixtures.js';
 import { GIT_BRANCH_NAMES } from './test-support/git-branch-names.js';
 import type {
+  ArtifactRef,
+  AssuranceFence,
+  AssuranceMode,
+  AssuranceOutcome,
+  AssuranceOutcomeKind,
+  AssuranceUsage,
+  AttemptOutcomeFacts,
+  AttemptOutcomeRecord,
+  AttemptTerminal,
+  BlockReason,
+  CoreAssuranceRequest,
+  EscalationReason,
   FailureClass,
   ObservedPullRequest,
+  PreLeaseAttemptTerminal,
+  ReviewMode,
+  ShadowVerdict,
+  TaskCoreInput,
+  TaskOutcome,
   PublicationEffect,
   ForgeRepository,
   TaskCommand,
@@ -526,31 +557,105 @@ test('approvals: the validator rejects unknown requests, disallowed decisions, b
 // Assurance outcome validation
 // ---------------------------------------------------------------------------
 
-const CTX = { round: 1, resultSha: shaFor(1) };
+const ROUND_1: TaskRequest = {
+  kind: 'assuranceRound',
+  request: {
+    attemptNumber: 1,
+    round: 1,
+    evidenceId: 'ev-1',
+    taskBaseSha: TASK_BASE,
+    declaredComplete: true,
+    priorAdjudicationId: null,
+    idempotencyKey: 'att-1:assurance:1',
+    budgetRemaining: { costMicroUsd: 14_000_000, wallClockMs: 12_000_000 },
+  },
+};
+const CTX = { round: 1, resultSha: shaFor(1), roundKey: 'att-1:assurance:1' };
 
-test('assurance: the four outcome kinds validate', () => {
-  assert.equal(parseAssuranceOutcome(proceed(), CTX).ok, true);
-  assert.equal(parseAssuranceOutcome({ kind: 'ESCALATE', adjudicationId: 'a', reason: 'reviewer-unavailable', prBodySectionRef: ref('x') }, CTX).ok, true);
-  assert.equal(parseAssuranceOutcome({ kind: 'REPAIR', adjudicationId: 'a', repairOrderRef: ref('r'), nextRound: 2, repairBaseSha: shaFor(1) }, CTX).ok, true);
-  assert.equal(parseAssuranceOutcome({ kind: 'BLOCK', adjudicationId: 'a', reason: 'secret-in-diff' }, CTX).ok, true);
+const SHADOW_PROCEED = {
+  ...(proceed(ROUND_1) as object),
+  mode: 'shadow',
+  shadow: { wouldBe: 'REPAIR', reason: 'blocking-findings', blockingFindings: 2 },
+};
+
+test('assurance: each outcome of the slot contract validates and is read back field for field', () => {
+  const valid: readonly unknown[] = [
+    proceed(ROUND_1),
+    { ...(proceed(ROUND_1) as object), prBodySectionRef: null },
+    { ...(proceed(ROUND_1) as object), mode: 'gating' },
+    SHADOW_PROCEED,
+    { ...SHADOW_PROCEED, shadow: { wouldBe: 'PROCEED', reason: null, blockingFindings: 0 } },
+    { ...SHADOW_PROCEED, shadow: { wouldBe: 'ESCALATE', reason: 'reviewer-unavailable', blockingFindings: 0 } },
+    escalate(ROUND_1),
+    repair(ROUND_1),
+    block(ROUND_1),
+    { ...(block(ROUND_1) as object), mode: 'shadow', prBodySectionRef: ref('blocked') },
+    { ...(block(ROUND_1) as object), mode: 'not-required', reason: 'unscannable-sensitive-change' },
+    { ...(proceed(ROUND_1) as object), usage: { providerCalls: 3, inputTokens: 1200, outputTokens: 300, reviewCostMicroUsd: null } },
+  ];
+  for (const raw of valid) {
+    const parsed = parseAssuranceOutcome(raw, CTX);
+    assert.ok(parsed.ok, `${JSON.stringify(raw)}: ${parsed.ok ? '' : parsed.error}`);
+    assert.deepEqual(parsed.outcome, raw);
+  }
+});
+
+test('assurance: the parsed outcome carries exactly the contract fields; extra fields are dropped', () => {
+  const parsed = parseAssuranceOutcome({ ...(proceed(ROUND_1) as object), approvedBy: 'slot', extra: { nested: true } }, CTX);
+  assert.ok(parsed.ok);
+  assert.deepEqual(parsed.outcome, proceed(ROUND_1));
 });
 
 test('assurance: anything outside the contract is a violation', () => {
-  const bad: readonly unknown[] = [
-    null,
-    'PROCEED',
-    { kind: 'APPROVED', adjudicationId: 'a' },
-    { kind: 'PROCEED', prBodySectionRef: ref('x') },
-    { kind: 'PROCEED', adjudicationId: '', prBodySectionRef: ref('x') },
-    { kind: 'PROCEED', adjudicationId: 'a' },
-    { kind: 'PROCEED', adjudicationId: 'a', prBodySectionRef: { artifactId: 'x', sha256: 'nothex', kind: 'k' } },
-    { kind: 'ESCALATE', adjudicationId: 'a', prBodySectionRef: ref('x') },
-    { kind: 'REPAIR', adjudicationId: 'a', repairOrderRef: ref('r'), nextRound: 3, repairBaseSha: shaFor(1) },
-    { kind: 'REPAIR', adjudicationId: 'a', repairOrderRef: ref('r'), nextRound: 2, repairBaseSha: shaFor(9) },
-    { kind: 'REPAIR', adjudicationId: 'a', nextRound: 2, repairBaseSha: shaFor(1) },
-    { kind: 'BLOCK', adjudicationId: 'a' },
+  const p = { ...proceed(ROUND_1) } as Record<string, unknown>;
+  const e = { ...escalate(ROUND_1) } as Record<string, unknown>;
+  const r = { ...repair(ROUND_1) } as Record<string, unknown>;
+  const b = { ...block(ROUND_1) } as Record<string, unknown>;
+  const usage = (over: Record<string, unknown>) => ({ ...p, usage: { ...NO_USAGE, ...over } });
+  const without = (o: Record<string, unknown>, key: string) => Object.fromEntries(Object.entries(o).filter(([k]) => k !== key));
+  const bad: readonly (readonly [string, unknown])[] = [
+    ['null', null],
+    ['a string', 'PROCEED'],
+    ['an array', [p]],
+    ['an unknown kind', { ...p, kind: 'APPROVED' }],
+    ['no slot version', without(p, 'slotVersion')],
+    ['another slot version', { ...p, slotVersion: 'review-loop/v2' }],
+    ['no round key', without(p, 'roundKey')],
+    ["another round's key", { ...p, roundKey: 'att-1:assurance:2' }],
+    ["another attempt's key", { ...p, roundKey: 'att-2:assurance:1' }],
+    ['an empty adjudication id', { ...p, adjudicationId: '' }],
+    ['a short adjudication id', { ...p, adjudicationId: 'a'.repeat(63) }],
+    ['an uppercase adjudication id', { ...p, adjudicationId: 'A'.repeat(64) }],
+    ['no usage', without(p, 'usage')],
+    ['negative provider calls', usage({ providerCalls: -1 })],
+    ['fractional input tokens', usage({ inputTokens: 1.5 })],
+    ['NaN output tokens', usage({ outputTokens: Number.NaN })],
+    ['an unsafe provider-call count', usage({ providerCalls: 2 ** 53 })],
+    ['a review cost in USD', usage({ reviewCostMicroUsd: 0.25 })],
+    ['a negative review cost', usage({ reviewCostMicroUsd: -1 })],
+    ['a review cost as a string', usage({ reviewCostMicroUsd: '1' })],
+    ['an unsafe review cost', usage({ reviewCostMicroUsd: 2 ** 53 })],
+    ['PROCEED without a section field', without(p, 'prBodySectionRef')],
+    ['PROCEED with a malformed section', { ...p, prBodySectionRef: { artifactId: 'x', sha256: 'nothex', kind: 'k' } }],
+    ['PROCEED in an unknown mode', { ...p, mode: 'auto' }],
+    ['PROCEED not-required with a shadow verdict', { ...p, shadow: SHADOW_PROCEED.shadow }],
+    ['PROCEED gating with a shadow verdict', { ...p, mode: 'gating', shadow: SHADOW_PROCEED.shadow }],
+    ['PROCEED shadow without a verdict', { ...SHADOW_PROCEED, shadow: null }],
+    ['a shadow verdict that would block', { ...SHADOW_PROCEED, shadow: { ...SHADOW_PROCEED.shadow, wouldBe: 'BLOCK' } }],
+    ['a shadow verdict with an unknown reason', { ...SHADOW_PROCEED, shadow: { ...SHADOW_PROCEED.shadow, reason: 'secret-in-diff' } }],
+    ['a shadow verdict with negative findings', { ...SHADOW_PROCEED, shadow: { ...SHADOW_PROCEED.shadow, blockingFindings: -1 } }],
+    ['ESCALATE in shadow mode', { ...e, mode: 'shadow' }],
+    ['ESCALATE with an unknown reason', { ...e, reason: 'blocking-findings' }],
+    ['ESCALATE without a section', { ...e, prBodySectionRef: null }],
+    ['REPAIR in shadow mode', { ...r, mode: 'shadow' }],
+    ['REPAIR skipping a round', { ...r, nextRound: 3 }],
+    ['REPAIR at another base', { ...r, repairBaseSha: shaFor(9) }],
+    ['REPAIR without a repair order', without(r, 'repairOrderRef')],
+    ['BLOCK with an escalation reason', { ...b, reason: 'reviewer-unavailable' }],
+    ['BLOCK in an unknown mode', { ...b, mode: 'auto' }],
+    ['BLOCK with a malformed section', { ...b, prBodySectionRef: { artifactId: '', sha256: 'f'.repeat(64), kind: 'k' } }],
   ];
-  for (const raw of bad) assert.equal(parseAssuranceOutcome(raw, CTX).ok, false, JSON.stringify(raw));
+  for (const [label, raw] of bad) assert.equal(parseAssuranceOutcome(raw, CTX).ok, false, label);
 });
 
 // ---------------------------------------------------------------------------
@@ -602,7 +707,7 @@ test('agent failure: worker death during the agent replaces the attempt before a
   const ensured = requests(trace.commands).filter((r) => r.kind === 'ensureAttempt');
   assert.deepEqual(ensured.map((r) => r.kind === 'ensureAttempt' && [r.attemptNumber, r.attemptKind, r.baseSha]),
     [[1, 'initial', TASK_BASE], [2, 'retry', TASK_BASE]]);
-  assert.deepEqual(outcomes(trace), [[1, 'failed'], [2, 'proceeded']]);
+  assert.deepEqual(outcomes(trace), [[1, 'infrastructure-failed'], [2, 'proceeded']]);
   const abandon = effectsOf(trace.commands, 'reapContainers').map((e) => e.attemptNumber);
   assert.deepEqual(abandon, [1]);
   assert.ok(effectsOf(trace.commands, 'quarantineWorkspace').some((e) => e.attemptNumber === 1));
@@ -630,7 +735,7 @@ test('agent failure: a non-replaceable failure class ends the task without a new
     runAgent: () => ({ kind: 'runAgent', status: 'FAILED', reportedCostUsd: 1, reportedToolCalls: 3, wallClockMs: 1000, failureClass: 'policy-violation' }),
   }));
   assert.equal(requestKinds(trace.commands).filter((k) => k === 'ensureAttempt').length, 1);
-  assert.deepEqual(outcomes(trace), [[1, 'failed']]);
+  assert.deepEqual(outcomes(trace), [[1, 'agent-failed']]);
   assert.equal(trace.summary.outcome, 'FAILED');
 });
 
@@ -640,7 +745,7 @@ test('agent failure: once a push may exist, a failure is terminal and no attempt
   }));
   assert.equal(requestKinds(trace.commands).filter((k) => k === 'ensureAttempt').length, 1);
   assert.equal(trace.summary.outcome, 'FAILED');
-  assert.deepEqual(outcomes(trace), [[1, 'failed']]);
+  assert.deepEqual(outcomes(trace), [[1, 'infrastructure-failed']]);
 });
 
 test('agent failure: replacement stops at maxAttempts', () => {
@@ -648,7 +753,7 @@ test('agent failure: replacement stops at maxAttempts', () => {
     runAgent: () => ({ kind: 'activityFailed', failureClass: 'provider', timedOut: false }),
   }));
   assert.equal(requestKinds(trace.commands).filter((k) => k === 'ensureAttempt').length, 3);
-  assert.deepEqual(outcomes(trace), [[1, 'failed'], [2, 'failed'], [3, 'failed']]);
+  assert.deepEqual(outcomes(trace), [[1, 'infrastructure-failed'], [2, 'infrastructure-failed'], [3, 'infrastructure-failed']]);
   assert.equal(trace.summary.outcome, 'FAILED');
 });
 
@@ -666,10 +771,11 @@ function assertRegistrationFailed(trace: TaskTrace): void {
   assertLegalProjections(trace);
 }
 
-test('registration: ensureAttempt fails but the lookup finds the attempt: it ends failed with zero usage', () => {
+test('registration: ensureAttempt fails but the lookup finds the attempt: it ends infrastructure-failed, unfenced, with zero usage', () => {
   const trace = runTaskSequentially(baseInput(), scripted({ ensureAttempt: registrationFails }));
   assertRegistrationFailed(trace);
-  assert.deepEqual(outcomes(trace), [[1, 'failed']]);
+  assert.deepEqual(effectsOf(trace.commands, 'recordAttemptOutcome').map((o) => [o.attemptNumber, o.terminal, o.fence, o.failureClass]),
+    [[1, 'infrastructure-failed', null, 'environment']]);
   assert.deepEqual(effectsOf(trace.commands, 'recordUsage').map((u) => [u.attemptNumber, u.chargedCostUsd, u.chargedWallClockMinutes]), [[1, 0, 0]]);
   assert.equal(trace.summary.attempts, 1);
 });
@@ -757,7 +863,7 @@ for (const verdict of ['FAIL', 'ERROR'] as const) {
       assert.ok(!kinds.includes(k), `${k} must not run after a verification stop`);
     }
     const recorded = effectsOf(trace.commands, 'recordAttemptOutcome');
-    assert.deepEqual(recorded.map((o) => [o.terminal, o.verificationVerdict]), [['verification-failed', verdict]]);
+    assert.deepEqual(recorded.map((o) => [o.terminal, o.verificationVerdict]), [['verification-stopped', verdict]]);
     assert.equal(trace.summary.outcome, 'FAILED');
     assertLegalProjections(trace);
   });
@@ -768,7 +874,7 @@ test('a verification activity that gives up is a verification stop with verdict 
     runVerification: () => ({ kind: 'activityFailed', failureClass: 'environment', timedOut: false }),
   }));
   assert.deepEqual(effectsOf(trace.commands, 'recordAttemptOutcome').map((o) => [o.terminal, o.verificationVerdict]),
-    [['verification-failed', 'ERROR']]);
+    [['verification-stopped', 'ERROR']]);
   assert.equal(requestKinds(trace.commands).filter((k) => k === 'ensureAttempt').length, 1);
   assert.equal(trace.summary.outcome, 'FAILED');
 });
@@ -779,13 +885,13 @@ test('a verification activity that gives up is a verification stop with verdict 
 
 test('assurance routing: ESCALATE publishes a flagged PR and hands off to human review', () => {
   const trace = runTaskSequentially(baseInput(), scripted({
-    assuranceRound: () => ({ kind: 'assuranceRound', outcome: { kind: 'ESCALATE', adjudicationId: 'adj-e', reason: 'reviewer-unavailable', prBodySectionRef: ref('esc') } }),
+    assuranceRound: (r) => ({ kind: 'assuranceRound', outcome: escalate(r, 'adj-e') }),
   }));
   const pr = requests(trace.commands).find((r) => r.kind === 'upsertPullRequest');
   assert.equal(pr?.kind === 'upsertPullRequest' && pr.flagged, true);
-  assert.deepEqual(pr?.kind === 'upsertPullRequest' && pr.prBodySectionRef, ref('esc'));
+  assert.deepEqual(pr?.kind === 'upsertPullRequest' && pr.prBodySectionRef, ref('esc-adj-e'));
   assert.deepEqual(effectsOf(trace.commands, 'recordAttemptOutcome').map((o) => [o.terminal, o.adjudicationId]),
-    [['escalated', 'adj-e']]);
+    [['escalated', adjudicationId('adj-e')]]);
   assert.equal(trace.summary.outcome, 'WAITING_FOR_HUMAN_REVIEW');
 });
 
@@ -798,7 +904,7 @@ test('assurance routing: PROCEED publishes an unflagged PR carrying the assuranc
 
 test('assurance routing: BLOCK publishes nothing and blocks the task', () => {
   const trace = runTaskSequentially(baseInput(), scripted({
-    assuranceRound: () => ({ kind: 'assuranceRound', outcome: { kind: 'BLOCK', adjudicationId: 'adj-b', reason: 'secret-in-diff' } }),
+    assuranceRound: (r) => ({ kind: 'assuranceRound', outcome: block(r, 'adj-b') }),
   }));
   const kinds = requestKinds(trace.commands);
   assert.ok(!kinds.includes('publishBranch') && !kinds.includes('upsertPullRequest'));
@@ -812,7 +918,7 @@ test('assurance routing: BLOCK publishes nothing and blocks the task', () => {
 test('assurance routing: REPAIR starts a repair attempt at repairBaseSha with the next round and prior adjudication', () => {
   const trace = runTaskSequentially(baseInput(), scripted({
     assuranceRound: (r, n) => (n === 1
-      ? { kind: 'assuranceRound', outcome: { kind: 'REPAIR', adjudicationId: 'adj-r1', repairOrderRef: ref('ro-1'), nextRound: 2, repairBaseSha: shaFor(1) } }
+      ? { kind: 'assuranceRound', outcome: repair(r, 'adj-r1') }
       : undefined),
   }));
   const all = requests(trace.commands);
@@ -829,8 +935,8 @@ test('assurance routing: REPAIR starts a repair attempt at repairBaseSha with th
   assert.equal(commit2?.kind === 'commitAttempt' && commit2.expectedHeadSha, shaFor(1));
   const rounds = all.flatMap((r) => (r.kind === 'assuranceRound' ? [r.request] : []));
   assert.deepEqual(rounds.map((r) => [r.attemptNumber, r.round, r.priorAdjudicationId, r.taskBaseSha]),
-    [[1, 1, null, TASK_BASE], [2, 2, 'adj-r1', TASK_BASE]]);
-  assert.notEqual(rounds[0]!.idempotencyKey, rounds[1]!.idempotencyKey);
+    [[1, 1, null, TASK_BASE], [2, 2, adjudicationId('adj-r1'), TASK_BASE]]);
+  assert.deepEqual(rounds.map((r) => r.idempotencyKey), ['att-1:assurance:1', 'att-2:assurance:2']);
   assert.deepEqual(outcomes(trace), [[1, 'repair-requested'], [2, 'proceeded']]);
   // The parent's workspace is disposed only after the repair workspace exists.
   const prepared2At = indexOfCommand(trace.commands, (c) => c.type === 'request' && c.request.kind === 'storeAttemptInputs' && c.request.attemptNumber === 2);
@@ -846,7 +952,7 @@ test('assurance routing: REPAIR without attempt capacity fails the task and publ
   const trace = runTaskSequentially(baseInput({
     taskBudget: { maxAttempts: 1, maxCostUsd: 20, softCostUsd: 12, maxWallClockMinutes: 240 },
   }), scripted({
-    assuranceRound: () => ({ kind: 'assuranceRound', outcome: { kind: 'REPAIR', adjudicationId: 'adj-r', repairOrderRef: ref('ro'), nextRound: 2, repairBaseSha: shaFor(1) } }),
+    assuranceRound: (r) => ({ kind: 'assuranceRound', outcome: repair(r) }),
   }));
   assert.ok(!requestKinds(trace.commands).includes('publishBranch'));
   assert.equal(trace.summary.outcome, 'FAILED');
@@ -857,15 +963,17 @@ test('assurance routing: REPAIR without attempt capacity fails the task and publ
 });
 
 for (const [name, outcome] of [
-  ['an unknown kind', { kind: 'APPROVED', adjudicationId: 'x' }],
-  ['REPAIR at the wrong base', { kind: 'REPAIR', adjudicationId: 'x', repairOrderRef: ref('r'), nextRound: 2, repairBaseSha: shaFor(5) }],
-  ['REPAIR with a skipped round', { kind: 'REPAIR', adjudicationId: 'x', repairOrderRef: ref('r'), nextRound: 4, repairBaseSha: shaFor(1) }],
+  ['an unknown kind', (r: TaskRequest) => ({ ...(proceed(r) as object), kind: 'APPROVED' })],
+  ['REPAIR at the wrong base', (r: TaskRequest) => ({ ...(repair(r) as object), repairBaseSha: shaFor(5) })],
+  ['REPAIR with a skipped round', (r: TaskRequest) => ({ ...(repair(r) as object), nextRound: 4 })],
+  ["an outcome for another round's key", (r: TaskRequest) => ({ ...(proceed(r) as object), roundKey: 'att-1:assurance:2' })],
+  ['a review cost in USD', (r: TaskRequest) => ({ ...(proceed(r) as object), usage: { ...NO_USAGE, reviewCostMicroUsd: 0.5 } })],
 ] as const) {
   test(`assurance routing: ${name} is a contract violation: audited, task FAILED, nothing published`, () => {
-    const trace = runTaskSequentially(baseInput(), scripted({ assuranceRound: () => ({ kind: 'assuranceRound', outcome }) }));
+    const trace = runTaskSequentially(baseInput(), scripted({ assuranceRound: (r) => ({ kind: 'assuranceRound', outcome: outcome(r) }) }));
     assert.ok(effectsOf(trace.commands, 'audit').some((a) => a.action === 'review-slot.contract-violation'));
     assert.ok(!requestKinds(trace.commands).includes('publishBranch'));
-    assert.deepEqual(outcomes(trace), [[1, 'failed']]);
+    assert.deepEqual(outcomes(trace), [[1, 'infrastructure-failed']]);
     assert.equal(trace.summary.outcome, 'FAILED');
   });
 }
@@ -991,7 +1099,7 @@ test('with publication approval required, no push happens before an approve', ()
     whenIdle: idleScript(() => ({ type: 'approvalDecisionReceived', decisionId: 'd1', approvalRequestId: 'asep-task-task-1:1', decision: 'reject', extensionUsd: null, principalId: 'h' })),
   }));
   assert.ok(!requestKinds(rejected.commands).includes('publishBranch'));
-  assert.deepEqual(outcomes(rejected), [[1, 'failed']]);
+  assert.deepEqual(outcomes(rejected), [[1, 'cancelled']], 'a human\'s no cancels the attempt; it did not fail');
   assert.equal(rejected.summary.outcome, 'BLOCKED');
   assertLegalProjections(rejected);
 });
@@ -1429,7 +1537,7 @@ for (const [name, answer, reason, overrun] of [
       assert.ok(!kinds.includes(k), `${k} after a non-replaceable failure`);
     }
     assert.equal(ensured(trace).length, 1);
-    assert.deepEqual(outcomes(trace), [[1, 'failed']]);
+    assert.deepEqual(outcomes(trace), [[1, 'agent-failed']]);
     assert.deepEqual(effectsOf(trace.commands, 'recordOverrun').map(({ overrunUsd, overrunToolCalls }) => ({ overrunUsd, overrunToolCalls })), overrun);
     assert.equal(effectsOf(trace.commands, 'audit').filter((a) => a.action === 'budget.overrun').length, overrun.length,
       'an overrun is still audited as an incident');
@@ -1448,7 +1556,7 @@ test('agent outcome: an infrastructure error is replaced only with a fresh reser
   }), scripted({
     runAgent: () => ({ kind: 'activityFailed', failureClass: 'environment', timedOut: true }),
   }));
-  assert.deepEqual(outcomes(trace), [[1, 'failed']]);
+  assert.deepEqual(outcomes(trace), [[1, 'infrastructure-failed']]);
   assert.equal(ensured(trace).length, 1);
   assert.equal(trace.summary.outcome, 'BUDGET_EXHAUSTED');
   assert.equal(trace.summary.reason, 'task-budget');
@@ -1519,12 +1627,12 @@ function hostilePolicy(failureClass: (typeof NEVER)[number]) {
   return policy({ replaceableFailureClasses: [...DEFAULT_ORCHESTRATION_POLICY.replaceableFailureClasses, failureClass] });
 }
 
-function assertEndsAfterOneAttempt(trace: TaskTrace, reason: string): void {
+function assertEndsAfterOneAttempt(trace: TaskTrace, reason: string, terminal: 'agent-failed' | 'infrastructure-failed'): void {
   assert.equal(ensured(trace).length, 1, 'no attempt follows a never-replaceable failure');
   const kinds = requestKinds(trace.commands);
   assert.ok(!kinds.includes('publishBranch') && !kinds.includes('upsertPullRequest'), 'nothing is published');
   assert.ok(!kinds.includes('openApprovalRequest'), 'no budget-extension approval');
-  assert.deepEqual(outcomes(trace), [[1, 'failed']]);
+  assert.deepEqual(outcomes(trace), [[1, terminal]]);
   assert.equal(trace.summary.outcome, 'FAILED');
   assert.equal(trace.summary.reason, reason);
   assertLegalProjections(trace);
@@ -1536,7 +1644,7 @@ for (const never of NEVER) {
       const trace = runTaskSequentially(baseInput({ policy: hostilePolicy(never) }), scripted({
         runAgent: () => ({ kind: 'runAgent', status: 'FAILED', reportedCostUsd, reportedToolCalls: 10, wallClockMs: 1000, failureClass: never }),
       }));
-      assertEndsAfterOneAttempt(trace, never);
+      assertEndsAfterOneAttempt(trace, never, 'agent-failed');
       assert.equal(effectsOf(trace.commands, 'recordOverrun').length, reportedCostUsd > 5 ? 1 : 0, 'an overrun is still recorded');
     });
   }
@@ -1545,7 +1653,7 @@ for (const never of NEVER) {
     const trace = runTaskSequentially(baseInput({ policy: hostilePolicy(never) }), scripted({
       runAgent: () => ({ kind: 'activityFailed', failureClass: never, timedOut: false }),
     }));
-    assertEndsAfterOneAttempt(trace, never);
+    assertEndsAfterOneAttempt(trace, never, 'infrastructure-failed');
   });
 }
 
@@ -1553,7 +1661,7 @@ test('never replaceable: an overstep is a policy violation and is not retried un
   const trace = runTaskSequentially(baseInput({ policy: hostilePolicy('policy-violation') }), scripted({
     inspectWorkspace: () => ({ kind: 'inspectWorkspace', overstep: true }),
   }));
-  assertEndsAfterOneAttempt(trace, 'policy-violation');
+  assertEndsAfterOneAttempt(trace, 'policy-violation', 'agent-failed');
 });
 
 test('never replaceable: the policy rule reports each never-replaceable class and accepts the default policy', () => {
@@ -1578,7 +1686,7 @@ const decide = (decision: 'approve' | 'reject', extensionUsd: number | null) => 
 
 function repairFirst(extra: Parameters<typeof scripted>[0] = {}, hooks: Parameters<typeof scripted>[1] = {}) {
   return repairOnce({
-    assuranceRound: (r, n) => (n === 1 && r.kind === 'assuranceRound' ? { kind: 'assuranceRound', outcome: repair(1, r.request.round) } : undefined),
+    assuranceRound: (r, n) => (n === 1 ? { kind: 'assuranceRound', outcome: repair(r) } : undefined),
     ...extra,
   }, hooks);
 }
@@ -1594,7 +1702,7 @@ test('repair budget: a task-cap shortfall with approvals available waits for a b
   assert.deepEqual(ensured(trace).map((r) => [r.attemptNumber, r.attemptKind, r.baseSha, r.parentAttemptNumber, r.repairOrderRef]),
     [[1, 'initial', TASK_BASE, null, null], [2, 'repair', shaFor(1), 1, ref('ro-1')]]);
   const rounds = requests(trace.commands).flatMap((r) => (r.kind === 'assuranceRound' ? [r.request] : []));
-  assert.deepEqual(rounds.map((r) => [r.attemptNumber, r.round, r.priorAdjudicationId]), [[1, 1, null], [2, 2, 'adj-r1']]);
+  assert.deepEqual(rounds.map((r) => [r.attemptNumber, r.round, r.priorAdjudicationId]), [[1, 1, null], [2, 2, adjudicationId('adj-r1')]]);
   assert.deepEqual(outcomes(trace), [[1, 'repair-requested'], [2, 'proceeded']]);
   assert.equal(trace.summary.outcome, 'WAITING_FOR_HUMAN_REVIEW');
   assertLegalProjections(trace);
@@ -1654,8 +1762,8 @@ test('repair lineage: REPAIR, then the repair agent dies, then the replacement k
   assert.equal(commit3?.kind === 'commitAttempt' && commit3.expectedHeadSha, shaFor(1));
   const rounds = all.flatMap((r) => (r.kind === 'assuranceRound' ? [r.request] : []));
   assert.deepEqual(rounds.map((r) => [r.attemptNumber, r.round, r.priorAdjudicationId, r.taskBaseSha]),
-    [[1, 1, null, TASK_BASE], [3, 2, 'adj-r1', TASK_BASE]]);
-  assert.deepEqual(outcomes(trace), [[1, 'repair-requested'], [2, 'failed'], [3, 'proceeded']]);
+    [[1, 1, null, TASK_BASE], [3, 2, adjudicationId('adj-r1'), TASK_BASE]]);
+  assert.deepEqual(outcomes(trace), [[1, 'repair-requested'], [2, 'infrastructure-failed'], [3, 'proceeded']]);
   // The parent's worktree goes once the first lineage worktree exists; the dead repair attempt is quarantined, not deleted.
   assert.deepEqual(effectsOf(trace.commands, 'cleanupWorkspace').map((e) => e.attemptNumber), [1, 3]);
   assert.deepEqual(effectsOf(trace.commands, 'quarantineWorkspace').map((e) => e.attemptNumber), [2]);
@@ -1774,7 +1882,7 @@ function assertPublicationIncomplete(trace: TaskTrace, pushConfirmed: boolean, c
   const read = trace.events.flatMap((e) => (e.type === 'result' && e.result.kind === 'reconcilePublication' ? [e.result] : []));
   assert.equal(observed, read.length === 0 ? undefined : JSON.stringify({ branch: read[0]!.branch, pullRequests: read[0]!.pullRequests }));
   assert.ok(!effectsOf(trace.commands, 'audit').some((a) => a.action === 'workflow.cancel.after-publication'), 'no PR to leave open');
-  assert.deepEqual(outcomes(trace), [[1, 'failed']]);
+  assert.deepEqual(outcomes(trace), [[1, 'infrastructure-failed']]);
   assertLegalProjections(trace);
 }
 
@@ -2234,30 +2342,30 @@ function assertOutcomeBeforeRelease(trace: TaskTrace, expected: readonly (readon
 }
 
 const agentFails = (failureClass: FailureClass) => () => ({ kind: 'runAgent' as const, status: 'FAILED' as const, reportedCostUsd: 1, reportedToolCalls: 3, wallClockMs: 1000, failureClass });
-const firstOnly = <T,>(answer: () => T) => (_r: TaskRequest, n: number) => (n === 1 ? answer() : undefined);
+const firstOnly = <T,>(answer: (r: TaskRequest) => T) => (r: TaskRequest, n: number) => (n === 1 ? answer(r) : undefined);
 
 for (const [path, environment, expected] of [
-  ['repair', scripted({ assuranceRound: firstOnly(() => ({ kind: 'assuranceRound' as const, outcome: repair(1, 1) })) }),
+  ['repair', scripted({ assuranceRound: firstOnly((r) => ({ kind: 'assuranceRound' as const, outcome: repair(r) })) }),
     [[1, 'repair-requested'], [2, 'proceeded']]],
   ['abandon after worker death, replaced', scripted({ runAgent: firstOnly(() => ({ kind: 'activityFailed' as const, failureClass: 'environment' as const, timedOut: true })) }),
-    [[1, 'failed'], [2, 'proceeded']]],
-  ['abandon after a non-replaceable agent failure', scripted({ runAgent: agentFails('policy-violation') }), [[1, 'failed']]],
+    [[1, 'infrastructure-failed'], [2, 'proceeded']]],
+  ['abandon after a non-replaceable agent failure', scripted({ runAgent: agentFails('policy-violation') }), [[1, 'agent-failed']]],
   ['abandon after a failed workspace activity', scripted({ prepareWorkspace: firstOnly(() => ({ kind: 'activityFailed' as const, failureClass: 'environment' as const, timedOut: false })) }),
-    [[1, 'failed'], [2, 'proceeded']]],
+    [[1, 'infrastructure-failed'], [2, 'proceeded']]],
   ['abandon after a failed lease acquisition whose grant the lookup found', scripted({ acquireLease: firstOnly(() => ({ kind: 'activityFailed' as const, failureClass: 'environment' as const, timedOut: false })) }),
-    [[1, 'failed'], [2, 'proceeded']]],
+    [[1, 'infrastructure-failed'], [2, 'proceeded']]],
   ['cancel that aborts a lease acquisition whose grant the lookup found', scripted({}, { eventsDuring: (request) => (request.kind === 'acquireLease' ? [cancel()] : []) }),
     [[1, 'cancelled']]],
-  ['abandon after an overstep found by inspection', scripted({ inspectWorkspace: () => ({ kind: 'inspectWorkspace' as const, overstep: true }) }), [[1, 'failed']]],
+  ['abandon after an overstep found by inspection', scripted({ inspectWorkspace: () => ({ kind: 'inspectWorkspace' as const, overstep: true }) }), [[1, 'agent-failed']]],
   ['exhaustion at a cap', scripted({ runAgent: firstOnly(() => ({ kind: 'runAgent' as const, status: 'BUDGET_EXHAUSTED' as const, reportedCostUsd: 5, reportedToolCalls: 50, wallClockMs: 1000, failureClass: null })) }),
     [[1, 'budget-exhausted'], [2, 'proceeded']]],
-  ['verification stop', scripted({ runVerification: () => ({ kind: 'runVerification' as const, verdict: 'FAIL' as const }) }), [[1, 'verification-failed']]],
-  ['assurance BLOCK', scripted({ assuranceRound: () => ({ kind: 'assuranceRound' as const, outcome: { kind: 'BLOCK', adjudicationId: 'adj-b', reason: 'secret-in-diff' } }) }),
+  ['verification stop', scripted({ runVerification: () => ({ kind: 'runVerification' as const, verdict: 'FAIL' as const }) }), [[1, 'verification-stopped']]],
+  ['assurance BLOCK', scripted({ assuranceRound: (r) => ({ kind: 'assuranceRound' as const, outcome: block(r) }) }),
     [[1, 'blocked']]],
   ['review handoff', scripted(), [[1, 'proceeded']]],
-  ['close on an assurance contract violation', scripted({ assuranceRound: () => ({ kind: 'assuranceRound' as const, outcome: { kind: 'APPROVED', adjudicationId: 'x' } }) }),
-    [[1, 'failed']]],
-  ['close on an incomplete publication', scripted({ upsertPullRequest: publicationFails('none') }), [[1, 'failed']]],
+  ['close on an assurance contract violation', scripted({ assuranceRound: (r) => ({ kind: 'assuranceRound' as const, outcome: { ...(proceed(r) as object), kind: 'APPROVED' } }) }),
+    [[1, 'infrastructure-failed']]],
+  ['close on an incomplete publication', scripted({ upsertPullRequest: publicationFails('none') }), [[1, 'infrastructure-failed']]],
   ['cancel during the agent', scripted({}, { eventsDuring: (request) => (request.kind === 'runAgent' ? [cancel()] : []) }), [[1, 'cancelled']]],
   ['cancel during the assurance round', scripted({}, { eventsDuring: (request) => (request.kind === 'assuranceRound' ? [cancel()] : []) }), [[1, 'cancelled']]],
   ['pause timeout', scripted({}, {
@@ -2297,7 +2405,7 @@ test('lease: an acquisition that fails is settled by a lookup, and the lease fou
   assert.deepEqual(leaseTrail(trace), {
     lookups: [1, 2, 3],
     preLease: [],
-    outcomes: [[1, 'failed', fenceFor(1)], [2, 'failed', fenceFor(2)], [3, 'failed', fenceFor(3)]],
+    outcomes: [[1, 'infrastructure-failed', fenceFor(1)], [2, 'infrastructure-failed', fenceFor(2)], [3, 'infrastructure-failed', fenceFor(3)]],
     releases: [[1, fenceFor(1)], [2, fenceFor(2)], [3, fenceFor(3)]],
   });
   assert.deepEqual([trace.summary.outcome, trace.summary.reason], ['FAILED', 'attempts-exhausted']);
@@ -2326,7 +2434,7 @@ for (const cancelled of [false, true]) {
       assert.deepEqual(leaseTrail(trace), { lookups: [1], preLease: [[1, 'cancelled']], outcomes: [], releases: [] });
       assert.equal(trace.summary.outcome, 'CANCELLED');
     } else {
-      assert.deepEqual(leaseTrail(trace), { lookups: [1], preLease: [[1, 'failed']], outcomes: [[2, 'proceeded', fenceFor(2)]], releases: [[2, fenceFor(2)]] });
+      assert.deepEqual(leaseTrail(trace), { lookups: [1], preLease: [[1, 'infrastructure-failed']], outcomes: [[2, 'proceeded', fenceFor(2)]], releases: [[2, fenceFor(2)]] });
       assert.equal(trace.summary.outcome, 'WAITING_FOR_HUMAN_REVIEW', 'the attempt was abandoned and replaced');
     }
     assertLegalProjections(trace);
@@ -2350,8 +2458,8 @@ for (const cancelled of [false, true]) {
       recordPreLeaseOutcome: () => ({ kind: 'recordPreLeaseOutcome' as const, recorded: false }),
     }, { eventsDuring: during('recordPreLeaseOutcome') }));
     const expected = cancelled
-      ? { lookups: [1, 1], preLease: [[1, 'failed']], outcomes: [[1, 'failed', fenceFor(1)]], releases: [[1, fenceFor(1)]] }
-      : { lookups: [1, 1], preLease: [[1, 'failed']], outcomes: [[1, 'failed', fenceFor(1)], [2, 'proceeded', fenceFor(2)]], releases: [[1, fenceFor(1)], [2, fenceFor(2)]] };
+      ? { lookups: [1, 1], preLease: [[1, 'infrastructure-failed']], outcomes: [[1, 'infrastructure-failed', fenceFor(1)]], releases: [[1, fenceFor(1)]] }
+      : { lookups: [1, 1], preLease: [[1, 'infrastructure-failed']], outcomes: [[1, 'infrastructure-failed', fenceFor(1)], [2, 'proceeded', fenceFor(2)]], releases: [[1, fenceFor(1)], [2, fenceFor(2)]] };
     assert.deepEqual(leaseTrail(trace), expected, 'at most two lookups');
     assert.equal(trace.summary.outcome, cancelled ? 'CANCELLED' : 'WAITING_FOR_HUMAN_REVIEW');
     assertLegalProjections(trace);
@@ -2388,7 +2496,7 @@ for (const cancelled of [false, true]) {
 
 test('lease: a never-replaceable class on the failed acquisition still ends the task with that class after the lookup', () => {
   const trace = runTaskSequentially(baseInput(), scripted({ acquireLease: leaseFails('duplicate-side-effect') }));
-  assert.deepEqual(leaseTrail(trace), { lookups: [1], preLease: [], outcomes: [[1, 'failed', fenceFor(1)]], releases: [[1, fenceFor(1)]] });
+  assert.deepEqual(leaseTrail(trace), { lookups: [1], preLease: [], outcomes: [[1, 'infrastructure-failed', fenceFor(1)]], releases: [[1, fenceFor(1)]] });
   assert.deepEqual([trace.summary.outcome, trace.summary.reason], ['FAILED', 'duplicate-side-effect']);
 });
 
@@ -2403,7 +2511,7 @@ test('lease: a pause does not withhold the lease lookup or the pre-lease write',
 });
 
 test('lease: every terminal write of a leased attempt carries the fence its acquisition returned', () => {
-  const trace = runTaskSequentially(baseInput(), scripted({ assuranceRound: firstOnly(() => ({ kind: 'assuranceRound' as const, outcome: repair(1, 1) })) }));
+  const trace = runTaskSequentially(baseInput(), scripted({ assuranceRound: firstOnly((r) => ({ kind: 'assuranceRound' as const, outcome: repair(r) })) }));
   assert.deepEqual(leaseTrail(trace), {
     lookups: [], preLease: [], outcomes: [[1, 'repair-requested', fenceFor(1)], [2, 'proceeded', fenceFor(2)]], releases: [[1, fenceFor(1)], [2, fenceFor(2)]],
   });
@@ -2690,4 +2798,436 @@ test('projection: the edges touching the new statuses are the data-model additio
     'WAITING_FOR_APPROVAL->BLOCKED', 'WAITING_FOR_APPROVAL->BUDGET_EXHAUSTED', 'WAITING_FOR_APPROVAL->CANCELLED',
     'WAITING_FOR_APPROVAL->EXECUTING', 'WAITING_FOR_APPROVAL->READY', 'WAITING_FOR_APPROVAL->VERIFYING',
   ].sort());
+});
+
+// ---------------------------------------------------------------------------
+// The slot contract at the core's boundary: names, routing, terminals, registration order
+// ---------------------------------------------------------------------------
+
+/** True exactly when A and B are the same type; mutual assignability would miss readonly and optional differences. */
+type Same<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
+/** Compiles only for `true`: the type checker of verify:all is this check's oracle. */
+const sameType = <T extends true>(): T | null => null;
+
+test('slot names: the core\'s copies of the slot contract\'s types are the contract\'s types', () => {
+  sameType<Same<AttemptTerminal, Slot.AttemptTerminal>>();
+  sameType<Same<PreLeaseAttemptTerminal, Slot.PreLeaseAttemptTerminal>>();
+  sameType<Same<AssuranceFence, Slot.AssuranceFence>>();
+  sameType<Same<AssuranceOutcome, Slot.AssuranceOutcome>>();
+  sameType<Same<AssuranceOutcomeKind, Slot.AssuranceOutcome['kind']>>();
+  sameType<Same<ReviewMode, Slot.ReviewMode>>();
+  sameType<Same<EscalationReason, Slot.EscalationReason>>();
+  sameType<Same<BlockReason, Slot.BlockReason>>();
+  sameType<Same<AssuranceUsage, Slot.AssuranceUsage>>();
+  sameType<Same<ShadowVerdict, Slot.ShadowVerdict>>();
+  // Every field of the round request the core decides is the slot input's field of that name and type.
+  type RoundFields = 'round' | 'taskBaseSha' | 'declaredComplete' | 'priorAdjudicationId' | 'idempotencyKey' | 'budgetRemaining';
+  sameType<Same<Pick<CoreAssuranceRequest, RoundFields>, Pick<Slot.AssuranceSlotInput, RoundFields>>>();
+  // The terminal record: the facts the core decides, and which fence goes with which terminals.
+  type OutcomeFields = 'round' | 'declaredComplete' | 'verificationVerdict' | 'adjudicationId' | 'assuranceUnavailable';
+  sameType<Same<Pick<AttemptOutcomeFacts, OutcomeFields>, Pick<Slot.AttemptOutcomeFields, OutcomeFields>>>();
+  sameType<Same<AttemptOutcomeFacts['modelCostMicroUsd'], NonNullable<Slot.AttemptOutcomeFields['cost']>['modelCostMicroUsd']>>();
+  type Leased = Extract<AttemptOutcomeRecord, { readonly fence: AssuranceFence }>;
+  type PreLease = Extract<AttemptOutcomeRecord, { readonly fence: null }>;
+  sameType<Same<Leased['terminal'], Slot.LeasedAttemptOutcomeInput['terminal']>>();
+  sameType<Same<Leased['fence'], Slot.LeasedAttemptOutcomeInput['fence']>>();
+  sameType<Same<PreLease['terminal'], Slot.PreLeaseAttemptOutcomeInput['terminal']>>();
+  sameType<Same<PreLease['fence'], Slot.PreLeaseAttemptOutcomeInput['fence']>>();
+  // The core's failure classes are class ids the slot accepts.
+  const failureClass: Slot.AttemptOutcomeFields['failureClass'] = 'artifact-loss' satisfies FailureClass;
+  assert.equal(failureClass, 'artifact-loss');
+  assert.deepEqual([...PRE_LEASE_ATTEMPT_TERMINALS], ['cancelled', 'infrastructure-failed']);
+});
+
+const SLOT_SCOPE = { organizationId: 'org-1', projectId: 'project-1' } as unknown as Slot.AttemptOutcomeFields['scope'];
+
+/** The slot input the composition builds from a recorded terminal: the core's facts plus the durable ones. */
+function slotOutcomeInput(o: Extract<TaskEffect, { kind: 'recordAttemptOutcome' }>): Slot.AttemptOutcomeInput {
+  const fields: Slot.AttemptOutcomeFields = {
+    slotVersion: 'review-loop/v1',
+    scope: SLOT_SCOPE,
+    repositoryBindingId: 'binding-1' as Slot.AttemptOutcomeFields['repositoryBindingId'],
+    runId: 'run-1' as RunId,
+    taskId: 'task-1' as TaskId,
+    attemptId: attemptIdFor(o.attemptNumber),
+    risk: 'R0',
+    round: o.round,
+    declaredComplete: o.declaredComplete,
+    verificationVerdict: o.verificationVerdict,
+    adjudicationId: o.adjudicationId,
+    assuranceUnavailable: o.assuranceUnavailable,
+    failureClass: o.failureClass,
+    cost: { modelCostMicroUsd: o.modelCostMicroUsd, computeCostMicroUsd: null, inputTokens: 0, outputTokens: 0, toolCalls: 0 },
+  };
+  return o.fence === null ? { ...fields, fence: null, terminal: o.terminal } : { ...fields, fence: o.fence, terminal: o.terminal };
+}
+
+const SLOT_CTX: Slot.AssuranceStepContext = {
+  signal: new AbortController().signal,
+  now: () => '2026-01-01T00:00:00.000Z',
+  heartbeat: () => undefined,
+};
+
+/** Every terminal the trace records is one the slot contract accepts: Lane B's opt-out slot validates it as any slot does. */
+async function assertSlotAcceptsTerminals(trace: TaskTrace): Promise<void> {
+  const slot = createDisabledAssuranceSlot(REVIEW_LOOP_DISABLED);
+  for (const o of effectsOf(trace.commands, 'recordAttemptOutcome')) {
+    await slot.recordAttemptOutcome(slotOutcomeInput(o), SLOT_CTX);
+  }
+}
+
+interface RoutingRow {
+  readonly name: string;
+  readonly assuranceMode: AssuranceMode;
+  /** The round's answer: one of the contract's outcomes for the round the request asks for, or the activity failing. */
+  readonly answer: (r: TaskRequest) => Slot.AssuranceOutcome | 'activity-failed';
+  /** The PR the first attempt publishes (flagged, section), or null for none. */
+  readonly published: readonly [boolean, ArtifactRef | null] | null;
+  /** Per terminal: attempt, terminal, its adjudication id, assuranceUnavailable. */
+  readonly terminals: readonly (readonly [number, Slot.AttemptTerminal, string | null, boolean])[];
+  readonly task: readonly [TaskOutcome, string];
+}
+
+const SHADOW_VERDICT: Slot.ShadowVerdict = { wouldBe: 'REPAIR', reason: 'blocking-findings', blockingFindings: 2 };
+
+const ROUTING: readonly RoutingRow[] = [
+  {
+    name: 'PROCEED, not required, with a section',
+    assuranceMode: 'shadow',
+    answer: (r) => proceed(r, 'adj-p'),
+    published: [false, ref('pr-adj-p')],
+    terminals: [[1, 'proceeded', adjudicationId('adj-p'), false]],
+    task: ['WAITING_FOR_HUMAN_REVIEW', 'review-handoff'],
+  },
+  {
+    name: 'PROCEED, not required, with nothing to show (the not-configured default)',
+    assuranceMode: 'shadow',
+    answer: (r) => ({ ...proceed(r, 'adj-n'), prBodySectionRef: null }),
+    published: [false, null],
+    terminals: [[1, 'proceeded', adjudicationId('adj-n'), false]],
+    task: ['WAITING_FOR_HUMAN_REVIEW', 'review-handoff'],
+  },
+  {
+    name: 'PROCEED in shadow mode: the shadow verdict never changes the route',
+    assuranceMode: 'shadow',
+    answer: (r) => ({ ...proceed(r, 'adj-s'), mode: 'shadow', shadow: SHADOW_VERDICT }),
+    published: [false, ref('pr-adj-s')],
+    terminals: [[1, 'proceeded', adjudicationId('adj-s'), false]],
+    task: ['WAITING_FOR_HUMAN_REVIEW', 'review-handoff'],
+  },
+  {
+    name: 'PROCEED in gating mode',
+    assuranceMode: 'gating',
+    answer: (r) => ({ ...proceed(r, 'adj-g'), mode: 'gating' }),
+    published: [false, ref('pr-adj-g')],
+    terminals: [[1, 'proceeded', adjudicationId('adj-g'), false]],
+    task: ['WAITING_FOR_HUMAN_REVIEW', 'review-handoff'],
+  },
+  {
+    name: 'ESCALATE',
+    assuranceMode: 'gating',
+    answer: (r) => escalate(r, 'adj-e', 'max-repair-rounds'),
+    published: [true, ref('esc-adj-e')],
+    terminals: [[1, 'escalated', adjudicationId('adj-e'), false]],
+    task: ['WAITING_FOR_HUMAN_REVIEW', 'assurance-escalated'],
+  },
+  {
+    name: 'REPAIR, then PROCEED on the repair attempt',
+    assuranceMode: 'gating',
+    answer: (r) => (roundRequest(r).attemptNumber === 1 ? repair(r, 'adj-r') : proceed(r, 'adj-p2')),
+    published: [false, ref('pr-adj-p2')],
+    terminals: [[1, 'repair-requested', adjudicationId('adj-r'), false], [2, 'proceeded', adjudicationId('adj-p2'), false]],
+    task: ['WAITING_FOR_HUMAN_REVIEW', 'review-handoff'],
+  },
+  {
+    name: 'BLOCK in gating mode',
+    assuranceMode: 'gating',
+    answer: (r) => block(r, 'adj-b'),
+    published: null,
+    terminals: [[1, 'blocked', adjudicationId('adj-b'), false]],
+    task: ['BLOCKED', 'secret-in-diff'],
+  },
+  {
+    name: 'BLOCK in shadow mode, with a section',
+    assuranceMode: 'shadow',
+    answer: (r) => ({ ...block(r, 'adj-b', 'forbidden-path'), mode: 'shadow', prBodySectionRef: ref('blocked') }),
+    published: null,
+    terminals: [[1, 'blocked', adjudicationId('adj-b'), false]],
+    task: ['BLOCKED', 'forbidden-path'],
+  },
+  {
+    name: 'BLOCK in not-required mode',
+    assuranceMode: 'shadow',
+    answer: (r) => ({ ...block(r, 'adj-b', 'unscannable-sensitive-change'), mode: 'not-required' }),
+    published: null,
+    terminals: [[1, 'blocked', adjudicationId('adj-b'), false]],
+    task: ['BLOCKED', 'unscannable-sensitive-change'],
+  },
+  {
+    name: 'an unavailable round in shadow mode continues as PROCEED without an adjudication',
+    assuranceMode: 'shadow',
+    answer: () => 'activity-failed',
+    published: [false, null],
+    terminals: [[1, 'proceeded', null, true]],
+    task: ['WAITING_FOR_HUMAN_REVIEW', 'review-handoff'],
+  },
+  {
+    name: 'an unavailable round in gating mode continues as ESCALATE without an adjudication',
+    assuranceMode: 'gating',
+    answer: () => 'activity-failed',
+    published: [true, null],
+    terminals: [[1, 'escalated', null, true]],
+    task: ['WAITING_FOR_HUMAN_REVIEW', 'assurance-escalated'],
+  },
+];
+
+for (const row of ROUTING) {
+  test(`slot routing: ${row.name}`, async () => {
+    const trace = runTaskSequentially(baseInput({ governance: governance({ assuranceMode: row.assuranceMode }) }), scripted({
+      assuranceRound: (r) => {
+        const answer = row.answer(r);
+        return answer === 'activity-failed' ? { kind: 'activityFailed', failureClass: 'provider', timedOut: false } : { kind: 'assuranceRound', outcome: answer };
+      },
+    }));
+    const pr = requests(trace.commands).flatMap((r) => (r.kind === 'upsertPullRequest' ? [[r.flagged, r.prBodySectionRef] as const] : []));
+    assert.deepEqual(pr, row.published === null ? [] : [row.published]);
+    if (row.published === null) assert.ok(!requestKinds(trace.commands).includes('publishBranch'), 'nothing is pushed');
+    assert.deepEqual(effectsOf(trace.commands, 'recordAttemptOutcome').map((o) => [o.attemptNumber, o.terminal, o.adjudicationId, o.assuranceUnavailable]),
+      row.terminals);
+    assert.deepEqual([trace.summary.outcome, trace.summary.reason], row.task);
+    await assertSlotAcceptsTerminals(trace);
+    assertLegalProjections(trace);
+  });
+}
+
+test('slot routing: an unavailable round is reported only on the terminal that continued without it', async () => {
+  const unavailable = () => ({ kind: 'activityFailed' as const, failureClass: 'provider' as const, timedOut: false });
+  for (const [label, environment, terminal] of [
+    ['a cancel after the round', scripted({ assuranceRound: unavailable }, { eventsDuring: (request) => (request.kind === 'publishBranch' ? [cancel()] : []) }), 'cancelled'],
+    ['an incomplete publication', scripted({ assuranceRound: unavailable, upsertPullRequest: publicationFails('none') }), 'infrastructure-failed'],
+  ] as const) {
+    const trace = runTaskSequentially(baseInput(), environment);
+    assert.ok(effectsOf(trace.commands, 'audit').some((a) => a.action === 'assurance-unavailable'), `${label}: audited`);
+    assert.deepEqual(effectsOf(trace.commands, 'recordAttemptOutcome').map((o) => [o.terminal, o.adjudicationId, o.assuranceUnavailable]),
+      [[terminal, null, false]], label);
+    await assertSlotAcceptsTerminals(trace);
+  }
+});
+
+test('slot routing: REPAIR carries its base, order, round and adjudication into the repair attempt and its round', () => {
+  const trace = runTaskSequentially(baseInput({ governance: governance({ assuranceMode: 'gating' }) }), scripted({
+    assuranceRound: (r, n) => (n === 1 ? { kind: 'assuranceRound', outcome: repair(r, 'adj-r') } : undefined),
+  }));
+  const all = requests(trace.commands);
+  // The oracle is the outcome the slot returned, written out: base shaFor(1), order ro-1, next round 2.
+  assert.deepEqual(all.filter((r) => r.kind === 'ensureAttempt' && r.attemptNumber === 2), [{
+    kind: 'ensureAttempt', attemptNumber: 2, attemptKind: 'repair', baseSha: shaFor(1), parentAttemptNumber: 1, repairOrderRef: ref('ro-1'),
+  }]);
+  assert.deepEqual(all.flatMap((r) => (r.kind === 'prepareWorkspace' ? [[r.attemptNumber, r.baseSha]] : [])), [[1, TASK_BASE], [2, shaFor(1)]]);
+  assert.deepEqual(all.flatMap((r) => (r.kind === 'storeAttemptInputs' ? [[r.attemptNumber, r.repairOrderRef]] : [])), [[1, null], [2, ref('ro-1')]]);
+  assert.deepEqual(all.flatMap((r) => (r.kind === 'commitAttempt' ? [[r.attemptNumber, r.expectedHeadSha]] : [])), [[1, TASK_BASE], [2, shaFor(1)]]);
+  assert.deepEqual(all.flatMap((r) => (r.kind === 'assuranceRound'
+    ? [[r.request.attemptNumber, r.request.round, r.request.priorAdjudicationId, r.request.taskBaseSha, r.request.idempotencyKey]]
+    : [])), [
+    [1, 1, null, TASK_BASE, 'att-1:assurance:1'],
+    [2, 2, adjudicationId('adj-r'), TASK_BASE, 'att-2:assurance:2'],
+  ]);
+  assert.deepEqual(effectsOf(trace.commands, 'recordAttemptOutcome').map((o) => [o.attemptNumber, o.terminal, o.round]),
+    [[1, 'repair-requested', 1], [2, 'proceeded', 2]]);
+});
+
+test('slot money: the round request carries what the task may still spend as integer micro-USD and milliseconds', () => {
+  // Attempt 1 reports 0.1234567 USD, charged once and rounded up (123 457 micro-USD), plus the 1 USD verification
+  // reserve; 1 minute of agent plus the 10-minute reserve. Task cap 20 USD and 240 minutes, run remainder 100 USD.
+  const fractional = scripted({
+    runAgent: () => ({ kind: 'runAgent', status: 'AGENT_DONE', reportedCostUsd: 0.1234567, reportedToolCalls: 10, wallClockMs: 60_000, failureClass: null }),
+  });
+  const trace = runTaskSequentially(baseInput(), fractional);
+  const [round] = requests(trace.commands).flatMap((r) => (r.kind === 'assuranceRound' ? [r.request] : []));
+  assert.deepEqual(round?.budgetRemaining, { costMicroUsd: 20_000_000 - 123_457 - 1_000_000, wallClockMs: (240 - 1 - 10) * 60_000 });
+  assert.deepEqual(effectsOf(trace.commands, 'recordAttemptOutcome').map((o) => o.modelCostMicroUsd), [123_457]);
+  for (const value of [round!.budgetRemaining.costMicroUsd, round!.budgetRemaining.wallClockMs]) assert.ok(Number.isSafeInteger(value));
+
+  // The run remainder caps it when it is below the task cap: 7 USD less the 2 USD charged.
+  const runCapped = runTaskSequentially(baseInput({ runRemainingUsd: 7 }), scripted());
+  const [capped] = requests(runCapped.commands).flatMap((r) => (r.kind === 'assuranceRound' ? [r.request] : []));
+  assert.equal(capped?.budgetRemaining.costMicroUsd, 5_000_000);
+
+  // A repair attempt's round counts both attempts: 20 USD less 2 + 2, 240 minutes less 11 + 11.
+  const repaired = runTaskSequentially(baseInput(), scripted({ assuranceRound: (r, n) => (n === 1 ? { kind: 'assuranceRound', outcome: repair(r) } : undefined) }));
+  assert.deepEqual(requests(repaired.commands).flatMap((r) => (r.kind === 'assuranceRound' ? [r.request.budgetRemaining] : [])), [
+    { costMicroUsd: 18_000_000, wallClockMs: 229 * 60_000 },
+    { costMicroUsd: 16_000_000, wallClockMs: 218 * 60_000 },
+  ]);
+
+  // A report the core cannot use is no model cost: null, never a USD number.
+  const unusable = runTaskSequentially(baseInput(), scripted({
+    runAgent: () => ({ kind: 'runAgent', status: 'AGENT_DONE', reportedCostUsd: Number.NaN, reportedToolCalls: 10, wallClockMs: 60_000, failureClass: null }),
+  }));
+  assert.deepEqual(effectsOf(unusable.commands, 'recordAttemptOutcome').map((o) => o.modelCostMicroUsd), [null]);
+});
+
+/** One scenario per terminal of the contract's vocabulary: the exact path that ends attempt 1 with it. */
+const TERMINAL_PATHS: Readonly<Record<Slot.AttemptTerminal, () => TaskTrace>> = {
+  'verification-stopped': () => runTaskSequentially(baseInput(), scripted({ runVerification: () => ({ kind: 'runVerification', verdict: 'FAIL' }) })),
+  'proceeded': () => runTaskSequentially(baseInput(), scripted()),
+  'repair-requested': () => runTaskSequentially(baseInput(), scripted({ assuranceRound: (r, n) => (n === 1 ? { kind: 'assuranceRound', outcome: repair(r) } : undefined) })),
+  'escalated': () => runTaskSequentially(baseInput(), scripted({ assuranceRound: (r) => ({ kind: 'assuranceRound', outcome: escalate(r) }) })),
+  'blocked': () => runTaskSequentially(baseInput(), scripted({ assuranceRound: (r) => ({ kind: 'assuranceRound', outcome: block(r) }) })),
+  'agent-failed': () => runTaskSequentially(baseInput(), scripted({
+    runAgent: () => ({ kind: 'runAgent', status: 'FAILED', reportedCostUsd: 1, reportedToolCalls: 3, wallClockMs: 1000, failureClass: 'policy-violation' }),
+  })),
+  'budget-exhausted': () => runTaskSequentially(baseInput(), scripted({
+    runAgent: (_r, n) => (n === 1 ? { kind: 'runAgent', status: 'BUDGET_EXHAUSTED', reportedCostUsd: 5, reportedToolCalls: 50, wallClockMs: 1000, failureClass: null } : undefined),
+  })),
+  'cancelled': () => runTaskSequentially(baseInput(), scripted({}, { eventsDuring: (request) => (request.kind === 'runAgent' ? [cancel()] : []) })),
+  'infrastructure-failed': () => runTaskSequentially(baseInput(), scripted({ prepareWorkspace: () => ({ kind: 'activityFailed', failureClass: 'artifact-loss', timedOut: false }) })),
+};
+
+test('slot terminals: each terminal of the contract reaches recordAttemptOutcome under its own name, and the slot accepts it', async () => {
+  for (const [terminal, run] of Object.entries(TERMINAL_PATHS)) {
+    const trace = run();
+    const [first] = effectsOf(trace.commands, 'recordAttemptOutcome');
+    assert.deepEqual([first?.attemptNumber, first?.terminal], [1, terminal], terminal);
+    await assertSlotAcceptsTerminals(trace);
+  }
+});
+
+test('slot terminals: an attempt that never held a lease ends only with a pre-lease terminal of the contract', async () => {
+  const preLease = new Set<string>(PRE_LEASE_ATTEMPT_TERMINALS);
+  const unleased: TaskTrace[] = [
+    // Found registered after a failed registration: infrastructure-failed.
+    runTaskSequentially(baseInput(), scripted({ ensureAttempt: () => ({ kind: 'activityFailed', failureClass: 'environment', timedOut: false }) })),
+    // A cancel that waited for the registration: cancelled.
+    runTaskSequentially(baseInput(), scripted({}, { eventsDuring: (request) => (request.kind === 'ensureAttempt' ? [cancel()] : []) })),
+  ];
+  const written: string[] = [];
+  for (const trace of unleased) {
+    for (const o of effectsOf(trace.commands, 'recordAttemptOutcome')) {
+      assert.equal(o.fence, null);
+      written.push(o.terminal);
+    }
+    await assertSlotAcceptsTerminals(trace);
+  }
+  // A failed or aborted acquisition whose lookup finds no lease: the pre-lease write.
+  for (const environment of [
+    scripted({
+      acquireLease: (_r, n) => (n === 1 ? { kind: 'activityFailed', failureClass: 'environment', timedOut: false } : undefined),
+      findLease: () => ({ kind: 'findLease', fence: null }),
+    }),
+    scripted({ findLease: () => ({ kind: 'findLease', fence: null }) }, { eventsDuring: (request) => (request.kind === 'acquireLease' ? [cancel()] : []) }),
+  ]) {
+    const trace = runTaskSequentially(baseInput(), environment);
+    for (const r of requests(trace.commands)) if (r.kind === 'recordPreLeaseOutcome') written.push(r.terminal);
+  }
+  assert.deepEqual(written, ['infrastructure-failed', 'cancelled', 'infrastructure-failed', 'cancelled']);
+  for (const terminal of written) assert.ok(preLease.has(terminal), terminal);
+});
+
+test('slot terminals: a publish-change approval that is refused cancels the attempt, and an unavailable gate is infrastructure', () => {
+  const input = baseInput({ governance: governance({ publicationApprovalRequired: true }) });
+  const gateFails = runTaskSequentially(input, scripted({ openApprovalRequest: () => ({ kind: 'activityFailed', failureClass: 'environment', timedOut: false }) }));
+  assert.deepEqual(outcomes(gateFails), [[1, 'infrastructure-failed']]);
+  assert.deepEqual([gateFails.summary.outcome, gateFails.summary.reason], ['BLOCKED', 'publication-unavailable']);
+  const expired = runTaskSequentially(input, scripted({}, { whenIdle: idleScript((timers) => ({ type: 'timerFired', timerId: timers[0]! })) }));
+  assert.deepEqual(outcomes(expired), [[1, 'cancelled']]);
+  assert.deepEqual([expired.summary.outcome, expired.summary.reason], ['BLOCKED', 'publication-expired']);
+});
+
+// ---------------------------------------------------------------------------
+// Registration before any attempt-bound effect: the slot kit's ordering case against the workflow
+// ---------------------------------------------------------------------------
+
+/** Requests that act on an attempt; the registration and its lookup are not among them. */
+const ATTEMPT_BOUND_REQUESTS: ReadonlySet<TaskRequestKind> = new Set([
+  'acquireLease', 'findLease', 'recordPreLeaseOutcome', 'prepareWorkspace', 'storeAttemptInputs', 'runAgent', 'inspectWorkspace',
+  'runVerification', 'commitAttempt', 'persistEvidence', 'assuranceRound', 'publishBranch', 'upsertPullRequest', 'reconcilePublication',
+]);
+const ATTEMPT_BOUND_EFFECTS: ReadonlySet<TaskEffect['kind']> = new Set([
+  'recordAttemptOutcome', 'recordUsage', 'recordOverrun', 'releaseLease', 'reapContainers', 'quarantineWorkspace', 'cleanupWorkspace',
+]);
+
+/** The attempt a command acts on, if it is attempt-bound. */
+function boundAttempt(c: TaskCommand): { readonly attemptNumber: number; readonly effect: string } | null {
+  if (c.type === 'request' && ATTEMPT_BOUND_REQUESTS.has(c.request.kind)) {
+    const n = c.request.kind === 'assuranceRound' ? c.request.request.attemptNumber : (c.request as { readonly attemptNumber: number }).attemptNumber;
+    return { attemptNumber: n, effect: c.request.kind };
+  }
+  if (c.type === 'effect' && ATTEMPT_BOUND_EFFECTS.has(c.effect.kind)) {
+    return { attemptNumber: (c.effect as { readonly attemptNumber: number }).attemptNumber, effect: c.effect.kind };
+  }
+  return null;
+}
+
+/**
+ * Replays the trace through the reducer and lists, in commit order, each attempt's registration as the workflow
+ * reads it back (the ensureAttempt result, or a lookup that finds the attempt) and every attempt-bound command. An
+ * effect is named by the id the registration of its attempt number reports, which the environment fixes.
+ */
+function lifecycleSteps(input: TaskCoreInput, trace: TaskTrace): AttemptLifecycleStep[] {
+  const steps: AttemptLifecycleStep[] = [];
+  const commit = (commands: readonly TaskCommand[]): void => {
+    for (const c of commands) {
+      const bound = boundAttempt(c);
+      if (bound !== null) steps.push({ kind: 'attempt-bound-effect', attemptId: attemptIdFor(bound.attemptNumber), effect: bound.effect });
+    }
+  };
+  let decision = startTask(input);
+  commit(decision.commands);
+  for (const event of trace.events) {
+    const pending = decision.state.pending;
+    decision = decideTask(decision.state, event);
+    if (event.type === 'result' && pending?.seq === event.seq) {
+      const r = event.result;
+      if (r.kind === 'ensureAttempt' || (r.kind === 'findAttempt' && r.attemptId !== null)) {
+        steps.push({ kind: 'registration-reconciled', attemptId: r.attemptId! });
+      }
+    }
+    commit(decision.commands);
+  }
+  return steps;
+}
+
+const ORDERING_SCENARIOS: readonly (readonly [string, TaskCoreInput, TaskEnvironment])[] = [
+  ['the first attempt to review handoff', baseInput(), scripted()],
+  ['a repair attempt', baseInput(), scripted({ assuranceRound: (r, n) => (n === 1 ? { kind: 'assuranceRound', outcome: repair(r) } : undefined) })],
+  ['a cancel before the lease', baseInput(), scripted({}, { eventsDuring: (request) => (request.kind === 'ensureAttempt' ? [cancel()] : []) })],
+  ['a failed registration the lookup finds', baseInput(), scripted({ ensureAttempt: () => ({ kind: 'activityFailed', failureClass: 'environment', timedOut: false }) })],
+  ['a failed lease acquisition with no lease found', baseInput(), scripted({
+    acquireLease: (_r, n) => (n === 1 ? { kind: 'activityFailed', failureClass: 'environment', timedOut: false } : undefined),
+    findLease: () => ({ kind: 'findLease', fence: null }),
+  })],
+  ['an aborted lease acquisition', baseInput(), scripted({ findLease: () => ({ kind: 'findLease', fence: null }) }, {
+    eventsDuring: (request) => (request.kind === 'acquireLease' ? [cancel()] : []),
+  })],
+  ['a worker that dies under the agent, and the replacement', baseInput(), scripted({
+    runAgent: (_r, n) => (n === 1 ? { kind: 'activityFailed', failureClass: 'workflow-recovery-failure', timedOut: true } : undefined),
+  })],
+  ['a publication with an unknown effect, reconciled', baseInput(), scripted({ publishBranch: publicationFails('unknown') })],
+];
+
+test('registration order: no attempt-bound effect precedes its attempt\'s registration, by the slot kit\'s ordering case', async () => {
+  const results = await runRegistrationOrderingContract(ORDERING_SCENARIOS.map(([name, input, environment]) => ({
+    name,
+    run: async () => lifecycleSteps(input, runTaskSequentially(input, environment)),
+  })));
+  assert.equal(results.length, ORDERING_SCENARIOS.length);
+  for (const result of results) assert.equal(result.status, 'passed', `${result.caseId}: ${result.detail}`);
+  // The steps are those the trace committed: the first scenario registers its attempt, then binds it.
+  const steps = lifecycleSteps(baseInput(), runTaskSequentially(baseInput(), scripted()));
+  assert.deepEqual(steps[0], { kind: 'registration-reconciled', attemptId: attemptIdFor(1) });
+  assert.ok(steps.length > 1 && steps.slice(1).every((s) => s.kind === 'attempt-bound-effect'));
+  // A registration that inserted nothing commits no step at all, which the kit would refuse as an empty scenario.
+  const nothing = runTaskSequentially(baseInput(), scripted({
+    ensureAttempt: () => ({ kind: 'activityFailed', failureClass: 'environment', timedOut: false }),
+    findAttempt: () => ({ kind: 'findAttempt', attemptId: null }),
+  }));
+  assert.deepEqual(lifecycleSteps(baseInput(), nothing), []);
+});
+
+test('registration order: the ordering case fails a trace that binds an attempt the workflow never registered', async () => {
+  // A failed registration that inserted nothing, with a usage entry written for its attempt as a faulty close would.
+  const faulty: AttemptLifecycleStep[] = [{ kind: 'attempt-bound-effect', attemptId: attemptIdFor(1), effect: 'recordUsage' }];
+  const [result] = await runRegistrationOrderingContract([{ name: 'faulty close', run: async () => faulty }]);
+  assert.equal(result?.status, 'failed');
 });

@@ -1,0 +1,9 @@
+{
+  "eventId": "asep-task-task-1:7",
+  "eventType": "approval.requested",
+  "occurredAt": "2026-10-30T09:00:00Z",
+  "runId": "run-1",
+  "taskId": "task-1",
+  "approvalKind": "publish-change",
+  "workflowId": "asep-task-task-1"
+}

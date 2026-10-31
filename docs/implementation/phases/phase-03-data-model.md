@@ -451,10 +451,19 @@ optional fields `interventionKind` (`pause|resume|cancel|seal|approval-approve|a
 `approvalKind` (`budget-extension|publish-change`), `budgetScope` (`attempt|task|run`), `thresholdKind`
 (`soft|hard`), `workflowId`.
 
-Lane B part: the SR-C5 fields exactly as locked in Lane B's plan (at `a2a7b8a`: optional `reviewRound`,
-`reviewerConfigId`, `reviewMode`, `assuranceOutcome`, `reviewFindingsAdjudicated`, `reviewFindingsBlocking`,
-`repairRound`, `repairClosedAllBlocking`, `reviewerFailed`, `shadowWouldBlock`; no new `eventType`). If Lane B's
-lock changes SR-C5, S0 takes the locked list.
+Lane A also adds three optional fields of `attempt.completed`, so that the default slot's two attempt events carry
+every fact of the attempt outcome and can serve as its idempotency record (a redelivery with the same facts finds
+the same events, one with other facts finds a conflict): `attemptTerminal` (the slot contract's nine terminals),
+`verificationVerdict` (`PASS|FAIL|ERROR`) and `adjudicationId` (64 lowercase hex). They were not in this list before
+S0; S0 adds them as part of the same superset bump.
+
+Lane B part, as landed in S0: the locked SR-C5 list (identical at `287ed0f` and `70b09eb`): the new `eventType`
+`review.finding_dispositioned` and the optional fields `reviewRound`, `reviewerConfigId`, `reviewerRole`,
+`reviewMode`, `assuranceOutcome`, `shadowWouldBlock`, `reviewFindingsUngrounded`, `reviewFindingsBlocking`,
+`reviewerFailed`, `egressStopped`, `reviewCostPriced`, `repairRound`, `repairClosedAllBlocking`, `findingId`,
+`findingValid`, `findingDisposition`, `dispositionActorKind`, `findingSource`, `findingSeverity`,
+`reviewRoundCompletedAt`, `dispositionLatencyMs` and `assuranceUnavailable`. The earlier draft list (at `a2a7b8a`)
+is superseded by it.
 
 All of these are additive, so `snapshots/v1` is kept and the compat gate must classify the change as MINOR.
 Neither lane bumps `run-event` again in Phase 3/4 without a new reconciliation (R5). The metrics-dictionary
@@ -520,13 +529,17 @@ calls or measured wall-clock was not a valid amount within its bound (§3.6, arc
 ### 4.5 Lease settlement and attempt state (R29; core DTOs, no schema change)
 
 ```text
-acquireLease result:          { fence }                 (the caller's fence: the lease identity the Phase 2 primitive
-                                                         returns, opaque to the core)
+acquireLease result:          { fence: { leaseId, fencingEpoch } }   (the caller's fence: the slot contract's
+                                                         AssuranceFence, the lease id and epoch the Phase 2 primitive
+                                                         returns for the grant)
 findLease request / result:   { attemptNumber } / { fence | null }   (null: durable history shows no lease)
-recordPreLeaseOutcome request: { attemptNumber, terminal, declaredComplete, verificationVerdict, adjudicationId }
-                               (written with fence: null)
+recordPreLeaseOutcome request: { attemptNumber, round, terminal: cancelled | infrastructure-failed, declaredComplete,
+                                 verificationVerdict, adjudicationId, failureClass }   (written with fence: null)
 recordPreLeaseOutcome result:  { recorded: boolean }   (false: refused, durable history now shows a lease)
-recordAttemptOutcome effect:   { …, fence | null }      releaseLease effect: { attemptNumber, fence }
+recordAttemptOutcome effect:   { attemptNumber, round, declaredComplete, verificationVerdict, adjudicationId,
+                                 assuranceUnavailable, failureClass, modelCostMicroUsd, fence, terminal }
+                               (fence null only with cancelled or infrastructure-failed)
+releaseLease effect:           { attemptNumber, fence }
 task result (TaskSummary):     { …, unrecordedAttempts: [ { attemptNumber, idempotencyKey } ] }
 ```
 

@@ -16,5 +16,8 @@
     "@asep/policy": "workspace:*",
     "@asep/ports": "workspace:*",
     "@asep/observability": "workspace:*"
+  },
+  "devDependencies": {
+    "@asep/persistence": "workspace:*"
   }
 }

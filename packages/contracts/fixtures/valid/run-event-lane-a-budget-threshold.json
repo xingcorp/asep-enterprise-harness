@@ -1,0 +1,9 @@
+{
+  "eventId": "asep-run-01JCCCCCCCCCCCCCCCCCCCCCCC:3",
+  "eventType": "budget.threshold_crossed",
+  "occurredAt": "2026-10-30T09:00:00Z",
+  "runId": "run-1",
+  "budgetScope": "run",
+  "thresholdKind": "soft",
+  "workflowId": "asep-run-01JCCCCCCCCCCCCCCCCCCCCCCC"
+}

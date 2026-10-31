@@ -129,3 +129,16 @@ export {
   type CompleteToReviewInput,
   type CompleteToReviewResult,
 } from './pipeline-steps.js';
+
+// The review-loop slot (the locked contract both lanes share), its conformance
+// kit and scripted slot, the literal opt-out, and the orchestration
+// composition's default slot for a deployment without independent assurance.
+export * from './review-loop/slot.js';
+export { createDisabledAssuranceSlot } from './review-loop/disabled-slot.js';
+export * from './review-loop/review-loop-contract.js';
+export {
+  NotConfiguredAssuranceSlot,
+  AssuranceUnavailableError,
+  attemptTerminalEvents,
+} from './orchestration-activities/not-configured-slot.js';
+export { recordPreLeaseOutcome, type PreLeaseOutcomeResult } from './orchestration-activities/pre-lease-outcome.js';

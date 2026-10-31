@@ -631,7 +631,9 @@ Real-Temporal proofs in `workers/temporal-worker/src/e2e/assurance-slot.itest.ts
 - [ ] J2. `NotConfiguredAssuranceSlot` gives `PROCEED`/`not-required` for R0 and R1 and fails closed
       (`AssuranceUnavailableError`) for any risk that requires review. It is distinct from Lane B's
       `DisabledAssuranceSlot`, the explicit opt-out (R18). It passes the S0 conformance kit
-      (`asep-suite:assurance-slot-contract`). Terminal names follow the locked block at hand-off.
+      (`asep-suite:assurance-slot-contract`). Terminal names are the locked block's
+      (`verification-stopped`, `proceeded`, `repair-requested`, `escalated`, `blocked`, `agent-failed`,
+      `budget-exhausted`, `cancelled`, `infrastructure-failed`), in the core since S0 (O5).
 - [ ] J3. Outcome mapping:
       - `PROCEED` → publish → PR carrying the section → `WAITING_FOR_HUMAN_REVIEW`;
       - `ESCALATE` → publish → PR flagged "assurance not satisfied" → `WAITING_FOR_HUMAN_REVIEW`;

@@ -4,12 +4,15 @@
 // directly, but every value must survive JSON round-trips and replay, so there
 // are no classes, Maps, Sets or functions in state, commands or events.
 //
-// Two groups are deliberately local and provisional:
+// Two groups are deliberately local:
 //   - ProjectedTaskStatus mirrors TaskStatus plus PAUSED, WAITING_FOR_APPROVAL and
 //     BUDGET_EXHAUSTED, until the contracts extension lands and TaskStatus carries
 //     them itself;
-//   - the Core* assurance types mirror only the fields of the review-loop slot
-//     contract that the core reads, until the shared contract text replaces them.
+//   - the review-loop slot types (the round outcome, the fence, the attempt
+//     terminals) carry the names and shapes of the locked slot contract in
+//     packages/application/src/review-loop/slot.ts. They are copies, because the
+//     core's production source imports only contracts and ports; a type-level test
+//     holds each copy equal to the contract's.
 
 import type { ArtifactRef, AttemptId, Budget, RiskLevel, RunId, TaskId } from '@asep/contracts';
 
@@ -75,51 +78,122 @@ export type AttemptKind = 'initial' | 'retry' | 'repair';
 export type AgentStatus = 'AGENT_DONE' | 'FAILED' | 'BLOCKED' | 'BUDGET_EXHAUSTED';
 export type VerificationVerdict = 'PASS' | 'FAIL' | 'ERROR';
 
-/** Attempt terminals reported through the slot's recordAttemptOutcome (architecture §12). */
+/** Attempt terminals reported through the slot's recordAttemptOutcome (architecture §12): the slot contract's. */
 export type AttemptTerminal =
-  | 'verification-failed'
+  | 'verification-stopped'
   | 'proceeded'
   | 'repair-requested'
   | 'escalated'
   | 'blocked'
+  | 'agent-failed'
   | 'budget-exhausted'
-  | 'failed'
-  | 'cancelled';
+  | 'cancelled'
+  | 'infrastructure-failed';
+
+/** The only terminals of an attempt that never held a lease, written with fence null. */
+export type PreLeaseAttemptTerminal = 'cancelled' | 'infrastructure-failed';
 
 export type ApprovalKind = 'budget-extension' | 'publish-change';
 export type ApprovalDecisionValue = 'approve' | 'reject';
 
-// --- review-loop slot (core-local view) -------------------------------------
+// --- review-loop slot (the contract's names and shapes) ------------------------
 
-export type AssuranceOutcomeKind = 'PROCEED' | 'REPAIR' | 'ESCALATE' | 'BLOCK';
+export type ReviewLoopSlotVersion = 'review-loop/v1';
 
-/** The fields of one assurance outcome that the core reads. Validated from `unknown`. */
-export type CoreAssuranceOutcome =
-  | {
-      readonly kind: 'PROCEED';
-      readonly adjudicationId: string;
-      readonly prBodySectionRef: ArtifactRef;
-    }
-  | {
-      readonly kind: 'ESCALATE';
-      readonly adjudicationId: string;
-      readonly reason: string;
-      readonly prBodySectionRef: ArtifactRef;
-    }
-  | {
-      readonly kind: 'REPAIR';
-      readonly adjudicationId: string;
-      readonly repairOrderRef: ArtifactRef;
-      readonly nextRound: number;
-      readonly repairBaseSha: string;
-    }
-  | {
-      readonly kind: 'BLOCK';
-      readonly adjudicationId: string;
-      readonly reason: string;
-    };
+/** The caller's fence on its workspace lease: the lease primitive's lease id and fencing epoch. */
+export interface AssuranceFence {
+  readonly leaseId: string;
+  readonly fencingEpoch: number;
+}
 
-/** What the core decides about one assurance round; the activity adds the durable facts. */
+export type ReviewMode = 'not-required' | 'shadow' | 'gating';
+
+export type EscalationReason =
+  | 'packet-over-budget'
+  | 'egress-stopped'
+  | 'independence-unsatisfiable'
+  | 'reviewer-unavailable'
+  | 'reviewer-escalated'
+  | 'max-repair-rounds'
+  | 'budget-exhausted';
+
+export type BlockReason = 'secret-in-diff' | 'forbidden-path' | 'unscannable-sensitive-change';
+
+export interface AssuranceUsage {
+  readonly providerCalls: number;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  /** Integer micro-USD; null when a call of the round has no configured price. */
+  readonly reviewCostMicroUsd: number | null;
+}
+
+/** What gating mode would have decided; recorded only. */
+export interface ShadowVerdict {
+  readonly wouldBe: 'PROCEED' | 'REPAIR' | 'ESCALATE';
+  readonly reason: EscalationReason | 'blocking-findings' | null;
+  readonly blockingFindings: number;
+}
+
+export interface AssuranceOutcomeBase {
+  readonly slotVersion: ReviewLoopSlotVersion;
+  /** Equals the request's idempotency key. */
+  readonly roundKey: string;
+  /** 64 lowercase hex. */
+  readonly adjudicationId: string;
+  readonly usage: AssuranceUsage;
+}
+
+export interface ProceedOutcomeFields extends AssuranceOutcomeBase {
+  readonly kind: 'PROCEED';
+  /** Null when the round has nothing to show. */
+  readonly prBodySectionRef: ArtifactRef | null;
+}
+
+export interface ShadowProceedOutcome extends ProceedOutcomeFields {
+  readonly mode: 'shadow';
+  readonly shadow: ShadowVerdict;
+}
+
+export interface DecidedProceedOutcome extends ProceedOutcomeFields {
+  readonly mode: 'gating' | 'not-required';
+  readonly shadow: null;
+}
+
+export type ProceedOutcome = ShadowProceedOutcome | DecidedProceedOutcome;
+
+export interface RepairOutcome extends AssuranceOutcomeBase {
+  readonly kind: 'REPAIR';
+  readonly mode: 'gating';
+  readonly repairOrderRef: ArtifactRef;
+  /** The round plus one. */
+  readonly nextRound: number;
+  /** The attempt's harness commit. */
+  readonly repairBaseSha: string;
+}
+
+export interface EscalateOutcome extends AssuranceOutcomeBase {
+  readonly kind: 'ESCALATE';
+  readonly mode: 'gating';
+  readonly reason: EscalationReason;
+  readonly prBodySectionRef: ArtifactRef;
+}
+
+export interface BlockOutcome extends AssuranceOutcomeBase {
+  readonly kind: 'BLOCK';
+  readonly mode: ReviewMode;
+  readonly reason: BlockReason;
+  readonly prBodySectionRef: ArtifactRef | null;
+}
+
+/** One assurance round's outcome. It arrives as `unknown` and is validated field by field. */
+export type AssuranceOutcome = ProceedOutcome | RepairOutcome | EscalateOutcome | BlockOutcome;
+
+export type AssuranceOutcomeKind = AssuranceOutcome['kind'];
+
+/**
+ * What the core decides about one assurance round, under the slot input's names; the activity adds the durable
+ * facts (scope, ids, refs, implementer and the fence).
+ */
 export interface CoreAssuranceRequest {
   readonly attemptNumber: number;
   readonly round: number;
@@ -127,7 +201,10 @@ export interface CoreAssuranceRequest {
   readonly taskBaseSha: string;
   readonly declaredComplete: boolean;
   readonly priorAdjudicationId: string | null;
+  /** `<attemptId>:assurance:<round>`. */
   readonly idempotencyKey: string;
+  /** What the task may still spend, from the core's integer ledger: micro-USD and milliseconds. */
+  readonly budgetRemaining: { readonly costMicroUsd: number | null; readonly wallClockMs: number };
 }
 
 // --- task workflow input ------------------------------------------------------
@@ -204,9 +281,6 @@ export interface TaskCoreInput {
 
 // --- requests: activities whose result drives the next decision --------------
 
-/** The caller's fence: the lease identity the Phase 2 primitive returns for a grant. Opaque to the core, which carries it. */
-export type LeaseFence = string;
-
 export type TaskRequest =
   | { readonly kind: 'admitTask'; readonly risk: RiskLevel }
   | {
@@ -229,10 +303,12 @@ export type TaskRequest =
   | {
       readonly kind: 'recordPreLeaseOutcome';
       readonly attemptNumber: number;
-      readonly terminal: AttemptTerminal;
+      readonly round: number;
+      readonly terminal: PreLeaseAttemptTerminal;
       readonly declaredComplete: boolean;
       readonly verificationVerdict: VerificationVerdict | null;
       readonly adjudicationId: string | null;
+      readonly failureClass: FailureClass | null;
     }
   | { readonly kind: 'prepareWorkspace'; readonly attemptNumber: number; readonly baseSha: string }
   | {
@@ -265,7 +341,10 @@ export type TaskRequest =
       /** The PR's base: the task input's base branch. */
       readonly baseBranch: string;
       readonly flagged: boolean;
-      /** Null when the assurance round was unavailable; the PR body then says so. */
+      /**
+       * Null when the round had nothing to show (a `PROCEED` without a section) or was unavailable; the audit trail
+       * tells the two apart.
+       */
       readonly prBodySectionRef: ArtifactRef | null;
     }
   | {
@@ -307,6 +386,28 @@ export type RunEventType =
   | 'approval.expired'
   | 'budget.threshold_crossed';
 
+/** The facts of one attempt terminal that only the workflow knows, under the slot's attempt-outcome names. */
+export interface AttemptOutcomeFacts {
+  readonly attemptNumber: number;
+  readonly round: number;
+  readonly declaredComplete: boolean;
+  readonly verificationVerdict: VerificationVerdict | null;
+  readonly adjudicationId: string | null;
+  /** The round failed and the attempt continued as `proceeded` or `escalated` without an adjudication. */
+  readonly assuranceUnavailable: boolean;
+  readonly failureClass: FailureClass | null;
+  /** The agent's reported model cost in integer micro-USD, rounded up once; null when it reported none usable. */
+  readonly modelCostMicroUsd: number | null;
+}
+
+/**
+ * An attempt terminal as the core records it: with the caller's fence of the lease the attempt holds or held, or
+ * with none, and then only with a pre-lease terminal, for an attempt that never held a lease.
+ */
+export type AttemptOutcomeRecord =
+  | (AttemptOutcomeFacts & { readonly fence: AssuranceFence; readonly terminal: AttemptTerminal })
+  | (AttemptOutcomeFacts & { readonly fence: null; readonly terminal: PreLeaseAttemptTerminal });
+
 export type TaskEffect =
   | { readonly kind: 'projectTaskState'; readonly projectionSeq: number; readonly status: ProjectedTaskStatus }
   | {
@@ -316,16 +417,7 @@ export type TaskEffect =
       readonly attemptNumber: number | null;
       readonly detail: RunEventDetail;
     }
-  | {
-      readonly kind: 'recordAttemptOutcome';
-      readonly attemptNumber: number;
-      /** The caller's fence of the lease the attempt holds or held; null only for an attempt that never asked for one. */
-      readonly fence: LeaseFence | null;
-      readonly terminal: AttemptTerminal;
-      readonly declaredComplete: boolean;
-      readonly verificationVerdict: VerificationVerdict | null;
-      readonly adjudicationId: string | null;
-    }
+  | ({ readonly kind: 'recordAttemptOutcome' } & AttemptOutcomeRecord)
   | {
       readonly kind: 'recordUsage';
       readonly attemptNumber: number;
@@ -352,7 +444,7 @@ export type TaskEffect =
   | { readonly kind: 'reapContainers'; readonly attemptNumber: number }
   | { readonly kind: 'quarantineWorkspace'; readonly attemptNumber: number; readonly reason: string }
   | { readonly kind: 'cleanupWorkspace'; readonly attemptNumber: number }
-  | { readonly kind: 'releaseLease'; readonly attemptNumber: number; readonly fence: LeaseFence }
+  | { readonly kind: 'releaseLease'; readonly attemptNumber: number; readonly fence: AssuranceFence }
   | { readonly kind: 'expireApprovalRequest'; readonly approvalRequestId: string }
   | { readonly kind: 'cancelApprovalRequest'; readonly approvalRequestId: string }
   | {
@@ -398,10 +490,13 @@ export type TaskResult =
     }
   /** Null: no attempt row exists, so the failed registration never inserted one. */
   | { readonly kind: 'findAttempt'; readonly attemptId: AttemptId | null }
-  | { readonly kind: 'acquireLease'; readonly fence: LeaseFence }
+  | { readonly kind: 'acquireLease'; readonly fence: AssuranceFence }
   /** Null: durable history shows no lease of the attempt. */
-  | { readonly kind: 'findLease'; readonly fence: LeaseFence | null }
-  /** False: refused, because durable history now shows a lease (a grant committed after the lookup). */
+  | { readonly kind: 'findLease'; readonly fence: AssuranceFence | null }
+  /**
+   * False: refused, because durable history now shows a lease (a grant committed after the lookup); the slot's
+   * `lease-granted` refusal, never an activity failure.
+   */
   | { readonly kind: 'recordPreLeaseOutcome'; readonly recorded: boolean }
   | { readonly kind: 'prepareWorkspace' }
   | { readonly kind: 'storeAttemptInputs' }
@@ -542,6 +637,8 @@ export interface RepairLineage {
 export interface AgentUsage {
   readonly chargedMicroUsd: number;
   readonly reportedCostUsd: number | null;
+  /** The reported cost in micro-USD, rounded up; null when it is not an amount within the bound. */
+  readonly reportedMicroUsd: number | null;
   readonly minutes: number;
 }
 
@@ -572,7 +669,7 @@ export interface AttemptState {
   readonly stateUnknown: boolean;
   readonly leaseRequested: boolean;
   /** The fence of the lease the attempt holds or held, from acquireLease or findLease; null while none is known. */
-  readonly fence: LeaseFence | null;
+  readonly fence: AssuranceFence | null;
   readonly leaseReleased: boolean;
   readonly workspaceRequested: boolean;
   readonly workspaceActive: boolean;
@@ -590,6 +687,10 @@ export interface AttemptState {
   readonly resultSha: string | null;
   readonly evidenceId: string | null;
   readonly adjudicationId: string | null;
+  /** The assurance round failed and the attempt continued without an adjudication (audited `assurance-unavailable`). */
+  readonly assuranceUnavailable: boolean;
+  /** The failure class the attempt ended on; null while none is known. */
+  readonly failureClass: FailureClass | null;
   readonly outcomeRecorded: boolean;
   readonly usageRecorded: boolean;
 }

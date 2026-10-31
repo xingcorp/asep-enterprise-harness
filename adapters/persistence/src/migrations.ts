@@ -1104,6 +1104,49 @@ alter table command_executions add constraint command_executions_stderr_ref_fk
   references artifacts (id, organization_id, project_id, sha256, kind);
 `;
 
+// ---------------------------------------------------------------------------
+// 0107 — run_events: the append-only store of operational run events.
+//
+// One row per event of a real run, keyed by the tenant and the producer's
+// deterministic event id. The payload is the full RunEvent, validated against
+// the run-event schema before insert, with the sha256 of its canonical bytes:
+// a second write of the same id with the same bytes is a no-op, with other
+// bytes a conflict (the sink compares the hashes; no row is ever updated). The
+// scoped run FK keeps measurement and replay data, which has no runs row, out
+// of this table. A trigger refuses every UPDATE and DELETE with SQLSTATE 55000.
+// The id 0107 lies above the orchestration migrations 0100–0106 that land
+// later; the migrator applies each missing id, so either order converges.
+// ---------------------------------------------------------------------------
+const M0107 = `
+create table run_events (
+  organization_id char(26) not null,
+  project_id      char(26) not null,
+  event_id        text not null,
+  event_type      text not null,
+  schema_version  text not null,
+  occurred_at     timestamptz not null,
+  run_id          char(26) not null,
+  task_id         char(26),
+  attempt_id      char(26),
+  payload         jsonb not null,
+  payload_sha256  text not null check (payload_sha256 ~ '^[0-9a-f]{64}$'),
+  inserted_at     timestamptz not null default now(),
+  constraint run_events_pkey primary key (organization_id, project_id, event_id),
+  constraint run_events_run_scoped_fk foreign key (run_id, organization_id, project_id)
+    references runs (id, organization_id, project_id)
+);
+create index run_events_type_time on run_events (organization_id, project_id, event_type, occurred_at);
+create index run_events_run on run_events (organization_id, project_id, run_id, occurred_at);
+
+create function run_events_reject_mutation() returns trigger language plpgsql as $$
+begin
+  raise exception 'run_events is append-only (% rejected)', tg_op using errcode = '55000';
+end $$;
+create trigger run_events_append_only
+  before update or delete on run_events
+  for each row execute function run_events_reject_mutation();
+`;
+
 // Ordered, immutable migration set. Order is by id; the runner asserts it.
 export const MIGRATIONS: readonly Migration[] = Object.freeze([
   { id: '0001_init_tenancy', sql: M0001 },
@@ -1125,4 +1168,5 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   { id: '0017_scoped_artifact_references', sql: M0017 },
   { id: '0018_evidence_reservations', sql: M0018 },
   { id: '0019_command_output_references', sql: M0019 },
+  { id: '0107_run_events', sql: M0107 },
 ]);

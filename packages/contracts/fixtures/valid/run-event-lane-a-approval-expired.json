@@ -1,0 +1,9 @@
+{
+  "eventId": "asep-task-task-1:8",
+  "eventType": "approval.expired",
+  "occurredAt": "2026-10-30T10:00:00Z",
+  "runId": "run-1",
+  "taskId": "task-1",
+  "approvalKind": "budget-extension",
+  "workflowId": "asep-task-task-1"
+}

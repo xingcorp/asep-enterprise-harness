@@ -52,6 +52,11 @@ export const REQUIRED_ITEST_SUITES = Object.freeze({
   // live, takes the unfinished record over once it expired, and converges on
   // one commit, one remote ref and one PR while the dead lease stays refused.
   'asep-suite:crash-takeover-real': 'apps/control-plane-api/src/crash-takeover.itest.ts',
+  // run_events on real PostgreSQL: the two-connection append race (same bytes
+  // a no-op, other bytes a conflict), SQLSTATE 55000 on UPDATE and DELETE, the
+  // scoped run FK, the race of a pre-lease terminal with the attempt's lease
+  // acquisition, and the upgrade path that adds 0107 to a database without it.
+  'asep-suite:pg-run-events': 'adapters/persistence/src/run-events/run-event-sink.itest.ts',
 });
 
 export const SUITE_ID_PREFIX = 'SUITE-ID:';

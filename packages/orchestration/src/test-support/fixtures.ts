@@ -10,6 +10,15 @@ import type {
 } from '@asep/contracts';
 import { DEFAULT_ORCHESTRATION_POLICY } from '../defaults.js';
 import type {
+  AssuranceFence,
+  AssuranceUsage,
+  BlockOutcome,
+  BlockReason,
+  CoreAssuranceRequest,
+  DecidedProceedOutcome,
+  EscalateOutcome,
+  EscalationReason,
+  RepairOutcome,
   OrchestrationPolicy,
   ForgeRepository,
   TaskCommand,
@@ -37,9 +46,14 @@ export function shaFor(attemptNumber: number): string {
   return attemptNumber.toString(16).padStart(40, 'c');
 }
 
-/** The caller's fence the lease primitive returns for attempt n's grant (opaque to the core). */
-export function fenceFor(attemptNumber: number): string {
-  return `lease-${attemptNumber}`;
+/** The caller's fence the lease primitive returns for attempt n's grant: its lease id and fencing epoch. */
+export function fenceFor(attemptNumber: number): AssuranceFence {
+  return { leaseId: `lease-${attemptNumber}`, fencingEpoch: attemptNumber };
+}
+
+/** The attempt id the registration reports for attempt n. */
+export function attemptIdFor(attemptNumber: number): AttemptId {
+  return `att-${attemptNumber}` as AttemptId;
 }
 
 /** The remote branch the attempt registration reports for attempt n (the Git adapter's naming rule). */
@@ -86,19 +100,60 @@ export function attemptOf(request: TaskRequest): number | null {
   return null;
 }
 
-export function proceed(name = 'adj-1'): unknown {
-  return { kind: 'PROCEED', adjudicationId: name, mode: 'not-required', prBodySectionRef: ref(`pr-${name}`) };
+/** The assurance round a request asks for; throws for any other request. */
+export function roundRequest(request: TaskRequest): CoreAssuranceRequest {
+  if (request.kind !== 'assuranceRound') throw new Error(`not an assurance round: ${request.kind}`);
+  return request.request;
 }
 
-/** A REPAIR outcome for the attempt whose harness commit is shaFor(attemptNumber). */
-export function repair(attemptNumber: number, round: number, name = `adj-r${attemptNumber}`): unknown {
+/** A 64-hex adjudication id for a test name, distinct per name. */
+export function adjudicationId(name: string): string {
+  return Array.from(name, (c) => c.charCodeAt(0).toString(16)).join('').padEnd(64, '0').slice(0, 64);
+}
+
+export const NO_USAGE: AssuranceUsage = { providerCalls: 0, inputTokens: 0, outputTokens: 0, reviewCostMicroUsd: 0 };
+
+function outcomeBase(request: TaskRequest, name: string) {
   return {
-    kind: 'REPAIR',
-    adjudicationId: name,
-    repairOrderRef: ref(`ro-${attemptNumber}`),
-    nextRound: round + 1,
-    repairBaseSha: shaFor(attemptNumber),
+    slotVersion: 'review-loop/v1' as const,
+    roundKey: roundRequest(request).idempotencyKey,
+    adjudicationId: adjudicationId(name),
+    usage: NO_USAGE,
   };
+}
+
+/** A PROCEED outcome for the round `request` asks for, in not-required mode, with a section. */
+export function proceed(request: TaskRequest, name = `adj-${roundRequest(request).attemptNumber}`): DecidedProceedOutcome {
+  return { ...outcomeBase(request, name), kind: 'PROCEED', mode: 'not-required', shadow: null, prBodySectionRef: ref(`pr-${name}`) };
+}
+
+export function escalate(
+  request: TaskRequest,
+  name = `adj-e${roundRequest(request).attemptNumber}`,
+  reason: EscalationReason = 'reviewer-unavailable',
+): EscalateOutcome {
+  return { ...outcomeBase(request, name), kind: 'ESCALATE', mode: 'gating', reason, prBodySectionRef: ref(`esc-${name}`) };
+}
+
+/** A REPAIR outcome for the round `request` asks for: the next round, from the attempt's harness commit shaFor(n). */
+export function repair(request: TaskRequest, name = `adj-r${roundRequest(request).attemptNumber}`): RepairOutcome {
+  const round = roundRequest(request);
+  return {
+    ...outcomeBase(request, name),
+    kind: 'REPAIR',
+    mode: 'gating',
+    repairOrderRef: ref(`ro-${round.attemptNumber}`),
+    nextRound: round.round + 1,
+    repairBaseSha: shaFor(round.attemptNumber),
+  };
+}
+
+export function block(
+  request: TaskRequest,
+  name = `adj-b${roundRequest(request).attemptNumber}`,
+  reason: BlockReason = 'secret-in-diff',
+): BlockOutcome {
+  return { ...outcomeBase(request, name), kind: 'BLOCK', mode: 'gating', reason, prBodySectionRef: null };
 }
 
 /** The default answer for every request: the happy path. */
@@ -108,9 +163,9 @@ export function happyAnswer(request: TaskRequest): Answer {
     case 'admitTask':
       return { kind: 'admitTask', admitted: true, reason: 'admitted' };
     case 'ensureAttempt':
-      return { kind: 'ensureAttempt', attemptId: `att-${request.attemptNumber}` as AttemptId, branch: branchFor(request.attemptNumber) };
+      return { kind: 'ensureAttempt', attemptId: attemptIdFor(request.attemptNumber), branch: branchFor(request.attemptNumber) };
     case 'findAttempt':
-      return { kind: 'findAttempt', attemptId: `att-${request.attemptNumber}` as AttemptId };
+      return { kind: 'findAttempt', attemptId: attemptIdFor(request.attemptNumber) };
     case 'acquireLease':
       return { kind: 'acquireLease', fence: fenceFor(request.attemptNumber) };
     case 'findLease':
@@ -132,7 +187,7 @@ export function happyAnswer(request: TaskRequest): Answer {
     case 'persistEvidence':
       return { kind: 'persistEvidence', evidenceId: `ev-${n}` };
     case 'assuranceRound':
-      return { kind: 'assuranceRound', outcome: proceed(`adj-${n}`) };
+      return { kind: 'assuranceRound', outcome: proceed(request) };
     case 'openApprovalRequest':
       return { kind: 'openApprovalRequest' };
     case 'verifyApprovalDecision':

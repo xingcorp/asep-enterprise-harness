@@ -177,7 +177,7 @@ BUDGET_CHECK (reservation for the planned attempt; table "Reservation failure" i
 ATTEMPT_STARTING  (ensureAttempt → acquireLease → prepareWorkspace(base = task baseSha, or the lineage's
                    repairBaseSha) → storeAttemptInputs (repair lineage: ContextPack = buildRepairContextPack(...)))
                    ensureAttempt fails ──▶ findAttempt (lookup by (task_id, attempt_number); R21):
-                     found  → the attempt ends `failed` with zero usage ──▶ FAILED (attempt-registration-failed)
+                     found  → the attempt ends `infrastructure-failed` with zero usage ──▶ FAILED (attempt-registration-failed)
                      absent → no attempt-bound effect (usage, outcome) ──▶ FAILED (attempt-registration-failed)
                      lookup fails → FAILED (attempt-state-unknown), below
                    (never replaced, so numbering stays contiguous)
@@ -211,7 +211,7 @@ INSPECTING     (inspectWorkspace)        ▶ overstep → ATTEMPT_ABANDONED(poli
    ▼
 VERIFYING      (runVerification; its budget was reserved separately at BUDGET_CHECK)
    ├─ PASS ─────▶ COMMITTING (commitAttempt) ▶ EVIDENCE (persistEvidence)   [critical unit 1] ▶ ASSURANCE_ROUND
-   └─ FAIL/ERROR ▶ VERIFICATION_STOP: recordAttemptOutcome('verification-failed') → reap → quarantine →
+   └─ FAIL/ERROR ▶ VERIFICATION_STOP: recordAttemptOutcome('verification-stopped') → reap → quarantine →
                    releaseLease → FAILED (terminal)
 ASSURANCE_ROUND (assuranceRound activity = Lane B runAssuranceRound; cancellable) — outcome:
    PROCEED  ─▶ PUBLICATION_GATE ─▶ PUBLISHING (PR body carries prBodySectionRef)
@@ -295,7 +295,8 @@ interpreter runs effects in order, each to completion before the next starts (`t
 activity's result is received before the release starts; if the outcome write fails, the release never runs and the
 lease expires to the janitor (§4.3). The outcome write presents the caller's fence, the lease identity the workflow
 got from `acquireLease` (or from `findLease`, below), never the current epoch read from the database (R23). The core
-carries the fence as opaque data: `acquireLease` and `findLease` return it, and `recordAttemptOutcome` and
+carries the fence as data it never interprets, in the slot contract's shape `{ leaseId, fencingEpoch }` (the Phase 2
+grant's lease id and epoch): `acquireLease` and `findLease` return it, and `recordAttemptOutcome` and
 `releaseLease` carry it. The core refuses to emit a release for an attempt whose outcome is not recorded, and refuses
 to record a terminal for an attempt whose lease acquisition was requested but not settled; the property test checks
 the order and the fence per attempt.
@@ -304,10 +305,11 @@ the order and the fence per attempt.
 its terminal with `fence: null`, and that terminal must be in the pre-lease allowlist `cancelled`,
 `infrastructure-failed`. The core's pre-lease paths: a cancel accepted while `ensureAttempt` ran (`cancelled`); a
 pause that withheld `acquireLease`, ended by its timeout or a cancel (`cancelled`); `ensureAttempt` failed and
-`findAttempt` found the row (core-local `failed`, which S0 renames to `infrastructure-failed`; `cancelled` with a cancel
-pending); and an `acquireLease` that failed or was aborted where `findLease` finds no lease (`failed`, or `cancelled`
-after an abort or with a cancel pending). No lease was ever requested on the first three, so no grant can exist. S0
-renames only `failed`; `cancelled` keeps its name (R33).
+`findAttempt` found the row (`infrastructure-failed`; `cancelled` with a cancel pending); and an `acquireLease` that
+failed or was aborted where `findLease` finds no lease (`infrastructure-failed`, or `cancelled` after an abort or with
+a cancel pending). No lease was ever requested on the first three, so no grant can exist. S0 renamed only the core's
+former `failed` on these paths; `cancelled` kept its name (R33). The core's types pair `fence: null` with exactly these
+two terminals, and the core refuses to record any other terminal without a fence.
 
 **Settling a failed or aborted lease acquisition (R29).** The grant may have committed although the activity failed
 or the cancel aborted it, and then the workflow never received the fence. So the core issues `findLease`, a
@@ -780,11 +782,11 @@ checked in order, and the first match wins:
 | Agent result | Inspect | Verify, commit, assurance, publish | Attempt terminal | Next |
 |---|---|---|---|---|
 | `AGENT_DONE`, usage within every cap (reported cost and tool calls valid and at most their caps, harness-measured wall-clock valid and at most the cap plus the kill grace) | yes | yes, as designed | per the rest of the path | — |
-| `FAILED` / `BLOCKED`, or a cap stop that reports a failure class, where the class is not one the policy lists as replaceable (an unclassified failure included), overrun or not | no | no | `failed`, plus `recordOverrun` and an audited overrun incident if usage overran a cap | none: the task ends `FAILED` with that class |
+| `FAILED` / `BLOCKED`, or a cap stop that reports a failure class, where the class is not one the policy lists as replaceable (an unclassified failure included), overrun or not | no | no | `agent-failed`, plus `recordOverrun` and an audited overrun incident if usage overran a cap | none: the task ends `FAILED` with that class |
 | `BUDGET_EXHAUSTED` (the adapter stopped the agent at a cap) | yes, to record evidence of the workspace state | **no** | `budget-exhausted` | a new attempt (`retry`, same lineage) if `BUDGET_CHECK` allows |
 | any other result with usage above a cap the adapter did not stop at (reported cost, reported tool calls, or harness-measured wall-clock beyond the cap plus the kill grace), or with a usage value outside its representable bound (R24) | yes | **no** | `budget-exhausted`, plus `recordOverrun` and an audited overrun incident | `BUDGET_CHECK`, where the recorded overrun ends the task `BUDGET_EXHAUSTED` while attempts remain |
-| `FAILED` / `BLOCKED` with a replaceable failure class | no | no | `failed` | a retry if `BUDGET_CHECK` allows |
-| activity failure or heartbeat timeout (infrastructure, worker death) | no | no | `failed` | a retry only for a replaceable class, if `maxAttempts` and a fresh reservation allow; `workflow.recovered` (`attempt-replaced`) after a timeout |
+| `FAILED` / `BLOCKED` with a replaceable failure class | no | no | `agent-failed` | a retry if `BUDGET_CHECK` allows |
+| activity failure or heartbeat timeout (infrastructure, worker death) | no | no | `infrastructure-failed` | a retry only for a replaceable class, if `maxAttempts` and a fresh reservation allow; `workflow.recovered` (`attempt-replaced`) after a timeout |
 
 A non-replaceable failure beats a cap stop and an overrun because the exhaustion path can lead to a budget
 extension and a new attempt, which must never follow such a failure (R20). Out of attempts beats budget: after an
@@ -912,8 +914,8 @@ What the fixed block is known to bring (R18), and what Lane A does with it:
   assurance is configured; it fails closed for any risk that requires review. Lane B's `DisabledAssuranceSlot` is
   the explicit, literal opt-out and returns `PROCEED` without events. Neither replaces the other.
 - **Terminal vocabulary.** The block's `recordAttemptOutcome` terminals win: `verification-stopped` plus specific
-  failure terminals. At hand-off Lane A updates the terminal table below, its prose and exit J2, and S0 renames
-  the decision core's local terminal names (plan §26, S0).
+  failure terminals. S0 updated the terminal table below, its prose and exit J2, and renamed the decision core's
+  local terminal names (plan §26, S0); a type-level test holds the core's copies equal to the block's (exit O5).
 - **Workspace resolver port.** A framework-free port in the application-local ports,
   `resolve(scope, { attemptId, leaseId, fencingEpoch })`, which checks tenant, an `ACTIVE` lease held by that
   lease id and the current epoch, and fails closed otherwise. Lane A implements it over the lease table (S3,
@@ -982,22 +984,29 @@ What the fixed block is known to bring (R18), and what Lane A does with it:
 
   | Attempt terminal | `terminal` value |
   |---|---|
-  | verification stop | `verification-failed` |
-  | after publication on `PROCEED` | `proceeded` |
-  | after publication on `ESCALATE` | `escalated` |
+  | verification stop | `verification-stopped` |
+  | after publication on `PROCEED` (also when the round was unavailable in shadow mode) | `proceeded` |
+  | after publication on `ESCALATE` (also when the round was unavailable in gating mode) | `escalated` |
   | on `REPAIR`, before the next attempt | `repair-requested` |
   | on `BLOCK` | `blocked` |
   | budget exhaustion: the adapter stopped the agent at a cap, or usage overran a cap (§10) | `budget-exhausted` |
-  | abandonment (agent failure, overstep, worker death), an incomplete publication, and any other non-review stop | `failed` |
-  | an attempt found registered after a failed `ensureAttempt` (never leased) | `failed` (S0 renames it `infrastructure-failed`); `cancelled` with a cancel pending |
-  | an attempt whose `acquireLease` failed and `findLease` found no lease (never leased) | `failed` (S0 renames it `infrastructure-failed`); `cancelled` after an abort or with a cancel pending (S0 keeps `cancelled`) |
+  | the agent failed: its result is `FAILED` or `BLOCKED`, or a cap stop that reports a failure class; or inspection found an overstep | `agent-failed` |
+  | an attempt activity failed after its retries, or its worker died (heartbeat timeout), also under the agent; a failed lease acquisition whose lookup found the grant | `infrastructure-failed` |
+  | the task closes without a terminal of its own: an incomplete or failed publication, a slot contract violation, a store that cannot be read, an unavailable publish-change gate | `infrastructure-failed` |
+  | a publish-change approval rejected or expired: verification and the round passed, and a human's no (or no answer) stops the attempt | `cancelled` |
+  | an attempt found registered after a failed `ensureAttempt` (never leased) | `infrastructure-failed`; `cancelled` with a cancel pending |
+  | an attempt whose `acquireLease` failed and `findLease` found no lease (never leased) | `infrastructure-failed`; `cancelled` after an abort or with a cancel pending |
   | cancel and pause timeout | `cancelled` |
 
   Every terminal of an attempt that held a lease is recorded with the caller's fence before the lease is released
   (§4.1). An attempt that never held a lease records `fence: null`, and only with a terminal of the pre-lease
-  allowlist `cancelled` or `infrastructure-failed` (R28); S0 maps the core's local names onto the block's. On the
-  pre-lease rows only the core's `failed` is renamed, to `infrastructure-failed`; `cancelled` stays `cancelled`
-  (R33). The one attempt that gets no terminal is one whose state the store could not read or write
+  allowlist `cancelled` or `infrastructure-failed` (R28). On the pre-lease rows S0 renamed only the core's former
+  `failed`, to `infrastructure-failed`; `cancelled` stayed `cancelled` (R33). Which of `agent-failed` and
+  `infrastructure-failed` an abandonment gets follows its source, not its failure class: a result the agent returned
+  (or the overstep inspection found) is `agent-failed`, an activity that failed is `infrastructure-failed`, whatever
+  class it reports. The record carries `assuranceUnavailable: true` only on the `proceeded` or `escalated` terminal of
+  an attempt that continued without an adjudication; an attempt that later ends otherwise (a cancel, a failed
+  publication) records it `false`, as the block requires, and the `assurance-unavailable` audit row keeps the fact. The one attempt that gets no terminal is one whose state the store could not read or write
   (`attempt-state-unknown`, §4.1, R29, R32): it is reported as a telemetry gap with its idempotency key, never
   hidden.
 
@@ -1011,8 +1020,10 @@ What the fixed block is known to bring (R18), and what Lane A does with it:
 - **Phase 3 default binding** (Lane A, application layer, used until Lane B's code is bound). The
   `NotConfiguredAssuranceSlot` behaves as follows:
   - Its round returns `PROCEED` with mode `not-required` only where Phase 2 admission already accounts for
-    review: R0 (`independentReviewers: 0`) and R1 (human review after the PR). Its `prBodySectionRef` is a
-    content-addressed artifact stating that independent assurance is not configured.
+    review: R0 (`independentReviewers: 0`) and R1 (human review after the PR). Its `prBodySectionRef` is `null`:
+    the slot has nothing to show and stores no artifact in S0 (the block allows `null` on `PROCEED`). The PR body's
+    statement that independent assurance is not configured is the publication's to render (S5, S6), not an artifact
+    of the slot.
   - Any other risk throws `AssuranceUnavailableError` (non-retryable). R2–R4 never reach it, because admission
     defers them.
   - Its `recordAttemptOutcome` emits the same two events Phase 4 specifies, through the same `RunEventSink`.

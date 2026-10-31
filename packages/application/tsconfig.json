@@ -12,6 +12,7 @@
     { "path": "../domain" },
     { "path": "../observability" },
     { "path": "../policy" },
-    { "path": "../ports" }
+    { "path": "../ports" },
+    { "path": "../../adapters/persistence" }
   ]
 }

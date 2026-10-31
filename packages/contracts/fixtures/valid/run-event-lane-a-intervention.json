@@ -1,0 +1,9 @@
+{
+  "eventId": "asep-task-task-1:9",
+  "eventType": "human.intervention",
+  "occurredAt": "2026-10-30T09:00:00Z",
+  "runId": "run-1",
+  "taskId": "task-1",
+  "interventionKind": "approval-reject",
+  "workflowId": "asep-task-task-1"
+}

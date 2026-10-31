@@ -2177,3 +2177,110 @@ CR-05 (L2, `FAILED`), CR-08 (labels), CR-12 (rule framework), CR-20, CR-25 (caps
 methods, the narrow repair, slices), §32 and the output block. The architecture follows in §7.1, §7.3, §7.4, §7.5 and
 §10. Nothing Phase 3 needs is missing from the primitive, so no change request against Phase 2 is filed. The plan stays
 `LOCKED v8`, with the controller's confirmation pending.
+
+## S0 — shared foundation
+
+> Lane A record of S0 (`feat(shared): land the review-slot contract, run-event sink and run-event 1.2.0`), the first
+> slice commit after the rebase, made on top of `3b349d5`. No review finding is adjudicated here. The controller's
+> check and an independent review follow.
+
+**Paste record (O1, R39).** The block is the controller's file `slot-block-287ed0f.ts`: 894 lines, sha256
+`9cc21c980d552d607c01bb0a330749eb88070b1cbdce55747fbfdc742960871a`. At `3b349d5` the plan held no copy (CR-10 read
+"Text pending"); S0 replaces that note with a fence of exactly these bytes, and `cmp` of the fence against the
+controller's file reports them identical. In source the block is split as its own banners direct: `slot.ts` is its
+section 1 (lines 1–720), `disabled-slot.ts` and `review-loop-contract.ts` carry sections 2 and 3, each declaration with
+a one-statement body that calls the implementation below the file's end marker. `asep-suite:assurance-slot-contract`
+reassembles the three files into the 894 lines and pins the sha256; a second test pins the plan's fence. The rules the
+block states and leaves to its implementations live apart, in `slot-rules.ts`, whose header also states the sha256.
+
+**Exit criteria and the tests that prove them.**
+
+| Exit | Proof |
+|---|---|
+| O1 | `assurance-slot.test.ts` (`asep-suite:assurance-slot-contract`): the reassembly and plan-fence byte tests; the kit against `NotConfiguredAssuranceSlot` on PGlite (every case passed, RLC-12 not applicable: no push-guard input), against the disabled slot (every stateless case) and against the scripted slot for PROCEED in each mode, REPAIR, ESCALATE and BLOCK |
+| O2 | `run-event-sink.test.ts` (`asep-suite:run-event-sink`, PGlite): same id and bytes → `{ appended: false }` whatever the key order; different bytes → `RunEventConflictError`, row unchanged; invalid for 1.2.0 → refused before insert; a run outside the tenant, or an event naming another tenant → refused. `run-event-sink.itest.ts` (`asep-suite:pg-run-events`, real PostgreSQL): the same two cases as two-connection races, 20 rounds each |
+| O3 | `0107_run_events` is data model §3.7's DDL. Both suites: `UPDATE` and `DELETE` raise SQLSTATE `55000`, and the scoped FK refuses another tenant's run (`23503`) |
+| O4 | `compat-gate.test.ts`: the change is MINOR against the snapshot and against the 1.1.0 schema; every fixture of both lanes validates and the five negative fixtures are refused |
+| O5 | `decide.test.ts` (`asep-suite:orchestration-core`): the type-level test holds the core's copies equal to the contract's types (terminals, pre-lease terminals, fence, outcome and its parts, the round request's fields, the terminal record's facts and fence pairing); the routing table drives the core with each locked outcome (PROCEED in each mode and with a null section, ESCALATE, REPAIR, BLOCK in each mode, and an unavailable round in both modes) and checks the PR, the terminals with their adjudication ids and the task outcome; the REPAIR test follows `repairBaseSha`, the repair order, `nextRound` and the adjudication into the repair attempt and its round request; one scenario per terminal shows each of the nine names reaching `recordAttemptOutcome`, and every recorded terminal is accepted by the contract's own input rules (Lane B's opt-out slot) |
+| O6 | RLC-16 passes against `NotConfiguredAssuranceSlot` (not declared N/A). The workflow case runs the kit's `runRegistrationOrderingContract` over eight replayed core scenarios (first attempt, repair, cancel before the lease, registration found after a failure, failed and aborted lease acquisition, worker death with replacement, publication with an unknown effect) |
+| J2 | the default-slot tests: `PROCEED`/`not-required` with no provider call for R0 and R1, `AssuranceUnavailableError` for R2–R4, the opt-out proceeding where it fails closed |
+| A5 | `pg-run-events`: a fresh database at the Phase 2 migration set takes `0107_run_events` alone, a rerun applies nothing, and the registry is in ascending order |
+| L3 | the sink validates against `run-event` 1.2.0 before any insert; the default slot writes only through it, inside the attempt-terminal store's transaction |
+
+The seam rules: the pre-lease write's result maps `ReviewLoopContractError('lease-granted')` to `recorded: false` and
+every other error (each other code, `AssuranceFencedError`, `AssuranceCancelledError`, a plain error, a look-alike with
+the same `code`) stays an error (`recordPreLeaseOutcome`, table test plus the default slot on PGlite). Money at the
+seam is integer micro-USD: the round request's `budgetRemaining` comes from the integer ledger, the terminal record
+carries `modelCostMicroUsd` (the reported cost rounded up once), and the core refuses an outcome whose usage carries a
+fractional, negative, string or unsafe `reviewCostMicroUsd`.
+
+**Counts.** `pnpm test`: 1446 tests, 0 fail, 0 skipped, 65 files, 41 required suites (1381, 63 and 39 at `3b349d5`;
++23 in `decide.test.ts`, 374 → 397; +26 `assurance-slot-contract`; +13 `run-event-sink`; +3 `compat-gate`).
+`pnpm test:integration` before the commit: 40 of 40, 8 itest files, 8 suites, containers torn down; the pre-lease race
+observed both orders (lease first, terminal first) on real PostgreSQL. `invariants.test.ts` and `purity.test.ts` keep
+their 90 tests.
+
+**Test first, where it was and where it was not.** The `run-event` 1.2.0 schema was written before its tests; the new
+compat tests were then shown red on the 1.1.0 schema (4 failing) and green on 1.2.0. The sink, the store, the default
+slot and the kit were written with their tests. The decision-core rename came before its new tests. For all of them
+the evidence that the tests bite is the mutation table below: each mutant was applied alone to the working tree, the
+named suite run, and the file restored byte for byte (persistence mutants run against the application suite were
+rebuilt into `dist/` first, because that suite imports the built package).
+
+| Mutant | Suite | Result |
+|---|---|---|
+| close's default terminal `agent-failed` | orchestration-core | 10 of 397 fail, among them the contract-violation rows and the ordering case |
+| an agent result abandoned as `infrastructure-failed` | orchestration-core | 13 fail |
+| round key in the old `<workflowId>:assurance:<n>:<round>` form | orchestration-core | 2 fail (both REPAIR lineage tests) |
+| `budgetRemaining.costMicroUsd` in USD | orchestration-core | 1 fails (slot money) |
+| close finishes unregistered attempts | orchestration-core | 2 fail (ordering case, registration) |
+| `assuranceUnavailable` kept on every terminal | orchestration-core | 1 fails |
+| publish-change rejection as `infrastructure-failed` | orchestration-core | 2 fail |
+| model cost in USD | orchestration-core | 1 fails |
+| a tenth terminal; the epoch a string; `reviewCostUsd`; a widened pre-lease set; a non-null budget cost | typecheck | each fails `tsc -b` at the type-level test |
+| conflict by bytes skipped | run-event-sink | 1 of 13 fails |
+| schema validation skipped | run-event-sink | 2 fail |
+| event tenant unchecked; run-in-tenant read skipped | run-event-sink | 1 fails each |
+| append-only trigger returns the old row | run-event-sink | 1 fails (`55000`) |
+| fence epoch ignored; lease liveness ignored | run-event-sink | 1 fails each |
+| lease history ignored for fence null | run-event-sink | 1 fails |
+| redelivery facts not compared | run-event-sink | 1 fails |
+| acquisition ignores a recorded terminal | run-event-sink | 1 fails |
+| attempt's run not checked | run-event-sink | 1 fails |
+| one terminal event written before the transaction | run-event-sink | 6 of 13 fail |
+| one terminal event written after the transaction, whether it commits or fails | run-event-sink; assurance-slot-contract | 1 of 13 fails (the events commit together); the kit's RLC-15 and RLC-16 fail for the default slot |
+| the default slot proceeds for any risk | assurance-slot-contract | the J2 test fails |
+| the fence-null rule dropped from the slot rules | assurance-slot-contract | the kit fails for the default slot |
+| every contract error, or a look-alike `code`, read as a late grant | assurance-slot-contract | the pre-lease result table fails |
+| the round runs under a stale fence | assurance-slot-contract | the kit fails for the default slot |
+
+**Decisions and deviations for the controller and Lane B.**
+
+- `run-event` 1.2.0 adds three Lane A fields that data model §4.3 did not list (`attemptTerminal`,
+  `verificationVerdict`, `adjudicationId`), so that the default slot's two attempt events carry every fact of the
+  outcome and are its idempotency record. Data model §4.3 is amended.
+- The default slot's `PROCEED` has `prBodySectionRef: null` (the block allows it); architecture §12 said a
+  content-addressed artifact and is amended. Rendering "assurance not configured" in the PR body is the publication's
+  (S5, S6).
+- The default slot refuses money of 10^15 micro-USD or more (`invalid-input`), so that the USD numbers its events
+  carry stay distinct.
+- Terminal mapping in the core: an abandonment is `agent-failed` when the agent's result or the overstep inspection
+  caused it and `infrastructure-failed` when an activity failed, whatever class it reports; every close without its
+  own terminal is `infrastructure-failed`; a publish-change approval rejected or expired is `cancelled`, an
+  unavailable gate `infrastructure-failed`. Architecture §12 and §10 are amended.
+- `assuranceUnavailable` is recorded `true` only on the `proceeded` or `escalated` terminal, as the block's rule
+  requires; an attempt that continued without an adjudication and then ended otherwise records `false`, and the
+  `assurance-unavailable` audit row keeps the fact.
+- The round request's idempotency key is now the block's `<attemptId>:assurance:<round>`.
+- The core still emits `repair.started`; Lane B's SR-A6 says not to. Not changed in S0.
+- A concrete task workflow id `asep-task-<ULID>` matches the repository's secret pattern `sk-[A-Za-z0-9]{20,}`
+  (`scripts/lib/secret-patterns.sh`), so no tracked file may carry one; the S0 fixtures use the placeholder task
+  `task-1`. Later slices that commit traces or fixtures meet the same rule.
+
+**What Lane B adopts.** The port `RunEventSink` with `RunEventConflictError` (`packages/ports`), and with it the
+attempt-terminal store port; migration `0107_run_events`, which the Phase 2 set plus `0107` alone upgrades to; the
+`run-event` 1.2.0 schema with the three Lane A fields above next to Lane B's locked list; the slot files at
+`packages/application/src/review-loop/`; `recordPreLeaseOutcome` as the seam's reading of `lease-granted`.
+
+**Gates.** The gate lines of this commit are reported to the controller with it and recorded here in the next docs
+commit.

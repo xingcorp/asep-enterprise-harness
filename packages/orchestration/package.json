@@ -13,6 +13,7 @@
     "@asep/contracts": "workspace:*"
   },
   "devDependencies": {
+    "@asep/application": "workspace:*",
     "@asep/domain": "workspace:*"
   }
 }

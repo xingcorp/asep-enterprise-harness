@@ -1,0 +1,17 @@
+{
+  "eventId": "evt-b-disposition",
+  "eventType": "review.finding_dispositioned",
+  "occurredAt": "2026-10-30T11:00:00Z",
+  "runId": "run-1",
+  "taskId": "task-1",
+  "findingId": "finding-1",
+  "findingValid": true,
+  "findingDisposition": "ACCEPTED",
+  "dispositionActorKind": "human",
+  "findingSource": "deterministic",
+  "findingSeverity": "HIGH",
+  "reviewerConfigId": "primary-gpt-6.1-sol",
+  "reviewRound": 1,
+  "reviewRoundCompletedAt": "2026-10-30T09:00:00Z",
+  "dispositionLatencyMs": 7200000
+}

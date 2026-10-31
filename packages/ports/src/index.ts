@@ -3,6 +3,7 @@ import type {
   VerificationResult, VerificationPlan, EvidenceBundle,
   ArtifactId, ArtifactRef, AttemptId, TaskId, RiskLevel,
   RepositoryBindingId, WorkspaceId, TenantScope, Budget, Usage,
+  RunEvent, RunId,
 } from '@asep/contracts';
 
 // ---------------------------------------------------------------------------
@@ -778,3 +779,87 @@ export interface OutputReducer {
 // The legacy AgentAttemptResult is retained in @asep/contracts for the mock and
 // any Phase-1 consumers, but is NOT part of the v2 CodingAgentProvider surface.
 export type { AgentAttemptResult };
+
+// ---------------------------------------------------------------------------
+// Run events (shared append-only sink; both lanes inject the one adapter).
+// ---------------------------------------------------------------------------
+
+export interface RunEventSink {
+  /**
+   * Idempotent on event.eventId within the scope: the same id with identical canonical
+   * bytes returns { appended: false }; the same id with different bytes throws
+   * RunEventConflictError. The event is validated against run-event 1.2.0 before insert.
+   */
+  append(scope: TenantScope, event: RunEvent): Promise<{ readonly appended: boolean }>;
+}
+
+export class RunEventConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'RunEventConflictError';
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Attempt terminals of the default assurance slot.
+//
+// The default slot records an attempt's terminal as its two attempt events,
+// written through the run-event sink. The store makes that write the fenced,
+// idempotent and atomic one the review-loop slot contract requires: in one
+// transaction it locks the attempt row, checks the scope, checks the caller's
+// fence (or, for an attempt presented without one, that its durable lease history
+// is empty), compares any terminal already recorded, and appends the events.
+// ---------------------------------------------------------------------------
+
+/** The caller's lease identity on an attempt's workspace lease, as the fenced lease primitive granted it. */
+export interface AttemptLeaseFence {
+  readonly leaseId: string;
+  readonly fencingEpoch: number;
+}
+
+/** An attempt with the run, task and binding it belongs to; all of them must lie in the caller's scope. */
+export interface AttemptRef {
+  readonly repositoryBindingId: RepositoryBindingId;
+  readonly runId: RunId;
+  readonly taskId: TaskId;
+  readonly attemptId: AttemptId;
+}
+
+/**
+ * 'fenced': the lease is not ACTIVE and live, is not the attempt's, or is at another epoch.
+ * 'not-in-scope': the scope does not own the attempt with that run, task and binding.
+ */
+export type AttemptLeaseCheck = 'held' | 'not-in-scope' | 'fenced';
+
+export type AttemptTerminalRefusal =
+  /** The scope does not own the attempt with that run, task and binding. */
+  | 'not-in-scope'
+  /** The fence presented is not the attempt's current lease. */
+  | 'fenced'
+  /** No fence was presented, but the attempt's durable lease history shows a lease. */
+  | 'lease-granted'
+  /** A terminal is recorded for the attempt and its events differ from these. */
+  | 'conflicting-redelivery';
+
+export type AttemptTerminalWrite =
+  | { readonly kind: 'recorded' }
+  /** A terminal with the same events, occurredAt aside, is already recorded: nothing was written. */
+  | { readonly kind: 'redelivered' }
+  /** Nothing was written. */
+  | { readonly kind: 'refused'; readonly reason: AttemptTerminalRefusal };
+
+export interface AttemptTerminalStore {
+  /** Whether `fence` is the attempt's current lease: ACTIVE, live, held by `fence.leaseId` at `fence.fencingEpoch`. */
+  checkLease(scope: TenantScope, attempt: AttemptRef, fence: AttemptLeaseFence): Promise<AttemptLeaseCheck>;
+  /**
+   * Records the attempt's terminal as `events` (each of the attempt, with an id derived from it) in one
+   * transaction, under the lock on the attempt row that lease acquisition also takes. `fence` null is accepted
+   * only while the attempt has never held a lease.
+   */
+  recordTerminal(
+    scope: TenantScope,
+    attempt: AttemptRef,
+    fence: AttemptLeaseFence | null,
+    events: readonly RunEvent[],
+  ): Promise<AttemptTerminalWrite>;
+}

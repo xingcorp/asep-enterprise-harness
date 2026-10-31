@@ -22,13 +22,16 @@ import { MAX_USD, checkReservation, crossesSoftThreshold, fromMicroUsd, reported
 import { NEVER_REPLACEABLE_FAILURE_CLASSES } from './defaults.js';
 import { isLegalProjection, isWorkStatus, statusForRequest } from './projection.js';
 import type {
+  AgentUsage,
   ApprovalKind,
+  AssuranceFence,
+  AttemptOutcomeFacts,
   AttemptState,
   AttemptOverrun,
   AttemptTerminal,
   ControlReceipt,
+  CoreAssuranceRequest,
   FailureClass,
-  LeaseFence,
   ObservedBranch,
   ObservedPullRequest,
   OpenApproval,
@@ -334,6 +337,8 @@ function markIssued(s: Draft, request: TaskRequest): void {
         resultSha: null,
         evidenceId: null,
         adjudicationId: null,
+        assuranceUnavailable: false,
+        failureClass: null,
         outcomeRecorded: false,
         usageRecorded: false,
       });
@@ -426,6 +431,7 @@ function noteAgentUsage(step: Step, a: MutableAttempt, result: Extract<TaskResul
   a.agentUsage = {
     chargedMicroUsd: chargedMicro,
     reportedCostUsd: nonNegative(result.reportedCostUsd),
+    reportedMicroUsd: reportedMicro,
     minutes: wallClockMs !== null ? Math.ceil(wallClockMs / 60_000) : budget.maxWallClockMinutes,
   };
   const capMs = budget.maxWallClockMinutes * 60_000;
@@ -443,23 +449,31 @@ function noteAgentUsage(step: Step, a: MutableAttempt, result: Extract<TaskResul
 }
 
 /**
- * One usage entry per attempt, at its terminal. An agent that never reported (it
- * died, timed out or was cancelled) is charged its full cap. Verification has no
- * metered cost source, so once it ran the attempt is also charged its reserve.
+ * What an attempt is charged. An agent that never reported (it died, timed out or was cancelled) is charged its full
+ * cap. Verification has no metered cost source, so once it ran the attempt is also charged its reserve.
  */
-function recordUsage(step: Step, a: MutableAttempt): void {
-  if (a.usageRecorded) return;
-  a.usageRecorded = true;
-  const s = step.s;
+function attemptCharge(s: Draft, a: MutableAttempt): { readonly agent: AgentUsage; readonly reserveMicro: number; readonly microUsd: number; readonly minutes: number } {
   const budget = s.input.attemptBudget;
   const reserve = s.input.verificationReserve;
   const agent = a.agentUsage
     ?? (a.agentStarted
-      ? { chargedMicroUsd: toMicroUsd(budget.maxCostUsd), reportedCostUsd: null, minutes: budget.maxWallClockMinutes }
-      : { chargedMicroUsd: 0, reportedCostUsd: null, minutes: 0 });
+      ? { chargedMicroUsd: toMicroUsd(budget.maxCostUsd), reportedCostUsd: null, reportedMicroUsd: null, minutes: budget.maxWallClockMinutes }
+      : { chargedMicroUsd: 0, reportedCostUsd: null, reportedMicroUsd: null, minutes: 0 });
   const reserveMicro = a.verificationStarted ? toMicroUsd(reserve.costUsd) : 0;
-  const chargedMicro = agent.chargedMicroUsd + reserveMicro;
-  const minutes = agent.minutes + (a.verificationStarted ? reserve.wallClockMinutes : 0);
+  return {
+    agent,
+    reserveMicro,
+    microUsd: agent.chargedMicroUsd + reserveMicro,
+    minutes: agent.minutes + (a.verificationStarted ? reserve.wallClockMinutes : 0),
+  };
+}
+
+/** One usage entry per attempt, at its terminal. */
+function recordUsage(step: Step, a: MutableAttempt): void {
+  if (a.usageRecorded) return;
+  a.usageRecorded = true;
+  const s = step.s;
+  const { agent, reserveMicro, microUsd: chargedMicro, minutes } = attemptCharge(s, a);
   const before = s.spentMicroUsd;
   s.spentMicroUsd += chargedMicro;
   s.spentWallClockMinutes += minutes;
@@ -490,22 +504,39 @@ function endAttempt(step: Step, a: MutableAttempt, terminal: AttemptTerminal): v
 
 /**
  * The terminal is written with the caller's fence of the lease the attempt holds or held, or with none for an
- * attempt that never asked for a lease. An attempt whose lease request is not settled has no terminal yet: its lease
- * lookup comes first.
+ * attempt that never asked for a lease, which ends only cancelled or infrastructure-failed. An attempt whose lease
+ * request is not settled has no terminal yet: its lease lookup comes first.
  */
 function recordOutcome(step: Step, a: MutableAttempt, terminal: AttemptTerminal): void {
   if (a.outcomeRecorded) return;
   if (a.leaseRequested && a.fence === null) throw new Error(`terminal of attempt ${a.attemptNumber} before its lease is settled`);
   a.outcomeRecorded = true;
-  effect(step, {
-    kind: 'recordAttemptOutcome',
+  const facts = outcomeFacts(a, terminal);
+  if (a.fence !== null) {
+    effect(step, { kind: 'recordAttemptOutcome', ...facts, fence: a.fence, terminal });
+    return;
+  }
+  if (terminal !== 'cancelled' && terminal !== 'infrastructure-failed') {
+    throw new Error(`attempt ${a.attemptNumber} never held a lease and cannot end ${terminal}`);
+  }
+  effect(step, { kind: 'recordAttemptOutcome', ...facts, fence: null, terminal });
+}
+
+/**
+ * The terminal's facts. `assuranceUnavailable` holds only where the attempt continued without an adjudication and
+ * ended so: published as `proceeded` or `escalated`.
+ */
+function outcomeFacts(a: MutableAttempt, terminal: AttemptTerminal): AttemptOutcomeFacts {
+  return {
     attemptNumber: a.attemptNumber,
-    fence: a.fence,
-    terminal,
+    round: roundOf(a),
     declaredComplete: a.declaredComplete,
     verificationVerdict: a.verdict,
     adjudicationId: a.adjudicationId,
-  });
+    assuranceUnavailable: a.assuranceUnavailable && (terminal === 'proceeded' || terminal === 'escalated'),
+    failureClass: a.failureClass,
+    modelCostMicroUsd: a.agentUsage?.reportedMicroUsd ?? null,
+  };
 }
 
 function disposeWorkspace(step: Step, a: MutableAttempt, disposal: 'cleanup' | 'quarantine', reason: string): void {
@@ -622,13 +653,13 @@ function onResult(step: Step, result: TaskResult): void {
       const failed = result.status === 'FAILED' || result.status === 'BLOCKED'
         || (result.status === 'BUDGET_EXHAUSTED' && result.failureClass !== null);
       if (failed && !isReplaceable(s, result.failureClass)) {
-        abandon(step, result.failureClass, false, result.failureClass ?? `agent-${result.status.toLowerCase()}`);
+        abandon(step, 'agent-failed', result.failureClass, false, result.failureClass ?? `agent-${result.status.toLowerCase()}`);
         return;
       }
       if (result.status === 'BUDGET_EXHAUSTED' || a.overrun !== null) {
         a.exhausted = true;
       } else if (result.status !== 'AGENT_DONE') {
-        abandon(step, result.failureClass, false, result.failureClass ?? `agent-${result.status.toLowerCase()}`);
+        abandon(step, 'agent-failed', result.failureClass, false, result.failureClass ?? `agent-${result.status.toLowerCase()}`);
         return;
       }
       issue(step, { kind: 'inspectWorkspace', attemptNumber: a.attemptNumber });
@@ -637,7 +668,7 @@ function onResult(step: Step, result: TaskResult): void {
     case 'inspectWorkspace': {
       const a = current(s);
       if (result.overstep) {
-        abandon(step, 'policy-violation', false, 'policy-violation');
+        abandon(step, 'agent-failed', 'policy-violation', false, 'policy-violation');
         return;
       }
       if (a.exhausted) {
@@ -666,18 +697,7 @@ function onResult(step: Step, result: TaskResult): void {
     case 'persistEvidence': {
       const a = current(s);
       a.evidenceId = result.evidenceId;
-      issue(step, {
-        kind: 'assuranceRound',
-        request: {
-          attemptNumber: a.attemptNumber,
-          round: roundOf(a),
-          evidenceId: result.evidenceId,
-          taskBaseSha: s.input.baseSha,
-          declaredComplete: a.declaredComplete,
-          priorAdjudicationId: a.lineage?.priorAdjudicationId ?? null,
-          idempotencyKey: `${s.workflowId}:assurance:${a.attemptNumber}:${roundOf(a)}`,
-        },
-      });
+      issue(step, { kind: 'assuranceRound', request: assuranceRequest(s, a, result.evidenceId) });
       return;
     }
     case 'assuranceRound':
@@ -715,6 +735,7 @@ function onActivityFailed(
       return;
     case 'ensureAttempt':
       // The insert may or may not have committed: settle it before any attempt-bound effect.
+      attempt(s, request.attemptNumber).failureClass = failureClass;
       issue(step, { kind: 'findAttempt', attemptNumber: request.attemptNumber });
       return;
     case 'findAttempt':
@@ -735,7 +756,8 @@ function onActivityFailed(
     case 'inspectWorkspace':
     case 'commitAttempt':
     case 'persistEvidence':
-      abandon(step, failureClass, timedOut, failureClass);
+      // The activity failed, not the agent: also a dead worker under the agent, which never reported.
+      abandon(step, 'infrastructure-failed', failureClass, timedOut, failureClass);
       return;
     case 'runVerification':
       // Infrastructure errors were already retried inside the activity.
@@ -775,6 +797,7 @@ function onActivityFailed(
 function lookUpLease(step: Step, failureClass: FailureClass | null, timedOut: boolean): void {
   const s = step.s;
   const a = current(s);
+  if (failureClass !== null) a.failureClass = failureClass;
   s.leaseLookup = { attemptNumber: a.attemptNumber, lookups: 1, failureClass, timedOut };
   issue(step, { kind: 'findLease', attemptNumber: a.attemptNumber });
 }
@@ -790,7 +813,7 @@ function leaseLookup(s: Draft) {
  * second lookup runs only after such a refusal, and a lease in history never disappears, so a second lookup that
  * finds none means the store cannot be trusted.
  */
-function leaseFound(step: Step, fence: LeaseFence | null): void {
+function leaseFound(step: Step, fence: AssuranceFence | null): void {
   const s = step.s;
   const lookup = leaseLookup(s);
   const a = attempt(s, lookup.attemptNumber);
@@ -806,10 +829,13 @@ function leaseFound(step: Step, fence: LeaseFence | null): void {
   issue(step, {
     kind: 'recordPreLeaseOutcome',
     attemptNumber: a.attemptNumber,
-    terminal: lookup.failureClass === null || s.cancelPending ? 'cancelled' : 'failed',
+    round: roundOf(a),
+    // The pre-lease terminals: an abort or a pending cancel stays `cancelled`, a failed acquisition is infrastructure.
+    terminal: lookup.failureClass === null || s.cancelPending ? 'cancelled' : 'infrastructure-failed',
     declaredComplete: a.declaredComplete,
     verificationVerdict: a.verdict,
     adjudicationId: a.adjudicationId,
+    failureClass: a.failureClass,
   });
 }
 
@@ -838,7 +864,7 @@ function leaseSettled(step: Step): void {
   const lookup = leaseLookup(s);
   s.leaseLookup = null;
   if (lookup.failureClass === null) close(step, 'CANCELLED', 'cancelled');
-  else abandon(step, lookup.failureClass, lookup.timedOut, lookup.failureClass);
+  else abandon(step, 'infrastructure-failed', lookup.failureClass, lookup.timedOut, lookup.failureClass);
 }
 
 /** The attempt's natural key (task id, attempt number), rendered for audits and the task result. */
@@ -861,7 +887,7 @@ function attemptStateUnknown(step: Step, a: MutableAttempt, lookup: TaskRequestK
     lookup,
     cancelRequested: s.cancelPending,
   });
-  close(step, 'FAILED', 'attempt-state-unknown', 'failed', true);
+  close(step, 'FAILED', 'attempt-state-unknown', 'infrastructure-failed', true);
 }
 
 function publication(s: Draft) {
@@ -1012,7 +1038,7 @@ function publicationIncomplete(step: Step, finding: string, read: Reconciliation
     finding,
     ...(read === null ? {} : { observed: JSON.stringify({ branch: read.branch, pullRequests: read.pullRequests }) }),
   });
-  close(step, 'FAILED', 'publication-incomplete', 'failed', true);
+  close(step, 'FAILED', 'publication-incomplete', 'infrastructure-failed', true);
 }
 
 // ---------------------------------------------------------------------------
@@ -1074,12 +1100,22 @@ function isReplaceable(s: Draft, failureClass: FailureClass | null): boolean {
     && s.input.policy.replaceableFailureClasses.includes(failureClass);
 }
 
-/** Abandon the current attempt; replace it, with the same lineage, only if the class allows and nothing was pushed. */
-function abandon(step: Step, failureClass: FailureClass | null, timedOut: boolean, reason: string): void {
+/**
+ * Abandon the current attempt, as `agent-failed` when the agent failed or overstepped and as `infrastructure-failed`
+ * when an activity did; replace it, with the same lineage, only if the class allows and nothing was pushed.
+ */
+function abandon(
+  step: Step,
+  terminal: 'agent-failed' | 'infrastructure-failed',
+  failureClass: FailureClass | null,
+  timedOut: boolean,
+  reason: string,
+): void {
   const s = step.s;
   const a = current(s);
   s.phase = 'ATTEMPT_ABANDONED';
-  finishAttempt(step, a, 'failed', 'quarantine', reason);
+  a.failureClass = failureClass;
+  finishAttempt(step, a, terminal, 'quarantine', reason);
   s.currentAttempt = null;
   if (!isReplaceable(s, failureClass)) {
     close(step, 'FAILED', reason);
@@ -1112,12 +1148,42 @@ function exhaust(step: Step): void {
 function verificationStop(step: Step, verdict: VerificationVerdict): void {
   const a = current(step.s);
   a.verdict = verdict;
-  endAttempt(step, a, 'verification-failed');
+  endAttempt(step, a, 'verification-stopped');
   close(step, 'FAILED', 'verification-failed');
 }
 
 function roundOf(a: MutableAttempt): number {
   return a.lineage?.round ?? 1;
+}
+
+/** The assurance round's idempotency key, which its outcome repeats: `<attemptId>:assurance:<round>`. */
+function roundKeyOf(a: MutableAttempt): string {
+  if (a.attemptId === null) throw new Error(`assurance round of unregistered attempt ${a.attemptNumber}`);
+  return `${a.attemptId}:assurance:${roundOf(a)}`;
+}
+
+/**
+ * The round's request, under the slot input's names. What the task may still spend comes from the integer ledger:
+ * the caps less everything charged, this attempt's agent and reserve too.
+ */
+function assuranceRequest(s: Draft, a: MutableAttempt, evidenceId: string): CoreAssuranceRequest {
+  const charge = attemptCharge(s, a);
+  const spentMicro = s.spentMicroUsd + charge.microUsd;
+  const capMicro = Math.min(toMicroUsd(s.input.taskBudget.maxCostUsd) + s.grantedExtensionMicroUsd, toMicroUsd(s.input.runRemainingUsd));
+  const minutesLeft = s.input.taskBudget.maxWallClockMinutes - s.spentWallClockMinutes - charge.minutes;
+  return {
+    attemptNumber: a.attemptNumber,
+    round: roundOf(a),
+    evidenceId,
+    taskBaseSha: s.input.baseSha,
+    declaredComplete: a.declaredComplete,
+    priorAdjudicationId: a.lineage?.priorAdjudicationId ?? null,
+    idempotencyKey: roundKeyOf(a),
+    budgetRemaining: {
+      costMicroUsd: Math.max(0, capMicro - spentMicro),
+      wallClockMs: Math.max(0, Math.floor(minutesLeft * 60_000)),
+    },
+  };
 }
 
 /**
@@ -1132,6 +1198,7 @@ function assuranceUnavailable(step: Step, failureClass: FailureClass): void {
   const a = current(s);
   const mode = s.input.governance.assuranceMode;
   audit(step, 'assurance-unavailable', { attemptNumber: a.attemptNumber, failureClass, assuranceMode: mode });
+  a.assuranceUnavailable = true;
   s.publication = {
     attemptNumber: a.attemptNumber,
     flagged: mode === 'gating',
@@ -1144,7 +1211,7 @@ function assuranceUnavailable(step: Step, failureClass: FailureClass): void {
 function route(step: Step, raw: unknown): void {
   const s = step.s;
   const a = current(s);
-  const parsed = parseAssuranceOutcome(raw, { round: roundOf(a), resultSha: a.resultSha ?? '' });
+  const parsed = parseAssuranceOutcome(raw, { round: roundOf(a), resultSha: a.resultSha ?? '', roundKey: roundKeyOf(a) });
   if (!parsed.ok) {
     audit(step, 'review-slot.contract-violation', { attemptNumber: a.attemptNumber, error: parsed.error });
     close(step, 'FAILED', 'review-slot.contract-violation');
@@ -1292,10 +1359,13 @@ function expireApproval(step: Step): void {
   rejectApproval(step, ap.kind, 'expired');
 }
 
-/** The kind's reject path, also taken on expiry and when the approval activities fail. */
+/**
+ * The kind's reject path, also taken on expiry and when the approval activities fail. A publish-change attempt passed
+ * verification and its round: a human's no (or no answer) cancels it, and an unavailable gate is infrastructure.
+ */
 function rejectApproval(step: Step, kind: ApprovalKind, cause: 'rejected' | 'expired' | 'unavailable'): void {
   if (kind === 'budget-extension') close(step, 'BUDGET_EXHAUSTED', `extension-${cause}`);
-  else close(step, 'BLOCKED', `publication-${cause}`);
+  else close(step, 'BLOCKED', `publication-${cause}`, cause === 'unavailable' ? 'infrastructure-failed' : 'cancelled');
 }
 
 function onTimer(step: Step, timerId: string): void {
@@ -1426,7 +1496,9 @@ function close(
     terminal = 'cancelled';
   }
   const handedOff = outcome === 'WAITING_FOR_HUMAN_REVIEW';
-  const attemptTerminal: AttemptTerminal = terminal ?? (outcome === 'CANCELLED' ? 'cancelled' : 'failed');
+  // Every close without a terminal of its own stops on the harness's side: an incomplete publication, a slot contract
+  // violation, a failed registration, a store that cannot be read.
+  const attemptTerminal: AttemptTerminal = terminal ?? (outcome === 'CANCELLED' ? 'cancelled' : 'infrastructure-failed');
   for (const a of s.attempts.filter((x) => x.registered && !x.stateUnknown)) {
     finishAttempt(step, a, attemptTerminal, handedOff ? 'cleanup' : 'quarantine', reason);
   }

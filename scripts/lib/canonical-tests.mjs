@@ -221,6 +221,12 @@ export const REQUIRED_SUITES = Object.freeze({
   'asep-suite:orchestration-core': 'packages/orchestration/src/decide.test.ts',
   'asep-suite:orchestration-properties': 'packages/orchestration/src/invariants.test.ts',
   'asep-suite:orchestration-purity': 'packages/orchestration/src/purity.test.ts',
+  // The shared foundation of the two lanes: the review-loop slot conformance kit
+  // run against the default, disabled and scripted slots (the stateful default
+  // slot on a real database), and the run-event sink with the attempt-terminal
+  // writes on it.
+  'asep-suite:assurance-slot-contract': 'packages/application/src/orchestration-activities/assurance-slot.test.ts',
+  'asep-suite:run-event-sink': 'adapters/persistence/src/run-events/run-event-sink.test.ts',
 });
 
 /** The machine-readable marker a suite prints at module load: `SUITE-ID: <id>`. */

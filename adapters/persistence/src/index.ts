@@ -51,3 +51,9 @@ export { SqlSideEffectLog } from './side-effect-log.js';
 // PostgreSQL-backed AuditSink (exit J4, disp. P2-FINAL-MED-003). Persists the
 // pure @asep/observability AuditEvent to the audit_events table.
 export { SqlAuditSink } from './audit-sink.js';
+
+// Run events (data model §3.7): the one RunEventSink both lanes inject, and the
+// default assurance slot's fenced attempt-terminal writes on it, with the lease
+// acquisition that refuses an attempt once its terminal is recorded.
+export { SqlRunEventSink, RunEventValidationError } from './run-events/run-event-sink.js';
+export { SqlAttemptTerminalStore } from './run-events/attempt-terminal-store.js';

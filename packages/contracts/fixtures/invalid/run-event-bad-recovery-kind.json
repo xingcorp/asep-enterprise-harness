@@ -1,0 +1,7 @@
+{
+  "eventId": "evt-bad-recovery",
+  "eventType": "workflow.recovered",
+  "occurredAt": "2026-10-30T09:00:00Z",
+  "runId": "run-1",
+  "recoveryKind": "guessed"
+}

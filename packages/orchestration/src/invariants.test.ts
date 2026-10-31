@@ -18,12 +18,15 @@ import type { RunCommand, RunCoreInput, RunEvent } from './run-core.js';
 import { runTaskSequentially } from './sequential-interpreter.js';
 import type { Answer, TaskEnvironment, TaskTrace } from './sequential-interpreter.js';
 import { decideTask, startTask } from './task-core.js';
-import { TASK_BASE, attemptOf, branchFor, effectsOf, fenceFor, happyAnswer, proceed, ref, requests, shaFor } from './test-support/fixtures.js';
+import {
+  TASK_BASE, adjudicationId, attemptOf, block, branchFor, effectsOf, escalate, fenceFor, happyAnswer, proceed, ref, repair, requests, shaFor,
+} from './test-support/fixtures.js';
 import { MAX_USD } from './budget.js';
 import { DEFAULT_ORCHESTRATION_POLICY, NEVER_REPLACEABLE_FAILURE_CLASSES } from './defaults.js';
 import type {
   ApprovalDecisionValue,
   ApprovalKind,
+  AssuranceFence,
   FailureClass,
   ObservedPullRequest,
   ProjectedTaskStatus,
@@ -249,13 +252,13 @@ type DecisionMessage = Extract<TaskMessage, { type: 'approvalDecisionReceived' }
 
 // The approval-content choices draw from the side stream too, so they leave the main draws of a seed unchanged.
 /** A generated environment, with the durable lease history it models: the grants that committed, per attempt. */
-type GeneratedEnvironment = TaskEnvironment & { readonly grants: ReadonlyMap<number, string> };
+type GeneratedEnvironment = TaskEnvironment & { readonly grants: ReadonlyMap<number, AssuranceFence> };
 
 function randomEnvironment(rng: Rng, side: Rng, remote: Rng, input: TaskCoreInput): GeneratedEnvironment {
   const approvalKinds = new Map<string, ApprovalKind>();
   // The lease history: a grant may commit although its acquisition failed or was aborted, and later, between a lookup
   // and the pre-lease write; a recorded terminal refuses any later grant, and a grant never disappears.
-  const grants = new Map<number, string>();
+  const grants = new Map<number, AssuranceFence>();
   const acquiring = new Set<number>();
   const terminals = new Set<number>();
   const grantLate = (n: number, p: number) => {
@@ -379,23 +382,16 @@ function randomEnvironment(rng: Rng, side: Rng, remote: Rng, input: TaskCoreInpu
           const round = request.request.round;
           const r = rng.next();
           if (r < 0.05) return failure(rng);
-          if (r < 0.45) return { kind: 'assuranceRound', outcome: proceed(`adj-${n}`) };
-          if (r < 0.6) {
-            return { kind: 'assuranceRound', outcome: { kind: 'ESCALATE', adjudicationId: `adj-${n}`, reason: 'reviewer-unavailable', prBodySectionRef: ref(`esc-${n}`) } };
-          }
-          if (r < 0.8) {
-            return {
-              kind: 'assuranceRound',
-              outcome: { kind: 'REPAIR', adjudicationId: `adj-${n}`, repairOrderRef: ref(`ro-${n}`), nextRound: round + 1, repairBaseSha: shaFor(n) },
-            };
-          }
-          if (r < 0.9) return { kind: 'assuranceRound', outcome: { kind: 'BLOCK', adjudicationId: `adj-${n}`, reason: 'secret-in-diff' } };
+          if (r < 0.45) return { kind: 'assuranceRound', outcome: proceed(request, `adj-${n}`) };
+          if (r < 0.6) return { kind: 'assuranceRound', outcome: escalate(request, `adj-${n}`) };
+          if (r < 0.8) return { kind: 'assuranceRound', outcome: repair(request, `adj-${n}`) };
+          if (r < 0.9) return { kind: 'assuranceRound', outcome: block(request, `adj-${n}`) };
           return {
             kind: 'assuranceRound',
             outcome: rng.pick([
-              { kind: 'APPROVED', adjudicationId: 'x' },
-              { kind: 'REPAIR', adjudicationId: 'x', repairOrderRef: ref('r'), nextRound: round + 2, repairBaseSha: shaFor(n) },
-              { kind: 'REPAIR', adjudicationId: 'x', repairOrderRef: ref('r'), nextRound: round + 1, repairBaseSha: TASK_BASE },
+              { ...proceed(request, 'x'), kind: 'APPROVED' },
+              { ...repair(request, 'x'), nextRound: round + 2 },
+              { ...repair(request, 'x'), repairBaseSha: TASK_BASE },
               null,
             ]),
           };
@@ -632,7 +628,7 @@ function checkTrace(input: TaskCoreInput, trace: TaskTrace, label: string): void
     if (r.parentAttemptNumber === null) return { round: 1, prior: null };
     const parent = roundOf.get(r.parentAttemptNumber);
     assert.ok(parent, `${label}: parent ${r.parentAttemptNumber} of ${n} had an assurance round`);
-    return { round: parent.round + 1, prior: `adj-${r.parentAttemptNumber}` };
+    return { round: parent.round + 1, prior: adjudicationId(`adj-${r.parentAttemptNumber}`) };
   };
   for (const [n, got] of roundOf) assert.deepEqual(got, lineageRound(n), `${label}: assurance round of attempt ${n}`);
 
@@ -758,11 +754,11 @@ function checkTrace(input: TaskCoreInput, trace: TaskTrace, label: string): void
   }));
   for (const o of outcomes) {
     if (reqs.some((r) => r.kind === 'acquireLease' && r.attemptNumber === o.attemptNumber)) continue;
-    assert.ok(o.terminal === 'cancelled' || (o.terminal === 'failed' && foundAfterFailure.has(o.attemptNumber)),
+    assert.ok(o.terminal === 'cancelled' || (o.terminal === 'infrastructure-failed' && foundAfterFailure.has(o.attemptNumber)),
       `${label}: attempt ${o.attemptNumber} never held a lease and ends ${o.terminal}`);
   }
   for (const r of reqs) {
-    if (r.kind === 'recordPreLeaseOutcome') assert.ok(r.terminal === 'cancelled' || r.terminal === 'failed', `${label}: pre-lease terminal ${r.terminal}`);
+    if (r.kind === 'recordPreLeaseOutcome') assert.ok(r.terminal === 'cancelled' || r.terminal === 'infrastructure-failed', `${label}: pre-lease terminal ${r.terminal}`);
   }
 
   // Resources: every workspace cleaned or quarantined once (leases: checkLeases).
@@ -827,7 +823,7 @@ function checkTrace(input: TaskCoreInput, trace: TaskTrace, label: string): void
   }
 
   // A verification stop is final: no assurance, approval or publication afterwards.
-  const stop = commands.findIndex((c) => c.type === 'effect' && c.effect.kind === 'recordAttemptOutcome' && c.effect.terminal === 'verification-failed');
+  const stop = commands.findIndex((c) => c.type === 'effect' && c.effect.kind === 'recordAttemptOutcome' && c.effect.terminal === 'verification-stopped');
   if (stop >= 0) {
     const later = requests(commands.slice(stop)).map((r) => r.kind);
     for (const k of ['assuranceRound', 'openApprovalRequest', 'publishBranch', 'ensureAttempt'] as const) {
@@ -1017,12 +1013,12 @@ function checkPublicationEffects(input: TaskCoreInput, trace: TaskTrace, label: 
 // a lease request, a second one only a refused pre-lease write, and never a third; a pre-lease write is issued only
 // when no lease is known. With the environment's lease history: every grant that committed is released once with its
 // fence, unless the attempt's state could not be read.
-function checkLeases(input: TaskCoreInput, trace: TaskTrace, grants: ReadonlyMap<number, string>, label: string): void {
-  const fence = new Map<number, string>();
+function checkLeases(input: TaskCoreInput, trace: TaskTrace, grants: ReadonlyMap<number, AssuranceFence>, label: string): void {
+  const fence = new Map<number, AssuranceFence>();
   const asked = new Set<number>();
   const lookups = new Map<number, number>();
   const refused = new Set<number>();
-  const released = new Map<number, string[]>();
+  const released = new Map<number, AssuranceFence[]>();
   for (const { before, event, decision } of replaySteps(input, trace)) {
     const request = (event.type === 'result' || event.type === 'activityFailed') && before.pending?.seq === event.seq ? before.pending.request : null;
     if (event.type === 'result' && request !== null) {
@@ -1046,12 +1042,12 @@ function checkLeases(input: TaskCoreInput, trace: TaskTrace, grants: ReadonlyMap
       }
       if (c.type === 'effect' && c.effect.kind === 'recordAttemptOutcome') {
         const n = c.effect.attemptNumber;
-        assert.equal(c.effect.fence, fence.get(n) ?? null, `${label}: the terminal of attempt ${n} carries the fence it was granted`);
+        assert.deepEqual(c.effect.fence, fence.get(n) ?? null, `${label}: the terminal of attempt ${n} carries the fence it was granted`);
         if (c.effect.fence === null) assert.ok(!asked.has(n), `${label}: attempt ${n} asked for a lease and records fence null`);
       }
       if (c.type === 'effect' && c.effect.kind === 'releaseLease') {
         const n = c.effect.attemptNumber;
-        assert.equal(c.effect.fence, fence.get(n), `${label}: the lease of attempt ${n} is released with its fence`);
+        assert.deepEqual(c.effect.fence, fence.get(n), `${label}: the lease of attempt ${n} is released with its fence`);
         released.set(n, [...(released.get(n) ?? []), c.effect.fence]);
       }
     }
@@ -1141,7 +1137,7 @@ function contentValid(kind: ApprovalKind, decision: ApprovalDecisionValue | null
 // Properties
 // ---------------------------------------------------------------------------
 
-function generate(seed: number): { input: TaskCoreInput; trace: TaskTrace; grants: ReadonlyMap<number, string> } {
+function generate(seed: number): { input: TaskCoreInput; trace: TaskTrace; grants: ReadonlyMap<number, AssuranceFence> } {
   const rng = rngFor(seed);
   const side = rngFor(seed + 1_000_003);
   const input = randomInput(rng, side, rngFor(seed + 4_000_037));
@@ -1203,7 +1199,7 @@ test('the generator covers repair, replacement, approvals, pause and cancel path
     if (trace.summary.reason === 'pause-timeout') seen.add('pause-timeout');
     if (trace.aborts > 0) seen.add('abort');
     if (effectsOf(trace.commands, 'audit').some((a) => a.action === 'review-slot.contract-violation')) seen.add('violation');
-    if (effectsOf(trace.commands, 'recordAttemptOutcome').some((o) => o.terminal === 'verification-failed')) seen.add('verification-stop');
+    if (effectsOf(trace.commands, 'recordAttemptOutcome').some((o) => o.terminal === 'verification-stopped')) seen.add('verification-stop');
     if (effectsOf(trace.commands, 'emitRunEvent').some((e) => e.eventType === 'workflow.recovered')) seen.add('recovered');
     if (effectsOf(trace.commands, 'recordAttemptOutcome').some((o) => o.terminal === 'budget-exhausted')) seen.add('exhausted');
     if (effectsOf(trace.commands, 'recordOverrun').length > 0) seen.add('overrun');

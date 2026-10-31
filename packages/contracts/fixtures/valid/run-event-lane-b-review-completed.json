@@ -1,0 +1,22 @@
+{
+  "eventId": "evt-b-review",
+  "eventType": "review.completed",
+  "occurredAt": "2026-10-30T09:00:00Z",
+  "runId": "run-1",
+  "taskId": "task-1",
+  "attemptId": "attempt-1",
+  "reviewerConfigId": "primary-gpt-6.1-sol",
+  "reviewerRole": "comparator",
+  "reviewRound": 1,
+  "reviewMode": "shadow",
+  "reviewFindingsTotal": 3,
+  "reviewFindingsUngrounded": 1,
+  "reviewFindingsBlocking": 0,
+  "reviewerFailed": false,
+  "egressStopped": false,
+  "reviewCostUsd": 0.42,
+  "reviewCostPriced": true,
+  "inputTokens": 1200,
+  "outputTokens": 300,
+  "durationMs": 5000
+}
