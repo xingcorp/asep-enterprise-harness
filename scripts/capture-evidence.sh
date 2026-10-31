@@ -11,6 +11,8 @@ set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
+# shellcheck source=scripts/lib/main-base.sh
+source "$REPO_ROOT/scripts/lib/main-base.sh"
 
 OUT_DIR="artifacts/phase-01"
 GATES_DIR="$OUT_DIR/gates"
@@ -28,7 +30,7 @@ sha256() {
   echo "pnpm: $(pnpm --version)"
   echo "tsc: $(pnpm exec tsc --version 2>/dev/null || echo unknown)"
   echo "os: $(uname -srm)"
-  echo "base_sha: $(git merge-base main HEAD 2>/dev/null || echo unknown)"
+  echo "base_sha: $(main_merge_base || echo unknown)"
   echo "head_sha: $(git rev-parse HEAD)"
 } > "$OUT_DIR/env-digest.txt"
 

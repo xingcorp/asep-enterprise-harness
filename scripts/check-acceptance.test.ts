@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { copyFileSync, mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,10 +14,19 @@ console.log("SUITE-ID: asep-suite:acceptance-marker");
 const here = dirname(fileURLToPath(import.meta.url));
 const script = join(here, "check-acceptance.sh");
 const crypto = join(here, "lib", "acceptance-crypto.mjs");
+const mainBase = join(here, "lib", "main-base.sh");
 const repoRoot = join(here, "..");
 
 function git(...args: string[]): string {
   return execFileSync("git", args, { cwd: repoRoot, encoding: "utf8" }).trim();
+}
+
+// The base the gate itself binds a marker to (`check-acceptance.sh --base`).
+// A test that builds a marker takes it from the gate, so its marker carries the
+// base the gate would demand in whatever checkout the suite runs: a developer
+// clone, a CI checkout of a branch or of a pull request's merge ref, or `main`.
+function gateBase(): string {
+  return execFileSync("bash", [script, "--base"], { cwd: repoRoot, encoding: "utf8" }).trim();
 }
 
 function runSelfTest(): { code: number; out: string } {
@@ -56,7 +65,7 @@ test("acceptance self-test proves HEAD + evidence binding and signature enforcem
 // property: writing the file is not enough — you must sign it.
 test("a worker-forged unsigned marker is rejected against the real reviewer key", () => {
   const head = git("rev-parse", "HEAD");
-  const base = git("merge-base", "main", "HEAD");
+  const base = gateBase();
   const dir = mkdtempSync(join(tmpdir(), "asep-acc-"));
   const marker = join(dir, "acceptance.json");
   writeFileSync(
@@ -83,7 +92,7 @@ test("a worker-forged unsigned marker is rejected against the real reviewer key"
 // P1-CHANGE-008: a marker naming a stale head must be rejected against the
 // current HEAD even if it is otherwise validly signed for that stale head.
 test("a signed marker for a stale head is invalid against current HEAD", () => {
-  const base = git("merge-base", "main", "HEAD");
+  const base = gateBase();
   const dir = mkdtempSync(join(tmpdir(), "asep-acc-"));
   const priv = join(dir, "priv.pem");
   const pub = join(dir, "pub.pem");
@@ -114,7 +123,7 @@ test("a signed marker for a stale head is invalid against current HEAD", () => {
 // head is inside the signed payload. Take the self-test's own construction: sign
 // for head A, then rewrite reviewed_head to head B keeping the old signature.
 test("a signature cannot be transplanted to a different HEAD (head is inside the payload)", () => {
-  const base = git("merge-base", "main", "HEAD");
+  const base = gateBase();
   const dir = mkdtempSync(join(tmpdir(), "asep-acc-"));
   const priv = join(dir, "priv.pem");
   const pub = join(dir, "pub.pem");
@@ -168,4 +177,114 @@ test("the committed reviewer public key is a valid Ed25519 public key", () => {
     ),
     "no PRIVATE KEY material may be committed",
   );
+});
+
+// The base is the merge base of HEAD with the main line, found the same way in
+// every checkout the gate runs in. Each layout is built in a throwaway
+// repository: commits A (main), B (the branch, on A), and C (main moved on).
+function layout(): { repo: string; a: string; b: string; c: string; run: (...args: string[]) => string } {
+  const repo = mkdtempSync(join(tmpdir(), "asep-acc-base-"));
+  const run = (...args: string[]) =>
+    execFileSync("git", ["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", ...args], {
+      cwd: repo,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.invalid",
+        GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.invalid",
+      },
+    }).trim();
+  run("init", "-q", "-b", "main");
+  run("commit", "-q", "--allow-empty", "-m", "a");
+  const a = run("rev-parse", "HEAD");
+  run("checkout", "-q", "-b", "branch");
+  run("commit", "-q", "--allow-empty", "-m", "b");
+  const b = run("rev-parse", "HEAD");
+  run("checkout", "-q", "main");
+  run("commit", "-q", "--allow-empty", "-m", "c");
+  const c = run("rev-parse", "HEAD");
+  return { repo, a, b, c, run };
+}
+
+function baseIn(repo: string): { code: number; out: string } {
+  try {
+    const out = execFileSync("bash", ["-c", `. "${mainBase}"; main_merge_base`], { cwd: repo, encoding: "utf8" });
+    return { code: 0, out: out.trim() };
+  } catch (e) {
+    const err = e as { status?: number; stdout?: string };
+    return { code: err.status ?? 1, out: (err.stdout ?? "").trim() };
+  }
+}
+
+test("the base is the merge base with main, or with origin/main where a checkout has no local main", () => {
+  const cases: [string, (l: ReturnType<typeof layout>) => string][] = [
+    ["a developer clone: the branch checked out, a local main", (l) => {
+      l.run("checkout", "-q", "branch");
+      return l.a;
+    }],
+    ["a CI checkout of a branch push: only origin/main", (l) => {
+      l.run("update-ref", "refs/remotes/origin/main", l.c);
+      l.run("checkout", "-q", "branch");
+      l.run("branch", "-q", "-D", "main");
+      return l.a;
+    }],
+    ["a CI checkout of a pull request's merge ref: a detached merge commit, only origin/main", (l) => {
+      l.run("update-ref", "refs/remotes/origin/main", l.c);
+      l.run("checkout", "-q", "--detach", l.c);
+      l.run("merge", "-q", "--no-ff", "--no-edit", l.b);
+      l.run("branch", "-q", "-D", "main", "branch");
+      return l.c;
+    }],
+    ["a checkout of main itself", (l) => {
+      l.run("update-ref", "refs/remotes/origin/main", l.c);
+      return l.c;
+    }],
+    ["a local main wins over origin/main, so a fetch does not move a developer's base", (l) => {
+      // The branch has taken in C, so the two would give different bases.
+      l.run("update-ref", "refs/remotes/origin/main", l.c);
+      l.run("checkout", "-q", "branch");
+      l.run("merge", "-q", "--no-ff", "--no-edit", l.c);
+      l.run("branch", "-q", "-f", "main", l.a);
+      return l.a;
+    }],
+  ];
+  for (const [label, arrange] of cases) {
+    const l = layout();
+    try {
+      const want = arrange(l);
+      assert.deepEqual(baseIn(l.repo), { code: 0, out: want }, label);
+    } finally {
+      rmSync(l.repo, { recursive: true, force: true });
+    }
+  }
+});
+
+test("a checkout with no main line has no base, and the gate says so instead of binding another", () => {
+  const l = layout();
+  try {
+    l.run("checkout", "-q", "branch");
+    l.run("branch", "-q", "-D", "main");
+    assert.deepEqual(baseIn(l.repo), { code: 1, out: "" });
+    // The gate, run from inside that checkout, prints no base and names why.
+    mkdirSync(join(l.repo, "scripts", "lib"), { recursive: true });
+    copyFileSync(script, join(l.repo, "scripts", "check-acceptance.sh"));
+    copyFileSync(mainBase, join(l.repo, "scripts", "lib", "main-base.sh"));
+    const r = spawnSync("bash", [join(l.repo, "scripts", "check-acceptance.sh"), "--base"], { encoding: "utf8" });
+    assert.equal(r.status, 1, r.stdout + r.stderr);
+    assert.equal(r.stdout, "");
+    assert.match(r.stderr, /neither a local main nor origin\/main/);
+  } finally {
+    rmSync(l.repo, { recursive: true, force: true });
+  }
+});
+
+// Every script that binds or records the base takes it from main_merge_base, so
+// none of them can go back to a local main a CI checkout does not have.
+test("no script takes the base from a local main alone", () => {
+  const r = spawnSync("git", ["grep", "-nE", "merge-base[[:space:]]+main([[:space:]]|$)", "--", "scripts/*.sh", "scripts/lib/*.sh"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+  });
+  // git grep exits 1 when nothing matches, and 0 with the lines it found.
+  assert.equal(r.status, 1, `use main_merge_base from scripts/lib/main-base.sh:\n${r.stdout}${r.stderr}`);
 });
