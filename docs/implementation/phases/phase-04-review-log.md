@@ -2006,3 +2006,80 @@ Since `f1a9926` (rebased `6d13e60`), rule C's prior candidates are stored once, 
 `priorCandidates` (by item id), and each rule C item's `synthetic.priorCandidates` lists the ids it shows.
 Written inline on all 260 references, the manifest was 514,500 bytes, over the large-file gate's 512,000; the gate was
 not loosened.
+
+## S17 — metric evaluator and versioned snapshot recompute (lane `phase-04-b2`, 2026-10-31)
+
+Branch `lane/assurance-observability`, from Lane B's `979f755`. Commits:
+
+| Commit | Subject |
+|---|---|
+| `0a9ffd6` | feat(observability): count review findings from human dispositions and define the assurance metrics |
+| `f555fe3` | feat(observability): evaluate dictionary metrics from events and human dispositions |
+
+### What landed, against the S17 row
+
+- **SR-X6.** `packages/observability/src/metrics.ts` accepts the operand keys `dedupeLatestBy` (a RunEvent property)
+  and `cohortBy` (a RunEvent property whose schema format is `date-time`, read from `run-event.schema.json`) and
+  rejects any other operand key, so a misspelt option cannot be silently ignored.
+- **SR-D1, SR-D2.** `docs/platform/metrics-dictionary.yaml` is 1.1.0: `review_finding_yield` and
+  `review_false_positive_rate` count `review.finding_dispositioned` by a human, `dedupeLatestBy: findingId`,
+  `cohortBy: reviewRoundCompletedAt`, over the unchanged `sum(review.completed.reviewFindingsTotal)`; the ten SR-D1
+  metrics are added as data model §5 writes them, in a new section at the end of the file (Lane A's CR-19 metric
+  sits mid-file, so the union at merge is two separate hunks). `metrics.test.ts` pins every formula, operand,
+  zero-denominator policy and privacy class against data model §5.
+- **Evaluator** (`packages/observability/src/metric-eval.ts`): per operand, event types → latest per dedupe key by
+  `(occurredAt, eventId)` → window `[start, end)` on `cohortBy` or `occurredAt` → filters → count, sum or mean. Dedupe
+  runs before the window and the filters, as data model §5 states.
+- **Versioned recompute**: `recomputeMetricSnapshots` appends version `n + 1` only when value, numerator, denominator
+  or null reason changed (the trigger's rule in data model §3.2); a lost version race re-reads and decides again,
+  bounded at five attempts. `MemoryMetricSnapshotStore` applies the table's check constraints and trigger rules.
+- **Acceptance checks** (`metric-eval.test.ts`, suite `asep-suite:metric-eval`, registered):
+  - golden values: "evaluator matches golden values for every dashboard metric" (J1);
+  - review day 1, accept day 2, reject day 3: "late human dispositions version their round's cohort snapshot" (H6) —
+    day-1 yield versions `0, 1, 0`, false-positive versions `0, 1`, every version still readable with its
+    `computedAt`, the day-2 and day-3 windows one null version each, never rewritten;
+  - disposition latency per cohort: the same test (day 1: null, 86 400 000, 129 600 000) and the golden;
+  - harness refutations excluded: "harness refutations count in neither yield, false positives, coverage nor
+    latency";
+  - nulls carry reasons: "missing source events yield null with a reason" (J2) and "every evaluated value is a number
+    or a null with a reason, never both";
+  - also B3, J7, J8 by their planned test names.
+
+### Decisions and deviations
+
+1. **The snapshot store seam lives in observability.** Architecture §6 lists `MetricSnapshotStore` among the
+   application-local ports of `packages/application/src/assurance/ports.ts`, which S12 creates (Lane B) and S17
+   appends to. S12 has not landed and B2 does not own that file, so the interface is defined next to the evaluator
+   (`MetricSnapshotStore`, `MetricSnapshotAppendResult`). When S12 creates `ports.ts`, S17's append there is a type
+   re-export. The PostgreSQL store is S8's (`adapters/persistence/src/assurance/**`); S17 needed no persistence change.
+   The contract S8 must meet: `append` returns `version-taken` for both ways PostgreSQL reports a lost race (the
+   unique-constraint violation of two concurrent inserts, and the trigger's "version must be n + 1" for a writer that
+   read a stale latest) and throws for anything else.
+2. **Snapshot appends carry no `AssuranceFence`.** A recompute is not attempt-scoped and holds no lease; its only
+   concurrency guard is `metric_snapshots_version_uq` with re-read and retry (data model §3.2).
+3. **Null reasons beyond the zero-denominator policy**, so every null has one: `no-values-to-average` (a mean over no
+   value), `no-source-events` (a count or sum without a denominator over no source event, e.g. Lane A's
+   `duplicate_side_effect_incidents` after the merge), `capture-not-enabled` (an opt-in privacy class without the
+   opt-in; nothing is read), `source-event-lacks-<field>` and `source-event-invalid-<field>` (a source event without a
+   usable dedupe key, window time or numeric field: the metric is null rather than silently counting or dropping it).
+4. **A mean's row** carries the sum of its values as numerator and their count as denominator, so the stored value
+   can be re-derived.
+5. **No dimension breakdown yet.** Every series is the whole project: `dimensions = {}`,
+   `dimensions_sha256 = sha256("{}")`. Panels need no breakdown in Phase 4.
+6. **The golden fixture is exported from `@asep/observability`** (`metric-eval-golden.ts`), because the S18 dashboard
+   itest in `apps/control-plane-api` compares Grafana's panel results with the same hand-derived values and can only
+   import built packages. Its values are derived by hand in its comments, never from the evaluator.
+7. **`escaped_defect_rate` is not on any dashboard.** By its formula it is 0 whenever reviews exist, because nothing
+   emits `escapedDefect` yet; data model §5 says it stays null until post-merge defect mapping exists. The evaluator
+   follows the dictionary; the metric is left off the panels instead of showing a 0 that means "not measured".
+   Controller decision whether the dictionary should change.
+
+### Test-first record
+
+- `0a9ffd6`: the seven new `metrics.test.ts` tests were written first and failed (7 of 33) before the validator and
+  dictionary change; 33/33 after.
+- `f555fe3`: `metric-eval.test.ts` and the golden were written before `metric-eval.ts`; the run before failed on the
+  missing module (one file-level failure, not per assertion); 17/17 after.
+- Seeded mutations, each applied to `metric-eval.ts` and reverted (for S23 to transcribe): no dedupe (6 tests fail),
+  cohort ignored (7), a missing field averaged as zero (4), the event-id tie reversed (1), an inclusive window end
+  (1), the change rule ignoring the numerator (1), no `version-taken` (2), capture opt-in ignored (1).
