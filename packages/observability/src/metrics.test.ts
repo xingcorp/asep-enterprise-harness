@@ -319,3 +319,189 @@ test('a correct operator+value operand still validates (no false positive)', () 
   const errors = validateDictionary(dict).filter((e) => e.problem.includes('drift'));
   assert.deepEqual(errors, [], `no drift expected on committed dict, got: ${JSON.stringify(errors)}`);
 });
+
+// --- operand options for disposition metrics: dedupeLatestBy and cohortBy ------
+
+function withNumerator(extra: Record<string, unknown>): MeasurementDictionary {
+  const d = clone(loadMeasurementDictionary());
+  const m = d.metrics.find((x) => x.name === 'review_ungrounded_rate')!;
+  Object.assign(m.numerator!, extra);
+  return d as unknown as MeasurementDictionary;
+}
+
+function errorsFor(dict: MeasurementDictionary, metric: string) {
+  return validateDictionary(dict).filter((e) => e.metric === metric);
+}
+
+test('dedupeLatestBy and cohortBy are accepted on RunEvent fields of the right kind', () => {
+  const dict = withNumerator({ dedupeLatestBy: 'findingId', cohortBy: 'reviewRoundCompletedAt' });
+  assert.deepEqual(errorsFor(dict, 'review_ungrounded_rate'), []);
+});
+
+test('a dedupeLatestBy that is not a RunEvent field is rejected', () => {
+  const errors = errorsFor(withNumerator({ dedupeLatestBy: 'noSuchField' }), 'review_ungrounded_rate');
+  assert.ok(errors.some((e) => e.problem.includes('dedupeLatestBy') && e.problem.includes('noSuchField')), JSON.stringify(errors));
+});
+
+test('a cohortBy that is not a date-time RunEvent field is rejected', () => {
+  const unknown = errorsFor(withNumerator({ cohortBy: 'noSuchField' }), 'review_ungrounded_rate');
+  assert.ok(unknown.some((e) => e.problem.includes('cohortBy') && e.problem.includes('noSuchField')), JSON.stringify(unknown));
+  // findingId exists on RunEvent but is not a date-time: a window cannot select by it.
+  const notDate = errorsFor(withNumerator({ cohortBy: 'findingId' }), 'review_ungrounded_rate');
+  assert.ok(notDate.some((e) => e.problem.includes('cohortBy') && e.problem.includes('date-time')), JSON.stringify(notDate));
+});
+
+test('an operand key the evaluator does not know is rejected, so a misspelt option cannot be ignored', () => {
+  const errors = errorsFor(withNumerator({ cohortby: 'reviewRoundCompletedAt' }), 'review_ungrounded_rate');
+  assert.ok(errors.some((e) => e.problem.includes('unknown operand key "cohortby"')), JSON.stringify(errors));
+});
+
+// --- dictionary 1.1.0: review metrics from human dispositions and the assurance metrics
+
+test('the dictionary is version 1.1.0', () => {
+  assert.equal(loadMeasurementDictionary().version, '1.1.0');
+});
+
+function metric(name: string) {
+  const m = loadMeasurementDictionary().metrics.find((x) => x.name === name);
+  assert.ok(m, `${name} is in the dictionary`);
+  return m;
+}
+
+const SUM_FINDINGS = { aggregation: 'sum', events: ['review.completed'], fields: ['reviewFindingsTotal'] };
+const MODEL_REVIEWS = {
+  aggregation: 'count',
+  events: ['review.completed'],
+  filter: { field: 'reviewerRole', notEquals: 'deterministic' },
+};
+const HUMAN = { field: 'dispositionActorKind', equals: 'human' };
+const LATEST_IN_COHORT = { dedupeLatestBy: 'findingId', cohortBy: 'reviewRoundCompletedAt' };
+
+test('review yield and false positives count the latest human disposition in the cohort of the round it disposes', () => {
+  for (const [name, valid] of [['review_finding_yield', true], ['review_false_positive_rate', false]] as const) {
+    const m = metric(name);
+    assert.equal(
+      m.formula,
+      `count(review.finding_dispositioned where findingValid=${valid} and dispositionActorKind=human) / sum(review.completed.reviewFindingsTotal)`,
+    );
+    assert.deepEqual(m.numerator, {
+      aggregation: 'count',
+      events: ['review.finding_dispositioned'],
+      filters: [{ field: 'findingValid', equals: valid }, HUMAN],
+      ...LATEST_IN_COHORT,
+    });
+    assert.deepEqual(m.denominator, SUM_FINDINGS);
+    assert.equal(m.zeroDenominatorPolicy, 'report-null-when-no-findings');
+    assert.equal(m.privacyClass, 'operational');
+  }
+});
+
+test('the assurance metrics are defined as the data model states', () => {
+  const expected: Record<string, { formula: string; numerator: unknown; denominator?: unknown; zero?: string; privacy: string }> = {
+    review_adjudication_coverage: {
+      formula: 'count(review.finding_dispositioned where dispositionActorKind=human) / sum(review.completed.reviewFindingsTotal)',
+      numerator: { aggregation: 'count', events: ['review.finding_dispositioned'], filter: HUMAN, ...LATEST_IN_COHORT },
+      denominator: SUM_FINDINGS,
+      zero: 'report-null-when-no-findings',
+      privacy: 'operational',
+    },
+    review_ungrounded_rate: {
+      formula: 'sum(review.completed.reviewFindingsUngrounded) / sum(review.completed.reviewFindingsTotal)',
+      numerator: { aggregation: 'sum', events: ['review.completed'], fields: ['reviewFindingsUngrounded'] },
+      denominator: SUM_FINDINGS,
+      zero: 'report-null-when-no-findings',
+      privacy: 'operational',
+    },
+    reviewer_failure_rate: {
+      formula:
+        'count(review.completed where reviewerFailed=true and reviewerRole!=deterministic) / count(review.completed where reviewerRole!=deterministic)',
+      numerator: {
+        aggregation: 'count',
+        events: ['review.completed'],
+        filters: [{ field: 'reviewerFailed', equals: true }, { field: 'reviewerRole', notEquals: 'deterministic' }],
+      },
+      denominator: MODEL_REVIEWS,
+      zero: 'report-null-when-no-reviews',
+      privacy: 'operational',
+    },
+    review_egress_stop_rate: {
+      formula:
+        'count(review.completed where egressStopped=true and reviewerRole!=deterministic) / count(review.completed where reviewerRole!=deterministic)',
+      numerator: {
+        aggregation: 'count',
+        events: ['review.completed'],
+        filters: [{ field: 'egressStopped', equals: true }, { field: 'reviewerRole', notEquals: 'deterministic' }],
+      },
+      denominator: MODEL_REVIEWS,
+      zero: 'report-null-when-no-reviews',
+      privacy: 'operational',
+    },
+    shadow_would_block_rate: {
+      formula:
+        'count(attempt.completed where reviewMode=shadow and shadowWouldBlock=true) / count(attempt.completed where reviewMode=shadow)',
+      numerator: {
+        aggregation: 'count',
+        events: ['attempt.completed'],
+        filters: [{ field: 'reviewMode', equals: 'shadow' }, { field: 'shadowWouldBlock', equals: true }],
+      },
+      denominator: { aggregation: 'count', events: ['attempt.completed'], filter: { field: 'reviewMode', equals: 'shadow' } },
+      zero: 'report-null-when-no-shadow-rounds',
+      privacy: 'operational',
+    },
+    review_cost_coverage: {
+      formula:
+        'count(review.completed where reviewCostPriced=true and reviewerRole!=deterministic) / count(review.completed where reviewerRole!=deterministic)',
+      numerator: {
+        aggregation: 'count',
+        events: ['review.completed'],
+        filters: [{ field: 'reviewCostPriced', equals: true }, { field: 'reviewerRole', notEquals: 'deterministic' }],
+      },
+      denominator: MODEL_REVIEWS,
+      zero: 'report-null-when-no-reviews',
+      privacy: 'operational',
+    },
+    mean_review_cost_usd: {
+      formula: 'mean(review.completed.reviewCostUsd)',
+      numerator: { aggregation: 'mean', events: ['review.completed'], fields: ['reviewCostUsd'] },
+      privacy: 'restricted',
+    },
+    review_disposition_latency_ms: {
+      formula: 'mean(review.finding_dispositioned.dispositionLatencyMs where dispositionActorKind=human)',
+      numerator: {
+        aggregation: 'mean',
+        events: ['review.finding_dispositioned'],
+        fields: ['dispositionLatencyMs'],
+        filter: HUMAN,
+        cohortBy: 'reviewRoundCompletedAt',
+      },
+      privacy: 'operational',
+    },
+    repair_success_rate: {
+      formula:
+        'count(attempt.completed where repairRound=true and repairClosedAllBlocking=true) / count(attempt.completed where repairRound=true)',
+      numerator: {
+        aggregation: 'count',
+        events: ['attempt.completed'],
+        filters: [{ field: 'repairRound', equals: true }, { field: 'repairClosedAllBlocking', equals: true }],
+      },
+      denominator: { aggregation: 'count', events: ['attempt.completed'], filter: { field: 'repairRound', equals: true } },
+      zero: 'report-null-when-no-repairs',
+      privacy: 'operational',
+    },
+    review_escalation_rate: {
+      formula: 'count(attempt.completed where assuranceOutcome=ESCALATE) / count(attempt.completed where reviewMode=gating)',
+      numerator: { aggregation: 'count', events: ['attempt.completed'], filter: { field: 'assuranceOutcome', equals: 'ESCALATE' } },
+      denominator: { aggregation: 'count', events: ['attempt.completed'], filter: { field: 'reviewMode', equals: 'gating' } },
+      zero: 'report-null-when-no-gating-rounds',
+      privacy: 'operational',
+    },
+  };
+  for (const [name, want] of Object.entries(expected)) {
+    const m = metric(name);
+    assert.equal(m.formula, want.formula, name);
+    assert.deepEqual(m.numerator, want.numerator, name);
+    assert.deepEqual(m.denominator, want.denominator, name);
+    assert.equal(m.zeroDenominatorPolicy, want.zero, name);
+    assert.equal(m.privacyClass, want.privacy, name);
+  }
+});

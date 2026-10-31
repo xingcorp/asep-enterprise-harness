@@ -9,6 +9,8 @@
 //     dimensions) is a defined RunEvent property name
 //   - every ratio metric (one with a denominator) declares a zeroDenominatorPolicy
 //   - every metric declares a privacyClass drawn from the closed enum
+//   - an operand carries only keys the evaluator knows; `dedupeLatestBy` names a
+//     RunEvent field and `cohortBy` a RunEvent date-time field
 //
 // Validation is DETERMINISTIC: file read + parse + set membership. No model,
 // no network.
@@ -23,6 +25,9 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 // packages/observability/src -> repo root is three levels up.
 const REPO_ROOT = join(HERE, '..', '..', '..');
 const DICTIONARY_PATH = join(REPO_ROOT, 'docs', 'platform', 'metrics-dictionary.yaml');
+// The catalog in @asep/contracts exposes field names only; whether a field is a
+// date-time is read from the same schema file it reads.
+const RUN_EVENT_SCHEMA_PATH = join(REPO_ROOT, 'packages', 'contracts', 'schema', 'run-event.schema.json');
 
 export interface FilterCondition {
   readonly field: string;
@@ -39,6 +44,31 @@ export interface MetricOperand {
   // A conjunction of filter conditions — ALL must hold (P1-FINAL-MED-003). This
   // is what lets an operand faithfully encode a formula's `where A=x and B=y`.
   readonly filters?: readonly FilterCondition[];
+  // Group the operand's events by this field and keep only the latest of each
+  // group, by (occurredAt, eventId), before the window and the filters apply. A
+  // later disposition of a finding therefore replaces the earlier one.
+  readonly dedupeLatestBy?: string;
+  // The date-time field the window selects by, instead of occurredAt. A
+  // disposition counts in the cohort of the round it disposes.
+  readonly cohortBy?: string;
+}
+
+const OPERAND_KEYS: ReadonlySet<string> = new Set([
+  'aggregation', 'events', 'fields', 'filter', 'filters', 'dedupeLatestBy', 'cohortBy',
+]);
+
+let dateTimeFields: ReadonlySet<string> | undefined;
+
+/** The RunEvent properties whose schema format is date-time. */
+export function runEventDateTimeFields(): ReadonlySet<string> {
+  if (dateTimeFields) return dateTimeFields;
+  const schema = JSON.parse(readFileSync(RUN_EVENT_SCHEMA_PATH, 'utf8')) as {
+    properties: Record<string, { format?: string }>;
+  };
+  dateTimeFields = new Set(
+    Object.entries(schema.properties).filter(([, p]) => p.format === 'date-time').map(([name]) => name),
+  );
+  return dateTimeFields;
 }
 
 export interface MetricDefinition {
@@ -247,6 +277,29 @@ export function validateDictionary(dict: MeasurementDictionary): DictionaryError
     for (const f of allFields) {
       if (!isRunEventField(f)) {
         errors.push({ metric: m.name, problem: `unknown field "${f}" (not a RunEvent property)` });
+      }
+    }
+
+    // operand options: no key the evaluator would silently ignore, and the
+    // dedupe and cohort fields exist with the kind they need.
+    for (const [label, op] of [['numerator', m.numerator], ['denominator', m.denominator]] as const) {
+      if (!op) continue;
+      for (const key of Object.keys(op)) {
+        if (!OPERAND_KEYS.has(key)) {
+          errors.push({ metric: m.name, problem: `${label}: unknown operand key "${key}"` });
+        }
+      }
+      if (op.dedupeLatestBy !== undefined && !isRunEventField(op.dedupeLatestBy)) {
+        errors.push({
+          metric: m.name,
+          problem: `${label}: dedupeLatestBy "${op.dedupeLatestBy}" is not a RunEvent property`,
+        });
+      }
+      if (op.cohortBy !== undefined && !runEventDateTimeFields().has(op.cohortBy)) {
+        errors.push({
+          metric: m.name,
+          problem: `${label}: cohortBy "${op.cohortBy}" is not a date-time RunEvent property`,
+        });
       }
     }
 

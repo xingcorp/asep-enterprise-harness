@@ -14,7 +14,7 @@
 # Phase 1 deliverable.
 apiVersion: asep.metrics/v1
 kind: MeasurementDictionary
-version: 1.0.0
+version: 1.1.0
 
 # Closed privacy enum (Codex P1-METRIC-003). Every metric declares exactly one
 # class; the loader fails on an unknown class. Rules govern capture, redaction,
@@ -49,6 +49,15 @@ privacyClasses:
 #   count  — number of matching events (optionally filtered)
 #   sum    — sum of the listed numeric fields across matching events
 #   mean   — mean of the listed numeric field across matching events
+#
+# Operand options (since 1.1.0; packages/observability/src/metric-eval.ts):
+#   dedupeLatestBy: <RunEvent field> — group the operand's events by that field
+#                   and keep the latest of each group by (occurredAt, eventId),
+#                   before the window and the filters apply, so a later
+#                   disposition of a finding replaces the earlier one.
+#   cohortBy: <RunEvent date-time field> — the window selects by that field
+#                   instead of occurredAt, so a disposition counts in the cohort
+#                   of the review round it disposes, not the day it arrived.
 metrics:
   # --- Product outcome -----------------------------------------------------
   - name: requirement_acceptance_rate
@@ -275,18 +284,22 @@ metrics:
   # --- Review effectiveness ------------------------------------------------
   - name: review_finding_yield
     family: review
-    purpose: Share of review findings that were confirmed valid.
-    formula: sum(review.completed.reviewFindingsValid) / sum(review.completed.reviewFindingsTotal)
+    purpose: Share of review findings a named human confirmed valid; the latest human disposition per finding counts, in the cohort of the review round it disposes.
+    formula: count(review.finding_dispositioned where findingValid=true and dispositionActorKind=human) / sum(review.completed.reviewFindingsTotal)
     numerator:
-      aggregation: sum
-      events: [review.completed]
-      fields: [reviewFindingsValid]
+      aggregation: count
+      events: [review.finding_dispositioned]
+      filters:
+        - { field: findingValid, equals: true }
+        - { field: dispositionActorKind, equals: human }
+      dedupeLatestBy: findingId
+      cohortBy: reviewRoundCompletedAt
     denominator:
       aggregation: sum
       events: [review.completed]
       fields: [reviewFindingsTotal]
     dimensions: [risk, projectId]
-    sourceEvents: [review.completed]
+    sourceEvents: [review.finding_dispositioned, review.completed]
     owner: review-platform
     sampling: full
     alertRelevance: medium
@@ -295,18 +308,22 @@ metrics:
 
   - name: review_false_positive_rate
     family: review
-    purpose: Share of review findings that were false positives.
-    formula: sum(review.completed.reviewFindingsFalsePositive) / sum(review.completed.reviewFindingsTotal)
+    purpose: Share of review findings a named human judged false positives; the latest human disposition per finding counts, in the cohort of the review round it disposes.
+    formula: count(review.finding_dispositioned where findingValid=false and dispositionActorKind=human) / sum(review.completed.reviewFindingsTotal)
     numerator:
-      aggregation: sum
-      events: [review.completed]
-      fields: [reviewFindingsFalsePositive]
+      aggregation: count
+      events: [review.finding_dispositioned]
+      filters:
+        - { field: findingValid, equals: false }
+        - { field: dispositionActorKind, equals: human }
+      dedupeLatestBy: findingId
+      cohortBy: reviewRoundCompletedAt
     denominator:
       aggregation: sum
       events: [review.completed]
       fields: [reviewFindingsTotal]
     dimensions: [risk, projectId]
-    sourceEvents: [review.completed]
+    sourceEvents: [review.finding_dispositioned, review.completed]
     owner: review-platform
     sampling: full
     alertRelevance: medium
@@ -429,3 +446,212 @@ metrics:
     alertRelevance: medium
     zeroDenominatorPolicy: report-null-when-no-tasks
     privacyClass: sensitive
+
+  # --- Independent assurance -----------------------------------------------
+  # Harness-rule refutations of ungrounded findings never count as a human
+  # disposition; they are reported by review_ungrounded_rate. repair_success_rate
+  # and review_escalation_rate need gating rounds, which Phase 4 production
+  # never runs, so they stay null there.
+  - name: review_adjudication_coverage
+    family: review
+    purpose: Share of review findings a named human has disposed of, in the cohort of the review round they came from.
+    formula: count(review.finding_dispositioned where dispositionActorKind=human) / sum(review.completed.reviewFindingsTotal)
+    numerator:
+      aggregation: count
+      events: [review.finding_dispositioned]
+      filter: { field: dispositionActorKind, equals: human }
+      dedupeLatestBy: findingId
+      cohortBy: reviewRoundCompletedAt
+    denominator:
+      aggregation: sum
+      events: [review.completed]
+      fields: [reviewFindingsTotal]
+    dimensions: [risk, projectId]
+    sourceEvents: [review.finding_dispositioned, review.completed]
+    owner: review-platform
+    sampling: full
+    alertRelevance: medium
+    zeroDenominatorPolicy: report-null-when-no-findings
+    privacyClass: operational
+
+  - name: review_ungrounded_rate
+    family: review
+    purpose: Share of review findings whose citation did not ground in the review packet; the harness refutes them.
+    formula: sum(review.completed.reviewFindingsUngrounded) / sum(review.completed.reviewFindingsTotal)
+    numerator:
+      aggregation: sum
+      events: [review.completed]
+      fields: [reviewFindingsUngrounded]
+    denominator:
+      aggregation: sum
+      events: [review.completed]
+      fields: [reviewFindingsTotal]
+    dimensions: [risk, projectId]
+    sourceEvents: [review.completed]
+    owner: review-platform
+    sampling: full
+    alertRelevance: medium
+    zeroDenominatorPolicy: report-null-when-no-findings
+    privacyClass: operational
+
+  - name: reviewer_failure_rate
+    family: review
+    purpose: Share of model reviews that failed (provider error, malformed or refused output, budget, served-model drift).
+    formula: count(review.completed where reviewerFailed=true and reviewerRole!=deterministic) / count(review.completed where reviewerRole!=deterministic)
+    numerator:
+      aggregation: count
+      events: [review.completed]
+      filters:
+        - { field: reviewerFailed, equals: true }
+        - { field: reviewerRole, notEquals: deterministic }
+    denominator:
+      aggregation: count
+      events: [review.completed]
+      filter: { field: reviewerRole, notEquals: deterministic }
+    dimensions: [risk, projectId]
+    sourceEvents: [review.completed]
+    owner: review-platform
+    sampling: full
+    alertRelevance: high
+    zeroDenominatorPolicy: report-null-when-no-reviews
+    privacyClass: operational
+
+  - name: review_egress_stop_rate
+    family: review
+    purpose: Share of model reviews the egress decision stopped before any request left the harness.
+    formula: count(review.completed where egressStopped=true and reviewerRole!=deterministic) / count(review.completed where reviewerRole!=deterministic)
+    numerator:
+      aggregation: count
+      events: [review.completed]
+      filters:
+        - { field: egressStopped, equals: true }
+        - { field: reviewerRole, notEquals: deterministic }
+    denominator:
+      aggregation: count
+      events: [review.completed]
+      filter: { field: reviewerRole, notEquals: deterministic }
+    dimensions: [risk, projectId]
+    sourceEvents: [review.completed]
+    owner: review-platform
+    sampling: full
+    alertRelevance: medium
+    zeroDenominatorPolicy: report-null-when-no-reviews
+    privacyClass: operational
+
+  - name: shadow_would_block_rate
+    family: review
+    purpose: Share of shadow-mode attempts whose round gating mode would not have let proceed.
+    formula: count(attempt.completed where reviewMode=shadow and shadowWouldBlock=true) / count(attempt.completed where reviewMode=shadow)
+    numerator:
+      aggregation: count
+      events: [attempt.completed]
+      filters:
+        - { field: reviewMode, equals: shadow }
+        - { field: shadowWouldBlock, equals: true }
+    denominator:
+      aggregation: count
+      events: [attempt.completed]
+      filter: { field: reviewMode, equals: shadow }
+    dimensions: [risk, projectId]
+    sourceEvents: [attempt.completed]
+    owner: review-platform
+    sampling: full
+    alertRelevance: medium
+    zeroDenominatorPolicy: report-null-when-no-shadow-rounds
+    privacyClass: operational
+
+  - name: review_cost_coverage
+    family: cost
+    purpose: Share of model reviews whose every call had a configured price; the gap is reviewer cost the cost metrics cannot see.
+    formula: count(review.completed where reviewCostPriced=true and reviewerRole!=deterministic) / count(review.completed where reviewerRole!=deterministic)
+    numerator:
+      aggregation: count
+      events: [review.completed]
+      filters:
+        - { field: reviewCostPriced, equals: true }
+        - { field: reviewerRole, notEquals: deterministic }
+    denominator:
+      aggregation: count
+      events: [review.completed]
+      filter: { field: reviewerRole, notEquals: deterministic }
+    dimensions: [projectId]
+    sourceEvents: [review.completed]
+    owner: finance-platform
+    sampling: full
+    alertRelevance: medium
+    zeroDenominatorPolicy: report-null-when-no-reviews
+    privacyClass: operational
+
+  - name: mean_review_cost_usd
+    family: cost
+    purpose: Mean priced cost of a review (recorded tokens times the configured price); unpriced reviews carry no cost and are not averaged in.
+    formula: mean(review.completed.reviewCostUsd)
+    numerator:
+      aggregation: mean
+      events: [review.completed]
+      fields: [reviewCostUsd]
+    dimensions: [projectId]
+    sourceEvents: [review.completed]
+    owner: finance-platform
+    sampling: full
+    alertRelevance: medium
+    privacyClass: restricted
+
+  - name: review_disposition_latency_ms
+    family: review
+    purpose: Mean time from a review round's completion to a named human's disposition of its findings, per cohort of the round.
+    formula: mean(review.finding_dispositioned.dispositionLatencyMs where dispositionActorKind=human)
+    numerator:
+      aggregation: mean
+      events: [review.finding_dispositioned]
+      fields: [dispositionLatencyMs]
+      filter: { field: dispositionActorKind, equals: human }
+      cohortBy: reviewRoundCompletedAt
+    dimensions: [risk, projectId]
+    sourceEvents: [review.finding_dispositioned]
+    owner: review-platform
+    sampling: full
+    alertRelevance: low
+    privacyClass: operational
+
+  - name: repair_success_rate
+    family: review
+    purpose: Share of repair attempts that closed every blocking finding. Needs gating rounds; null in Phase 4 production.
+    formula: count(attempt.completed where repairRound=true and repairClosedAllBlocking=true) / count(attempt.completed where repairRound=true)
+    numerator:
+      aggregation: count
+      events: [attempt.completed]
+      filters:
+        - { field: repairRound, equals: true }
+        - { field: repairClosedAllBlocking, equals: true }
+    denominator:
+      aggregation: count
+      events: [attempt.completed]
+      filter: { field: repairRound, equals: true }
+    dimensions: [risk, projectId]
+    sourceEvents: [attempt.completed]
+    owner: review-platform
+    sampling: full
+    alertRelevance: medium
+    zeroDenominatorPolicy: report-null-when-no-repairs
+    privacyClass: operational
+
+  - name: review_escalation_rate
+    family: review
+    purpose: Share of gating-mode attempts whose assurance round escalated to a human. Needs gating rounds; null in Phase 4 production.
+    formula: count(attempt.completed where assuranceOutcome=ESCALATE) / count(attempt.completed where reviewMode=gating)
+    numerator:
+      aggregation: count
+      events: [attempt.completed]
+      filter: { field: assuranceOutcome, equals: ESCALATE }
+    denominator:
+      aggregation: count
+      events: [attempt.completed]
+      filter: { field: reviewMode, equals: gating }
+    dimensions: [risk, projectId]
+    sourceEvents: [attempt.completed]
+    owner: review-platform
+    sampling: full
+    alertRelevance: medium
+    zeroDenominatorPolicy: report-null-when-no-gating-rounds
+    privacyClass: operational
