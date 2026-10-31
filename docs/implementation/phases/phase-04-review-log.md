@@ -1912,3 +1912,97 @@ the S19 provenance-stage freeze once P4-V9-MED-001 and the residual rule land, w
 stay within it, and is applied ("Review v9").
 
 **PLAN_STATUS: LOCKED v7 (controller-confirmed, R41)**
+
+## Rebase onto the shared foundation (2026-10-31)
+
+The branch was rebased from its fork point `00a6889` onto `b549aeb`, the Phase 3 S0 head accepted with changes (R55),
+which holds Phase 2 as accepted (`8e71ed7`, acceptance record `d6ee686`), Lane A's S2 decision core and S0. The
+controller's backup ref `backup/phase-04-pre-rebase-70b09eb` keeps the old history. All 70 commits replay in their
+order with the same subjects, authors and author dates; each message is byte-identical to its old one, except that
+the eight commits marked below lose their AI attribution trailer (R54). Every file the branch changes has the same
+blob at the old and the new head, except `packages/policy/src/index.ts`, `packages/policy/src/policy-source.ts` and
+`scripts/lib/canonical-tests.mjs`, which keep the base's changes and the branch's together (the suite registry by
+union, R10).
+
+SHAs cited elsewhere in this log, in `reconciliation-v1.md` and in the Codex reviews are the pre-rebase SHAs and are
+not rewritten; the table maps each to its rebased commit.
+
+| # | Pre-rebase | Rebased | Subject |
+|---|---|---|---|
+| 1 | `a2a7b8ad09a5389339fc3ef7131ae7b2b294d97f` | `fc81c473585a5385e26a5208dbd3ac65ac34a79a` | docs(phase-4): draft independent assurance plan (attribution trailer removed) |
+| 2 | `32013356e0845354f40ac6f63925f928637d6fb3` | `8475e0e13976f550ae61a11b804e0a1b7839ba73` | docs(phase-4): adjudicate plan review and lock plan v2 (attribution trailer removed) |
+| 3 | `7799bbe4df0fbde41b92d238343d9847e0dfbf22` | `c2b8e5bea6ca6f27039b5ac4f4384e17b7bb5a15` | docs(phase-4): record verified gateway injection, primary reviewer candidate and R15 (attribution trailer removed) |
+| 4 | `040ee5eeab9f765b3b48df319771932be9b8fc61` | `993cbc79c1a9c4c69c7df9587114bc6d0c4d9a99` | feat(policy): declare reviewer independence, egress classification and shadow-only modes as data (attribution trailer removed) |
+| 5 | `723b3f422bc8e0b056e5422345ce5ba1b9871096` | `6e3e63e3ed8ef95c1c32fa79b29fe15ccdc1f14b` | feat(domain): finding lifecycle with closure authority and review-round states (attribution trailer removed) |
+| 6 | `f6ca91d01db5a65f1821d0b5873b3655614fbed2` | `e5ba0bd0283eeb721a020a1465aa4c8c6eb2eae6` | feat(assurance): build an independent review packet with an execution manifest (attribution trailer removed) |
+| 7 | `7bcec5eba5f6209af11817c98c24c67812156a6a` | `716c164130f36cc88145381aec7ed40d8a7514af` | feat(assurance): deterministic push guard, egress decision and false-green checks (attribution trailer removed) |
+| 8 | `b2096d3dd8e25e138341476f935a02acd5a15f34` | `4402ca37f32e80c1251bb884780ed87d514a672c` | feat(assurance): grounding, adjudication and closure authority (attribution trailer removed) |
+| 9 | `ef5d608ce71d9f27964215c23d146cc58185b76f` | `fe6f32ddcaf1265cdf1b9fb3efa6984015501ba3` | docs(phase-4): fold the plan lock-check, fix the slot block and lock plan v3 |
+| 10 | `82be04808ef11f37be6c9937c677b33d1ab2d6c4` | `a810d45fcc32f339608dd594ba8ae6b167837c49` | refactor(assurance): name the fence epoch as the slot contract does |
+| 11 | `8df35a531cc43a8138e4743ad0427bde19ea5dea` | `da862e19a225d5772995de0ef9dcf06d38209110` | fix(assurance): judge waiver expiry at the round's opening time |
+| 12 | `fca8c52f789de391d292d328746abe1d02dec504` | `987acb374d00ce38b81690c9c78e4cff8baf56c9` | test(assurance): pin that a push-guard block carries no shadow verdict |
+| 13 | `8af887ee550f6b3ddd15e06714621f830518f28d` | `c9765c5bc2948c5d980de8bf51ff27095a261efd` | feat(assurance): canonical check report with a strict parser |
+| 14 | `9e3a1c32e869193e981a867e8bb9fbd1abaec9c8` | `16797383671889cdcb96d9434114113ffe1668f5` | feat(evals): collect self-history defect provenance and content-addressed excerpts |
+| 15 | `36763d705fefac7cfb5b02d8ef487a432e3c4ff1` | `5cf32a9dbc12e237f9b33a7b2be0affd94d0d362` | docs(phase-4): fold the v3 review into plan v4 and fix the slot block |
+| 16 | `037de8bf5a37faafd72225d1b22e9d279882affa` | `4eaac0ecfc2521dc075136f23b89499ec54a3ce2` | style(assurance): drop the trailing blank line of the adjudication module (P4-CODE-LOW-001) |
+| 17 | `eb64b63d742021ad175c6bf9830023ba9cd10522` | `cc151a0f56b87e45604247a76c0fcd974d13c458` | test(assurance): reject reviews whose status and output disagree |
+| 18 | `a18ef5031c387b3f23e83de008e8cb29b30ecb30` | `a79a6679a831aafdbe8ef7d4305d01950253ec3e` | fix(policy,assurance): refuse paths that are not normalizable before the gateway (P4-CODE-HIGH-001) |
+| 19 | `2f814b592031e9107419499b61f99d45eca7f6fa` | `33d44788a1e5ec1e8fcfd40263ed0a8c68eb749b` | fix(assurance): classify both sides of every entry of both diffs before egress (P4-CODE-HIGH-002) |
+| 20 | `6370c74d3287f1a2dd3e145bfb181141d8178eb4` | `5446771afe907d8d698be64e1dd444e304ce8606` | fix(assurance): ground findings before they merge and keep their identities apart (P4-CODE-HIGH-003) |
+| 21 | `99ba1f74dc3a48cdb0cb618e9bb5efabfaf7e359` | `1bf0e8604da4ac40514f808813f22434b6f55c24` | fix(assurance): close a finding only on a changed line, never on its context (P4-CODE-HIGH-004) |
+| 22 | `1ff78974bc36c1b63dd37aeb8576dde7b2a56d26` | `9acc3297a477992b0ae14f78b6647ddb7182e6c5` | fix(assurance,domain): keep SARIF findings blocking until a proven scanner recheck (P4-CODE-HIGH-005) |
+| 23 | `17cc5e5f39f4b8a47d7bbb281a3493dded2f42c5` | `c616c3e5144fbb1303f2924ea5d1067af1fd1964` | fix(assurance): reconcile a re-raised finding with its prior before it blocks (P4-CODE-MED-001) |
+| 24 | `ae182c0d3a00ba4326cc155e18ebd7ff6a8bb3d1` | `b2b6b1793f191aa36082ae96a777871a6a0d43be` | fix(assurance): count the whole packet in its budget and refuse an oversized prompt (P4-CODE-MED-002) |
+| 25 | `7b15ba840fe73f6ca75f23c4739385c42a817f8c` | `3549e66f9c3aad686083cb76b823c9933203b461` | fix(assurance): count executed tests and recorded failures as false green (P4-CODE-MED-003) |
+| 26 | `40d87adcc0e6db1b306018a0a1b1978bc105eae8` | `ba795a5356957b890f94d075482916e963171ef5` | fix(review-corpus): abort collection when a publication gate or git does not complete (P4-CODE-HIGH-006) |
+| 27 | `7cc20f474ef0d53532ff386777eae7d5d07dae24` | `2099b38f28fbef80f65dee96f4c77106f6565afa` | fix(review-corpus): adopt the R22 provenance vocabulary and record bundle dependence (P4-PLAN3-MED-001) |
+| 28 | `dd5f9be85baae9992fac53173155804f08a453cf` | `88df1d17a127309abf3106c9ba6d015d0fbe0df6` | docs(phase-04): fold the v4 re-check and lock v5 (R26, R28) |
+| 29 | `4c2569c04216c0ce6d2cb604f945f684aea1748c` | `a875c329b8a4bd16e03ee68ea38fd47ad97d4e75` | fix(assurance): a re-raise never downgrades a prior it does not shield (P4-CODE4-HIGH-001) |
+| 30 | `897993d9bb550654a5ef8147f109589b41293d29` | `9ca8400d09dbc8e9c81a6446a1d08926cdf1dc73` | fix(assurance): a SARIF recheck needs effective execution and coverage (P4-CODE4-HIGH-002, P4-PLAN4-HIGH-001) |
+| 31 | `dec419bc54bafa0b2287b0a35d1de4f18699fce8` | `af2061d566881a4cc7eaa163a8f6f4a111a8ec7a` | fix(assurance): hash every identity as a canonical JSON tuple (P4-CODE4-HIGH-003) |
+| 32 | `9129abcc44b683366c0c233ee143063a55490edf` | `9b95d7a0d1b3c6c73e8b7d8e561c0a68e498ac8e` | fix(assurance): measure the packet budget on its final bytes (P4-CODE4-MED-001, P4-PLAN4-MED-001) |
+| 33 | `fb2e4323a61e128553043b08157f02c70a1684c9` | `b4c6917cb34d03569734f30c56bb140d0e6c6ec6` | fix(review-corpus): read the path-leak patterns from one list shared with the publication gate (P4-CODE4-MED-002) |
+| 34 | `1e24264bcdc620ebe39219392f33e7432dd2fe62` | `10fe1e29d010b2d5a046b1314454dbb7dd2732f3` | docs(phase-04): fold the v5 re-check and lock v6 (R29, R31, R32) |
+| 35 | `a07f703a9bfda3165e7b433509940cde323e39cc` | `48e45ad8226f9ee62d9b13a4c46bb4004cb317f3` | fix(assurance,domain): close a SARIF finding only by a human disposition (P4-CODE5-HIGH-001, P4-CODE5-HIGH-002) |
+| 36 | `bd69b3b5f6050c6b54067223da016c36de35bce2` | `aa373452cb4c1c0554797a4de316883f7e293a1d` | fix(assurance): resolve every SARIF reference form or flag it, never drop it (P4-CODE5-HIGH-001, P4-CODE5-HIGH-002) |
+| 37 | `38e2ed198e6a65ea32a45fe7cdbd734f1f8b9160` | `aaee8bd725d5172116232e6ad28f278b1548aca6` | test(assurance): pin SARIF severity preservation and the canonical blocking order |
+| 38 | `3e63e14d6f971f444640f860510c1c70aa0b5e0d` | `2d81afc4cebe2c39754315812f9b3d6c2a1512fa` | fix(publication): make the path-leak scanner fail closed (P4-CODE5-HIGH-003, P4-CODE5-MED-001) |
+| 39 | `53a5716443d50f1931922cb09b7bd30baddf4a3c` | `9b322c5de5488160c376bfb1d9baa53dd61a9a55` | fix(assurance): report a packet's size as its stored bytes (P4-CODE5-LOW-001) |
+| 40 | `d0907b9afecd4c8e3527874e8b9ddd435978a8dc` | `e7417fdd4e90fceea2d1ca2c9d40f21cd4737c07` | test(publication): put the stub grep on PATH from the shell, not the test's environment |
+| 41 | `dc7edb2fa2ef3e3f8a3dca4090976ccf241bc9fd` | `0e2009ede1c06c3cc392ce454d45b821e068df2d` | docs(phase-04): fold the v6 re-check and lock v7 (R37) |
+| 42 | `6ce474b2d9b8a5467876ff657f3c6c2f3627fe16` | `8bb0a2305f8c97d5c8a05fe15ef06257e8953279` | fix(assurance): turn each SARIF log into one human-only blocking finding, never parsed (P4-CODE6-HIGH-001, P4-CODE6-HIGH-002, P4-CODE6-MED-002) |
+| 43 | `7df3ccbe920e93a8b135d0b76473c303858b171b` | `0ad6b6990cc2e992abacc2c8bc44750d90ae43f9` | fix(domain): refuse every machine disposition of a SARIF finding but a reopen (P4-CODE6-MED-001) |
+| 44 | `287ed0ff791d5a17371e331afcab6f7ce7be1fdf` | `8cfdbce16442539d6058058ceeb5eca1d76aeb77` | fix(publication): make the history-secret scan fail closed and end --scan-paths options at -- (R37) |
+| 45 | `d4cc2517d67d355153ecf960c9309d0df1a3bd85` | `a41236249cb03a3da30e8116728c4b394d376ae6` | docs(phase-04): fold the v7 re-check (R39, R40) |
+| 46 | `374dfac362c31bf86f5b6f7f895b7e6ccf46e087` | `ddc3211ec654c8d70512c919315b1ab278923c56` | fix(assurance): count every SARIF finding as blocking in the check summary (P4-CODE7-MED-001) |
+| 47 | `58baad781a11a86e233f775d79799bc94b070cfb` | `8fe7a21e311dd976925feb4696c5e9a0dea8b495` | fix(assurance): list SARIF inputs by check id then digest (P4-CODE7-LOW-001) |
+| 48 | `0fdd76ebe9a4bf98a0aa9113b5b34448ac5725f4` | `7768df247c236a129987c9f4bda5677ab068fe73` | test(domain): refuse machine dispositions of a SARIF finding from every state (P4-CODE7-LOW-002) |
+| 49 | `27927d9933a26c89a147510d8a7d8806c9b5c395` | `0f05f089f1eee4ff4290bb921ed5efc46ba0a408` | test(publication): prove the history exemption against paths that carry an exempt name (P4-CODE7-LOW-003) |
+| 50 | `04d98320c2eef1268f84694e5d23cb57a5fb09bd` | `c35558de6e59b6fd3cd411f024ea16715e96120e` | docs(phase-04): record the controller's confirmation of plan v7 (R41) |
+| 51 | `c48befb26d0c6b53047f47570f96bf3ffd5253cc` | `92faa23721d9ff0d9ff52c74430a1957efc6f45b` | feat(evals): freeze the self-history corpus with its manifest and corpusSha256 |
+| 52 | `11a90b341d990c726dc09e1af0999736050e4f55` | `a547fbf54a17c5786eeaf1cf46e647dd26a5bdb9` | feat(evals): map gold locations to the post-fix tree |
+| 53 | `6b454ae3af0bd4cb2a918a3b63a9eced4efe0764` | `23e310718fd89b176c5f834bce4ede76496faaf2` | feat(evals): match gold items to reviewer findings deterministically |
+| 54 | `caaabfd7d54f4d6740c2fa8698fe0a5226bf5eb7` | `1783b0113f93558c597d33d210ede2f5ea75fa17` | feat(evals): report Wilson intervals and evaluate the pre-registered floors |
+| 55 | `0e79a45c5aec9c22e95fdb42d8a5984a9938abb9` | `59d50b814e859c4fedbeb59069c85d8886d31001` | test(evals): keep the gate-cleanup check apart from concurrent test files |
+| 56 | `c9746768de78caa4f1890c00b7511e4dc14aa446` | `faccb14ad455a32a9afc90a8e3b59a6489354e4c` | feat(assurance): build corpus packets whose execution is NOT_RECORDED |
+| 57 | `676fefcde9eecf7f5ff0bb996ef8e461ccd5008b` | `3343b4dd6d1661ff41c0009cdc1bb8a3859d8a3e` | feat(evals): synthetic corpus fields and the golden item's packet round trip |
+| 58 | `5a5ee45134f40387bfacf4c036b8af2f6dd0e2b5` | `69622eaa360d5c12555d7f86f4a0eb44688e3772` | docs(phase-04): adjudicate review v8 of the S19 freeze and S20 pure core (R44) |
+| 59 | `aaa38dbe3703760a61f83e00748e742b671f7ee5` | `eecb8ab1ebab3f8460550156c4d4836adf74f87e` | feat(evals): mark the corpus manifest as a provenance-stage freeze |
+| 60 | `0ae60a3500b60b123dd403543293bbd96c11edaf` | `5c4c22cdedc18f61f3eb0b2f75fbe4c39e45db99` | feat(evals): state what each corpus item is used for, never by its fix commits |
+| 61 | `370738b95e76be04131fd21763c8cd0af611ff53` | `189af85a9ca7cdcb4da667609cb573537e5e483a` | feat(evals): record each corpus item's provenance-derived synthetic fields |
+| 62 | `18901ae77a2a67e66266bd17acef16cd5d1e3e22` | `da2e2926dfe6f976f2d43da1a8bfb1f8f14368ec` | fix(evals): break matcher ties on the fingerprint, with the chunk last |
+| 63 | `d07a33bd4e817a8005733a25a0bedff34dfd6795` | `78f6c9d7dd4eec21846f6ed62373e2018b9e35c9` | test(evals): prove lenient matching is nearest first |
+| 64 | `cc2164b10324b83dec337d8f699e4d2f4474758b` | `28ed3720670d6b90356eab1bce2145a831e036b8` | fix(evals): report injection degradation with its sign |
+| 65 | `fbaf6ac10dcd526071914433f940aa2c118098f0` | `ad099c0af1e78d9a783eca526950b903e396e7a3` | feat(evals): pin the golden item's packet, prompt and grounding independently |
+| 66 | `f6c698fcd329bceea7141b766dfd26fca80c7fc0` | `b8d87cb411ffe719a1fbaab8a4d2c40a3b3b3e26` | docs(phase-04): adjudicate re-check v9 of the S19 provenance-stage freeze and S20 pure core (R45) |
+| 67 | `1d7f675888453c9c4308a34678ea3834a41deaef` | `bfc518a6244ebf3bf6e29f4309bf9d03722e1c0e` | feat(evals): exclude residuals without a rule C repair base as reviewed-tree-unknown |
+| 68 | `f1a99265a9dbd5154843e2ad6b60562f9d4ec950` | `6d13e6062283f36a15af84d93b038de5cfd56733` | feat(evals): give rule C's prior candidates their evidence and required fix from the label |
+| 69 | `17007fed570b30d480b4243848b055cfa12d75f0` | `496a6cfe48b5030bd5475c6b7cd009f1c08a1ac7` | test(evals): match a finding that gives no end line as the line it starts on |
+| 70 | `70b09eba3923cef3b04400b3474a68fd7b11eac7` | `069d770db8da1081465088b413b4c41d98644432` | test(application): pin the review prompt's template digest to its independently computed value |
+
+### Corpus manifest shape (R46)
+
+Since `f1a9926` (rebased `6d13e60`), rule C's prior candidates are stored once, in the manifest's top-level
+`priorCandidates` (by item id), and each rule C item's `synthetic.priorCandidates` lists the ids it shows.
+Written inline on all 260 references, the manifest was 514,500 bytes, over the large-file gate's 512,000; the gate was
+not loosened.
