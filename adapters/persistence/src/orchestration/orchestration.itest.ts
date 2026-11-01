@@ -661,8 +661,8 @@ test('projections raced on two connections keep the highest sequence number, and
       assert.ok(lost?.status === 'rejected' && lost.reason instanceof ProjectionOwnershipError, `round ${round}`);
     }
 
-    // Two workflows project one attempt of an unbound task at once, and one projects the task itself: the first to
-    // bind the task owns it, and the attempt shows only the owner's writes.
+    // Two workflows project one attempt of an unbound task at once: the first to bind the task owns it, and the
+    // attempt shows only that workflow's write.
     for (let round = 0; round < 5; round++) {
       const taskId = await newTask(db, t);
       const attemptId = await newAttempt(db, t, taskId);
