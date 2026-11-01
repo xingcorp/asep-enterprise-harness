@@ -102,6 +102,37 @@ export function runGit(subArgs: readonly string[], opts: RunGitOptions = {}): Pr
   });
 }
 
+/**
+ * runGit with stdout kept as bytes: the same hardening flags and sanitized
+ * environment, for output a UTF-8 decode would corrupt (blob contents, diffs of
+ * binary or non-UTF-8 files). A non-zero exit always throws.
+ */
+export function runGitBytes(subArgs: readonly string[], opts: Omit<RunGitOptions, 'allowNonZero'> = {}): Promise<Buffer> {
+  const args = [...HARDENING_FLAGS, ...subArgs];
+  return new Promise((resolve, reject) => {
+    execFile(
+      'git',
+      args,
+      {
+        cwd: opts.cwd,
+        env: sanitizedEnv(),
+        timeout: opts.timeoutMs ?? 60_000,
+        maxBuffer: 256 * 1024 * 1024,
+        windowsHide: true,
+        encoding: 'buffer',
+      },
+      (err, stdout, stderr) => {
+        if (err) {
+          const code = typeof (err as { code?: unknown }).code === 'number' ? (err as { code: number }).code : 1;
+          reject(new GitCommandError(subArgs, code, String(stderr)));
+          return;
+        }
+        resolve(stdout);
+      },
+    );
+  });
+}
+
 // Insert `--end-of-options` into an argv after the given prefix length, so any
 // following user/derived value cannot be treated as a flag. Small helper used by
 // subcommands that take a positional ref/path argument.

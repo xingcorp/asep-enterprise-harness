@@ -8,7 +8,7 @@
 // non-bypassable RefSafetyPolicy.
 
 export type { GitResult, RunGitOptions } from './git-exec.js';
-export { runGit, endOfOptions, GitCommandError } from './git-exec.js';
+export { runGit, runGitBytes, endOfOptions, GitCommandError } from './git-exec.js';
 
 export type { ForgeIdentity } from './remote-url.js';
 export { buildCloneUrl, rejectRawRemoteUrl, RemoteIdentityError } from './remote-url.js';
@@ -25,3 +25,10 @@ export {
 } from './worktree-manager.js';
 
 export { ulid, isUlid } from './ulid.js';
+
+// Trusted review source: exact range diffs and post-images read from the
+// workspace object store, every omission reported (independent assurance).
+export type { GitReviewSourceReaderConfig } from './review-source.js';
+export {
+  GitReviewSourceReader, ReviewSourceError, REVIEW_DIFF_FLAGS, isNormalizableReviewPath,
+} from './review-source.js';
