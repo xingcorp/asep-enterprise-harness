@@ -823,6 +823,24 @@ test('findLease returns the fence of the attempt\'s latest lease, or null when i
   }
 });
 
+test('findLease returns the lease of the highest epoch, whatever the grant timestamps say', async () => {
+  const { db, a } = await freshDb();
+  try {
+    const attemptId = await legacyAttempt(db, a);
+    const first = await acquire(db, a, attemptId);
+    await new SqlWorkspaceLeaseRepository(db).release(a.scope, first.leaseId);
+    const second = await acquire(db, a, attemptId);
+    assert.ok(second.fencingEpoch > first.fencingEpoch);
+    // acquired_at is the granting transaction's now(): a clock step back, or a grant whose transaction began
+    // earlier, puts an older lease after a newer one.
+    await db.query(`update workspace_leases set acquired_at = acquired_at + interval '1 hour' where id = $1`, [first.leaseId]);
+    assert.deepEqual(await new SqlAttemptLeaseHistory(db).findLease(a.scope, attemptId),
+      { leaseId: second.leaseId, fencingEpoch: second.fencingEpoch });
+  } finally {
+    await db.close();
+  }
+});
+
 test('renewal extends a live lease and reports a released, expired, quarantined or superseded lease lost', async () => {
   const { db, a } = await freshDb();
   try {

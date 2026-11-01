@@ -19,7 +19,10 @@
 //
 // findLease returns the fence of the attempt's latest lease, whatever its state
 // now, or null when the attempt never held one. A lease row is never deleted and
-// a lease that left ACTIVE never returns to it, so the history only grows.
+// a lease that left ACTIVE never returns to it, so the history only grows. The
+// latest lease is the one of the highest epoch: epochs are granted in order,
+// while acquired_at is the granting transaction's now() and can run backwards.
+// The id breaks a tie, which only leases on different branches can make.
 
 import type { AttemptId, TenantScope, WorkspaceId } from '@asep/contracts';
 import { WorkspaceUnavailableError, type AttemptLeaseFence, type WorkspaceCapability } from '@asep/ports';
@@ -89,7 +92,7 @@ export class SqlAttemptLeaseHistory {
     const r = await this.client.query(
       `select id, fencing_epoch from workspace_leases
         where attempt_id = $1 and organization_id = $2 and project_id = $3
-        order by acquired_at desc, fencing_epoch desc, id desc
+        order by fencing_epoch desc, id desc
         limit 1`,
       [attemptId, scope.organizationId, scope.projectId],
     );
