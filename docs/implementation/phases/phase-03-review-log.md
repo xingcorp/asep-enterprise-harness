@@ -2546,3 +2546,25 @@ case. The error did not recur in 6 runs of the migration tests, in 5 later full 
   private container with the pinned digest, torn down afterwards.
 - The documentation commit changes only the two documents. I ran `pnpm format:check` and `pnpm check:publication` on
   it.
+
+## S3 follow-ups — review of `fa51059`
+
+The controller accepted S3 at `13c54e7` (R70). The auto-review of `fa51059` gave ACCEPT_WITH_CHANGES 0.92, with no
+HIGH. These commits address its MED findings (R58), each failing-first.
+
+| Finding | Disposition | Commit | Failing-first evidence |
+|---|---|---|---|
+| AUTO-MED-001: while `tasks.workflow_id` is null, two workflows can write one attempt | Fixed. An attempt projection locks the task row, binds an unbound task to the writing workflow, and refuses any other workflow, in one transaction (`projection.ts:84-127`). A workflow that projects another task is refused too. | `1644d93`; race itest `a121226` | `orchestration-persistence.test.ts:432` failed (the first attempt projection left the task unbound) before the change. The itest at `orchestration.itest.ts:664` was **not run**: Docker did not respond. |
+| AUTO-MED-002: `findLease` orders by `acquired_at` before the epoch | Fixed. Ordered by `fencing_epoch` alone; the id breaks a tie, which only leases on different branches can make (`workspace-resolver.ts:89-101`). | `2d17cce` | `orchestration-persistence.test.ts:856` moves a released lease's `acquired_at` an hour ahead; it failed (the released lease came back) before the change. |
+| AUTO-MED-003: the ledger is not append-only in the database | Fixed. Migration `0108_budget_ledger_append_only` adds a trigger that refuses UPDATE and DELETE with SQLSTATE 55000 (`migrations.ts:1585-1603`). The itest upgrade path expects `0108` with the orchestration set. | `b1e49cd` | `orchestration-persistence.test.ts:1259`, the Codex probe (an UPDATE of `cost_usd`) plus a DELETE, failed (the update succeeded) before the migration. |
+| AUTO-MED-004: two existing tests edited outside the assigned files | Accepted by the controller (R70). No change. | — | — |
+| AUTO-MED-005: the ledger conflict test does not cover `inputTokens` | Fixed in the test. It replays a usage entry and an overrun with each field changed in turn, including null counts, asserts that the cases cover every field but the key, and that the stored rows did not change. The comparison already covered every field, so no code changed. | `c3214d4` | The mutant that skips `inputTokens` survived the old test and fails the new one at `orchestration-persistence.test.ts:1206` (`Missing expected rejection … {"inputTokens":1001}`). |
+| AUTO-LOW-001: `fa51059` changed `0102`'s text after `215d6ac` | Accepted by the controller: no database holds `215d6ac`'s migrations. The follow-up fixes add `0108` and edit no applied migration. | — | — |
+| AUTO-LOW-002: the bodies of `215d6ac` and `fa51059` name a phase | Acknowledged. The history is not rewritten by the lane; it is the controller's to handle. The commit messages of this step name no phase. | — | — |
+| AUTO-LOW-003: the review log ended at S1 | Resolved by `13c54e7`, which added the S3 section with the evidence per commit. | — | — |
+
+**Checks per commit.** `pnpm typecheck` exited 0 before each commit, and the focused tests passed. Before the commits,
+the whole `orchestration-persistence.test.ts` passed 43 of 43.
+
+**Not verified.** The Docker daemon did not respond during this step, so I ran no integration test. That covers the
+new race itest and the upgrade-path change for `0108`. Both typecheck.

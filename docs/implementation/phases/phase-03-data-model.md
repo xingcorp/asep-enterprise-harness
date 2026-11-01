@@ -44,6 +44,7 @@
 0105_approvals                     approval_requests, approval_decisions, approval_decision_deliveries (outbox)
 0106_budget_ledger                 budget_ledger; runs: budget + governance columns
 0107_run_events                    run_events, unified DDL of both lanes (R4)   [lands in S0]
+0108_budget_ledger_append_only     budget_ledger: a trigger refuses UPDATE and DELETE (SQLSTATE 55000)
 ```
 
 All are `ALTER`/`CREATE` only, except the one `DROP CONSTRAINT … ADD CONSTRAINT` in `0100`. No Phase 2 migration
@@ -369,9 +370,15 @@ open. None of them weakens a rule of §3.
   (`:1534`). Usage and overruns are an attempt's, and an extension is a task's. A trigger fixes a run's governance once
   `created_by` is set (`:1563-1582`). That is how "`publicationApprovalRequired` cannot change after the run starts"
   holds for every writer.
+- **Attempt projection binds its task.** An attempt projection locks the task row and binds an unbound task to the
+  writing workflow before it writes the attempt, so two workflows never both write one attempt
+  (`orchestration/projection.ts:84-127`).
+- **The ledger is append-only in the database** (`0108`, `migrations.ts:1595-1603`): a trigger refuses every UPDATE
+  and DELETE with SQLSTATE 55000, as `run_events` does.
 - **Lease history.** `findLease(scope, attemptId)` returns the fence of the attempt's latest lease, whatever its
-  state, or null (`orchestration/workspace-resolver.ts:87-98`). The activity maps the `attemptNumber` of §4.5 to the
-  attempt id through `findAttempt`.
+  state, or null (`orchestration/workspace-resolver.ts:89-101`). The latest lease is the one of the highest epoch:
+  `acquired_at` is the granting transaction's `now()` and does not order grants. The activity maps the
+  `attemptNumber` of §4.5 to the attempt id through `findAttempt`.
 - **Natural-key inserts arbitrate on every unique key** (`on conflict do nothing` without a target), as §5 says
   for approval requests. A registration or an open that races on two connections then waits and does nothing,
   instead of failing on the second unique key.
