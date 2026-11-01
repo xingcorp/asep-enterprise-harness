@@ -2358,3 +2358,63 @@ It is not committed, because two existing suites go red and both belong to other
 2. `adapters/persistence/src/run-events/run-event-sink.itest.ts` › "upgrade path" asserts that a database at the
    Phase 2 set takes `0107_run_events` alone. Any later migration breaks it. The orchestration persistence lane
    changed the same lines in `215d6ac` to migrate to a named run-events set.
+
+## S9 — trusted range diffs and post-images (lane `phase-04-b2`, 2026-11-01)
+
+Commit `c022824` feat(workspace): trusted range diffs and post-images for review. On top of the controller's merge of
+the review contracts and ports (`a62e82d`).
+
+- `adapters/git-worktree/src/review-source.ts`: `GitReviewSourceReader implements ReviewSourceReader`.
+  - `diffRange` stores the exact `git diff --no-color --no-ext-diff --no-textconv --find-renames --unified=3` bytes
+    between two full SHAs (the flags of plan §7.8 rule P), whole; over `maxBytes` it is flagged `overLimit`, never cut.
+    The file list comes from NUL-separated `--name-status` and `--numstat` over the same range; `T` maps to `M`; any
+    other unmapped status fails closed.
+  - `readBlobs` answers every requested path: `binary` (git's NUL-in-8000-bytes rule), `too-large` (size over
+    `maxBytesPerFile`, with the size), `submodule` (gitlink), `deleted` (absent at that commit), `non-utf8` (fatal
+    UTF-8 decode) and `unsafe-path` (empty, absolute, trailing slash, backslash, `.`/`..`/empty segment, a `.git`
+    segment, C0, DEL, U+2028, U+2029), never read.
+  - Commits must be full 40-hex SHAs that `cat-file -t` reports as commits in the workspace; nothing resolves a ref
+    name, and `--end-of-options` precedes every range.
+- `adapters/git-worktree/src/git-exec.ts` gains `runGitBytes`, `runGit` with stdout kept as bytes (same hardening
+  flags and sanitized environment). This file is outside the two the plan names for S9; the change is additive and
+  `runGit` is unchanged. The plan's export-line rule (§21.2) covers `index.ts`.
+- `workspacePath(capability)` is injected: the composition binds it to the workspace manager, which keeps its paths
+  private. The lease and tenant checks happen before the read, in the resolver (E13), not here.
+- Suite `asep-suite:review-source` (registered), against real temporary repositories: the exact diff bytes and file
+  list, over-limit at `bytes − 1` and exactly `bytes`, the five omission reasons and both sides of a change, the file
+  limit at size and size − 1, eleven refused paths with nothing stored, and refused SHAs. Written first: the run before
+  the module failed on the missing import. Its first run caught a fixture defect (a gitlink staged before `add -A` was
+  dropped), fixed in the test.
+- Slice-end `verify:all` not run yet (host freeze at 17:30); owed on resume.
+
+## Follow-ups from `auto-review-9738318.md` (ACCEPT_WITH_CHANGES 0.92, no HIGH; controller R70)
+
+### AUTO-MED-001 — a lost race could publish a value from older events — ACCEPTED, fixed in `447693b`
+**Disposition:** `recomputeMetricSnapshots` compares its `sourceWatermark` with the latest version's after every read,
+re-reads after a lost race included, and writes nothing (counted `stale`) when the latest was computed from newer
+events or when it has no watermark to set against one. The recompute takes its events as input and cannot re-read
+them; the watermark guard is what makes the retry safe. S8's store and the caller's event read must supply the
+watermark (max `inserted_at` of the events read, data model §3.2).
+**Validation:** "a recompute from older events than the latest snapshot never appends over it": the race of two event
+sets (the stale writer would otherwise append version 2 = 0 over version 1 = 1), an older watermark, a null watermark
+and a newer one. Failed before the change, passes after.
+
+### AUTO-MED-002 — `escaped_defect_rate` read 0 without defect mapping — ACCEPTED, fixed in `393f62f`
+**Disposition:** a dictionary metric may declare `notMeasured: <reason>`; the evaluator returns null with that reason
+and reads nothing, before any other rule except the capture opt-in. `escaped_defect_rate` declares
+`post-merge-defect-mapping-not-available` (data model §5). This replaces S17 decision 7's open question.
+**Validation:** "a metric the dictionary declares not measured is null with that reason, whatever events exist"
+(golden reviews, no mapping), failing before; J2's expectation includes the declared reason.
+
+### AUTO-LOW-001 — an unknown aggregation ran as a mean — ACCEPTED, fixed in `393f62f`
+The validator rejects any aggregation other than `count`, `sum`, `mean`; the evaluator throws on one. Test "an
+aggregation the evaluator does not know is refused, never computed as another", failing before.
+
+### AUTO-LOW-002 — finite values could sum to Infinity — ACCEPTED, fixed in `393f62f`
+A sum outside the finite range is null with `aggregate-not-finite`. Test "an aggregate that overflows is null with a
+reason, never Infinity" (two `1e308` costs), failing before.
+
+### AUTO-LOW-003 — the given watermark was never asserted — ACCEPTED, fixed in `393f62f` and `447693b`
+"a recompute records the source watermark it was given" pins it (it passed when written: the code was right, the
+assertion was missing), and the stale-race test reads the watermark too, so the review's `sourceWatermark: null`
+mutant now fails both.
