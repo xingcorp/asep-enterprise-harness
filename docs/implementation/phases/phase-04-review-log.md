@@ -2061,3 +2061,91 @@ parity test, the new controls test and the egress test failed before the change.
    branch's two commits touch neither the test nor the code under it.
 3. Green: `verify:all: PASS (all gates green)`, 1585 tests, 1585 pass, `canonical-tests: PASS (85 test file(s), 50
    required suite(s) verified)`, `samples=588 max_node_launch_ms=44229 stalls_ge_10s=4`.
+
+## Review contracts, review ports and assurance persistence (2026-10-31 to 11-01, R58/R59)
+
+### The five review contracts — `3f88227`
+
+`review-finding`, `review-record`, `review-packet`, `adjudication-record` and `repair-order` are JSON Schema
+contracts at 1.0.0, each with a v1 snapshot identical to the live schema (`packages/contracts/schema/`,
+`schema/snapshots/v1/`). The field rules are `allOf` conditionals in the schemas: an ungrounded finding carries a
+grounding reason; a model finding's raiser is not `deterministic:` or `sarif:`; a deterministic finding carries its
+rule id; a SARIF finding is the one `sarif:unparsed` / `sarif-unparsed` / HIGH / EVIDENCE_INTEGRITY finding with no
+location; a finding's file is a normalized repository path. A record carries a verdict exactly when its output was
+valid; a fresh review is round 1 with no prior claims. A packet file has a post-image exactly when it is not omitted,
+an execution manifest that is `NOT_RECORDED` has no environment and no checks, and a fresh packet has no prior
+findings; the packet has no field for the coder's report. An escalation or block names its reason; a non-gating
+round only proceeds or blocks, and a shadow proceed records what gating would have done; a push-guard block names
+its reason. A repair order carries the fixed closure rule.
+
+`architecture-invariant` gains an optional `check` (`forbidden-import` over globs and a specifier pattern) and moves
+to 1.1.0; its v1 snapshot stays 1.0.0, so the compat gate checks the change as a minor bump. The type generator now
+renders nullable objects and nullable `x-tsType` nodes; the regenerated `generated.ts` only adds lines. The attempt
+machine gains `COMMITTED → UNDER_REVIEW`, `UNDER_REVIEW → PUSHED | CHANGES_REQUESTED`, and `CHANGES_REQUESTED` is
+terminal. `asep-suite:contract-fixtures` (`validate.test.ts`) is a required suite.
+
+Exit-criteria tests: "legacy review contracts and v1 snapshots keep their recorded digests" (the snapshot directory
+holds the 13 recorded digests and the five new contracts, and the earlier `review-report` and `finding` schemas
+keep their digests) and "assurance contract additions are additive" (`compat-gate.test.ts`).
+
+Failing first: with the tests in the tree and the schemas absent, the contracts package failed 24 of 61 tests and
+the domain operational test failed 1 of 11. After: contracts 105 of 105, domain 19 of 19, the canonical-runner test
+14 of 14, `pnpm typecheck` clean.
+
+Seeded mutations, each run against `validate.test.ts` and `review-contracts.test.ts` with the live schema and its
+snapshot both changed: every one of the 14 conditionals dropped in turn (finding 4, record 2, packet 3, adjudication
+5), the finding path pattern weakened to `.+`, the closure rule opened to any string, extra top-level packet
+properties allowed, and the invariant check kind opened: 18 of 18 fail a test. The two generator changes reverted:
+the drift test fails each; with `generated.ts` regenerated from the reverted generator, the compile-time projection
+test fails `tsc`. The attempt machine: committed cannot enter review, review cannot request changes, review opens a
+PR without a push, changes-requested not terminal: each fails the operational test. "Changes requested may re-enter
+review" survives: the terminal check runs before the table, so that table entry is never read (an equivalent
+mutant; the test asserts `CHANGES_REQUESTED → UNDER_REVIEW` is refused).
+
+Slice-end gate at `3f88227`: `verify:all: PASS (all gates green)`, 1608 tests, 1608 pass, `canonical-tests: PASS (86
+test file(s), 51 required suite(s) verified)`, `samples=369 max_node_launch_ms=36979 stalls_ge_10s=2`.
+
+### Packet-only reviewer and review-source ports — `3cd80c4`
+
+`ReviewerProvider` (`packages/ports/src/index.ts`) takes the reviewer's whole input as one rendered prompt artifact
+and its digest, a budget and an abort signal, and returns an untrusted `ReviewerObservation`: raw output text, the
+raw request and response artifacts, the served model, the gateway alteration (`no-request` when no request was
+sent) and the usage. `ReviewSourceReader` reads a diff range and bounded blobs from a workspace capability; an
+over-limit diff is reported, never cut. `ReviewProvider` keeps its shape and is marked `@deprecated` in favour of
+`ReviewerProvider`.
+
+Failing first: `review-ports.test.ts` failed `tsc` on the missing exports and failed at run time on the missing
+deprecation. After: 3 of 3, `pnpm typecheck` clean. Seeded mutations (the request also carries a work order; the
+output is parsed; `no-request` dropped; the source takes a raw path; the earlier port's input changes; the
+deprecation removed): 6 of 6 fail `tsc` or the test.
+
+Slice-end gate at `3cd80c4`: `verify:all: PASS (all gates green)`, 1611 tests, 1611 pass, `canonical-tests: PASS (87
+test file(s), 51 required suite(s) verified)`, `samples=272 max_node_launch_ms=39159 stalls_ge_10s=1`. The run
+queued behind other lanes' gates and finished after the session's own background time limit had cut the wrapper
+command; the result is read from the gate's complete log. The run has one stall of 10 s or more.
+
+### Assurance persistence — not landed
+
+The stores, migrations `0200_assurance_reviews`, `0201_metric_snapshots` and `0202_attempt_review_states`, and their
+unit suite (10 tests) and itest (9 tests, not yet run) are drafted. In the tree, the unit suite failed first: it
+did not load without the stores, and all 10 tests failed with the stores but without the migrations
+(`review_rounds` and `metric_snapshots_latest` did not exist). With the migrations it passed 10 of 10. Hydration
+replays a finding's dispositions in the order they were recorded (an identity column), not by their logical time;
+in a scratch copy, a seeded mutation that orders them by time fails the hydration test.
+
+It is not committed, because two existing suites go red and both belong to other lanes:
+
+1. `adapters/persistence/src/persistence.test.ts` › "the reference registry, the naming convention and the foreign
+   keys into artifacts agree" fails: `review_rounds.packet: the key carries the checksum`. The Phase 2 migrations
+   0017 and 0019 bind every artifact reference as `<name>_artifact_id` with `<name>_sha256` and a generated
+   `<name>_kind`, through a foreign key on `(id, organization_id, project_id, sha256, kind)`, registered in
+   `artifact_reference_columns`. The data model's DDL (§3.1) binds references by `(id, organization_id,
+   project_id)` only. Migration 0200 has to follow the Phase 2 convention. The companion test "every registered
+   artifact reference refuses a missing, foreign, mis-hashed or mis-kinded artifact" then probes each registered
+   reference by an UPDATE on a row from `seedReferencingRows`. That needs a seeded row for each review table, and
+   four of them refuse every UPDATE by design (dispositions and adjudications are append-only; a final review
+   record and a set packet never change). The probe needs a second path for those tables, for example an INSERT
+   probe.
+2. `adapters/persistence/src/run-events/run-event-sink.itest.ts` › "upgrade path" asserts that a database at the
+   Phase 2 set takes `0107_run_events` alone. Any later migration breaks it. The orchestration persistence lane
+   changed the same lines in `215d6ac` to migrate to a named run-events set.
