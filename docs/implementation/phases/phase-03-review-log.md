@@ -2430,3 +2430,119 @@ committed at 14:20 while this gate ran), and the scan reads `git rev-list --all`
 branch's pattern, which that fix replaces. The same scan over this branch's own history (`git rev-list HEAD`) finds
 nothing. The clean-tree stage did not run; `git status --porcelain` was empty after the gate. Until this branch moves
 onto that fix, every `verify:all` here fails the same way.
+
+## S3 — orchestration state on the fenced lease primitive
+
+Lane `phase-03-a2`, branch `lane/orchestration-persistence`, from `2c63fbd`.
+
+**Commits.**
+
+- `215d6ac` `feat(persistence): make orchestration state idempotent on the fenced lease primitive`: migrations
+  `0100`–`0102` and `0104`–`0106` (`adapters/persistence/src/migrations.ts:1151-1583`, registered between `0019` and
+  `0107` at `:1606-1611`), and the stores in `adapters/persistence/src/orchestration/`:
+  - the attempt ordinal (`attempt-ordinal.ts`);
+  - the projection writer (`projection.ts`);
+  - the workspace registry (`workspace-registry.ts`);
+  - the workspace resolver and the lease history (`workspace-resolver.ts`);
+  - the approval store with its decision outbox (`approvals.ts`);
+  - the budget ledger and run governance (`budget-ledger.ts`).
+
+  Also the unit suite `asep-suite:orchestration-persistence` (`orchestration-persistence.test.ts`, PGlite).
+- `fa51059` `fix(persistence): keep orchestration writes to one row under two-connection races`: the integration
+  suite `asep-suite:pg-orchestration` (`orchestration.itest.ts`, real PostgreSQL), and the three defects it found.
+- This section and the data model's §3.8.
+
+**Acceptance, persistence part.**
+
+| Criterion | Tests |
+|---|---|
+| A5 | `orchestration.itest.ts:251` (forward, then a no-op re-run), `:260` (two migrators at once), `:270` (an edited applied migration fails before any later one), `:284` (upgrade path: Phase 2 head with data, then `0107` alone, then `0100`–`0102` and `0104`–`0106`; each id once, the registry in ascending id order, the Phase 2 attempts numbered by start) |
+| D11 | `orchestration-persistence.test.ts:355`, `:376`, `:401`, `:432`; two connections at `orchestration.itest.ts:644` |
+| E1 | `orchestration-persistence.test.ts:230`, `:254`, `:282`, `:300`, `:332`; two connections at `orchestration.itest.ts:328` and `:352` |
+| E2 | `orchestration.itest.ts:375`: the grant commits and its result is lost. The next delivery is denied a second lease, recovers the committed fence through `findLease` and renews it. Another attempt on the branch is denied. Both are started together, 10 rounds. |
+| E3 | `orchestration-persistence.test.ts:826`, `orchestration.itest.ts:410` |
+| E4 | `orchestration.itest.ts:448` (released, expired, quarantined, superseded), `:474` (superseded between the read and the claim), `:490` (a supersede waits for a claim in flight, then refuses the old holder). Each holds for a side-effect record and for a workspace registration. |
+| E5 | `orchestration.itest.ts:531`: the old holder's `complete` races the successor's takeover and is refused, 5 rounds; its `fail`, `confirmOwner` and second claim are refused. The `side-effect.takeover` audit and the spy ordering belong to S6. |
+| E9 | `orchestration-persistence.test.ts:890`, `:966`, `:991`, `:1092`, `:1137`; two connections at `orchestration.itest.ts:666` and `:744` |
+| E13 | `orchestration.itest.ts:562`, on the primitive: effect absent → `PENDING` under the new holder; present → `COMPLETED`, adopted afterwards; `FAILED` stays `FAILED`; an ambiguous outcome stays `PENDING` with its natural key. Reconciling before a reopen belongs to S6. |
+| E15 | `orchestration-persistence.test.ts:703`, `:717`, `:743`, `:779`; `orchestration.itest.ts:610` |
+
+**Failing-first.**
+
+- `215d6ac`: I wrote the migration text first, before the unit suite. I set it aside without running it. The
+  suite came next, and its first run failed to load (`tests 1, fail 1`: the module did not exist). I wrote the
+  stores, and the suite ran red against the Phase 2 schema: `tests 38, pass 3, fail 35`. The three that passed read
+  only Phase 2 columns (the set-once facts, `findLease`, renewal). With the migrations restored, 35 of 38 passed.
+  The three failures were oracle defects in the test, and I fixed them in the test:
+  - the constraint query also counted PostgreSQL's `tasks_status_not_null`;
+  - the upgrade expectation included `0019`;
+  - four `rowCount` checks used PGlite's no-parameter path, which reports 0 for a SELECT
+    (`adapters/persistence/src/pglite-client.ts:27-31`). They now count rows.
+
+  After those fixes: 38 of 38. Live-lease registration was written test-first. The test failed with
+  `Missing expected rejection: released`, then I changed the code, then 39 of 39.
+- `fa51059`: the integration suite ran red on a private PostgreSQL 17 container with the pinned digest, before any
+  fix: `tests 17, pass 15, fail 2`. The failures were unique violations on `attempts_task_ordinal` (an unnumbered
+  writer against an attempt insert in flight) and on `approval_requests_scoped_uq` (one approval request opened on
+  two connections). A race of one identical registration on two connections, added next, failed on
+  `workspaces_pkey`. The fixes:
+  - every attempt insert takes the task-row lock;
+  - both inserts arbitrate on every unique key.
+
+  After them: 17 of 17, then 17 of 17 three more times. On the same database `run-event-sink.itest.ts` passed 6 of 6
+  and `concurrency.itest.ts` 6 of 6. The other 14 tests prove committed code and Phase 2's primitive, and they
+  passed on their first run.
+- Mutation check: I commented out the registry's `for share` and kept the text, so the barrier still matched. The
+  claim-in-flight test then failed with `server process 305 never waited on a lock`. With the lock restored, it
+  passes.
+
+**Decisions and deviations for the controller.** Data model §3.8 records the schema details. The behaviour:
+
+- **Registering a workspace is a claim.** `begin` needs the caller's lease live, holds it `FOR SHARE`, and raises
+  `LeaseLostError` otherwise (`workspace-registry.ts:90-123`). The `WorkspaceRegistry` port does not state this
+  rule (`packages/ports/src/index.ts:280-294`), and the port is unchanged. S4 calls `begin` while it holds the lease.
+- **The resolver is structural.** `@asep/persistence` cannot import `@asep/application`, so
+  `SqlAssuranceWorkspaceResolver` has the slot resolver's shape without naming it (`workspace-resolver.ts:51-81`).
+  The S6 composition that binds it must check the fit. It resolves with the attempt's live held lease, which may be
+  a later lease than the one the workspace was created under, so S4 never rebinds a registry row.
+- **`findLease(scope, attemptId)`** returns the latest lease in any state, or null (`workspace-resolver.ts:87-98`).
+  The activity maps `attemptNumber` to the attempt id through `findAttempt`.
+- **The ordinal of Phase 2 writers.** `AttemptRepository.create` is unchanged. The trigger numbers its rows.
+- **Errors for the S6 bridge.** These are typed and not retryable: `AttemptIdentityConflictError`,
+  `ProjectionOwnershipError`, `ProjectionFactConflictError`, `ApprovalRequestConflictError`,
+  `ApprovalRequestClosedError` (with `status` and `pastExpiry`), `ApprovalDecisionConflictError`,
+  `BudgetLedgerConflictError` and `RunGovernanceConflictError`. The stores also raise `ScopeViolationError` (wrong
+  tenant), `LeaseLostError` (registration), `WorkspaceUnavailableError` (`missing`, `quarantined`) and `RangeError`
+  (malformed input, before any write).
+- **No port changed.**
+
+**Edits outside `orchestration/`.** These go beyond the store directory and are listed for review:
+
+- `adapters/persistence/src/persistence.test.ts` (Phase 2 suite): the reference-registry test seeds one row per
+  registered reference. A repair order fits only a repair attempt, so the seed adds one. The lookup tries
+  `table.reference` before the table (`:1013-1028`, `:1040`).
+- `adapters/persistence/src/run-events/run-event-sink.itest.ts` (S0): its upgrade test now names its own set,
+  Phase 2 plus `0107`, because `0100`–`0106` now sit between them in `MIGRATIONS` (`:219-231`).
+- The registrations in `scripts/lib/canonical-tests.mjs` and `scripts/integration/lib.mjs`, and the export in
+  `adapters/persistence/src/index.ts`, are additions at the end of each file.
+
+**Observation.** One integration run on the private container reported
+`terminating connection due to administrator command` in the two-migrator test. Its cause is not established. In
+the same run the shared database still held the earlier `0102` checksum, so 14 tests failed on the migrator's refusal,
+as designed, and the suite's shared-database helper did not end its pool when migration threw; it now ends it in every
+case. The error did not recur in 6 runs of the migration tests, in 5 later full runs, or in the gate run.
+
+**Gates.**
+
+- `pnpm verify:all` under the host gate lock, on `fa51059`: exit 0, `verify:all: PASS (all gates green)`,
+  `samples=265 max_node_launch_ms=6717 stalls_ge_10s=0` (waited 1525 s for the gate lock). `pnpm test`: tests 1528,
+  pass 1528, fail 0, skipped 0; 69 test files, 42 required suites. The clean-tree stage passed.
+- `pnpm test:integration` under the host gate lock, on `fa51059`: exit 0,
+  `integration-gate: PASS (9 itest file(s), 9 required suite(s) verified)`, tests 57, pass 57, fail 0, skipped 0,
+  containers torn down, `samples=45 max_node_launch_ms=1423 stalls_ge_10s=0`.
+- Per commit: `pnpm typecheck` exited 0, and the focused suites passed. At `215d6ac` those were
+  `orchestration-persistence.test.ts` (39 of 39) and `persistence.test.ts` (49 of 49). At `fa51059` they were
+  `orchestration.itest.ts` (17 of 17), with `run-event-sink.itest.ts` and `concurrency.itest.ts` at 6 of 6 each, on a
+  private container with the pinned digest, torn down afterwards.
+- The documentation commit changes only the two documents. I ran `pnpm format:check` and `pnpm check:publication` on
+  it.

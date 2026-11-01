@@ -332,6 +332,50 @@ in the tenant, and it must be rejected.
 Rollback of `0107` is a forward migration that drops the trigger, function and table. It is written only if the
 controller orders a rollback; no down-migration is run automatically (Phase 2 migrator rule).
 
+### 3.8 As built in S3 (amends §3.1–§3.6)
+
+S3 implements §3.0–§3.6 with these differences. Each one makes a rule stricter or names a detail that §3 left
+open. None of them weakens a rule of §3.
+
+- **Tenant and lineage coherence by composite keys.** Each foreign key also carries the parent of the row it
+  names. An approval request's or ledger entry's task must belong to its run, and its attempt to its task. For
+  that, `0105` adds `tasks_id_scope_run_uq` (`adapters/persistence/src/migrations.ts:1409`), and the foreign keys
+  follow it (`:1456-1459`, `:1540-1543`). A repair attempt's parent must be an attempt of the same task
+  (`attempts_parent_same_task_fk`, `:1251`). It must also be an earlier attempt, which a trigger holds (`:1273-1302`),
+  and never the attempt itself (`:1250`).
+- **The repair order is a full artifact reference** (`:1235-1236`, `:1255-1261`): `repair_order_artifact_id` with
+  `repair_order_sha256` and a generated `repair_order_kind = 'repair-order'`. The scoped foreign key carries the
+  checksum and the kind, and the reference is registered in `artifact_reference_columns` (`:1270-1271`), like the other references
+  (`0017`, `0019`). §3.2 named only the id.
+- **Phase 2 writers keep working.** `attempt_kind` defaults to `'initial'` (`:1233`). A writer that names no ordinal
+  gets the next ordinal of its task from the trigger. Every attempt insert first locks the task row, so such a
+  writer waits for an ordinal another writer is inserting, instead of colliding with it (`:1273-1302`).
+  `ensureAttempt` names the parent by its ordinal (`parentAttemptNumber`), not by its id. It returns
+  `{ attempt, created }` (`adapters/persistence/src/orchestration/attempt-ordinal.ts:139-179`).
+- **Workspaces.** `lease_epoch` records the epoch of the lease the workspace was created under. A composite foreign
+  key binds the row to exactly that lease of the same tenant, binding and attempt (`migrations.ts:1330`, `:1347`).
+  A trigger keeps the identity immutable, lets the state move only forward and fixes the baseline refs once the
+  workspace is `ACTIVE` (`:1353-1386`). `host_id` and `path_rel` are checked by pattern in the database too (`:1331-1335`).
+  Registering a workspace is a claim. It needs the caller's lease live, which `begin` checks under
+  `FOR SHARE`, and otherwise it raises `LeaseLostError` and writes nothing
+  (`orchestration/workspace-registry.ts:90-123`). A later lease of the same attempt gets the row created under the
+  earlier lease.
+- **Approvals.** The request id must be `<workflowId>:<gate number>` (`migrations.ts:1446`). The payload is closed per
+  kind: `{"shortfallMicroUsd": n}` for a budget extension and `{}` for a publication (`:1411-1427`). A budget
+  extension names its task, and a publication its attempt. `extension_usd` is exact to the micro-USD (`:1471`) and is
+  present only on an approve (`:1474`). A decision on a request that is still `PENDING` but past `expires_at`
+  is refused (`ApprovalRequestClosedError` with `pastExpiry`). `closeRequest` leaves a decided request as it is.
+- **Ledger and governance.** `cost_usd` is exact to the micro-USD (`:1524`), and a grant is exactly a human's
+  (`:1534`). Usage and overruns are an attempt's, and an extension is a task's. A trigger fixes a run's governance once
+  `created_by` is set (`:1563-1582`). That is how "`publicationApprovalRequired` cannot change after the run starts"
+  holds for every writer.
+- **Lease history.** `findLease(scope, attemptId)` returns the fence of the attempt's latest lease, whatever its
+  state, or null (`orchestration/workspace-resolver.ts:87-98`). The activity maps the `attemptNumber` of §4.5 to the
+  attempt id through `findAttempt`.
+- **Natural-key inserts arbitrate on every unique key** (`on conflict do nothing` without a target), as §5 says
+  for approval requests. A registration or an open that races on two connections then waits and does nothing,
+  instead of failing on the second unique key.
+
 ## 4. Contract changes (shared; CR-01 … CR-03)
 
 ### 4.1 `TaskStatus` (hand-authored in `packages/contracts/src/base.ts:38-40`)
