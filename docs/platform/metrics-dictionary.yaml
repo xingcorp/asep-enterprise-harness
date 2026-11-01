@@ -348,6 +348,9 @@ metrics:
     alertRelevance: high
     zeroDenominatorPolicy: report-null-when-no-reviews
     privacyClass: operational
+    # Nothing maps a merged change to a later defect yet, so escapedDefect is
+    # never set: the metric is null with this reason, never 0.
+    notMeasured: post-merge-defect-mapping-not-available
 
   # --- Harness reliability -------------------------------------------------
   - name: artifact_loss_rate

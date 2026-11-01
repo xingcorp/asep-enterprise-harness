@@ -25,6 +25,9 @@
 //     `no-source-events`;
 //   - a metric whose privacy class captures only on opt-in, without that
 //     opt-in, reports `capture-not-enabled` and reads nothing;
+//   - a metric the dictionary declares notMeasured reports that reason and
+//     reads nothing;
+//   - a sum that overflows the finite range reports `aggregate-not-finite`;
 //   - a source event without the dedupe key or the window time reports
 //     `source-event-lacks-<field>` (`source-event-invalid-<field>` when it is
 //     there but not a date-time, or a summed field that is not a number).
@@ -39,7 +42,7 @@
 
 import { createHash } from 'node:crypto';
 import type { RunEvent } from '@asep/contracts';
-import type { FilterCondition, MeasurementDictionary, MetricDefinition, MetricOperand } from './metrics.js';
+import { AGGREGATIONS, type FilterCondition, type MeasurementDictionary, type MetricDefinition, type MetricOperand } from './metrics.js';
 
 /** Recorded on every snapshot; bump when a formula's computation changes. */
 export const METRIC_EVALUATOR_VERSION = '1.0.0';
@@ -47,6 +50,7 @@ export const METRIC_EVALUATOR_VERSION = '1.0.0';
 export const NO_VALUES_TO_AVERAGE = 'no-values-to-average';
 export const NO_SOURCE_EVENTS = 'no-source-events';
 export const CAPTURE_NOT_ENABLED = 'capture-not-enabled';
+export const AGGREGATE_NOT_FINITE = 'aggregate-not-finite';
 
 /** A half-open window [start, end) of ISO-8601 instants. */
 export interface MetricWindow {
@@ -116,6 +120,7 @@ function byEventId(a: RunEvent, b: RunEvent): number {
 }
 
 function evaluateOperand(op: MetricOperand, events: readonly RunEvent[], start: number, end: number): OperandResult {
+  if (!AGGREGATIONS.has(op.aggregation)) throw new Error(`unknown aggregation "${op.aggregation}"`);
   const types = new Set(op.events);
   // Aggregate in event-id order: a floating-point sum depends on its order, and
   // the same events read back in another order must give the same value.
@@ -148,6 +153,7 @@ function evaluateOperand(op: MetricOperand, events: readonly RunEvent[], start: 
       count += 1;
     }
   }
+  if (!Number.isFinite(sum)) throw new InvalidSourceEvent(AGGREGATE_NOT_FINITE);
   if (op.aggregation === 'sum') return { value: sum, sum, count, considered };
   return { value: count === 0 ? null : sum / count, sum, count, considered };
 }
@@ -182,6 +188,9 @@ export function evaluateMetric(
   if (!rule) throw new Error(`metric "${metricName}" has unknown privacy class "${m.privacyClass}"`);
   if (rule.capture !== 'always' && !(options.captureOptIn ?? []).includes(m.privacyClass)) {
     return { ...base, value: null, numerator: null, denominator: null, nullReason: CAPTURE_NOT_ENABLED, sourceEventCount: 0 };
+  }
+  if (m.notMeasured !== undefined) {
+    return { ...base, value: null, numerator: null, denominator: null, nullReason: m.notMeasured, sourceEventCount: 0 };
   }
 
   let num: OperandResult;

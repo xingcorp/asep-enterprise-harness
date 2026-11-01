@@ -240,7 +240,8 @@ test('missing source events yield null with a reason', () => {
   for (const m of DICT.metrics) {
     const got = evaluateMetric(DICT, m.name, [], DAY_1, { captureOptIn: ['sensitive', 'restricted'] });
     assert.equal(got.value, null, m.name);
-    const expected = m.denominator ? m.zeroDenominatorPolicy : m.numerator.aggregation === 'mean' ? 'no-values-to-average' : 'no-source-events';
+    const expected = m.notMeasured
+      ?? (m.denominator ? m.zeroDenominatorPolicy : m.numerator.aggregation === 'mean' ? 'no-values-to-average' : 'no-source-events');
     assert.equal(got.nullReason, expected, m.name);
     assert.equal(got.sourceEventCount, 0, m.name);
   }
@@ -413,4 +414,38 @@ test('recompute refuses an unknown metric and an invalid computation time', asyn
   await assert.rejects(recompute(store, [], '2026-10-01T23:00:00.000Z', ['no_such_metric']), /unknown metric/);
   await assert.rejects(recompute(store, [], 'not a time', ['review_finding_yield']), RangeError);
   assert.equal(store.all().length, 0);
+});
+
+test('a metric the dictionary declares not measured is null with that reason, whatever events exist', () => {
+  const m = DICT.metrics.find((x) => x.name === 'escaped_defect_rate')!;
+  assert.equal(m.notMeasured, 'post-merge-defect-mapping-not-available');
+  // reviews exist, but nothing maps a merged change to a later defect yet: never 0
+  const got = evaluateMetric(DICT, 'escaped_defect_rate', GOLDEN_EVENTS, DAY_1);
+  assert.deepEqual(shape(got), { value: null, numerator: null, denominator: null, nullReason: 'post-merge-defect-mapping-not-available' });
+  assert.equal(got.sourceEventCount, 0, 'nothing is read for a metric that is not measured');
+});
+
+test('an aggregation the evaluator does not know is refused, never computed as another', () => {
+  const dict = JSON.parse(JSON.stringify(DICT)) as { metrics: { name: string; numerator: { aggregation: string } }[] };
+  dict.metrics.find((x) => x.name === 'mean_review_cost_usd')!.numerator.aggregation = 'summ';
+  const bad = dict as unknown as typeof DICT;
+  assert.ok(validateDictionary(bad).some((e) => e.metric === 'mean_review_cost_usd' && e.problem.includes('unknown aggregation "summ"')));
+  assert.throws(() => evaluateMetric(bad, 'mean_review_cost_usd', GOLDEN_EVENTS, DAY_1, { captureOptIn: ['restricted'] }), /unknown aggregation "summ"/);
+});
+
+test('an aggregate that overflows is null with a reason, never Infinity', () => {
+  const big = [1, 2].map((i) => ev({
+    eventId: `o${i}`, eventType: 'review.completed', occurredAt: '2026-10-01T09:00:00.000Z', reviewCostPriced: true, reviewCostUsd: 1e308,
+  }));
+  const got = evaluateMetric(DICT, 'mean_review_cost_usd', big, DAY_1, { captureOptIn: ['restricted'] });
+  assert.deepEqual(shape(got), { value: null, numerator: null, denominator: null, nullReason: 'aggregate-not-finite' });
+});
+
+test('a recompute records the source watermark it was given', async () => {
+  const store = new MemoryMetricSnapshotStore();
+  const { appended } = await recomputeMetricSnapshots({
+    store, scope: SCOPE, dictionary: DICT, metricNames: ['review_finding_yield'], windows: [DAY_1],
+    events: GOLDEN_EVENTS_BY_DAY[0]!, computedAt: '2026-10-01T23:00:00.000Z', sourceWatermark: '2026-10-01T22:59:00.000Z',
+  });
+  assert.equal(appended[0]!.sourceWatermark, '2026-10-01T22:59:00.000Z');
 });

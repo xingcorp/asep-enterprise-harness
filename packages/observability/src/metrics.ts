@@ -53,6 +53,8 @@ export interface MetricOperand {
   readonly cohortBy?: string;
 }
 
+export const AGGREGATIONS: ReadonlySet<string> = new Set(['count', 'sum', 'mean']);
+
 const OPERAND_KEYS: ReadonlySet<string> = new Set([
   'aggregation', 'events', 'fields', 'filter', 'filters', 'dedupeLatestBy', 'cohortBy',
 ]);
@@ -85,6 +87,9 @@ export interface MetricDefinition {
   readonly alertRelevance: string;
   readonly zeroDenominatorPolicy?: string;
   readonly privacyClass: string;
+  // The metric is defined but cannot be measured yet; the evaluator reports
+  // null with this reason instead of a number its sources cannot support.
+  readonly notMeasured?: string;
 }
 
 export interface PrivacyClassRule {
@@ -278,6 +283,15 @@ export function validateDictionary(dict: MeasurementDictionary): DictionaryError
       if (!isRunEventField(f)) {
         errors.push({ metric: m.name, problem: `unknown field "${f}" (not a RunEvent property)` });
       }
+    }
+
+    for (const [label, op] of [['numerator', m.numerator], ['denominator', m.denominator]] as const) {
+      if (op && !AGGREGATIONS.has(op.aggregation)) {
+        errors.push({ metric: m.name, problem: `${label}: unknown aggregation "${op.aggregation}"` });
+      }
+    }
+    if (m.notMeasured !== undefined && !/^[a-z0-9]+(-[a-z0-9]+)*$/.test(m.notMeasured)) {
+      errors.push({ metric: m.name, problem: `notMeasured "${m.notMeasured}" is not a kebab-case reason` });
     }
 
     // operand options: no key the evaluator would silently ignore, and the
