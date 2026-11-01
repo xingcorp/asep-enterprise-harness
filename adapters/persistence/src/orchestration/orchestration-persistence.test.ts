@@ -1226,6 +1226,21 @@ test('a ledger replay with any field changed under the same key is refused and c
   }
 });
 
+test('the ledger is append-only in the database: an entry is never updated or deleted', async () => {
+  const { db, a } = await freshDb();
+  try {
+    const attemptId = await legacyAttempt(db, a);
+    await new SqlBudgetLedger(db).append(a.scope, usage(a, attemptId));
+    const key = `${attemptId}:attempt-usage`;
+    const appendOnly = (err: unknown) => /append-only/i.test((err as Error).message) && (err as { code?: unknown }).code === '55000';
+    await assert.rejects(() => db.query('update budget_ledger set cost_usd = 0 where idempotency_key = $1', [key]), appendOnly, 'update');
+    await assert.rejects(() => db.query('delete from budget_ledger where idempotency_key = $1', [key]), appendOnly, 'delete');
+    assert.equal(Number((await one(db, 'select cost_usd::text as usd from budget_ledger where idempotency_key = $1', [key]))['usd']), 1.5);
+  } finally {
+    await db.close();
+  }
+});
+
 test('ledger money is exact micro-USD and totals add up per run and per task', async () => {
   const { db, a, b } = await freshDb();
   try {

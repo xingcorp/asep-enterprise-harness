@@ -246,7 +246,7 @@ async function settledYet(promise: Promise<unknown>): Promise<boolean> {
 // --- migrations ---------------------------------------------------------------
 
 const ids = (migrations: readonly { readonly id: string }[]): string[] => migrations.map((m) => m.id);
-const ORCHESTRATION = MIGRATIONS.filter((m) => m.id >= '0100' && m.id < '0107');
+const ORCHESTRATION = MIGRATIONS.filter((m) => m.id >= '0100' && m.id !== '0107_run_events');
 
 test('the full migration set applies forward on a fresh database, and a second run applies nothing', async () => {
   await withFreshDatabase((url) => withPool(url, 2, async (db) => {
@@ -281,7 +281,7 @@ test('an edited applied orchestration migration fails the run before any later m
   }));
 });
 
-test('upgrade path: the Phase 2 head with data, then 0107 alone, then 0100–0102 and 0104–0106, each applied once', async () => {
+test('upgrade path: the Phase 2 head with data, then 0107 alone, then 0100–0102, 0104–0106 and 0108, each applied once', async () => {
   await withFreshDatabase((url) => withPool(url, 2, async (db) => {
     const phase2 = MIGRATIONS.filter((m) => m.id < '0100');
     assert.equal(phase2[phase2.length - 1]?.id, '0019_command_output_references');
@@ -303,9 +303,9 @@ test('upgrade path: the Phase 2 head with data, then 0107 alone, then 0100–010
     assert.deepEqual((await migrate(db, withRunEvents)).applied, ['0107_run_events']);
     assert.deepEqual(ids(ORCHESTRATION), [
       '0100_orchestration_task_status', '0101_workflow_bindings_projection', '0102_attempt_ordinal',
-      '0104_workspaces', '0105_approvals', '0106_budget_ledger',
+      '0104_workspaces', '0105_approvals', '0106_budget_ledger', '0108_budget_ledger_append_only',
     ]);
-    assert.deepEqual((await migrate(db)).applied, ids(ORCHESTRATION), 'the lower ids apply after 0107');
+    assert.deepEqual((await migrate(db)).applied, ids(ORCHESTRATION), 'the orchestration set applies after 0107');
     assert.deepEqual((await migrate(db)).applied, []);
 
     const registry = await rows(db, 'select id from schema_migrations order by id', []);

@@ -1582,6 +1582,26 @@ create trigger run_governance_guard
   for each row execute function asep_run_governance_guard();
 `;
 
+// ---------------------------------------------------------------------------
+// 0108 — the budget ledger is append-only in the database.
+//
+// A ledger entry is a fact: what an attempt spent, an overrun, an extension a
+// human granted. 0106 made each one unique by its idempotency key but left the
+// row writable, so any writer could rewrite or remove what was spent. A trigger
+// now refuses every UPDATE and DELETE with SQLSTATE 55000, as run_events does
+// (0107). A correction is a new entry under a new key. Append-only: earlier
+// migrations are untouched.
+// ---------------------------------------------------------------------------
+const M0108 = `
+create function budget_ledger_reject_mutation() returns trigger language plpgsql as $$
+begin
+  raise exception 'budget_ledger is append-only (% rejected)', tg_op using errcode = '55000';
+end $$;
+create trigger budget_ledger_append_only
+  before update or delete on budget_ledger
+  for each row execute function budget_ledger_reject_mutation();
+`;
+
 // Ordered, immutable migration set. Order is by id; the runner asserts it.
 export const MIGRATIONS: readonly Migration[] = Object.freeze([
   { id: '0001_init_tenancy', sql: M0001 },
@@ -1610,4 +1630,5 @@ export const MIGRATIONS: readonly Migration[] = Object.freeze([
   { id: '0105_approvals', sql: M0105 },
   { id: '0106_budget_ledger', sql: M0106 },
   { id: '0107_run_events', sql: M0107 },
+  { id: '0108_budget_ledger_append_only', sql: M0108 },
 ]);
