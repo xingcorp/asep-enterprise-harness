@@ -1,0 +1,14 @@
+{
+  "id": "comparator-anthropic#bb47bdac495ef78a120041dd8ad883d8b77fb372d71eb5d3d66e2130ae822660#90c4d2e7a15b3f08",
+  "source": "model",
+  "raisedBy": "comparator-anthropic",
+  "fingerprint": "bb47bdac495ef78a120041dd8ad883d8b77fb372d71eb5d3d66e2130ae822660",
+  "severity": "CRITICAL",
+  "category": "SECURITY",
+  "evidence": "The handler trusts the caller's project id.",
+  "requiredFix": "Derive the project from the authenticated scope.",
+  "grounded": false,
+  "lifecycleState": "REFUTED",
+  "file": "src/auth/handler.ts",
+  "lineStart": 12
+}

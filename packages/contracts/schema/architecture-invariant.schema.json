@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://asep.dev/schema/architecture-invariant/v1",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "title": "ArchitectureInvariant",
   "type": "object",
   "additionalProperties": false,
@@ -10,9 +10,26 @@
     "id": { "type": "string", "minLength": 1 },
     "statement": { "type": "string", "minLength": 1 },
     "category": { "type": "string", "enum": ["DEPENDENCY", "LAYERING", "SECURITY", "DATA", "NAMING", "OTHER"] },
-    "rationale": { "type": "string" }
+    "rationale": { "type": "string" },
+    "check": {
+      "type": "object",
+      "description": "Optional machine check (additive v1.1.0). An invariant without one is judged by reviewers only. forbidden-import: no file matching fromGlobs imports a specifier matching specifierPattern, a JavaScript regular expression.",
+      "additionalProperties": false,
+      "required": ["kind", "fromGlobs", "specifierPattern"],
+      "properties": {
+        "kind": { "type": "string", "enum": ["forbidden-import"] },
+        "fromGlobs": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+        "specifierPattern": { "type": "string", "minLength": 1 }
+      }
+    }
   },
   "examples": [
-    { "id": "INV-001", "statement": "No provider SDK may be imported by domain contracts.", "category": "DEPENDENCY" }
+    { "id": "INV-001", "statement": "No provider SDK may be imported by domain contracts.", "category": "DEPENDENCY" },
+    {
+      "id": "INV-002",
+      "statement": "The domain package never imports a provider adapter.",
+      "category": "LAYERING",
+      "check": { "kind": "forbidden-import", "fromGlobs": ["packages/domain/src/**/*.ts"], "specifierPattern": "^@asep/(adapter-|reviewer-)" }
+    }
   ]
 }

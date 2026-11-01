@@ -1,6 +1,6 @@
-// Hand-authored runtime types that are NOT part of the 13 canonical JSON-Schema
+// Hand-authored runtime types that are NOT part of the canonical JSON-Schema
 // contracts. Branded identifiers, lifecycle enums, and the internal execution
-// shapes (agent attempt / verification result) live here. The 13 canonical
+// shapes (agent attempt / verification result) live here. The canonical
 // contract types are generated from schema/*.schema.json into ./generated.ts;
 // they import the shared names below via ./base.js.
 
@@ -39,9 +39,13 @@ export type TaskStatus =
   | 'PENDING' | 'READY' | 'EXECUTING' | 'VERIFYING'
   | 'WAITING_FOR_HUMAN_REVIEW' | 'FAILED' | 'BLOCKED' | 'CANCELLED';
 
+// UNDER_REVIEW: a committed attempt in an independent review round, before any
+// push. CHANGES_REQUESTED: the round asked for a repair; terminal for the attempt,
+// the repair runs as the next attempt.
 export type AttemptStatus =
   | 'STARTED' | 'AGENT_RUNNING' | 'AGENT_DONE' | 'INSPECTING' | 'VERIFYING'
-  | 'EVIDENCE_BUILT' | 'COMMITTED' | 'PUSHED' | 'PR_OPEN' | 'SUCCEEDED'
+  | 'EVIDENCE_BUILT' | 'COMMITTED' | 'UNDER_REVIEW' | 'CHANGES_REQUESTED'
+  | 'PUSHED' | 'PR_OPEN' | 'SUCCEEDED'
   | 'FAILED' | 'BLOCKED' | 'BUDGET_EXHAUSTED' | 'CANCELLED';
 
 export type LeaseStatus = 'ACTIVE' | 'RELEASED' | 'EXPIRED' | 'QUARANTINED';

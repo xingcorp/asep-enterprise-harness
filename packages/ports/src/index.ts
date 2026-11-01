@@ -66,6 +66,11 @@ export interface CodingAgentProvider {
 // Review (unchanged from Phase 1).
 // ---------------------------------------------------------------------------
 
+/**
+ * @deprecated Superseded by ReviewerProvider: a reviewer that receives only the
+ * rendered prompt of a ReviewPacket and returns an untrusted observation. Kept
+ * with its shape unchanged for the implementations written against it.
+ */
 export interface ReviewProvider {
   readonly providerId: string;
   review(input: {
@@ -75,6 +80,109 @@ export interface ReviewProvider {
     verification: VerificationResult;
     implementerProviderId: string;
   }): Promise<ReviewReport>;
+}
+
+// ---------------------------------------------------------------------------
+// Packet-only reviewer. The reviewer receives ONLY a rendered, immutable prompt
+// artifact built from a ReviewPacket. Its result is an UNTRUSTED observation:
+// raw text plus the captured raw request and response artifacts. Validation,
+// grounding and adjudication happen in the application layer, never in the
+// adapter.
+// ---------------------------------------------------------------------------
+
+export interface ReviewerDescriptor {
+  readonly reviewerConfigId: string;   // stable id of this reviewer configuration
+  readonly providerId: string;         // 'openai-responses' | 'recorded' | 'scripted-fake'
+  readonly model: string;              // pinned requested model id; family is resolved by policy
+  readonly configSha256: string;       // hash of the pinned config (template, schema, effort, tier, limits, base URL host)
+}
+
+export interface ReviewerBudget {
+  readonly maxOutputTokens: number;
+  readonly maxWallClockMs: number;       // whole call including transport retries
+  readonly maxTransportAttempts: number; // bounded 429/503/5xx retries
+}
+
+export interface ReviewerExecuteRequest {
+  readonly reviewId: string;           // harness-owned, deterministic
+  readonly promptRef: ArtifactRef;     // rendered ReviewPrompt artifact (instructions, input, output schema)
+  readonly promptSha256: string;       // must equal the bytes the egress re-scan cleared
+  readonly budget: ReviewerBudget;
+  readonly signal: AbortSignal;        // request-scoped cancellation
+}
+
+export interface ReviewerUsage {
+  readonly inputTokens: number;
+  readonly cachedInputTokens: number;
+  readonly outputTokens: number;
+  readonly reasoningTokens: number;
+  readonly wallClockMs: number;
+  readonly transportAttempts: number;
+}
+
+export type ReviewerObservationStatus =
+  | 'COMPLETED' | 'REFUSED' | 'INCOMPLETE' | 'MALFORMED' | 'RATE_LIMITED'
+  | 'PROVIDER_ERROR' | 'AUTH_ERROR' | 'CONTEXT_OVERFLOW' | 'BUDGET_EXHAUSTED' | 'CANCELLED';
+
+// What the gateway did to the request in transit.
+export interface GatewayAlteration {
+  readonly status: 'altered' | 'unaltered' | 'unknown' | 'no-request';
+  readonly appendedBytes: number | null;        // bytes appended to the sent instructions, when observable
+  readonly appendedSha256: string | null;
+  readonly appendixRef: ArtifactRef | null;     // the appended text, stored as a gateway-appendix artifact
+  readonly toolsAttributed: boolean | null;     // usage attribution reports tools the harness never sent
+  readonly attributedFields: readonly string[]; // usage.attribution.request_fields keys, verbatim
+}
+
+// UNTRUSTED.
+export interface ReviewerObservation {
+  readonly status: ReviewerObservationStatus;
+  readonly outputText: string | null;           // structured-output JSON text, unparsed
+  readonly rawRequestRef: ArtifactRef;          // canonical request body; never contains a credential
+  readonly rawResponseRef: ArtifactRef | null;  // exact response bytes, persisted before parsing
+  readonly servedModel: string | null;          // provider-reported model id
+  readonly providerRequestId: string | null;    // e.g. the x-request-id header
+  readonly gatewayAlteration: GatewayAlteration;
+  readonly usage: ReviewerUsage;
+  readonly detail: string | null;               // bounded, credential-free failure detail
+}
+
+export interface ReviewerProvider {
+  readonly descriptor: ReviewerDescriptor;
+  review(scope: TenantScope, req: ReviewerExecuteRequest): Promise<ReviewerObservation>;
+}
+
+// ---------------------------------------------------------------------------
+// Trusted review source. The packet builder reads the reviewed change through
+// this port, from the workspace object store, never from the agent's report.
+// ---------------------------------------------------------------------------
+
+export interface ReviewBlob {
+  readonly path: string;               // as git reports it; a path that is not normalizable is never read
+  readonly blob: ArtifactRef | null;   // null when omitted
+  readonly bytes: number;
+  readonly lineCount: number;
+  readonly omittedReason: 'binary' | 'too-large' | 'deleted' | 'submodule' | 'non-utf8' | 'unsafe-path' | null;
+}
+
+export interface ReviewSourceReader {
+  diffRange(scope: TenantScope, input: {
+    readonly workspace: WorkspaceCapability;
+    readonly fromSha: string;          // 40-hex, must exist in the workspace object store
+    readonly toSha: string;
+    readonly maxBytes: number;
+  }): Promise<{
+    readonly diff: ArtifactRef;
+    readonly bytes: number;
+    readonly overLimit: boolean;       // true → caller flags over-budget; the artifact is never cut silently
+    readonly changedFiles: readonly { readonly path: string; readonly status: 'A' | 'M' | 'D' | 'R'; readonly binary: boolean }[];
+  }>;
+  readBlobs(scope: TenantScope, input: {
+    readonly workspace: WorkspaceCapability;
+    readonly sha: string;
+    readonly paths: readonly string[];
+    readonly maxBytesPerFile: number;
+  }): Promise<readonly ReviewBlob[]>;
 }
 
 // The future dispatch seam (Phase 3 Temporal). Phase 2 dispatches via CLI/worker

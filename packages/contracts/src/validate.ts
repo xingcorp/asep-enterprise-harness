@@ -1,4 +1,5 @@
-// Runtime schema validation for the 13 canonical ASEP contracts.
+// Runtime schema validation for the canonical ASEP contracts: the 13 platform
+// contracts and the five review contracts of independent assurance.
 //
 // JSON Schema (schema/*.schema.json) is the single source of truth. This module
 // compiles those schemas once with Ajv (2020-12 dialect) and exposes a small,
@@ -59,7 +60,12 @@ export type ContractName =
   | 'verification-plan'
   | 'run-event'
   | 'skill-manifest'
-  | 'execution-envelope';
+  | 'execution-envelope'
+  | 'review-finding'
+  | 'review-record'
+  | 'review-packet'
+  | 'adjudication-record'
+  | 'repair-order';
 
 interface RawSchema {
   $id: string;

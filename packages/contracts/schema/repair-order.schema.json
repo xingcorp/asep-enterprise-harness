@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://asep.dev/schema/repair-order/v1",
+  "version": "1.0.0",
+  "title": "RepairOrder",
+  "description": "What the next attempt is told after a gating REPAIR decision: the grounded blocking findings and a capped set of informational findings, anchored to the reviewed attempt's commit. The size limits on finding text are policy data, applied when the order is built.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "repairOrderId", "taskId", "fromAttemptId", "nextRound", "taskBaseSha", "repairBaseSha", "adjudicationId",
+    "blockingFindings", "informationalFindings", "closureRule", "workOrderRef"
+  ],
+  "properties": {
+    "repairOrderId": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "taskId": { "type": "string", "minLength": 1, "x-tsType": "TaskId" },
+    "fromAttemptId": { "type": "string", "minLength": 1, "x-tsType": "AttemptId" },
+    "nextRound": { "type": "integer", "minimum": 2 },
+    "taskBaseSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "repairBaseSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "adjudicationId": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "blockingFindings": {
+      "type": "array",
+      "items": { "$ref": "https://asep.dev/schema/review-finding/v1", "x-tsType": "ReviewFindingRecord" }
+    },
+    "informationalFindings": {
+      "type": "array",
+      "items": { "$ref": "https://asep.dev/schema/review-finding/v1", "x-tsType": "ReviewFindingRecord" }
+    },
+    "closureRule": {
+      "type": "string",
+      "enum": ["a fix is verified only by a different eligible reviewer, a human, or a deterministic re-check"]
+    },
+    "workOrderRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifactId", "sha256", "kind"],
+      "properties": {
+        "artifactId": { "type": "string", "minLength": 1 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "kind": { "type": "string", "minLength": 1 }
+      },
+      "x-tsType": "ArtifactRef"
+    }
+  },
+  "examples": [
+    {
+      "repairOrderId": "9999999999999999999999999999999999999999999999999999999999999999",
+      "taskId": "01J000000000000000000TASK",
+      "fromAttemptId": "01J0000000000000000000ATT",
+      "nextRound": 2,
+      "taskBaseSha": "0000000000000000000000000000000000000000",
+      "repairBaseSha": "1111111111111111111111111111111111111111",
+      "adjudicationId": "5555555555555555555555555555555555555555555555555555555555555555",
+      "blockingFindings": [
+        {
+          "id": "deterministic:false-green#5d41402abc4b2a76b9719d911017c5925d41402abc4b2a76b9719d911017c592",
+          "source": "deterministic",
+          "raisedBy": "deterministic:false-green",
+          "fingerprint": "5d41402abc4b2a76b9719d911017c5925d41402abc4b2a76b9719d911017c592",
+          "severity": "HIGH",
+          "category": "EVIDENCE_INTEGRITY",
+          "evidence": "Check unit passed with zero tests executed.",
+          "requiredFix": "Make the unit check run the tests it claims to run.",
+          "grounded": true,
+          "lifecycleState": "OPEN",
+          "ruleId": "false-green"
+        }
+      ],
+      "informationalFindings": [],
+      "closureRule": "a fix is verified only by a different eligible reviewer, a human, or a deterministic re-check",
+      "workOrderRef": { "artifactId": "01J000000000000000000WO01", "sha256": "0000000000000000000000000000000000000000000000000000000000000000", "kind": "work-order" }
+    }
+  ]
+}

@@ -1,0 +1,91 @@
+{
+  "packetVersion": "review-packet/v1",
+  "identity": {
+    "organizationId": "01J000000000000000000ORG0",
+    "projectId": "01J000000000000000000PROJ",
+    "repositoryBindingId": "01J0000000000000000000RB0",
+    "runId": "01J0000000000000000000RUN",
+    "taskId": "01J000000000000000000TASK",
+    "attemptId": "01J0000000000000000000AT2",
+    "round": 2,
+    "roundKey": "01J0000000000000000000AT2:2"
+  },
+  "risk": "R3",
+  "reviewKind": "re-review",
+  "workOrder": {
+    "objective": "Add pagination to the users endpoint.",
+    "requirementIds": [],
+    "allowedPaths": ["src/**"],
+    "forbiddenChanges": [],
+    "architectureInvariants": [],
+    "acceptanceCheckIds": []
+  },
+  "change": {
+    "taskBaseSha": "1405df66cbe219b0bf6355bc3d60361a8376b6b4",
+    "resultSha": "e8a7d6f2bc4132a0f764d5e084371ff67d21a516",
+    "repairBaseSha": "37a5301a88da334dc5afc5b63979daa0f3f45e68",
+    "cumulativeDiff": { "artifactId": "01J0000000000000000DIFF02", "sha256": "33d457402f456235be5340c020ecac65013ac0bf8b6f397b46cb38b543092cc4", "kind": "review-diff" },
+    "repairDelta": { "artifactId": "01J000000000000000DELTA01", "sha256": "04e2b76fbcbde52deb674c34b5329a13b6e21b89fab859cd310f675364bf4ff2", "kind": "review-diff" },
+    "files": [
+      {
+        "path": "src/users.ts",
+        "status": "M",
+        "binary": false,
+        "postImage": { "artifactId": "01J0000000000000000BLOB03", "sha256": "201e33b22aa4f55a98fc6b5b14c6ab2b99bccc1b1ca0a18af0454a047f6b0672", "kind": "review-blob" },
+        "lineCount": 121,
+        "omittedReason": null
+      },
+      { "path": "assets/logo.png", "status": "A", "binary": true, "postImage": null, "lineCount": 0, "omittedReason": "binary" },
+      { "path": "src/legacy.ts", "status": "D", "binary": false, "postImage": null, "lineCount": 0, "omittedReason": "deleted" },
+      { "path": "\"src/odd\\nname.ts\"", "status": "A", "binary": false, "postImage": null, "lineCount": 0, "omittedReason": "unsafe-path" }
+    ]
+  },
+  "execution": {
+    "verdict": "FAIL",
+    "environment": { "imageDigest": "sha256:4e0b5c1f", "lockfileHash": "sha256:9a1d", "nodeVersion": null },
+    "checks": [
+      {
+        "id": "unit",
+        "category": "unit",
+        "command": "pnpm test",
+        "exitCode": 1,
+        "durationMs": 9050,
+        "stdout": {
+          "artifactId": "01J00000000000000000OUT02",
+          "sha256": "f44c30d07d331c6ff6aeb64dc4a63070c1cc002946e49019617cd18e5211a6f6",
+          "bytes": 21002,
+          "excerptTail": "ℹ tests 43\nℹ pass 42\nℹ fail 1\n"
+        },
+        "stderr": null,
+        "testSummary": { "runner": "node:test", "tests": 43, "pass": 42, "fail": 1, "skipped": 0, "todo": 0 }
+      }
+    ]
+  },
+  "priorFindings": [
+    {
+      "id": "01J0000000000000000FIND01",
+      "source": "model",
+      "raisedBy": "primary-openai",
+      "fingerprint": "db7c7efcdd1aea7b6708f741dd0a7b7ef1979da4f147084f507171d5a81d13fe",
+      "severity": "HIGH",
+      "category": "CORRECTNESS",
+      "evidence": "src/users.ts:42 compares the page index with < limit, so the last page is never returned.",
+      "requiredFix": "Compare with <= limit, and add a test that reads the last page.",
+      "grounded": true,
+      "lifecycleState": "OPEN",
+      "requirementId": "REQ-001",
+      "file": "src/users.ts",
+      "lineStart": 40,
+      "lineEnd": 44
+    }
+  ],
+  "budget": {
+    "maxBytes": 262144,
+    "overBudget": false,
+    "omissions": [
+      { "path": "assets/logo.png", "reason": "binary" },
+      { "path": "src/legacy.ts", "reason": "deleted" },
+      { "path": "\"src/odd\\nname.ts\"", "reason": "unsafe-path" }
+    ]
+  }
+}

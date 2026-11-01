@@ -1,0 +1,31 @@
+{
+  "reviewId": "1d795ba0b258280096c1cd959a4505736a3e1e76c7a0b809aca826f1279f8057",
+  "roundKey": "01J0000000000000000000ATT:1",
+  "attemptId": "01J0000000000000000000ATT",
+  "round": 1,
+  "reviewKind": "fresh",
+  "reviewerConfigId": "comparator-anthropic",
+  "reviewerConfigSha256": "87b3c88f441a3ec713b46a68441aae6487704c3d6389a74594fdd0c3fe2346a8",
+  "reviewerRole": "comparator",
+  "requestedModel": "claude-example",
+  "resolvedFamily": "anthropic",
+  "servedModel": "claude-example",
+  "packetSha256": "c48e8d2fd69d694f90962ad5c6da898c6e83f070c32804601d4c8b4b02854127",
+  "promptSha256": "7ed65932e8020d4d9f9f6a3685dd16ea62b9bd0477726edcf734750de827e343",
+  "rawRequestArtifactId": "01J00000000000000000REQ03",
+  "rawResponseArtifactId": "01J00000000000000000RSP03",
+  "validity": "INVALID",
+  "verdict": null,
+  "findings": [],
+  "priorFindingClaims": [],
+  "usage": { "inputTokens": 18234, "cachedInputTokens": 0, "outputTokens": 77, "reasoningTokens": 0, "wallClockMs": 9310, "transportAttempts": 1 },
+  "providerCalls": 1,
+  "gatewayAlteration": {
+    "status": "unknown",
+    "appendedBytes": null,
+    "appendedSha256": null,
+    "appendixArtifactId": null,
+    "toolsAttributed": null,
+    "attributedFields": []
+  }
+}

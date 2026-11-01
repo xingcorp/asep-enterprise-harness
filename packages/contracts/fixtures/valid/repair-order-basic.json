@@ -1,0 +1,42 @@
+{
+  "repairOrderId": "34206ec9e3b08ec888dc9fe0ad867694f54696124e7838c389a2844b5d6db33a",
+  "taskId": "01J000000000000000000TASK",
+  "fromAttemptId": "01J0000000000000000000AT2",
+  "nextRound": 3,
+  "taskBaseSha": "1405df66cbe219b0bf6355bc3d60361a8376b6b4",
+  "repairBaseSha": "e8a7d6f2bc4132a0f764d5e084371ff67d21a516",
+  "adjudicationId": "b2b5b94287092710798c94bdb54c3ac78226327a2401b2dde8673c6016907643",
+  "blockingFindings": [
+    {
+      "id": "deterministic:false-green#9c91cf6496f7c0eab838a624d9a392899b67886e4b92472b18bc4dd21a4a7010",
+      "source": "deterministic",
+      "raisedBy": "deterministic:false-green",
+      "fingerprint": "9c91cf6496f7c0eab838a624d9a392899b67886e4b92472b18bc4dd21a4a7010",
+      "severity": "HIGH",
+      "category": "EVIDENCE_INTEGRITY",
+      "evidence": "Check unit passed with zero tests executed.",
+      "requiredFix": "Make the unit check run the tests it claims to run.",
+      "grounded": true,
+      "lifecycleState": "OPEN",
+      "ruleId": "false-green"
+    }
+  ],
+  "informationalFindings": [
+    {
+      "id": "primary-openai#bb47bdac495ef78a120041dd8ad883d8b77fb372d71eb5d3d66e2130ae822660#1b2c3d4e5f607182",
+      "source": "model",
+      "raisedBy": "primary-openai",
+      "fingerprint": "bb47bdac495ef78a120041dd8ad883d8b77fb372d71eb5d3d66e2130ae822660",
+      "severity": "LOW",
+      "category": "MAINTAINABILITY",
+      "evidence": "src/users.ts:10 repeats the page-size constant.",
+      "requiredFix": "Use the exported PAGE_SIZE constant.",
+      "grounded": true,
+      "lifecycleState": "OPEN",
+      "file": "src/users.ts",
+      "lineStart": 10
+    }
+  ],
+  "closureRule": "a fix is verified only by a different eligible reviewer, a human, or a deterministic re-check",
+  "workOrderRef": { "artifactId": "01J000000000000000000WO01", "sha256": "43d930dd073379dcecfd040377ec0221940ba2e28213472822fc3bea9e71ccbd", "kind": "work-order" }
+}

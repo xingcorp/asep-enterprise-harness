@@ -1,0 +1,35 @@
+{
+  "packetVersion": "review-packet/v1",
+  "identity": {
+    "organizationId": "corpus",
+    "projectId": "asep-enterprise-harness",
+    "repositoryBindingId": "self-history",
+    "runId": "p2-self-6",
+    "taskId": "p2-self-6",
+    "attemptId": "p2-self-6-chunk-1",
+    "round": 1,
+    "roundKey": "p2-self-6-chunk-1"
+  },
+  "risk": "R3",
+  "reviewKind": "fresh",
+  "workOrder": {
+    "objective": "Phase 2 at the reviewed commit. Review the change against the phase plan and exit criteria.",
+    "requirementIds": [],
+    "requirements": [],
+    "allowedPaths": ["**"],
+    "forbiddenChanges": [],
+    "architectureInvariants": [],
+    "acceptanceCheckIds": []
+  },
+  "change": {
+    "taskBaseSha": "1405df66cbe219b0bf6355bc3d60361a8376b6b4",
+    "resultSha": "37a5301a88da334dc5afc5b63979daa0f3f45e68",
+    "repairBaseSha": null,
+    "cumulativeDiff": { "artifactId": "excerpt-diff", "sha256": "33d457402f456235be5340c020ecac65013ac0bf8b6f397b46cb38b543092cc4", "kind": "corpus-excerpt" },
+    "repairDelta": null,
+    "files": []
+  },
+  "execution": { "verdict": "NOT_RECORDED", "environment": null, "checks": [] },
+  "priorFindings": [],
+  "budget": { "maxBytes": 524288, "overBudget": true, "omissions": [] }
+}

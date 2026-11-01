@@ -1,0 +1,89 @@
+{
+  "packetVersion": "review-packet/v1",
+  "identity": {
+    "organizationId": "01J000000000000000000ORG0",
+    "projectId": "01J000000000000000000PROJ",
+    "repositoryBindingId": "01J0000000000000000000RB0",
+    "runId": "01J0000000000000000000RUN",
+    "taskId": "01J000000000000000000TASK",
+    "attemptId": "01J0000000000000000000ATT",
+    "round": 1,
+    "roundKey": "01J0000000000000000000ATT:1"
+  },
+  "risk": "R2",
+  "reviewKind": "fresh",
+  "workOrder": {
+    "objective": "Add pagination to the users endpoint.",
+    "requirementIds": ["REQ-001", "REQ-002"],
+    "requirements": [
+      { "id": "REQ-001", "statement": "The users endpoint returns pages of at most 50 users.", "priority": "MUST" }
+    ],
+    "allowedPaths": ["src/**", "test/**"],
+    "forbiddenChanges": ["migrations/**"],
+    "architectureInvariants": ["INV-001"],
+    "acceptanceCheckIds": ["unit"]
+  },
+  "change": {
+    "taskBaseSha": "1405df66cbe219b0bf6355bc3d60361a8376b6b4",
+    "resultSha": "37a5301a88da334dc5afc5b63979daa0f3f45e68",
+    "repairBaseSha": null,
+    "cumulativeDiff": { "artifactId": "01J0000000000000000DIFF01", "sha256": "33d457402f456235be5340c020ecac65013ac0bf8b6f397b46cb38b543092cc4", "kind": "review-diff" },
+    "repairDelta": null,
+    "files": [
+      {
+        "path": "src/users.ts",
+        "status": "M",
+        "binary": false,
+        "postImage": { "artifactId": "01J0000000000000000BLOB01", "sha256": "201e33b22aa4f55a98fc6b5b14c6ab2b99bccc1b1ca0a18af0454a047f6b0672", "kind": "review-blob" },
+        "lineCount": 120,
+        "omittedReason": null
+      },
+      {
+        "path": "test/users.test.ts",
+        "status": "A",
+        "binary": false,
+        "postImage": { "artifactId": "01J0000000000000000BLOB02", "sha256": "90113fcf1fc0ef0a7211e08de474d6df04048d61f0a1dfc2c6d3869ffd9297f1", "kind": "review-blob" },
+        "lineCount": 64,
+        "omittedReason": null
+      }
+    ]
+  },
+  "execution": {
+    "verdict": "PASS",
+    "environment": { "imageDigest": "sha256:4e0b5c1f", "lockfileHash": "sha256:9a1d", "nodeVersion": "v22.12.0" },
+    "checks": [
+      {
+        "id": "unit",
+        "category": "unit",
+        "command": "pnpm test",
+        "exitCode": 0,
+        "durationMs": 8123,
+        "stdout": {
+          "artifactId": "01J00000000000000000OUT01",
+          "sha256": "f44c30d07d331c6ff6aeb64dc4a63070c1cc002946e49019617cd18e5211a6f6",
+          "bytes": 20480,
+          "excerptTail": "ℹ tests 42\nℹ pass 42\nℹ fail 0\n"
+        },
+        "stderr": {
+          "artifactId": "01J00000000000000000ERR01",
+          "sha256": "647238e542a031d3898b86f8d70e7439055eacf0d74ff31ce1abc524a8d6625d",
+          "bytes": 0,
+          "excerptTail": null
+        },
+        "testSummary": { "runner": "node:test", "tests": 42, "pass": 42, "fail": 0, "skipped": 0, "todo": 0 }
+      },
+      {
+        "id": "typecheck",
+        "category": "static",
+        "command": "pnpm typecheck",
+        "exitCode": 0,
+        "durationMs": 30211,
+        "stdout": null,
+        "stderr": null,
+        "testSummary": null
+      }
+    ]
+  },
+  "priorFindings": [],
+  "budget": { "maxBytes": 262144, "overBudget": false, "omissions": [] }
+}

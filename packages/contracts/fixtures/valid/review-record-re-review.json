@@ -1,0 +1,46 @@
+{
+  "reviewId": "72bbeb75306e44a7f5ce5b9d9c2faa6d624336110eaf089416bbdbee934f5d85",
+  "roundKey": "01J0000000000000000000AT2:2",
+  "attemptId": "01J0000000000000000000AT2",
+  "round": 2,
+  "reviewKind": "re-review",
+  "reviewerConfigId": "comparator-anthropic",
+  "reviewerConfigSha256": "87b3c88f441a3ec713b46a68441aae6487704c3d6389a74594fdd0c3fe2346a8",
+  "reviewerRole": "comparator",
+  "requestedModel": "claude-example",
+  "resolvedFamily": "anthropic",
+  "servedModel": "claude-example",
+  "packetSha256": "7dc051ca32fed97ab9aa682dc5afec82a8674dab215bc165398d9a5e2fb1313b",
+  "promptSha256": "4fa87b9db139b966f397df83744edc0242967c6b0aac4f5edb71a35202daf7bf",
+  "rawRequestArtifactId": "01J00000000000000000REQ02",
+  "rawResponseArtifactId": "01J00000000000000000RSP02",
+  "validity": "VALID",
+  "verdict": "APPROVE",
+  "findings": [],
+  "priorFindingClaims": [
+    {
+      "priorFindingId": "01J0000000000000000FIND01",
+      "status": "RESOLVED",
+      "evidence": "The repair delta changes the bound to <= limit and adds the last-page test.",
+      "resolutionFile": "src/users.ts",
+      "resolutionLine": 42
+    },
+    {
+      "priorFindingId": "01J0000000000000000FIND02",
+      "status": "OPEN",
+      "evidence": "The repair delta does not touch the handler.",
+      "resolutionFile": null,
+      "resolutionLine": null
+    }
+  ],
+  "usage": { "inputTokens": 21003, "cachedInputTokens": 17920, "outputTokens": 640, "reasoningTokens": 0, "wallClockMs": 51290, "transportAttempts": 2 },
+  "providerCalls": 2,
+  "gatewayAlteration": {
+    "status": "altered",
+    "appendedBytes": 1834,
+    "appendedSha256": "22d7433b18cc3ac307304bef778e33eb9c880e0b22cf66fd689c1b57c5111799",
+    "appendixArtifactId": "01J00000000000000000APX01",
+    "toolsAttributed": true,
+    "attributedFields": ["input", "instructions", "tools"]
+  }
+}

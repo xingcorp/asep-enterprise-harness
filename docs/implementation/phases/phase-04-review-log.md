@@ -2216,3 +2216,145 @@ golden values are binary fractions and do not move.
   `crash-recovery.test.ts` case with the same 30 s `docker version` kill as the S17 run, in code this lane did not
   change.
 - Re-run at the head after this entry: results in the lane report.
+## After the rebase: corpus sources, scanner boundary and the gate (2026-10-31, R59)
+
+### Corpus source documents are read at the collection commit — `cc185af`
+
+The collector read the review documents and the phase report from the working tree. `863fed0` rewrote
+`phase-02-report.md` after the corpus was collected (a paragraph removed, `implementation_head_sha` changed), so the
+collector test failed after the merge of the vertical slice. The collector and the freeze now read every corpus source
+document at one fixed commit, `CORPUS_SOURCE_COMMIT` = `00a6889` (`evals/review-corpus/collect.ts`, `sourceDocument`),
+through `git cat-file blob`, never the working tree; `freeze.ts` takes the 90-day plan and the review documents the
+same way. No re-freeze: `collect.ts --write` (153 items: 69 plan-defect, 65 included, 19 reviewed-tree-unknown; 122
+excerpts) and `freeze.ts --write` reproduce the committed bytes; the manifest sha256
+`5a407d6ca0fc40689f9603e6e62a8d31eaa70579dd3a33399cc6e2f390404987` and the hash over every self-history file
+`fb5fdd9dfc1d4c4af2d4c40938f194b01f7145a91057ef0b53bbe66b92854f05` are the same before and after, and git shows no
+corpus file changed.
+
+Failing first: the existing collect test was red at the merged head; the two new tests ("corpus source documents are
+read at one fixed commit, never from the working tree" and "the freeze reads its source documents at the corpus
+source commit, not from the working tree") failed before the change. The freeze test freezes a copy of the corpus
+directory alone, so any working-tree read fails. Seeded mutations (collector reads the working tree; freeze reads the
+working tree; plan read from the working tree) each fail a test.
+
+### Secret patterns keep the shared word boundary — `979f755`
+
+Lane R's `9fbde9d` gave the two `sk-` patterns a leading boundary in `scripts/lib/secret-patterns.sh`
+(`(^|[^A-Za-z0-9_])`, and `sk-ant-` also accepts `_`), so the `sk-` at the end of every `asep-task-<ULID>` workflow
+id is no key. The parity test (`checks.test.ts`) failed after the merge. The TypeScript copies
+(`packages/application/src/assurance/secret-patterns.ts`) now carry the same patterns; `javascriptPattern` reads the
+boundary as a lookbehind, so a hit's offset is the key's own start. The lookbehind also holds after an escaped line
+break or tab and after a `\uXXXX` escape, once or twice escaped: the packet and the reviewer request carry text as JSON
+strings, where a key at the start of a line follows `\n`, never a line start. A literal translation of the boundary
+would let such a key through the egress decision and the request re-scan; this is an addition beyond the shell
+pattern, stated here.
+
+Negative controls: workflow ids bare, quoted, after `=`, and after an escaped line break in JSON; `whisk-ant-…`
+inside a word. Positive cases: line start, a later line, after `=`, after either quote, a space or a tab, after an
+escaped line break, tab, control escape `\u0001` and a twice-escaped break; offsets start at `sk-`; an unsupported
+boundary throws. `egress.test.ts`: a key at the start of a line inside JSON text stops egress in the packet and in the
+request re-scan at one and two levels of escaping; a workflow id in the same places is `CLEAR`. Failing first: the
+parity test, the new controls test and the egress test failed before the change. Seeded mutations (no JSON escapes, no
+`\u` escape, boundary dropped, boundary consumed, the old patterns) each fail a test.
+
+### The gate at `979f755`
+
+`~/.openclaw/lanes/gate.sh phase-04 pnpm verify:all`, three runs:
+
+1. Stopped by this session's own background time limit (10 minutes) during the test step; no result. The sampler log
+   reads `samples=221 max_node_launch_ms=31519 stalls_ge_10s=2`.
+2. Red: 1 of 1585 tests failed, `apps/control-plane-api/src/crash-recovery.test.ts` › "through the GitHub adapter and
+   port, a successor over a PR a human closed fails the task and writes nothing", with `SandboxTeardownError`: the
+   fake `docker ps` was killed at its 30 s bound. The host's load average was 39 and the gate recorded
+   `samples=387 max_node_launch_ms=42207 stalls_ge_10s=2`. The test passed alone at the same head (55 s). The
+   branch's two commits touch neither the test nor the code under it.
+3. Green: `verify:all: PASS (all gates green)`, 1585 tests, 1585 pass, `canonical-tests: PASS (85 test file(s), 50
+   required suite(s) verified)`, `samples=588 max_node_launch_ms=44229 stalls_ge_10s=4`.
+
+## Review contracts, review ports and assurance persistence (2026-10-31 to 11-01, R58/R59)
+
+### The five review contracts — `3f88227`
+
+`review-finding`, `review-record`, `review-packet`, `adjudication-record` and `repair-order` are JSON Schema
+contracts at 1.0.0, each with a v1 snapshot identical to the live schema (`packages/contracts/schema/`,
+`schema/snapshots/v1/`). The field rules are `allOf` conditionals in the schemas: an ungrounded finding carries a
+grounding reason; a model finding's raiser is not `deterministic:` or `sarif:`; a deterministic finding carries its
+rule id; a SARIF finding is the one `sarif:unparsed` / `sarif-unparsed` / HIGH / EVIDENCE_INTEGRITY finding with no
+location; a finding's file is a normalized repository path. A record carries a verdict exactly when its output was
+valid; a fresh review is round 1 with no prior claims. A packet file has a post-image exactly when it is not omitted,
+an execution manifest that is `NOT_RECORDED` has no environment and no checks, and a fresh packet has no prior
+findings; the packet has no field for the coder's report. An escalation or block names its reason; a non-gating
+round only proceeds or blocks, and a shadow proceed records what gating would have done; a push-guard block names
+its reason. A repair order carries the fixed closure rule.
+
+`architecture-invariant` gains an optional `check` (`forbidden-import` over globs and a specifier pattern) and moves
+to 1.1.0; its v1 snapshot stays 1.0.0, so the compat gate checks the change as a minor bump. The type generator now
+renders nullable objects and nullable `x-tsType` nodes; the regenerated `generated.ts` only adds lines. The attempt
+machine gains `COMMITTED → UNDER_REVIEW`, `UNDER_REVIEW → PUSHED | CHANGES_REQUESTED`, and `CHANGES_REQUESTED` is
+terminal. `asep-suite:contract-fixtures` (`validate.test.ts`) is a required suite.
+
+Exit-criteria tests: "legacy review contracts and v1 snapshots keep their recorded digests" (the snapshot directory
+holds the 13 recorded digests and the five new contracts, and the earlier `review-report` and `finding` schemas
+keep their digests) and "assurance contract additions are additive" (`compat-gate.test.ts`).
+
+Failing first: with the tests in the tree and the schemas absent, the contracts package failed 24 of 61 tests and
+the domain operational test failed 1 of 11. After: contracts 105 of 105, domain 19 of 19, the canonical-runner test
+14 of 14, `pnpm typecheck` clean.
+
+Seeded mutations, each run against `validate.test.ts` and `review-contracts.test.ts` with the live schema and its
+snapshot both changed: every one of the 14 conditionals dropped in turn (finding 4, record 2, packet 3, adjudication
+5), the finding path pattern weakened to `.+`, the closure rule opened to any string, extra top-level packet
+properties allowed, and the invariant check kind opened: 18 of 18 fail a test. The two generator changes reverted:
+the drift test fails each; with `generated.ts` regenerated from the reverted generator, the compile-time projection
+test fails `tsc`. The attempt machine: committed cannot enter review, review cannot request changes, review opens a
+PR without a push, changes-requested not terminal: each fails the operational test. "Changes requested may re-enter
+review" survives: the terminal check runs before the table, so that table entry is never read (an equivalent
+mutant; the test asserts `CHANGES_REQUESTED → UNDER_REVIEW` is refused).
+
+Slice-end gate at `3f88227`: `verify:all: PASS (all gates green)`, 1608 tests, 1608 pass, `canonical-tests: PASS (86
+test file(s), 51 required suite(s) verified)`, `samples=369 max_node_launch_ms=36979 stalls_ge_10s=2`.
+
+### Packet-only reviewer and review-source ports — `3cd80c4`
+
+`ReviewerProvider` (`packages/ports/src/index.ts`) takes the reviewer's whole input as one rendered prompt artifact
+and its digest, a budget and an abort signal, and returns an untrusted `ReviewerObservation`: raw output text, the
+raw request and response artifacts, the served model, the gateway alteration (`no-request` when no request was
+sent) and the usage. `ReviewSourceReader` reads a diff range and bounded blobs from a workspace capability; an
+over-limit diff is reported, never cut. `ReviewProvider` keeps its shape and is marked `@deprecated` in favour of
+`ReviewerProvider`.
+
+Failing first: `review-ports.test.ts` failed `tsc` on the missing exports and failed at run time on the missing
+deprecation. After: 3 of 3, `pnpm typecheck` clean. Seeded mutations (the request also carries a work order; the
+output is parsed; `no-request` dropped; the source takes a raw path; the earlier port's input changes; the
+deprecation removed): 6 of 6 fail `tsc` or the test.
+
+Slice-end gate at `3cd80c4`: `verify:all: PASS (all gates green)`, 1611 tests, 1611 pass, `canonical-tests: PASS (87
+test file(s), 51 required suite(s) verified)`, `samples=272 max_node_launch_ms=39159 stalls_ge_10s=1`. The run
+queued behind other lanes' gates and finished after the session's own background time limit had cut the wrapper
+command; the result is read from the gate's complete log. The run has one stall of 10 s or more.
+
+### Assurance persistence — not landed
+
+The stores, migrations `0200_assurance_reviews`, `0201_metric_snapshots` and `0202_attempt_review_states`, and their
+unit suite (10 tests) and itest (9 tests, not yet run) are drafted. In the tree, the unit suite failed first: it
+did not load without the stores, and all 10 tests failed with the stores but without the migrations
+(`review_rounds` and `metric_snapshots_latest` did not exist). With the migrations it passed 10 of 10. Hydration
+replays a finding's dispositions in the order they were recorded (an identity column), not by their logical time;
+in a scratch copy, a seeded mutation that orders them by time fails the hydration test.
+
+It is not committed, because two existing suites go red and both belong to other lanes:
+
+1. `adapters/persistence/src/persistence.test.ts` › "the reference registry, the naming convention and the foreign
+   keys into artifacts agree" fails: `review_rounds.packet: the key carries the checksum`. The Phase 2 migrations
+   0017 and 0019 bind every artifact reference as `<name>_artifact_id` with `<name>_sha256` and a generated
+   `<name>_kind`, through a foreign key on `(id, organization_id, project_id, sha256, kind)`, registered in
+   `artifact_reference_columns`. The data model's DDL (§3.1) binds references by `(id, organization_id,
+   project_id)` only. Migration 0200 has to follow the Phase 2 convention. The companion test "every registered
+   artifact reference refuses a missing, foreign, mis-hashed or mis-kinded artifact" then probes each registered
+   reference by an UPDATE on a row from `seedReferencingRows`. That needs a seeded row for each review table, and
+   four of them refuse every UPDATE by design (dispositions and adjudications are append-only; a final review
+   record and a set packet never change). The probe needs a second path for those tables, for example an INSERT
+   probe.
+2. `adapters/persistence/src/run-events/run-event-sink.itest.ts` › "upgrade path" asserts that a database at the
+   Phase 2 set takes `0107_run_events` alone. Any later migration breaks it. The orchestration persistence lane
+   changed the same lines in `215d6ac` to migrate to a named run-events set.

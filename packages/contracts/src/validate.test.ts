@@ -9,6 +9,10 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { validate, contractNames, type ContractName } from './validate.js';
 
+// Machine-readable suite marker: the canonical test runner requires this line, so
+// the fixture accept/reject suite cannot be dropped without turning the gate RED.
+console.log('SUITE-ID: asep-suite:contract-fixtures');
+
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIX = join(HERE, '..', 'fixtures');
 

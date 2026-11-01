@@ -1,6 +1,6 @@
 // Deterministic JSON-Schema -> TypeScript contract generator.
 //
-// The 13 canonical contracts under packages/contracts/schema/*.schema.json are
+// The canonical contracts under packages/contracts/schema/*.schema.json are
 // the single source of truth. This generator derives ../generated.ts from them.
 // It is intentionally dependency-free (no json-schema-to-typescript) so the
 // output is fully deterministic and the drift-guard test can regenerate the
@@ -12,9 +12,10 @@
 //   - type: integer | number -> number
 //   - type: boolean -> boolean
 //   - type: array   -> readonly T[]
-//   - type: [X, "null"] -> (X | null)
+//   - type: [X, "null"] -> (X | null), X a scalar or an object with properties
 //   - $ref to a sibling schema -> that schema's title type
-//   - x-tsType override (on a property or on array items) -> named import from ./base.js
+//   - x-tsType override (on a property or on array items) -> named import from ./base.js,
+//     `Name | null` when the node's type admits null
 //
 // Regenerate with: pnpm --filter @asep/contracts gen:types
 
@@ -89,7 +90,7 @@ function renderType(
   const xt = s['x-tsType'];
   if (xt) {
     noteImport(xt);
-    return xt;
+    return Array.isArray(s.type) && s.type.includes('null') ? `${xt} | null` : xt;
   }
   if (s.$ref) {
     return refName(s.$ref, refIndex);
@@ -99,8 +100,8 @@ function renderType(
   }
   const t = s.type;
   if (Array.isArray(t)) {
-    // e.g. ["string", "null"]
-    const parts = t.map((tt) => scalar(tt));
+    // e.g. ["string", "null"], or ["object", "null"] for a nullable object
+    const parts = t.map((tt) => (tt === 'object' ? renderObject(s, refIndex, indent) : scalar(tt)));
     return parts.join(' | ');
   }
   switch (t) {

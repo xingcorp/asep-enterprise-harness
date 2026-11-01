@@ -1,0 +1,13 @@
+{
+  "id": "INV-002",
+  "statement": "The domain package never imports a provider adapter.",
+  "category": "LAYERING",
+  "rationale": "Adapters depend on the domain, never the reverse.",
+  "check": {
+    "kind": "forbidden-call",
+    "fromGlobs": [
+      "packages/domain/src/**/*.ts"
+    ],
+    "specifierPattern": "^@asep/(adapter-|reviewer-)"
+  }
+}

@@ -110,6 +110,31 @@ test('attempt rejects happy-path skips and post-terminal moves', () => {
   assert.throws(() => transitionAttempt(attempt('FAILED'), 'AGENT_RUNNING'));
 });
 
+test('a committed attempt under review is pushed or asked for changes, and changes requested ends it', () => {
+  let a = attempt('COMMITTED');
+  for (const s of ['UNDER_REVIEW', 'PUSHED', 'PR_OPEN', 'SUCCEEDED'] as const) a = transitionAttempt(a, s);
+  assert.equal(a.status, 'SUCCEEDED');
+  // Without a review round the committed attempt is pushed directly.
+  assert.equal(transitionAttempt(attempt('COMMITTED'), 'PUSHED').status, 'PUSHED');
+  // The round asks for a repair: the attempt ends; the repair is the next attempt.
+  assert.equal(transitionAttempt(attempt('UNDER_REVIEW'), 'CHANGES_REQUESTED').status, 'CHANGES_REQUESTED');
+  assert.ok(isAttemptTerminal('CHANGES_REQUESTED'));
+  assert.ok(!isAttemptTerminal('UNDER_REVIEW'));
+  for (const next of ['UNDER_REVIEW', 'PUSHED', 'COMMITTED', 'FAILED'] as const) {
+    assert.throws(() => transitionAttempt(attempt('CHANGES_REQUESTED'), next), `CHANGES_REQUESTED -> ${next}`);
+  }
+  // The push guard blocks a reviewed attempt.
+  assert.equal(transitionAttempt(attempt('UNDER_REVIEW'), 'BLOCKED').status, 'BLOCKED');
+  // Review sits between the commit and the push, nowhere else.
+  const refused: readonly [AttemptStatus, AttemptStatus][] = [
+    ['UNDER_REVIEW', 'PR_OPEN'], ['UNDER_REVIEW', 'COMMITTED'], ['UNDER_REVIEW', 'SUCCEEDED'], ['VERIFYING', 'UNDER_REVIEW'],
+    ['EVIDENCE_BUILT', 'UNDER_REVIEW'], ['PUSHED', 'UNDER_REVIEW'], ['COMMITTED', 'CHANGES_REQUESTED'],
+    ['PUSHED', 'CHANGES_REQUESTED'],
+  ];
+  for (const [from, to] of refused) assert.throws(() => transitionAttempt(attempt(from), to), `${from} -> ${to}`);
+  assert.ok(attemptReachableStates().includes('UNDER_REVIEW') && attemptReachableStates().includes('CHANGES_REQUESTED'));
+});
+
 // --- WorkspaceLease ---------------------------------------------------------
 
 test('lease ACTIVE -> RELEASED and ACTIVE -> EXPIRED -> QUARANTINED', () => {
