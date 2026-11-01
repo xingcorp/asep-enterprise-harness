@@ -1,4 +1,4 @@
-# Phase 5 — Research Register (DRAFT v1)
+# Phase 5 — Research Register (DRAFT v2)
 
 > Sources read for the Phase 5 plan, with the versions and dates observed. Web pages were read on **2026-10-31**
 > with the session's fetch tool; no package was downloaded. Local observations were made on this host
@@ -18,11 +18,26 @@ TypeScript 7.0.2's package exposes `./unstable/sync`, `./unstable/async` and `./
 (`node_modules/typescript/package.json` `exports`); the native binary's `--lsp` mode accepts `-stdio`, `-pipe` and
 `-socket`. The LSP probes are summarized in plan §2. Not verified: the same probes on Linux x64 (the CI runner).
 
+File-system jail (architecture §4.1a), read on 2026-11-01 from the installed package
+`node_modules/.pnpm/typescript@7.0.2/node_modules/typescript/dist/api/`: `options.d.ts:15` gives the spawned API an
+optional `fs?: FileSystem`; `fs.d.ts:5-19` defines `directoryExists`, `fileExists`, `getAccessibleEntries`,
+`readFile` and `realpath` callbacks, where `readFile` returning `null` means "does not exist (without falling back
+to the real FS)" (`fs.d.ts:12-14`); `fs.d.ts:21` lists those five as the names the Go server delegates.
+`sync/api.d.ts:227` also offers `getReferencesToSymbolInFile`, a possible in-API replacement for the LSP pass (not
+adopted in this version; it would run inside the jail). Not verified: that every server read goes through the
+callbacks (I6's canary checks it first in S5).
+
 ## 2. Vendoring sources
 
 Read through the GitHub REST API (`/repos/<o>/<r>/commits/<ref>`, `/contents/<path>?ref=<sha>`, `/tags`) and raw
 files. Blob SHAs are Git SHA-1 blob ids as the API reports them; V1 checks the committed bytes against them with
 `git hash-object`.
+
+**Fetch record (R68).** One fetch of the seven raw URLs below is authorized, in S4 at implementation time; nothing
+was downloaded in the planning steps. At that fetch the lane fills, per file: the URL, the sha256 of the bytes, the
+SPDX license id and the fetch date (UTC), in the table "Fetch record" of each subsection, and the same values in
+`quarantine.json` and the skill's `skill.json` provenance (V1, V2). A file whose blob SHA or size differs from the
+pin, or whose license does not permit redistribution, is not committed and is recorded as refused.
 
 ### 2.1 obra/superpowers
 
@@ -38,6 +53,8 @@ files. Blob SHAs are Git SHA-1 blob ids as the API reports them; V1 checks the c
 | `skills/test-driven-development/SKILL.md` | `46838cc9e893c06259e3bdad0fc2425b36242f15` | 9578 | `…/skills/test-driven-development/SKILL.md` (same prefix) |
 | `skills/verification-before-completion/SKILL.md` | `7d45333cc4a49c57a80df6c1fe2fa777a207afbc` | 3646 | `…/skills/verification-before-completion/SKILL.md` |
 | `LICENSE` | `abf0390320aa14406af7a520b9b0739fdda9bf08` | 1070 | `…/LICENSE` |
+
+Fetch record: *(filled at the S4 fetch: URL, sha256, SPDX id, date for each of the four files above)*.
 
 Not vendored from `systematic-debugging/`: `find-polluter.sh` (executable), `condition-based-waiting-example.ts`,
 `CREATION-LOG.md`, `test-academic.md`, `test-pressure-{1,2,3}.md`, `condition-based-waiting.md`,
@@ -60,6 +77,7 @@ Not vendored from `systematic-debugging/`: `find-polluter.sh` (executable), `con
 | `LICENSE` | `d67778ada6b9cda6227e9130da182c13e73c8b2e` | 1068 |
 
 Raw URLs: `https://raw.githubusercontent.com/addyosmani/agent-skills/8bfcc1f9916f2eea55494d8c1fa7f4bde867dd9e/<path>`.
+Fetch record: *(filled at the S4 fetch: URL, sha256, SPDX id, date for each of the three files above)*.
 `incremental-implementation` refers to `../../references/definition-of-done.md` and to the skills
 `git-workflow-and-versioning` and `test-driven-development` of the same repository; none is vendored, so V3 lists
 them as outbound references. `code-simplification` names `CLAUDE.md` and `git blame`; no other skill.
@@ -118,5 +136,6 @@ change is judged by per-item rank movement and the floors.
 - The LSP and TypeScript API probes on Linux x64.
 - The evaluation gate's runtime (measured in S8).
 - The bytes of the five `SKILL.md` files beyond their API metadata and the frontmatter of three of them; V1 checks
-  them at import.
+  them at the S4 fetch, and their sha256 values are recorded then.
+- That the TypeScript 7.0.2 server routes every file read through the API's `fs` callbacks (I6 checks it in S5).
 - cosign 3.1.4's offline verification flags.

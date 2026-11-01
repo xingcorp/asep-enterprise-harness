@@ -1,4 +1,4 @@
-# Phase 5 — Architecture (DRAFT v1)
+# Phase 5 — Architecture (DRAFT v2)
 
 > Companion to `phase-05-plan.md`. Base `f613c7f`. Where this document and the reconciliation disagree, the
 > reconciliation wins.
@@ -39,7 +39,7 @@ flowchart LR
   subgraph adapters
     RI[adapters/repo-index<br/>Git objects, TS 7 API, tsc --lsp]
     SR[adapters/skill-registry<br/>DSSE + Ed25519, trust root]
-    PS[adapters/persistence/src/context<br/>0300, 0301]
+    PS[adapters/persistence/src/context<br/>0300, 0301, 0302]
     AS[artifact store, Phase 2]
   end
   P3 --> PC
@@ -97,6 +97,34 @@ The indexer never checks out a worktree and never runs repository code.
    resolve.
 6. The snapshot directory is removed in `finally`, also on abort.
 
+### 4.1a Reads outside the snapshot
+
+TypeScript loads configuration and resolves modules by reading the file system: `extends`, project `references`,
+`paths`, `typeRoots`, relative or absolute import specifiers, and the walk up the root's ancestors for
+`node_modules`, `package.json` and `tsconfig.json`. Repository content controls the first five, so the indexer
+keeps every such read inside the root instead of filtering the results afterwards.
+
+1. **The symbol and import pass runs on a file-system jail.** The `typescript/unstable/sync` `API` is spawned with
+   the `fs` callbacks of TypeScript 7.0.2 (`readFile`, `fileExists`, `directoryExists`, `getAccessibleEntries`,
+   `realpath`; `dist/api/options.d.ts:15`, `dist/api/fs.d.ts:5-21`). They serve only paths under the real root. Any
+   other path answers absent: `readFile` returns `null`, which the API documents as "does not exist, without
+   falling back to the real FS" (`fs.d.ts:12-14`); the others return `false`, an empty listing or the path itself.
+   Each denied lookup is recorded.
+2. **Denied lookups are classified.** An *ancestor probe* is a lookup of `node_modules/**`, `package.json`,
+   `tsconfig.json` or `jsconfig.json` in an ancestor directory of the root. Anything else outside the root (an
+   `extends` or reference target, an import specifier that leaves the root, an absolute path) is an *escape*, and it
+   is recorded as a problem `outside-root-lookup` with the requesting file. The affected project's symbols are what
+   the jailed load gave, with `symbols: partial`.
+3. **The LSP pass has no such hook, so it runs only when the jail saw no escape.** Before it starts, the indexer
+   checks with `lstat` that none of the ancestor-probe names exists in any real ancestor of the root (the snapshot
+   lives in a directory the harness creates for it, never in the repository). If the jailed pass recorded an escape,
+   or an ancestor name exists, the LSP pass does not run: `references: partial`, problem `outside-root-lookup`.
+   Residual: the LSP could look up a path the jailed pass did not. I6 tests the gate with canaries; containerized
+   indexing (deferred, plan §4) removes the residual.
+
+Not verified in this step: that the TypeScript 7.0.2 server routes every read through the callbacks. S5 proves it
+with I6's canary before anything else in the indexer is built on it.
+
 ### 4.2 Maps
 
 | Map | How | Failure → |
@@ -116,7 +144,13 @@ not depend on the Git version.
 - The index is `repository-index/v1`, serialized as canonical JSON (§7) and validated before it is returned.
 - Everything in it is sorted: files by path; tokens by token; postings, edges, references and tests by file index.
 - `indexerDigest` = sha256 hex of the canonical JSON `["repository-index", INDEXER_VERSION, typescriptVersion,
-  limits]`. It is the cache key with the binding and the commit.
+  limits, config]`, where `config` = `{ stopwords, testPatterns }` as the policy gives them (sorted). Every policy
+  value that changes the index bytes is in it (token lengths are fixed by the schema), so a policy change is a new
+  cache key
+  and never reuses an index built under the old values. The same `config` is written into the index (data model
+  §1.2). It is the cache key with the binding and the commit. A test (I5) changes the stopwords and the test patterns
+  with an index for the old values already stored, and checks that the composer builds a new index whose bytes equal
+  a fresh build under the new values.
 - A golden test indexes a committed fixture repository and compares the bytes with a committed golden index that
   carries `indexerVersion`. A change that alters the output must update the golden file and bump
   `INDEXER_VERSION` in the same commit (I5).
@@ -144,8 +178,9 @@ skills/
 ```
 
 The production reader takes three settings from `context-root.ts`: the registry directory, the trust root path
-and `minimumSequence`. `skills: none` is an explicit fourth option and yields an empty registry with mode `none`.
-A configured registry whose index file is missing fails closed.
+and `minimumSequence` (the deployment's floor, §5.3a), plus a `SkillRegistryHighWaterStore` (§8) backed by
+PostgreSQL. `skills: none` is an explicit fourth option and yields an empty registry with mode `none`. A configured
+registry whose index file is missing fails closed.
 
 ### 5.2 Signed index
 
@@ -176,7 +211,35 @@ A configured registry whose index file is missing fails closed.
    and the bundle digest must match (→ `bundle-mismatch`); `skill.json` must validate `skill-manifest/v1` with the
    same id and version (→ `manifest-invalid`); `SKILL.md` must have valid frontmatter whose `name` equals its
    directory name and a UTF-8 body within the policy's size cap (→ `instructions-invalid`).
-10. Return the releases built from the bytes verified in step 9. Nothing is read from disk again.
+10. Anti-rollback (§5.3a): `highWater.advance(registry, sequence, statementSha256)`. A returned mark with a higher
+    sequence → `sequence-rolled-back`; the same sequence with another statement digest → `sequence-reused`. This is
+    the last step, so a load that fails any earlier step never moves the mark.
+11. Return the releases built from the bytes verified in step 9. Nothing is read from disk again.
+
+### 5.3a Anti-rollback: the persisted high-water mark
+
+A signed index stays valid until it expires, so a revocation (a new index with a higher sequence, status
+`revoked`) is only as strong as the reader's memory of the highest sequence it accepted. Without that memory,
+restoring the older, still-signed index file brings the revoked skill back without any key. The reader therefore
+keeps a high-water mark per registry name, outside the registry directory, in PostgreSQL.
+
+- **Store.** Table `skill_registry_high_water` (migration `0302`, data model §3.3): one row per registry name with
+  `sequence`, `statement_sha256`, `trust_root_sha256` and `advanced_at`. A trigger refuses a delete and any update
+  that does not raise `sequence`. The row is deployment-wide, like the registry; it has no tenant column.
+- **Advance.** One statement, atomic under concurrency: insert the row, or on conflict update it only where the
+  stored `sequence` is lower, then return the stored row. Two loads racing with sequences 2 and 3 end at 3, and the
+  one with 2 is refused.
+- **Rule.** Lower sequence than the mark → `sequence-rolled-back`. Equal sequence → accepted only when its statement
+  digest equals the recorded one, so a restart reloads the same index; any other statement with that sequence is
+  `sequence-reused` (two different statements signed with one sequence). Higher → accepted, and the mark moves.
+- **First load and bootstrap.** A deployment with no row for the registry has only the floor: step 8 requires
+  `sequence ≥ minimumSequence`, and the first accepted load inserts the row. The runbook sets `minimumSequence` to
+  the current index's sequence when a deployment is created, and raises it with every revocation (the floor and the
+  mark are two independent stores, so restoring the index file alone is refused by both, and a new or restored
+  database still has the floor).
+- **Trust-root changes do not reset the mark.** A rotated key signs the next sequence; `trust_root_sha256` records
+  which root accepted it.
+- **Evaluation mode and `skills: none`** have no sequence and never read or write the mark.
 
 ### 5.4 Evaluation mode
 
@@ -192,7 +255,10 @@ The composer refuses an evaluation registry (`evaluation-registry-refused`) unle
 `sign --key <priv.pem> --sequence <n> --expires <date> --promote <skillId@version>…` (builds the index from
 `quarantine.json` and the files on disk, signs it, writes `index.dsse.json`) · `verify` (runs §5.3). The private key
 is read from a path given on the command line and never written anywhere else, the same model as
-`scripts/sign-acceptance.sh`.
+`scripts/sign-acceptance.sh`. The operator is the user: the key ceremony, the trust-root commit and every signing
+are operator steps in the runbook, never lane or agent steps. Tests generate their keys inside the test fixtures at
+run time; no private key file is committed (the secret scan refuses PEM private keys,
+`scripts/lib/secret-patterns.sh:31`), and the committed trust root never lists a test key.
 
 ## 6. Composition
 
@@ -200,6 +266,21 @@ is read from a path given on the command line and never written anywhere else, t
 
 The caller's request (`ContextComposeInput`, §8), the WorkOrder bytes read from the artifact store, the index
 snapshot, the verified registry and `policies/context-policy.yaml` (with the sha256 of its raw bytes).
+
+Every input the pure pipeline reads is kept as an immutable artifact, so a replay never depends on the files that
+are current at replay time:
+
+| Input | Artifact kind | Bytes |
+|---|---|---|
+| WorkOrder | `work-order` | already stored by the caller |
+| repository index | `repository-index` | the canonical index bytes |
+| policy | `context-policy` *(new)* | the raw bytes of `policies/context-policy.yaml` as loaded |
+| registry | `skill-registry-snapshot` *(new)* | canonical JSON of what the router saw: mode, registry name, source sha256, sequence, trust-root sha256, and every loaded release with its id, version, status, bundle digest, `skill.json` content and instructions |
+
+The policy and registry-snapshot artifacts are content-addressed and create-only, written with the pack and the
+provenance; the provenance names them, and the provenance row binds them by scoped FK (data model §3.2).
+`replayContextPack(scope, provenanceRef)` reads these four artifacts and the recorded request, runs the pure
+pipeline, and compares the pack and provenance bytes (C3).
 
 ### 6.2 Pure pipeline
 
@@ -250,7 +331,17 @@ snapshot, the verified registry and `policies/context-policy.yaml` (with the sha
   disallowedTools]`. `generatedAt` is not part of it: a retried submit at a later time gets the first composition.
 - Recorded row with an equal `requestDigest` → its refs, `reused: true`, nothing written. A different digest →
   `conflicting-input`, nothing written.
-- The two artifact puts are content-addressed and create-only; the row is the last write and the only authority. A
+- Concurrent calls for one task both find no row, both compose, and their packs differ because `generatedAt`
+  differs. The row decides: `record` inserts one row and returns the existing row to the loser (§8). The loser
+  compares `requestDigest`: equal → it returns the winner's refs with `reused: true` (its own artifacts are orphans,
+  never referenced); different → `conflicting-input`. So identical requests always converge on one row and one
+  pair of refs. Tested with two concurrent calls on in-memory stores (C5) and on two PostgreSQL connections (C4).
+- Required skills are checked twice. Before the index is read or built, each required ref must name a loaded
+  release by exact id and version that passes the phase and permission filters (no index needed); this refuses an
+  unknown skill with nothing written at all. The language filter needs the index, so a required skill excluded by
+  language is refused after the index snapshot is stored. That snapshot is the only write a refusal can leave: a
+  cache entry keyed by commit and indexer digest, never referenced by a pack. C6 states this exception.
+- The artifact puts are content-addressed and create-only; the row is the last write and the only authority. A
   crash between a put and the row is recomposed on retry; if the registry or index changed in between, the first
   attempt's artifacts are orphans, never referenced.
 
@@ -280,7 +371,8 @@ is transient").
 | bundle digest | `sha256(canonicalJson(files))`, `files` = `[[path, sha256, size], …]` of the skill directory, sorted by path |
 | manifest digest | sha256 of the `skill.json` bytes |
 | `keyId` | sha256 hex of the Ed25519 public key's SPKI DER |
-| registry `sourceSha256` | sha256 of the DSSE payload bytes (the statement), or of the `quarantine.json` bytes |
+| registry `sourceSha256` | sha256 of the DSSE payload bytes (the statement), or of the `quarantine.json` bytes; also the `statementSha256` of the high-water mark (§5.3a) |
+| `skill-registry-snapshot` bytes | `canonicalJson` of the snapshot of §6.1, releases sorted by `(skillId, version)` |
 | `indexerDigest` | §4.3 |
 | `requestDigest` | §6.3 |
 | `inputDigest` | sha256 of canonical `[requestDigest, generatedAt, policySha256, indexSha256, indexerDigest, registry mode, registry name, registry sourceSha256, registry sequence, composerVersion]` |
@@ -299,7 +391,7 @@ export interface RepositoryIndexKey {
   readonly repositoryBindingId: RepositoryBindingId;
   /** The commit, 40 lower-case hex. */
   readonly baseSha: string;
-  /** sha256 hex of the indexer version, the TypeScript version and the caps. */
+  /** sha256 hex of everything that shapes the index bytes: indexer version, TypeScript version, caps, stopwords, test patterns (§4.3). */
   readonly indexerDigest: string;
 }
 
@@ -375,10 +467,26 @@ export interface SkillRegistryReader {
   load(): Promise<VerifiedSkillRegistry>;
 }
 
+export interface SkillRegistryHighWaterMark {
+  readonly registry: string;
+  readonly sequence: number;
+  /** sha256 hex of the statement that set the mark. */
+  readonly statementSha256: string;
+  readonly trustRootSha256: string;
+}
+
+export interface SkillRegistryHighWaterStore {
+  /**
+   * Atomically raises the registry's mark to this sequence when it is higher than the stored one (or no mark
+   * exists), and returns the mark as stored after the call. Never lowers it. The reader compares the result.
+   */
+  advance(mark: SkillRegistryHighWaterMark): Promise<SkillRegistryHighWaterMark>;
+}
+
 export type SkillRegistryRefusal =
   | 'trust-root-invalid' | 'envelope-invalid' | 'unknown-key' | 'signature-invalid' | 'statement-invalid'
   | 'key-not-valid' | 'index-expired' | 'sequence-below-minimum' | 'bundle-unlisted-file' | 'bundle-mismatch'
-  | 'manifest-invalid' | 'instructions-invalid';
+  | 'manifest-invalid' | 'instructions-invalid' | 'sequence-rolled-back' | 'sequence-reused';
 
 export class SkillRegistryVerificationError extends Error {
   constructor(readonly code: SkillRegistryRefusal, detail: string) {
@@ -394,6 +502,10 @@ export interface ContextProvenanceRecord {
   readonly contextPackRef: ArtifactRef;
   /** Kind 'context-provenance'. */
   readonly provenanceRef: ArtifactRef;
+  /** Kind 'context-policy': the policy bytes the composition used. */
+  readonly policyRef: ArtifactRef;
+  /** Kind 'skill-registry-snapshot': the verified releases the router saw. */
+  readonly registrySnapshotRef: ArtifactRef;
   readonly indexSnapshotId: string;
   /** sha256 hex of the caller's request (architecture §6.3). */
   readonly requestDigest: string;
@@ -402,7 +514,11 @@ export interface ContextProvenanceRecord {
 export interface ContextProvenanceStore {
   findByTask(scope: TenantScope, taskId: TaskId): Promise<ContextProvenanceRecord | null>;
   findByPack(scope: TenantScope, contextPackRef: ArtifactRef): Promise<ContextProvenanceRecord | null>;
-  /** Create-once per task: an equal record returns created false; a different one throws ContextCompositionError 'conflicting-input'. */
+  /**
+   * Create-once per task. When the task has no row, inserts this one and returns created true. When it already has
+   * a row (an earlier call, or a concurrent one that won the insert), returns that row with created false, whatever
+   * its refs; the composer compares requestDigest (§6.3).
+   */
   record(scope: TenantScope, rec: ContextProvenanceRecord): Promise<{
     readonly record: ContextProvenanceRecord;
     readonly created: boolean;

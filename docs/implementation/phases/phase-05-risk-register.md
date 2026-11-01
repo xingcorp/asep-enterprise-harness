@@ -1,4 +1,4 @@
-# Phase 5 — Risk Register (DRAFT v1)
+# Phase 5 — Risk Register (DRAFT v2)
 
 > Delivery and design risks for the skill and context platform. Base `f613c7f`. Severity = impact × likelihood.
 
@@ -12,7 +12,7 @@
 | PR5-06 | The evaluation gate is too slow for `pnpm test` (one index build per item) | MED | Budget 180 s measured in S8; one index per item shared by all variants; reference queries capped | Over budget → CR-P5-13 (parallel CI job), never a smaller corpus without a new pre-registration |
 | PR5-07 | Phase 3's submit path keeps storing client packs, so composed packs never reach the durable path | HIGH | Port in S1 so Lane A can bind it early; CR-P5-12 optional and byte-identical when unbound; verdict suffix `_WIRING_PENDING` | CR-P5-12 not landed at Phase 5 final review |
 | PR5-08 | Phase 4's repair pack computes a different `hash` | MED | One `contextPackHash` exported from `@asep/application`; CR-P5-11 parity test | Parity test red, or Lane B lands S13 before S2: reconcile at merge |
-| PR5-09 | Vendoring needs a network fetch, which the lane rules forbid | MED | G-NET request; pinned blob SHAs make the fetch verifiable whoever runs it | No approval → S4 lands the import tool with an empty quarantine; the routing evaluation has no candidates (plan §21.3) |
+| PR5-09 | Vendoring needs a network fetch, which the lane rules forbid by default | LOW | R68 authorizes one fetch of the seven pinned URLs in S4; pinned blob SHAs, sizes and recorded sha256 make it verifiable; a license that does not permit redistribution stops the fetch for that item | A fetched byte differs from its pin, or a license is not redistributable → that item is not vendored; the report names it |
 | PR5-10 | No operator registry key, so production packs carry no skills | MED | `skills: none` is an explicit, recorded mode; verdict `IMPLEMENTATION_COMPLETE_PROMOTION_PENDING`; runbook ceremony | Operator signs an index → `COMPLETE` check |
 | PR5-11 | Vendored skills assume tools or subagents the harness does not grant | MED | Selection excludes subagent and worktree skills (plan §7); outbound references listed (V3); permissions limited in the ASEP manifest | A delivered skill instructs an action the sandbox refuses → note in the skill's quarantine record |
 | PR5-12 | Packs grow until they crowd the agent's context | LOW | `maxPackBytes`, `maxSkillBytes`, `K`, `M` in policy; instructions dropped whole, never cut (C7) | Pack bytes in the scorecard rise across baselines |
@@ -21,4 +21,6 @@
 | PR5-15 | A gate is green while a MUST was skipped (Phase 2 lesson) | HIGH | Every MUST names its test; suites registered as required in the same commit (R10); the gate recomputes rather than reads results | Review finding |
 | PR5-16 | Migration id collision with other lanes | LOW | Range `0300`–`0399` only; append-only registry unioned at merge | Merge conflict in `migrations.ts` |
 | PR5-17 | Upstream skill text later found to carry hostile or wrong instructions | MED | Quarantine; human review before signing; revocation by a higher-sequence index; skills are data inside a sandboxed agent's pack and grant no permission | Revoke and re-sign; record in the review log |
-| PR5-18 | "Routing" read as model routing by a reviewer, so the exit criterion is judged unmet | MED | D5-9 states the reading; flagged to the controller in the status block | Controller decision |
+| PR5-18 | "Routing" read as model routing by a reviewer, so the exit criterion is judged unmet | LOW | D5-9 states the reading; the controller accepted it (R68) | — |
+| PR5-19 | The registry high-water mark is lost (database restored from an old backup, a new deployment), which re-opens rollback down to the floor | MED | The deployment floor `minimumSequence` is raised with every revocation (runbook), so the floor alone refuses the revoked index; the mark is never part of a rollback migration (data model §3.4) | A restore or new deployment: the runbook step checks the floor equals the latest sequence before the reader is enabled |
+| PR5-20 | The TypeScript 7.0.2 server reads some file without going through the API's `fs` callbacks, so the jail is incomplete | MED | I6's canary with a positive control proves the callbacks cover config reads before the indexer builds on them (S5 first task); the LSP pass is gated on the jailed pass | Canary red → S5 stops and the controller decides (containerized indexing becomes in scope, or the LSP and config-reading maps are dropped) |
