@@ -6,8 +6,9 @@
 // write changes nothing) and only for the row's workflow: a task or run is bound
 // to the first workflow that projects it, an attempt belongs to its task's
 // workflow, and a write from any other workflow is ProjectionOwnershipError
-// whatever its number, because it means two orchestrators. Each write is one
-// UPDATE; when it changes no row, a read says which of the three cases it was.
+// whatever its number, because it means two orchestrators. A task or run write
+// is one UPDATE; when it changes no row, a read says which of the three cases it
+// was. An attempt write binds an unbound task to its workflow first.
 //
 // Facts that are written once (the attempt's result commit, its evidence) are
 // set when empty and must be equal otherwise: the same value again is a no-op,
@@ -80,27 +81,49 @@ export class SqlProjectionWriter {
     return this.projectBound('runs', 'run', scope, runId, write);
   }
 
+  /**
+   * An attempt belongs to its task's workflow. A task that no workflow projects yet is bound to the writing workflow
+   * first, under a lock on the task row, so two workflows can never both write one attempt.
+   */
   async projectAttempt(scope: TenantScope, attemptId: AttemptId, write: ProjectionWrite<AttemptStatus>): Promise<ProjectionResult> {
     checkWrite('attempt', attemptId, write);
-    const r = await this.client.query(
-      `update attempts a
-          set status = $4, projection_seq = $5, projection_updated_at = now(), version = a.version + 1
-         from tasks t
-        where a.id = $1 and a.organization_id = $2 and a.project_id = $3
-          and t.id = a.task_id and t.organization_id = a.organization_id and t.project_id = a.project_id
-          and (t.workflow_id is null or t.workflow_id = $6) and a.projection_seq < $5
-        returning a.id`,
-      [attemptId, scope.organizationId, scope.projectId, write.status, write.seq, write.workflowId],
-    );
-    if (r.rowCount > 0) return { applied: true };
-    const now = await this.client.query(
-      `select t.workflow_id from attempts a join tasks t on t.id = a.task_id
-        where a.id = $1 and a.organization_id = $2 and a.project_id = $3`,
-      [attemptId, scope.organizationId, scope.projectId],
-    );
-    if (now.rowCount === 0) throw new ScopeViolationError('attempt', attemptId);
-    this.assertOwner('attempt', attemptId, now.rows[0]!['workflow_id'], write.workflowId);
-    return { applied: false };
+    return this.client.transaction(async (tx) => {
+      const owner = await tx.query(
+        `select t.id as task_id, t.workflow_id from attempts a
+           join tasks t on t.id = a.task_id and t.organization_id = a.organization_id and t.project_id = a.project_id
+          where a.id = $1 and a.organization_id = $2 and a.project_id = $3
+          for update of t`,
+        [attemptId, scope.organizationId, scope.projectId],
+      );
+      if (owner.rowCount === 0) throw new ScopeViolationError('attempt', attemptId);
+      const bound = owner.rows[0]!['workflow_id'];
+      if (bound === null || bound === undefined) {
+        try {
+          await tx.query(
+            `update tasks set workflow_id = $4, version = version + 1
+              where id = $1 and organization_id = $2 and project_id = $3 and workflow_id is null`,
+            [owner.rows[0]!['task_id'] as string, scope.organizationId, scope.projectId, write.workflowId],
+          );
+        } catch (err) {
+          if (isUniqueViolation(err)) {
+            throw new ProjectionOwnershipError(
+              `workflow ${write.workflowId} already projects another task; it cannot project attempt ${attemptId}`,
+            );
+          }
+          throw err;
+        }
+      } else {
+        this.assertOwner('attempt', attemptId, bound, write.workflowId);
+      }
+      const r = await tx.query(
+        `update attempts
+            set status = $4, projection_seq = $5, projection_updated_at = now(), version = version + 1
+          where id = $1 and organization_id = $2 and project_id = $3 and projection_seq < $5
+          returning id`,
+        [attemptId, scope.organizationId, scope.projectId, write.status, write.seq],
+      );
+      return { applied: r.rowCount > 0 };
+    });
   }
 
   /** The attempt's result commit, written once. */

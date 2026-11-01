@@ -429,6 +429,36 @@ test('attempt and run projections follow the same rules; an attempt\'s owner is 
   }
 });
 
+test('an attempt projected before its task binds the task to that workflow, and another workflow is refused', async () => {
+  const { db, a } = await freshDb();
+  try {
+    const projection = new SqlProjectionWriter(db);
+    const first = `asep-task-${a.taskId}`;
+    const attemptId = await legacyAttempt(db, a);
+    assert.deepEqual(await projection.projectAttempt(a.scope, attemptId, { workflowId: first, seq: 100, status: 'FAILED' }), { applied: true });
+    assert.equal((await one(db, 'select workflow_id from tasks where id = $1', [a.taskId]))['workflow_id'], first,
+      'the first attempt projection binds the task');
+    await assert.rejects(
+      () => projection.projectAttempt(a.scope, attemptId, { workflowId: 'asep-task-other', seq: 200, status: 'SUCCEEDED' }),
+      ProjectionOwnershipError, 'another workflow, whatever its sequence number');
+    await assert.rejects(
+      () => projection.projectTask(a.scope, a.taskId, { workflowId: 'asep-task-other', seq: 1, status: 'EXECUTING' }),
+      ProjectionOwnershipError, 'the task is bound already');
+    assert.deepEqual(await projection.projectAttempt(a.scope, attemptId, { workflowId: first, seq: 101, status: 'AGENT_RUNNING' }), { applied: true });
+    // A workflow that projects one task cannot take a second task through one of its attempts.
+    const otherTask = await newTask(db, a);
+    const otherAttempt = await legacyAttempt(db, a, otherTask);
+    await assert.rejects(
+      () => projection.projectAttempt(a.scope, otherAttempt, { workflowId: first, seq: 1, status: 'AGENT_RUNNING' }),
+      ProjectionOwnershipError);
+    assert.deepEqual(await one(db,
+      `select (select workflow_id from tasks where id = $1) as wf, (select projection_seq::int from attempts where id = $2) as seq`,
+      [otherTask, otherAttempt]), { wf: null, seq: 0 }, 'nothing written');
+  } finally {
+    await db.close();
+  }
+});
+
 test('projection writes stay in the caller\'s tenant and take only a positive sequence number', async () => {
   const { db, a, b } = await freshDb();
   try {
