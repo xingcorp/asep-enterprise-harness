@@ -226,9 +226,11 @@ keeps a high-water mark per registry name, outside the registry directory, in Po
 - **Store.** Table `skill_registry_high_water` (migration `0302`, data model §3.3): one row per registry name with
   `sequence`, `statement_sha256`, `trust_root_sha256` and `advanced_at`. A trigger refuses a delete and any update
   that does not raise `sequence`. The row is deployment-wide, like the registry; it has no tenant column.
-- **Advance.** One statement, atomic under concurrency: insert the row, or on conflict update it only where the
-  stored `sequence` is lower, then return the stored row. Two loads racing with sequences 2 and 3 end at 3, and the
-  one with 2 is refused.
+- **Advance.** One upsert, atomic under concurrency: insert the row, or on conflict update it only where the
+  stored `sequence` is lower, `returning` the row it wrote. When it wrote nothing (the stored sequence was already
+  equal or higher), the store reads and returns the stored row. A load is judged by its own statement, so a load
+  that raised the mark is accepted even if a later load raises it again before it returns. Two loads racing with
+  sequences 2 and 3 end at 3, and the one with 2 is refused.
 - **Rule.** Lower sequence than the mark → `sequence-rolled-back`. Equal sequence → accepted only when its statement
   digest equals the recorded one, so a restart reloads the same index; any other statement with that sequence is
   `sequence-reused` (two different statements signed with one sequence). Higher → accepted, and the mark moves.
@@ -478,7 +480,8 @@ export interface SkillRegistryHighWaterMark {
 export interface SkillRegistryHighWaterStore {
   /**
    * Atomically raises the registry's mark to this sequence when it is higher than the stored one (or no mark
-   * exists), and returns the mark as stored after the call. Never lowers it. The reader compares the result.
+   * exists) and returns the mark it wrote; otherwise returns the stored mark. Never lowers it. The reader compares
+   * the result with what it asked for.
    */
   advance(mark: SkillRegistryHighWaterMark): Promise<SkillRegistryHighWaterMark>;
 }

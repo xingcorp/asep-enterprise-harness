@@ -247,7 +247,7 @@ create table skill_registry_high_water (
 -- a trigger refuses delete, and any update whose new sequence is not greater than the old one
 ```
 
-`advance` is one statement:
+`advance` is one upsert; the read runs only when the upsert wrote nothing:
 
 ```sql
 insert into skill_registry_high_water (registry, sequence, statement_sha256, trust_root_sha256)
@@ -255,7 +255,9 @@ values ($1, $2, $3, $4)
 on conflict (registry) do update
   set sequence = excluded.sequence, statement_sha256 = excluded.statement_sha256,
       trust_root_sha256 = excluded.trust_root_sha256, advanced_at = now()
-  where skill_registry_high_water.sequence < excluded.sequence;
+  where skill_registry_high_water.sequence < excluded.sequence
+returning registry, sequence, statement_sha256, trust_root_sha256;
+-- no row returned: the stored sequence is equal or higher
 select registry, sequence, statement_sha256, trust_root_sha256 from skill_registry_high_water where registry = $1;
 ```
 
