@@ -1155,6 +1155,59 @@ test('a ledger entry is appended once per key; other facts under the same key ar
   }
 });
 
+test('a ledger replay with any field changed under the same key is refused and changes nothing', async () => {
+  const { db, a } = await freshDb();
+  try {
+    const ledger = new SqlBudgetLedger(db);
+    const attemptId = await legacyAttempt(db, a);
+    const sibling = await legacyAttempt(db, a);
+    const otherTask = await newTask(db, a);
+    const otherTaskAttempt = await legacyAttempt(db, a, otherTask);
+    const otherRun = await new RunRepository(db).create(a.scope, { repositoryBindingId: a.bindingId, status: 'EXECUTING', risk: 'R0' });
+    const otherRunTask = (await new TaskRepository(db).create(a.scope, { runId: otherRun.id, repositoryBindingId: a.bindingId, risk: 'R0' })).id;
+    const otherRunAttempt = await legacyAttempt(db, a, otherRunTask);
+    const entry = usage(a, attemptId);
+    const overrun = usage(a, attemptId, { idempotencyKey: `${attemptId}:overrun`, entryKind: 'overrun', source: 'harness-measured' });
+    await ledger.append(a.scope, entry);
+    await ledger.append(a.scope, overrun);
+    const changes: Array<[LedgerEntryInput, Partial<LedgerEntryInput>]> = [
+      [entry, { runId: otherRun.id, taskId: otherRunTask, attemptId: otherRunAttempt }],
+      [entry, { taskId: otherTask, attemptId: otherTaskAttempt }],
+      [entry, { attemptId: sibling }],
+      [entry, { entryKind: 'overrun', source: 'harness-measured' }],
+      [entry, { costMicroUsd: 1_500_001 }],
+      [entry, { costMicroUsd: 0 }],
+      [overrun, { usageOutOfBound: true }],
+      [entry, { inputTokens: 1001 }],
+      [entry, { inputTokens: null }],
+      [entry, { outputTokens: 201 }],
+      [entry, { outputTokens: null }],
+      [entry, { toolCalls: 8 }],
+      [entry, { toolCalls: null }],
+      [entry, { wallClockMs: 60_001 }],
+      [entry, { wallClockMs: null }],
+      [entry, { source: 'harness-measured' }],
+    ];
+    const covered = new Set(changes.flatMap(([, change]) => Object.keys(change)));
+    assert.deepEqual([...covered].sort(), Object.keys(entry).filter((k) => k !== 'idempotencyKey').sort(),
+      'every field but the key is changed by some case');
+    for (const [base, change] of changes) {
+      await assert.rejects(() => ledger.append(a.scope, { ...base, ...change }), BudgetLedgerConflictError, JSON.stringify(change));
+    }
+    const stored = await db.query(
+      `select idempotency_key, run_id, task_id, attempt_id, entry_kind, cost_usd::text as usd, usage_out_of_bound,
+              input_tokens::int as input_tokens, output_tokens::int as output_tokens, tool_calls, wall_clock_ms::int as wall_clock_ms, source
+         from budget_ledger where organization_id = $1 order by idempotency_key`, [a.scope.organizationId]);
+    assert.deepEqual(stored.rows.map((r) => ({ ...r, usd: Number(r['usd']) })), [entry, overrun].map((e) => ({
+      idempotency_key: e.idempotencyKey, run_id: e.runId, task_id: e.taskId, attempt_id: e.attemptId, entry_kind: e.entryKind,
+      usd: e.costMicroUsd / 1_000_000, usage_out_of_bound: e.usageOutOfBound, input_tokens: e.inputTokens,
+      output_tokens: e.outputTokens, tool_calls: e.toolCalls, wall_clock_ms: e.wallClockMs, source: e.source,
+    })).sort((x, y) => x.idempotency_key.localeCompare(y.idempotency_key)));
+  } finally {
+    await db.close();
+  }
+});
+
 test('ledger money is exact micro-USD and totals add up per run and per task', async () => {
   const { db, a, b } = await freshDb();
   try {
