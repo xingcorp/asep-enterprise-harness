@@ -641,7 +641,7 @@ test('the resolver resolves only for the right tenant, the held ACTIVE lease and
 
 // --- projection, approvals, ledger, governance, registry races --------------------
 
-test('projections raced on two connections keep the highest sequence number, and two workflows cannot share a task', async () => {
+test('projections raced on two connections keep the highest sequence number, and two workflows cannot share a task or its attempt', async () => {
   await withTenants((db, t) => withTwoConnections(async (a, b) => {
     const workflowId = `asep-task-${t.taskId}`;
     const statuses = ['READY', 'EXECUTING', 'VERIFYING'] as const;
@@ -659,6 +659,26 @@ test('projections raced on two connections keep the highest sequence number, and
       assert.equal(outcomes.filter((o) => o.status === 'fulfilled').length, 1, `round ${round}: one workflow binds the task`);
       const lost = outcomes.find((o) => o.status === 'rejected');
       assert.ok(lost?.status === 'rejected' && lost.reason instanceof ProjectionOwnershipError, `round ${round}`);
+    }
+
+    // Two workflows project one attempt of an unbound task at once, and one projects the task itself: the first to
+    // bind the task owns it, and the attempt shows only the owner's writes.
+    for (let round = 0; round < 5; round++) {
+      const taskId = await newTask(db, t);
+      const attemptId = await newAttempt(db, t, taskId);
+      const owner = `asep-task-${taskId}`;
+      const rogue = `asep-task-${taskId}-rogue`;
+      const outcomes = await Promise.allSettled([
+        new SqlProjectionWriter(a).projectAttempt(t.scope, attemptId, { workflowId: owner, seq: 1, status: 'AGENT_RUNNING' }),
+        new SqlProjectionWriter(b).projectAttempt(t.scope, attemptId, { workflowId: rogue, seq: 100, status: 'FAILED' }),
+      ]);
+      assert.equal(outcomes.filter((o) => o.status === 'fulfilled').length, 1, `round ${round}: one workflow binds the task`);
+      const lost = outcomes.find((o) => o.status === 'rejected');
+      assert.ok(lost?.status === 'rejected' && lost.reason instanceof ProjectionOwnershipError, `round ${round}`);
+      const winner = outcomes[0]!.status === 'fulfilled' ? owner : rogue;
+      const [row] = await rows(db,
+        `select t.workflow_id, a.projection_seq::int as seq from attempts a join tasks t on t.id = a.task_id where a.id = $1`, [attemptId]);
+      assert.deepEqual(row, { workflow_id: winner, seq: winner === owner ? 1 : 100 }, `round ${round}`);
     }
   }));
 });
