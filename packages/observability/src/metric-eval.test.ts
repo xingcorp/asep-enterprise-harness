@@ -449,3 +449,48 @@ test('a recompute records the source watermark it was given', async () => {
   });
   assert.equal(appended[0]!.sourceWatermark, '2026-10-01T22:59:00.000Z');
 });
+
+test('a recompute from older events than the latest snapshot never appends over it', async () => {
+  const round = '2026-10-01T09:00:00.000Z';
+  const review = ev({ eventId: 'r1', eventType: 'review.completed', occurredAt: round, reviewFindingsTotal: 1 });
+  const accepted = ev({
+    eventId: 'd1', eventType: 'review.finding_dispositioned', occurredAt: '2026-10-02T09:00:00.000Z', findingId: 'f-1',
+    findingValid: true, dispositionActorKind: 'human', reviewRoundCompletedAt: round, dispositionLatencyMs: 1,
+  });
+  const run = (store: MetricSnapshotStore, events: readonly RunEvent[], sourceWatermark: string | null, computedAt: string) =>
+    recomputeMetricSnapshots({
+      store, scope: SCOPE, dictionary: DICT, metricNames: ['review_finding_yield'], windows: [DAY_1], events, computedAt, sourceWatermark,
+    });
+
+  // A writer that read the events before the acceptance (watermark T1, value 0)
+  // loses the race for version 1 to one that read them after it (T2, value 1).
+  // It re-reads, sees the newer source and writes nothing; without the guard it
+  // would append version 2 = 0 from its older events.
+  const inner = new MemoryMetricSnapshotStore();
+  let raced = false;
+  const racing: MetricSnapshotStore = {
+    latest: (k) => inner.latest(k),
+    append: async (snapshot) => {
+      if (!raced) {
+        raced = true;
+        await run(inner, [review, accepted], '2026-10-02T09:00:01.000Z', '2026-10-02T09:00:02.000Z');
+      }
+      return inner.append(snapshot);
+    },
+  };
+  const stale = await run(racing, [review], '2026-10-01T10:00:00.000Z', '2026-10-02T09:00:03.000Z');
+  assert.ok(raced);
+  assert.deepEqual([stale.appended.length, stale.stale], [0, 1]);
+  assert.deepEqual(inner.versions(key('review_finding_yield', DAY_1)).map((s) => [s.snapshotVersion, s.value]), [[1, 1]]);
+
+  // Older than the latest without a race, or with no watermark against a latest that has one: nothing is written.
+  for (const watermark of ['2026-10-01T11:00:00.000Z', null]) {
+    const r = await run(inner, [review], watermark, '2026-10-02T10:00:00.000Z');
+    assert.deepEqual([r.appended.length, r.stale], [0, 1], String(watermark));
+  }
+  // A newer source still appends.
+  const rejected = ev({ ...accepted as unknown as Record<string, unknown>, eventId: 'd2', occurredAt: '2026-10-03T09:00:00.000Z', findingValid: false });
+  const newer = await run(inner, [review, accepted, rejected], '2026-10-03T09:00:01.000Z', '2026-10-03T10:00:00.000Z');
+  assert.equal(newer.appended.length, 1);
+  assert.deepEqual(inner.versions(key('review_finding_yield', DAY_1)).map((s) => s.value), [1, 0]);
+});

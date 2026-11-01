@@ -38,7 +38,9 @@
 // Snapshots are append-only versions (data model §3.2): a recompute that
 // changes nothing writes nothing, a changed value appends the next version, and
 // earlier versions stay readable. Two recomputes cannot both write version n+1;
-// the loser re-reads and decides again.
+// the loser re-reads and decides again. A recompute never follows a latest
+// version computed from newer events (by source watermark), so a writer that
+// read the events before another one cannot put its older value on top.
 
 import { createHash } from 'node:crypto';
 import type { RunEvent } from '@asep/contracts';
@@ -353,6 +355,18 @@ export interface RecomputeResult {
   readonly appended: readonly MetricSnapshot[];
   /** Series whose latest version already held the computed value. */
   readonly unchanged: number;
+  /** Series whose latest version was computed from newer events than this recompute read. */
+  readonly stale: number;
+}
+
+// Whether a snapshot computed from events up to `watermark` may follow `prev`.
+// A latest version with a watermark is only followed by one from events at
+// least as new; a recompute with no watermark cannot show that, so it may only
+// follow a latest version that has none either.
+function notOlderThan(watermark: string | null, prev: MetricSnapshot): boolean {
+  if (prev.sourceWatermark === null) return true;
+  if (watermark === null) return false;
+  return Date.parse(watermark) >= Date.parse(prev.sourceWatermark);
 }
 
 // Snapshot dimensions are not broken down yet: every series is the whole scope.
@@ -376,6 +390,11 @@ export async function recomputeMetricSnapshots(input: RecomputeInput): Promise<R
 
   const appended: MetricSnapshot[] = [];
   let unchanged = 0;
+  let stale = 0;
+  const watermark = input.sourceWatermark ?? null;
+  if (watermark !== null && !Number.isFinite(Date.parse(watermark))) {
+    throw new RangeError(`sourceWatermark "${watermark}" is not an instant`);
+  }
   for (const v of values) {
     const key: MetricSnapshotKey = {
       organizationId: input.scope.organizationId,
@@ -388,6 +407,11 @@ export async function recomputeMetricSnapshots(input: RecomputeInput): Promise<R
     };
     for (let attempt = 1; ; attempt += 1) {
       const prev = await input.store.latest(key);
+      if (prev && !notOlderThan(watermark, prev)) {
+        // Re-read after a lost race included: the winner saw newer events.
+        stale += 1;
+        break;
+      }
       if (prev && sameValue(prev, v)) {
         unchanged += 1;
         break;
@@ -403,7 +427,7 @@ export async function recomputeMetricSnapshots(input: RecomputeInput): Promise<R
         nullReason: v.nullReason,
         privacyClass: v.privacyClass,
         sourceEventCount: v.sourceEventCount,
-        sourceWatermark: input.sourceWatermark ?? null,
+        sourceWatermark: watermark,
         computedAt,
       });
       if ((await input.store.append(snapshot)) === 'appended') {
@@ -415,5 +439,5 @@ export async function recomputeMetricSnapshots(input: RecomputeInput): Promise<R
       }
     }
   }
-  return { appended, unchanged };
+  return { appended, unchanged, stale };
 }
